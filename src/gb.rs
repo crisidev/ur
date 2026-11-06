@@ -189,24 +189,76 @@ impl<'a> Value<'a> {
     }
 
     /// Decodes a string value into `out`, truncating if it doesn't fit.
-    /// Bytes are ISO-8859-1 (Gadgetbridge encodes that way; anything outside
-    /// Latin-1 already arrives as `?`).
+    ///
+    /// Gadgetbridge's strings for a Bangle.js are JavaScript rather than
+    /// strict JSON (see `jsonToStringInternal` in its driver):
+    ///
+    /// - String literals use JavaScript escapes: `\xHH` for control
+    ///   characters and the Latin-1 range 0xC2–0xF4 (å, æ, ø, é, … all fall
+    ///   in it), `\uHHHH` beyond Latin-1, one- or two-digit octal like `\0`
+    ///   and `\20`, and `\b \t \n \v \f`. Other bytes are raw ISO-8859-1.
+    /// - Where escaping would cost more than base64, the "string" is instead
+    ///   the expression `atob("…")`, base64 of the ISO-8859-1 bytes. Names
+    ///   heavy in accented letters arrive this way.
     pub fn decode_into<const N: usize>(&self, out: &mut String<N>) -> Option<()> {
+        if let Some(base64) = self
+            .0
+            .strip_prefix(b"atob(\"")
+            .and_then(|v| v.strip_suffix(b"\")"))
+        {
+            for byte in decode_base64(base64) {
+                if out.push(char::from(byte)).is_err() {
+                    break;
+                }
+            }
+            return Some(());
+        }
+
         let inner = self.0.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
-        let mut bytes = inner.iter();
-        while let Some(&byte) = bytes.next() {
-            let c = match byte {
-                b'\\' => match bytes.next()? {
-                    b'n' | b'r' | b't' => ' ',
+        let mut bytes = inner.iter().copied().peekable();
+        let hex = |bytes: &mut core::iter::Peekable<_>, digits: usize| -> Option<u32> {
+            let text: heapless::Vec<u8, 4> = bytes.by_ref().take(digits).collect();
+            u32::from_str_radix(core::str::from_utf8(&text).ok()?, 16).ok()
+        };
+        while let Some(byte) = bytes.next() {
+            let c = if byte != b'\\' {
+                // Latin-1 maps straight onto U+0000–U+00FF.
+                char::from(byte)
+            } else {
+                match bytes.next()? {
+                    b'x' => char::from_u32(hex(&mut bytes, 2)?)?,
                     b'u' => {
-                        let hex: heapless::Vec<u8, 4> = bytes.by_ref().take(4).copied().collect();
-                        let code =
-                            u32::from_str_radix(core::str::from_utf8(&hex).ok()?, 16).ok()?;
-                        char::from_u32(code).unwrap_or('?')
+                        let unit = hex(&mut bytes, 4)?;
+                        // A UTF-16 surrogate pair spells one character
+                        // (emoji, mostly), which the font lacks anyway.
+                        if (0xD800..0xDC00).contains(&unit) && bytes.peek() == Some(&b'\\') {
+                            bytes.next();
+                            bytes.next(); // 'u'
+                            let low = hex(&mut bytes, 4)?;
+                            char::from_u32(0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00))
+                                .unwrap_or('?')
+                        } else {
+                            char::from_u32(unit).unwrap_or('?')
+                        }
                     }
-                    &other => char::from(other), // \" \\ \/
-                },
-                _ => char::from(byte), // Latin-1 maps straight onto U+0000–U+00FF
+                    digit @ b'0'..=b'7' => {
+                        // Octal: JavaScript reads up to three digits.
+                        let mut value = u32::from(digit - b'0');
+                        for _ in 0..2 {
+                            match bytes.peek() {
+                                Some(&d @ b'0'..=b'7') => {
+                                    value = value * 8 + u32::from(d - b'0');
+                                    bytes.next();
+                                }
+                                _ => break,
+                            }
+                        }
+                        char::from_u32(value)?
+                    }
+                    // Line breaks and tabs would only mess up one-line labels.
+                    b'n' | b'r' | b't' | b'v' | b'f' | b'b' => ' ',
+                    other => char::from(other), // \" \\ \/
+                }
             };
             if out.push(c).is_err() {
                 break;
@@ -372,4 +424,27 @@ impl Outgoing {
         debug!("gb: sending {}", line.as_str());
         line
     }
+}
+
+/// Decodes standard base64 (padding optional, anything else skipped).
+fn decode_base64(text: &[u8]) -> impl Iterator<Item = u8> + '_ {
+    let value = |c: u8| match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    let mut sextets = text.iter().filter_map(move |&c| value(c));
+    let mut pending: u32 = 0;
+    let mut bits = 0;
+    core::iter::from_fn(move || {
+        while bits < 8 {
+            pending = (pending << 6) | u32::from(sextets.next()?);
+            bits += 6;
+        }
+        bits -= 8;
+        Some((pending >> bits) as u8)
+    })
 }
