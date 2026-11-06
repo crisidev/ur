@@ -439,18 +439,21 @@ async fn send(
     }
 }
 
-/// Reports the battery to the phone at connect and whenever it changes.
+/// Reports the battery to the phone at connect and whenever its percentage
+/// or charging state changes. (Not the voltage: it jitters by millivolts
+/// from sample to sample, which made this report every minute.)
 async fn report_status() {
     let mut reported = None;
     loop {
         let battery = BATTERY.lock(Cell::get);
-        if reported != Some(battery) {
+        let key = (battery.percent, battery.charging);
+        if reported != Some(key) {
             let _ = OUTBOX.try_send(Outgoing::Status {
                 percent: battery.percent,
                 charging: battery.charging,
                 millivolts: battery.millivolts,
             });
-            reported = Some(battery);
+            reported = Some(key);
         }
         Timer::after_secs(60).await;
     }
