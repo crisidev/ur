@@ -71,11 +71,13 @@ const fn theme(name: &'static str, hex: [u32; Color::COUNT]) -> Theme {
     Theme { name, palette }
 }
 
-// TODO: once a theme is chosen, keep it (and maybe one alternative) and
-// persist the choice in settings, rather than cycling through all of these.
+// These three survived trying six on the real panel (also tried: amber
+// terminal, '80s home-computer blue, and the original navy/teal).
+//
+// TODO: persist the selected theme once settings storage exists.
 // Kept unformatted so each palette stays a compact two-line block.
 #[rustfmt::skip]
-pub const THEMES: [Theme; 6] = [
+pub const THEMES: [Theme; 3] = [
     // Black cabinet, white-to-grey text, red shadows and accents.
     theme("ARCADE", [
         0x101010, 0x5a1010, 0xe8e8e8, 0xa8a8a8, 0x606060, 0x303030, 0xd82828,
@@ -86,24 +88,9 @@ pub const THEMES: [Theme; 6] = [
         0xc3cf8c, 0x8a9f3a, 0x1e2a14, 0x3c5428, 0x8a9f3a, 0x8a9f3a, 0x3c5428,
         0x1e2a14, 0x8a9f3a, 0x1e2a14, 0x8a9f3a, 0x3c5428, 0x1e2a14,
     ]),
-    // Amber phosphor on black, a few intensities.
-    theme("AMBER", [
-        0x0c0800, 0x3a2600, 0xffb428, 0xc07c10, 0x6a4408, 0x2a1c04, 0xffb428,
-        0xc07c10, 0x0c0800, 0xffb428, 0xfff0b0, 0xffd070, 0xff7020,
-    ]),
-    // An '80s home computer: deep blue, pale blue/white text, yellow accent.
-    theme("HOME COMPUTER", [
-        0x2a2a9a, 0x14145a, 0xf0f0ff, 0x9a9aea, 0x6a6ad0, 0x1c1c70, 0xf0d040,
-        0x9a9aea, 0x2a2a9a, 0xe04050, 0xffa0b0, 0x70e070, 0xe04050,
-    ]),
     // Brown ink on cream, muted red: an old printed game manual.
     theme("PARCHMENT", [
         0xe8dcb8, 0xc0a878, 0x3a2414, 0x6a4a2a, 0xa08860, 0xd0c098, 0xa02820,
         0xa02820, 0xe8dcb8, 0xa02820, 0xe07060, 0x4a6a2a, 0xa02820,
-    ]),
-    // The original: navy, off-white, teal.
-    theme("MODERN", [
-        0x14182e, 0x000000, 0xf2f0e5, 0x9aa3b8, 0x56607e, 0x2c3352, 0x2e9c94,
-        0x2e9c94, 0x14182e, 0xd8434a, 0xe87ab4, 0x5fbf5a, 0xd8434a,
     ]),
 ];

@@ -8,7 +8,7 @@
 //! Navigation:
 //!
 //! - Swipe left/right: cycle between screens.
-//! - Long press: next colour theme (temporary, while choosing one).
+//! - Long press: next colour theme.
 //! - Button: return to the clock; on the clock, turn the screen off.
 //! - Any button press or touch while the screen is off: wake to the clock.
 //!   (That touch is *only* a wake-up; it isn't also acted on.)
@@ -120,7 +120,6 @@ impl App {
                 // TODO: remove once something real uses the motor; for now
                 // this is how we check it works.
                 (Gesture::Tap, Screen::Info) => motor::buzz(Pattern::NOTIFY),
-                // TODO: temporary, for picking a theme on the real panel.
                 (Gesture::LongPress, _) => self.theme = (self.theme + 1) % THEMES.len(),
                 _ => {}
             },
@@ -147,11 +146,12 @@ impl App {
 //
 // Canvas layout (80×80), y ranges inclusive:
 //
-//    3..7    status bar: battery % and icon (right)
-//   14..35   HH:MM in 5×7 digits at 3× (15×21 each), with a drop shadow
-//   40..53   SS in the same digits at 2× (10×14), centred
-//   60..64   date
-//   68..73   heart rate
+//    3..7    status bar: time-sync state (left), battery % and icon (right)
+//   13..34   HH:MM in 5×7 digits at 3× (15×21 each), with a drop shadow
+//   39..52   weekday (left), SS in the same digits at 2× (centred), heart
+//            rate (right)
+//   58..62   date, YYYY-MM-DD
+//   66..79   free; meant for the next alarm (milestone 5)
 
 const BACKGROUND: Color = Color::BACKGROUND;
 
@@ -159,14 +159,16 @@ fn render_clock(canvas: &mut Canvas, status: &Status) {
     canvas.clear(BACKGROUND);
     render_battery(canvas, status.battery);
 
-    // TODO: wall-clock time and date once Bluetooth time sync lands
-    // (milestone 2). Until then: time since boot, and say so.
+    // TODO: wall-clock time, weekday, and date once Bluetooth time sync
+    // lands (milestone 2). Until then: time since boot, placeholders, and a
+    // status-bar note saying so.
+    canvas.text(3, 3, "NO TIME", Color::TEXT_FAINT);
     let secs = status.uptime_secs;
     let (hours, minutes, seconds) = ((secs / 3600) % 24, (secs / 60) % 60, secs % 60);
 
     // HH:MM. Each digit cell is 15 px wide with 2 px gaps; the colon gets a
     // 3 px column. That's 71 px, leaving 4 px either side (+1 for shadow).
-    const TIME_Y: i32 = 14;
+    const TIME_Y: i32 = 13;
     const TIME_SCALE: i32 = 3;
     let hhmm = [hours / 10, hours % 10, minutes / 10, minutes % 10];
     for (&digit, x) in hhmm.iter().zip([4, 21, 43, 60]) {
@@ -182,29 +184,32 @@ fn render_clock(canvas: &mut Canvas, status: &Status) {
         }
     }
 
-    // Seconds: smaller and dimmer, so they read as secondary to HH:MM. Two
-    // 10 px cells with a 2 px gap, centred.
+    // The seconds row: smaller, dimmer seconds in the middle (two 10 px
+    // cells, 2 px gap), flanked by the weekday and heart rate, all
+    // vertically centred on the digits.
+    const ROW_Y: i32 = 39;
+    const TEXT_Y: i32 = ROW_Y + 4;
     for (digit, x) in [seconds / 10, seconds % 10].into_iter().zip([29, 41]) {
-        draw_digit(canvas, x, 40, digit, 2, Color::TEXT_DIM);
+        draw_digit(canvas, x, ROW_Y, digit, 2, Color::TEXT_DIM);
     }
+    canvas.text(4, TEXT_Y, "---", Color::TEXT_DIM);
 
-    canvas.text_centered(40, 60, "NOT SYNCED", Color::TEXT_FAINT);
-
-    // Heart rate, centred as a group: icon, 2 px gap, value.
+    // Heart rate, right-aligned as a group: icon, 2 px gap, value.
     // TODO: real readings once the HRS3300 driver lands (milestone 6).
     let bpm = "--";
-    let group_w = font::HEART_W as i32 + 2 + font::small_text_width(bpm);
-    let x = 40 - group_w / 2;
-    canvas.sprite(x, 68, font::HEART_W, &font::HEART, 1, Color::HEART);
+    let x = 77 - (font::HEART_W as i32 + 2 + font::small_text_width(bpm));
+    canvas.sprite(x, TEXT_Y - 1, font::HEART_W, &font::HEART, 1, Color::HEART);
     canvas.sprite(
         x,
-        68,
+        TEXT_Y - 1,
         font::HEART_W,
         &font::HEART_SHINE,
         1,
         Color::HEART_SHINE,
     );
-    canvas.text(x + font::HEART_W as i32 + 2, 69, bpm, Color::TEXT);
+    canvas.text(x + font::HEART_W as i32 + 2, TEXT_Y, bpm, Color::TEXT);
+
+    canvas.text_centered(40, 58, "----------", Color::TEXT_DIM);
 }
 
 /// One big 5×7 digit at `scale`, with a 1 px drop shadow down and right.
