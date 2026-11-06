@@ -56,7 +56,7 @@ use crate::battery::Battery;
 use crate::canvas::{Canvas, Sweep};
 use crate::display::Display;
 use crate::touch::Touch;
-use crate::ui::{App, Status};
+use crate::ui::{App, Status, ThemeChoice};
 
 bind_interrupts!(struct Irqs {
     SPI2 => spim::InterruptHandler<peripherals::SPI2>;
@@ -345,10 +345,18 @@ async fn main(spawner: Spawner) {
     static CANVAS: StaticCell<Canvas> = StaticCell::new();
     let canvas = CANVAS.init(Canvas::new());
     let mut battery = Battery::new();
-    let saved_theme = storage::load::<1>(storage::key::THEME)
+    let load_u8 = async |key| storage::load::<1>(key).await.map_or(0, |[value]| value);
+    let themes = ThemeChoice {
+        light: load_u8(storage::key::THEME_LIGHT).await,
+        dark: load_u8(storage::key::THEME_DARK).await,
+    };
+    let mut app = App::new(Instant::now(), themes);
+    if let Some(sun) = storage::load(storage::key::SUN)
         .await
-        .map(|[theme]| theme);
-    let mut app = App::new(Instant::now(), saved_theme.unwrap_or(0));
+        .and_then(clock::Sun::from_bytes)
+    {
+        clock::set_sun(sun);
+    }
     // Start "asleep" so the first pass goes through the wake path: render the
     // first frame, then turn the backlight on. (Waking an already-awake
     // ST7789 is harmless.)
@@ -376,8 +384,10 @@ async fn main(spawner: Spawner) {
                 local_time: clock::now(),
                 connected: ble::CONNECTED.load(Ordering::Relaxed),
                 passkey: ble::PASSKEY.lock(Cell::get),
+                sun: clock::sun(),
                 battery: &battery,
             };
+            app.set_daytime(clock::is_daytime());
             canvas.set_theme(app.theme());
             app.render(canvas, &status);
             match app.take_transition() {
@@ -410,10 +420,13 @@ async fn main(spawner: Spawner) {
             }
             Either::Second(event) => {
                 info!("input: {}", event);
-                let theme = app.theme_index();
+                let before = app.themes;
                 app.on_input(event, Instant::now());
-                if app.theme_index() != theme {
-                    storage::save(storage::key::THEME, &[app.theme_index()]).await;
+                if app.themes.light != before.light {
+                    storage::save(storage::key::THEME_LIGHT, &[app.themes.light]).await;
+                }
+                if app.themes.dark != before.dark {
+                    storage::save(storage::key::THEME_DARK, &[app.themes.dark]).await;
                 }
             }
         }

@@ -33,7 +33,12 @@ const RANGE: Range<u32> = 0x7C000..0x80000;
 pub mod key {
     /// Bluetooth bonds, one per slot.
     pub const BONDS: [u8; 2] = [1, 2];
-    pub const THEME: u8 = 16;
+    // 16: retired (a single theme index, before themes followed the sun).
+    /// The chosen theme within [`crate::theme::LIGHT`] and `DARK`.
+    pub const THEME_LIGHT: u8 = 17;
+    pub const THEME_DARK: u8 = 18;
+    /// The last sunrise/sunset from the phone; see [`crate::clock::Sun`].
+    pub const SUN: u8 = 19;
 }
 
 /// Big enough for the largest item (a 43-byte bond) plus its key, rounded up

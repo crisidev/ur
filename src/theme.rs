@@ -71,26 +71,38 @@ const fn theme(name: &'static str, hex: [u32; Color::COUNT]) -> Theme {
     Theme { name, palette }
 }
 
-// These three survived trying six on the real panel (also tried: amber
-// terminal, '80s home-computer blue, and the original navy/teal).
+// Three themes survived trying six on the real panel (also tried: amber
+// terminal, '80s home-computer blue, and the original navy/teal). They are
+// grouped by whether they suit darkness or daylight; the UI picks the group
+// from sunrise/sunset and remembers a choice within each group.
 //
-// TODO: persist the selected theme once settings storage exists.
-// Kept unformatted so each palette stays a compact two-line block.
+// Statics, not consts: the canvas detects theme changes by address.
+
+/// Black cabinet, white-to-grey text, red shadows and accents.
 #[rustfmt::skip]
-pub const THEMES: [Theme; 3] = [
-    // Black cabinet, white-to-grey text, red shadows and accents.
-    theme("ARCADE", [
-        0x101010, 0x5a1010, 0xe8e8e8, 0xa8a8a8, 0x606060, 0x303030, 0xd82828,
-        0xd82828, 0x101010, 0xd82828, 0xff9090, 0xffffff, 0xff5050,
-    ]),
-    // Four shades of olive green, dark on light, like an early handheld LCD.
-    theme("HANDHELD", [
-        0xc3cf8c, 0x8a9f3a, 0x1e2a14, 0x3c5428, 0x8a9f3a, 0x8a9f3a, 0x3c5428,
-        0x1e2a14, 0x8a9f3a, 0x1e2a14, 0x8a9f3a, 0x3c5428, 0x1e2a14,
-    ]),
-    // Brown ink on cream, muted red: an old printed game manual.
-    theme("PARCHMENT", [
-        0xe8dcb8, 0xc0a878, 0x3a2414, 0x6a4a2a, 0xa08860, 0xd0c098, 0xa02820,
-        0xa02820, 0xe8dcb8, 0xa02820, 0xe07060, 0x4a6a2a, 0xa02820,
-    ]),
-];
+pub static ARCADE: Theme = theme("ARCADE", [
+    0x101010, 0x5a1010, 0xe8e8e8, 0xa8a8a8, 0x606060, 0x303030, 0xd82828,
+    0xd82828, 0x101010, 0xd82828, 0xff9090, 0xffffff, 0xff5050,
+]);
+
+/// Four shades of olive green, dark on light, like an early handheld LCD.
+#[rustfmt::skip]
+pub static HANDHELD: Theme = theme("HANDHELD", [
+    0xc3cf8c, 0x8a9f3a, 0x1e2a14, 0x3c5428, 0x8a9f3a, 0x8a9f3a, 0x3c5428,
+    0x1e2a14, 0x8a9f3a, 0x1e2a14, 0x8a9f3a, 0x3c5428, 0x1e2a14,
+]);
+
+/// Brown ink on cream, muted red: an old printed game manual.
+#[rustfmt::skip]
+pub static PARCHMENT: Theme = theme("PARCHMENT", [
+    0xe8dcb8, 0xc0a878, 0x3a2414, 0x6a4a2a, 0xa08860, 0xd0c098, 0xa02820,
+    0xa02820, 0xe8dcb8, 0xa02820, 0xe07060, 0x4a6a2a, 0xa02820,
+]);
+
+/// Themes for after sunset. Long press cycles within this list at night.
+/// TODO: only one so far; long press at night does nothing until there's a
+/// second dark theme.
+pub static DARK: [&Theme; 1] = [&ARCADE];
+
+/// Themes for daylight. Long press cycles within this list by day.
+pub static LIGHT: [&Theme; 2] = [&HANDHELD, &PARCHMENT];

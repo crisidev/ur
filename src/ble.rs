@@ -77,11 +77,23 @@ pub type Controller = nrf_sdc::SoftdeviceController<'static>;
 // GATT server
 // ==============================================================================
 
+/// The full InfiniTime-compatible layout, including services whose behaviour
+/// isn't implemented yet (calls, music, heart rate).
+///
+/// Android caches a bonded device's GATT layout, and TrouBLE doesn't offer
+/// the Service Changed indication or Database Hash that tell it to look
+/// again. So the layout is defined completely up front: if a later milestone
+/// added a service, the phone would keep using the cached list without it
+/// until re-paired.
 #[gatt_server]
 struct Server {
     device_information: DeviceInformation,
     current_time: CurrentTimeService,
     battery: BatteryService,
+    alert_notification: AlertNotificationService,
+    music: MusicService,
+    weather: SimpleWeatherService,
+    heart_rate: HeartRateService,
 }
 
 #[gatt_service(uuid = service::DEVICE_INFORMATION)]
@@ -110,6 +122,73 @@ struct CurrentTimeService {
 struct BatteryService {
     #[characteristic(uuid = characteristic::BATTERY_LEVEL, read, notify)]
     level: u8,
+}
+
+/// Notifications and calls. Gadgetbridge writes each notification to New
+/// Alert as `[category, count, icon, text…]`; the watch answers calls on
+/// InfiniTime's extra characteristic. (Handled from milestone 3.)
+#[gatt_service(uuid = service::ALERT_NOTIFICATION)]
+struct AlertNotificationService {
+    /// Up to 3 header bytes plus Gadgetbridge's 100-character text, which
+    /// can be up to ~300 bytes of UTF-8, but one ATT write carries at most
+    /// MTU − 3 = 244 bytes.
+    /// TODO: accept longer (queued) writes for heavily non-ASCII texts.
+    #[characteristic(uuid = characteristic::NEW_ALERT, write)]
+    new_alert: Vec<u8, 244>,
+    /// One byte, watch to phone: 0 reject, 1 accept, 2 mute.
+    #[characteristic(uuid = "00020001-78fc-48fe-8e23-433b3a1942d0", read, notify)]
+    call_response: u8,
+}
+
+/// InfiniTime's music service. Gadgetbridge only writes characteristics that
+/// have the *write* property (write-without-response alone isn't enough).
+/// (Handled from milestone 4.)
+#[gatt_service(uuid = "00000000-78fc-48fe-8e23-433b3a1942d0")]
+struct MusicService {
+    /// Watch to phone: 0 play, 1 pause, 3 next, 4 previous.
+    #[characteristic(uuid = "00000001-78fc-48fe-8e23-433b3a1942d0", read, notify)]
+    event: u8,
+    /// 1 while playing.
+    #[characteristic(uuid = "00000002-78fc-48fe-8e23-433b3a1942d0", read, write)]
+    status: u8,
+    #[characteristic(uuid = "00000003-78fc-48fe-8e23-433b3a1942d0", read, write)]
+    artist: Vec<u8, 64>,
+    #[characteristic(uuid = "00000004-78fc-48fe-8e23-433b3a1942d0", read, write)]
+    track: Vec<u8, 64>,
+    #[characteristic(uuid = "00000005-78fc-48fe-8e23-433b3a1942d0", read, write)]
+    album: Vec<u8, 64>,
+    /// Big-endian seconds and counts. We don't use these, but Gadgetbridge
+    /// writes them, so they must exist and accept writes.
+    #[characteristic(uuid = "00000006-78fc-48fe-8e23-433b3a1942d0", read, write)]
+    position: [u8; 4],
+    #[characteristic(uuid = "00000007-78fc-48fe-8e23-433b3a1942d0", read, write)]
+    length: [u8; 4],
+    #[characteristic(uuid = "00000008-78fc-48fe-8e23-433b3a1942d0", read, write)]
+    track_number: [u8; 4],
+    #[characteristic(uuid = "00000009-78fc-48fe-8e23-433b3a1942d0", read, write)]
+    track_count: [u8; 4],
+    #[characteristic(uuid = "0000000a-78fc-48fe-8e23-433b3a1942d0", read, write)]
+    playback_speed: [u8; 4],
+    #[characteristic(uuid = "0000000b-78fc-48fe-8e23-433b3a1942d0", read, write)]
+    repeat: [u8; 4],
+    #[characteristic(uuid = "0000000c-78fc-48fe-8e23-433b3a1942d0", read, write)]
+    shuffle: [u8; 4],
+}
+
+/// InfiniTime's "simple weather". We only want the sunrise and sunset in the
+/// current-conditions packet; see [`parse_sun`].
+#[gatt_service(uuid = "00050000-78fc-48fe-8e23-433b3a1942d0")]
+struct SimpleWeatherService {
+    #[characteristic(uuid = "00050001-78fc-48fe-8e23-433b3a1942d0", write)]
+    data: Vec<u8, 64>,
+}
+
+/// Standard heart rate, `[flags, bpm]`. Gadgetbridge records it if present.
+/// (Fed from milestone 6.)
+#[gatt_service(uuid = service::HEART_RATE)]
+struct HeartRateService {
+    #[characteristic(uuid = characteristic::HEART_RATE_MEASUREMENT, notify)]
+    measurement: [u8; 2],
 }
 
 // ==============================================================================
@@ -161,6 +240,15 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
             .set(characteristic, &value)
             .expect("characteristic belongs to this server");
     }
+
+    // These services exist for the stable layout (see `Server`), but nothing
+    // reads them until milestones 3, 4, and 6. (`#[gatt_server]` drops
+    // `#[allow(dead_code)]`, so acknowledge them here instead.)
+    let _ = (
+        &server.alert_notification,
+        &server.music,
+        &server.heart_rate,
+    );
 
     let host = async {
         loop {
@@ -238,6 +326,7 @@ async fn serve<C: trouble_host::Controller>(
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
 ) {
     let current_time = server.current_time.current_time.handle;
+    let weather = server.weather.data.handle;
     let reason = loop {
         match conn.next().await {
             GattConnectionEvent::Disconnected { reason } => break reason,
@@ -247,6 +336,12 @@ async fn serve<C: trouble_host::Controller>(
                     GattEvent::Write(e) => debug!("ble: write handle {}", e.handle()),
                     GattEvent::Other(e) => debug!("ble: other gatt request {}", e.payload()),
                     GattEvent::NotAllowed(_) => debug!("ble: disallowed gatt request"),
+                }
+                if let GattEvent::Write(write) = &event
+                    && write.handle() == weather
+                    && let Some(sun) = write.with_data(|_offset, data| parse_sun(data))
+                {
+                    update_sun(sun).await;
                 }
                 if let GattEvent::Write(write) = &event
                     && write.handle() == current_time
@@ -323,6 +418,35 @@ async fn report_battery(server: &Server<'_>, conn: &GattConnection<'_, '_, Defau
             reported = Some(percent);
         }
         Timer::after_secs(60).await;
+    }
+}
+
+/// Extracts sunrise and sunset from a simple-weather write.
+///
+/// Gadgetbridge writes three kinds of packet to this one characteristic,
+/// told apart by the first byte and length: current conditions (type 0),
+/// forecasts (type 1), and a 40-byte world-clock table it sends to every
+/// InfiniTime ≥ 1.14 regardless. Only current conditions in format version
+/// ≥ 1 carry the sun, as minutes after local midnight, `u16` LE at offsets
+/// 49 and 51.
+fn parse_sun(data: &[u8]) -> Option<clock::Sun> {
+    match data {
+        &[0, version, ..] if version >= 1 && data.len() >= 53 => {
+            clock::Sun::from_bytes([data[49], data[50], data[51], data[52]])
+        }
+        _ => None,
+    }
+}
+
+/// Adopts new sunrise/sunset times, saving them only when they've moved
+/// noticeably (weather arrives about hourly; the sun moves minutes a day).
+async fn update_sun(sun: clock::Sun) {
+    let previous = clock::sun();
+    clock::set_sun(sun);
+    let moved = previous.sunrise.abs_diff(sun.sunrise) + previous.sunset.abs_diff(sun.sunset);
+    if moved >= 5 {
+        info!("ble: sunrise/sunset now {}", sun);
+        storage::save(storage::key::SUN, &sun.to_bytes()).await;
     }
 }
 

@@ -16,7 +16,7 @@ use embassy_time::{Duration, Instant, Ticker};
 
 use crate::display::Display;
 use crate::font;
-use crate::theme::{THEMES, Theme};
+use crate::theme::{self, Theme};
 
 pub use crate::theme::Color;
 
@@ -50,7 +50,7 @@ impl Canvas {
             back: [0; BYTES],
             front: [0; BYTES],
             front_valid: false,
-            theme: &THEMES[0],
+            theme: &theme::ARCADE,
             batch: [0; BATCH],
         }
     }

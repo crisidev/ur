@@ -19,7 +19,6 @@
 //! it, e.g. to handle DST changes between syncs.
 
 use core::cell::Cell;
-use core::mem::MaybeUninit;
 
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -95,11 +94,75 @@ pub fn now() -> Option<DateTime> {
 }
 
 // ==============================================================================
+// Daylight
+// ==============================================================================
+//
+// The theme follows the sun: dark themes from sunset to sunrise. The watch
+// can't know where it is, but Gadgetbridge forwards weather from a weather
+// app, and that includes today's sunrise and sunset in local time (see
+// `ble`). They're also saved in flash; they drift only minutes per day, so
+// old values are fine until the next weather update.
+
+/// Assumed until the phone has ever sent weather.
+const DEFAULT_SUN: Sun = Sun {
+    sunrise: 7 * 60,
+    sunset: 19 * 60,
+};
+
+/// Sunrise and sunset, in minutes after local midnight.
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct Sun {
+    pub sunrise: u16,
+    pub sunset: u16,
+}
+
+impl Sun {
+    pub fn to_bytes(self) -> [u8; 4] {
+        let [a, b] = self.sunrise.to_le_bytes();
+        let [c, d] = self.sunset.to_le_bytes();
+        [a, b, c, d]
+    }
+
+    /// `None` unless both times are within a day and sunrise comes first.
+    /// (Polar day and night don't fit this model; we'd rather keep the
+    /// previous values than flip themes on nonsense.)
+    pub fn from_bytes([a, b, c, d]: [u8; 4]) -> Option<Self> {
+        let sun = Self {
+            sunrise: u16::from_le_bytes([a, b]),
+            sunset: u16::from_le_bytes([c, d]),
+        };
+        (sun.sunrise < sun.sunset && sun.sunset < 24 * 60).then_some(sun)
+    }
+}
+
+static SUN: Mutex<CriticalSectionRawMutex, Cell<Option<Sun>>> = Mutex::new(Cell::new(None));
+
+pub fn set_sun(sun: Sun) {
+    SUN.lock(|cell| cell.set(Some(sun)));
+}
+
+pub fn sun() -> Sun {
+    SUN.lock(Cell::get).unwrap_or(DEFAULT_SUN)
+}
+
+/// Whether it's currently between sunrise and sunset. Without wall-clock
+/// time, it's treated as night (the dark theme is the safe default when the
+/// screen might be lit in a dark room).
+pub fn is_daytime() -> bool {
+    let Some(now) = now() else { return false };
+    let minute = u16::from(now.hour) * 60 + u16::from(now.minute);
+    let sun = sun();
+    (sun.sunrise..sun.sunset).contains(&minute)
+}
+
+// ==============================================================================
 // Surviving resets
 // ==============================================================================
 
-/// The last known local time, in RAM that cortex-m-rt leaves alone at
-/// startup (`.uninit`), so it survives any reset that keeps power on.
+/// The last known local time, in the last 32 bytes of RAM, which `memory.x`
+/// keeps out of the linker's hands. Nothing initialises it at startup, so it
+/// survives any reset that keeps power on, and its fixed address means even a
+/// different firmware build (after reflashing) finds it.
 #[repr(C)]
 struct Retained {
     magic: u32,
@@ -111,27 +174,29 @@ struct Retained {
 
 const RETAINED_MAGIC: u32 = 0x7572_434B; // "urCK"
 
-#[unsafe(link_section = ".uninit.ur_clock")]
-static mut RETAINED: MaybeUninit<Retained> = MaybeUninit::uninit();
+/// Must match the `RETAINED` region in `memory.x`.
+const RETAINED_ADDRESS: usize = 0x2000_FFE0;
+const _: () = assert!(size_of::<Retained>() <= 32);
+
+fn retained() -> *mut Retained {
+    RETAINED_ADDRESS as *mut Retained
+}
 
 /// Saves the current time for [`restore`]. Call about once a second; the
 /// interval bounds how far behind a restored clock can be.
 pub fn checkpoint() {
     let Some(now) = now() else { return };
     let epoch_seconds = now.to_epoch_seconds();
-    let retained = Retained {
+    let retained_value = Retained {
         magic: RETAINED_MAGIC,
         epoch_seconds,
         check: !epoch_seconds,
     };
-    // SAFETY: Only ever accessed from the UI loop (checkpoint) and once at
-    // boot before any task runs (restore); never concurrently. Volatile so
+    // SAFETY: The address is reserved RAM (see `memory.x`), suitably
+    // aligned, and only ever accessed from the UI loop (checkpoint) and once
+    // at boot before any task runs (restore); never concurrently. Volatile so
     // the write isn't optimised away as dead.
-    unsafe {
-        (&raw mut RETAINED)
-            .cast::<Retained>()
-            .write_volatile(retained)
-    };
+    unsafe { retained().write_volatile(retained_value) };
 }
 
 /// Resumes the clock from the last [`checkpoint`] before a reset, if there
@@ -140,7 +205,7 @@ pub fn restore() {
     // SAFETY: See `checkpoint`. Any bit pattern is a valid `Retained`
     // (plain integers), so reading uninitialised-looking RAM is fine; the
     // magic and check fields tell us whether it's real.
-    let retained = unsafe { (&raw const RETAINED).cast::<Retained>().read_volatile() };
+    let retained = unsafe { retained().read_volatile() };
     if retained.magic != RETAINED_MAGIC || retained.check != !retained.epoch_seconds {
         return;
     }

@@ -8,7 +8,8 @@
 //! Navigation:
 //!
 //! - Swipe left/right: cycle between screens.
-//! - Long press: next colour theme.
+//! - Long press: next colour theme within the current group (dark themes
+//!   after sunset, light ones after sunrise; each group remembers its own).
 //! - Button: return to the clock; on the clock, turn the screen off.
 //! - Any button press or touch while the screen is off: wake to the clock.
 //!   (That touch is *only* a wake-up; it isn't also acted on.)
@@ -22,9 +23,10 @@ use crate::InputEvent;
 use crate::battery::Battery;
 use crate::canvas::{Canvas, Color, Sweep};
 use crate::clock::DateTime;
+use crate::clock::Sun;
 use crate::font;
 use crate::motor::{self, Pattern};
-use crate::theme::{THEMES, Theme};
+use crate::theme::{self, Theme};
 use crate::touch::Gesture;
 
 const SCREEN_TIMEOUT: Duration = Duration::from_secs(15);
@@ -38,6 +40,8 @@ pub struct Status<'a> {
     pub connected: bool,
     /// While pairing: the passkey to type on the phone.
     pub passkey: Option<u32>,
+    /// Today's sunrise/sunset, for the info screen.
+    pub sun: Sun,
     pub battery: &'a Battery,
 }
 
@@ -68,30 +72,54 @@ pub struct App {
     /// Set when the screen changes; the next frame is shown with this
     /// transition instead of a plain update.
     transition: Option<Sweep>,
-    /// Index into [`THEMES`].
-    theme: usize,
+    /// Whether it's daylight, which picks the light or dark theme group.
+    daytime: bool,
+    /// The chosen theme within each group: indices into [`theme::LIGHT`] and
+    /// [`theme::DARK`]. Long press advances the one currently in use.
+    pub themes: ThemeChoice,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ThemeChoice {
+    pub light: u8,
+    pub dark: u8,
 }
 
 impl App {
-    /// `theme` is an index into [`THEMES`], e.g. as saved from a previous
-    /// run; out-of-range values (a theme since removed) fall back to the first.
-    pub fn new(now: Instant, theme: u8) -> Self {
+    /// `themes` is typically as saved from a previous run; out-of-range
+    /// indices (a theme since removed) wrap around.
+    pub fn new(now: Instant, themes: ThemeChoice) -> Self {
         Self {
             screen: Screen::Clock,
             awake: true,
             last_input: now,
             transition: None,
-            theme: usize::from(theme) % THEMES.len(),
+            daytime: false,
+            themes,
         }
     }
 
-    pub fn theme(&self) -> &'static Theme {
-        &THEMES[self.theme]
+    pub fn set_daytime(&mut self, daytime: bool) {
+        self.daytime = daytime;
     }
 
-    /// For persisting the theme choice.
-    pub fn theme_index(&self) -> u8 {
-        self.theme as u8
+    pub fn theme(&self) -> &'static Theme {
+        let (group, choice): (&[&Theme], u8) = if self.daytime {
+            (&theme::LIGHT, self.themes.light)
+        } else {
+            (&theme::DARK, self.themes.dark)
+        };
+        group[usize::from(choice) % group.len()]
+    }
+
+    /// Long press: the next theme in the group currently in use.
+    fn next_theme(&mut self) {
+        let (choice, count) = if self.daytime {
+            (&mut self.themes.light, theme::LIGHT.len())
+        } else {
+            (&mut self.themes.dark, theme::DARK.len())
+        };
+        *choice = ((usize::from(*choice) + 1) % count) as u8;
     }
 
     /// The transition to show the next frame with, if any.
@@ -136,7 +164,7 @@ impl App {
                 // TODO: remove once something real uses the motor; for now
                 // this is how we check it works.
                 (Gesture::Tap, Screen::Info) => motor::buzz(Pattern::NOTIFY),
-                (Gesture::LongPress, _) => self.theme = (self.theme + 1) % THEMES.len(),
+                (Gesture::LongPress, _) => self.next_theme(),
                 _ => {}
             },
         }
@@ -295,7 +323,7 @@ fn render_battery(canvas: &mut Canvas, battery: &Battery) {
 // ==============================================================================
 
 /// First value row, and the spacing between rows.
-const INFO_TOP: i32 = 13;
+const INFO_TOP: i32 = 12;
 const INFO_LINE: i32 = 8;
 
 fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
@@ -334,6 +362,20 @@ fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
     canvas.text(4, y, "THEME", Color::TEXT_DIM);
     canvas.text_right(77, y, theme.name, Color::TEXT);
     let y = y + INFO_LINE;
+    canvas.text(4, y, "SUN", Color::TEXT_DIM);
+    let mut daylight = heapless::String::<12>::new();
+    let (rise, set) = (status.sun.sunrise, status.sun.sunset);
+    write!(
+        daylight,
+        "{:02}:{:02}-{:02}:{:02}",
+        rise / 60,
+        rise % 60,
+        set / 60,
+        set % 60
+    )
+    .expect("11 chars");
+    canvas.text_right(77, y, &daylight, Color::TEXT);
+    let y = y + INFO_LINE;
     canvas.text(4, y, "PHONE", Color::TEXT_DIM);
     let phone = if status.connected {
         "CONNECTED"
@@ -342,9 +384,8 @@ fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
     };
     canvas.text_right(77, y, phone, Color::TEXT);
 
-    canvas.text(4, 62, "TAP: TEST BUZZ", Color::TEXT_FAINT);
     canvas.text(4, 68, "HOLD: NEXT THEME", Color::TEXT_FAINT);
-    canvas.text(4, 74, "SWIPE: CLOCK", Color::TEXT_FAINT);
+    canvas.text(4, 74, "TAP: TEST BUZZ", Color::TEXT_FAINT);
 }
 
 // ==============================================================================
