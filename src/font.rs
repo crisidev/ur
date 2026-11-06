@@ -31,7 +31,9 @@ const ACUTE: [u8; 2] = [0b001, 0b010];
 const GRAVE: [u8; 2] = [0b100, 0b010];
 const CIRCUMFLEX: [u8; 2] = [0b010, 0b101];
 const TILDE: [u8; 2] = [0b011, 0b110];
-const DIAERESIS: [u8; 2] = [0b000, 0b101];
+/// Raised a row above the letter: directly on top, the dots merged into the
+/// stems of U (whose top row is also `101`).
+const DIAERESIS: [u8; 2] = [0b101, 0b000];
 /// Over A's pointed top, this closes into a little ring.
 const RING: [u8; 2] = [0b111, 0b101];
 
