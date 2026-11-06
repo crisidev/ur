@@ -19,7 +19,6 @@ pub struct Pattern {
 }
 
 impl Pattern {
-    #[allow(dead_code)] // Used once calls can be dismissed (milestone 3).
     pub const STOP: Self = Self {
         steps: &[],
         repeat: false,
@@ -30,7 +29,6 @@ impl Pattern {
         repeat: false,
     };
     /// Incoming call: rings until stopped.
-    #[allow(dead_code)] // Used once notifications land (milestone 3).
     pub const RING: Self = Self {
         steps: &[400, 600],
         repeat: true,

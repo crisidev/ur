@@ -7,29 +7,48 @@
 //!
 //! Navigation:
 //!
-//! - Swipe left/right: cycle between screens.
+//! - Swipe left/right: cycle between screens (clock, music while the phone
+//!   has media, info).
 //! - Long press: next colour theme within the current group (dark themes
 //!   after sunset, light ones after sunrise; each group remembers its own).
-//! - Button: return to the clock; on the clock, turn the screen off.
+//! - Button: return to the clock; on the clock, turn the screen off. While a
+//!   call rings: silence it.
 //! - Any button press or touch while the screen is off: wake to the clock.
 //!   (That touch is *only* a wake-up; it isn't also acted on.)
 //! - No input for [`SCREEN_TIMEOUT`]: turn the screen off.
+//!
+//! From the phone:
+//!
+//! - Notifications: a two-line banner (app, then sender) for
+//!   [`BANNER_TIME`] and a short buzz. If the screen was off, it wakes just
+//!   for the banner and sleeps again after.
+//! - Calls: take over the screen, ringing, until the phone says the call is
+//!   over (answered, rejected, ended) or the user acts.
+//! - Media info: enables the music screen.
 
 use core::fmt::Write as _;
 
 use embassy_time::{Duration, Instant};
+use heapless::String;
 
 use crate::InputEvent;
 use crate::battery::Battery;
-use crate::canvas::{Canvas, Color, Sweep};
+use crate::ble;
+use crate::canvas::{Canvas, Color, Sweep, marquee_cycle};
 use crate::clock::DateTime;
 use crate::font;
+use crate::gb::{CallAction, MusicCommand, Outgoing};
 use crate::geo::Sun;
 use crate::motor::{self, Pattern};
 use crate::theme::{self, Theme};
 use crate::touch::Gesture;
 
 const SCREEN_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a notification banner shows.
+const BANNER_TIME: Duration = Duration::from_secs(4);
+/// Stop ringing after this long, in case the phone never says the call is
+/// over (e.g. the connection dropped mid-call).
+const MAX_RING: Duration = Duration::from_secs(45);
 
 /// Everything screens may display that the UI doesn't own itself.
 pub struct Status<'a> {
@@ -45,22 +64,83 @@ pub struct Status<'a> {
     pub battery: &'a Battery,
 }
 
+/// Things the phone tells the UI, via [`crate::ble`].
+pub enum PhoneEvent {
+    Notification {
+        app: String<24>,
+        who: String<40>,
+    },
+    IncomingCall {
+        caller: String<40>,
+    },
+    /// The call was answered, rejected, or ended, on either side.
+    CallOver,
+    MusicInfo {
+        artist: String<40>,
+        track: String<40>,
+    },
+    MusicState {
+        playing: bool,
+    },
+    /// "Find my watch" from the phone: ring until told to stop.
+    Find {
+        on: bool,
+    },
+}
+
+/// Logged without contents: names and titles stay out of the logs.
+impl defmt::Format for PhoneEvent {
+    fn format(&self, f: defmt::Formatter) {
+        let kind = match self {
+            Self::Notification { .. } => "Notification",
+            Self::IncomingCall { .. } => "IncomingCall",
+            Self::CallOver => "CallOver",
+            Self::MusicInfo { .. } => "MusicInfo",
+            Self::MusicState { .. } => "MusicState",
+            Self::Find { .. } => "Find",
+        };
+        defmt::write!(f, "{=str}", kind)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
 enum Screen {
     Clock,
+    Music,
     Info,
 }
 
-impl Screen {
-    /// Screens in swipe order. Swiping wraps around.
-    const ALL: [Self; 2] = [Self::Clock, Self::Info];
+struct Banner {
+    app: String<24>,
+    who: String<40>,
+    /// When it appeared, for scrolling long lines.
+    since: Instant,
+    until: Instant,
+}
 
-    fn neighbour(self, step: isize) -> Self {
-        let i = Self::ALL
-            .iter()
-            .position(|&s| s == self)
-            .expect("every screen is in ALL");
-        Self::ALL[(i as isize + step).rem_euclid(Self::ALL.len() as isize) as usize]
+struct Call {
+    caller: String<40>,
+    since: Instant,
+    until: Instant,
+    silenced: bool,
+}
+
+struct Music {
+    artist: String<40>,
+    track: String<40>,
+    playing: bool,
+    /// When the track last changed, for scrolling long names.
+    since: Instant,
+}
+
+impl Music {
+    fn new(now: Instant) -> Self {
+        Self {
+            artist: String::new(),
+            track: String::new(),
+            playing: false,
+            since: now,
+        }
     }
 }
 
@@ -77,6 +157,13 @@ pub struct App {
     /// The chosen theme within each group: indices into [`theme::LIGHT`] and
     /// [`theme::DARK`]. Long press advances the one currently in use.
     pub themes: ThemeChoice,
+    connected: bool,
+    banner: Option<Banner>,
+    /// The screen woke only to show a notification; sleep again after it.
+    brief_wake: bool,
+    call: Option<Call>,
+    /// What the phone is playing, since it last told us.
+    music: Option<Music>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -96,11 +183,28 @@ impl App {
             transition: None,
             daytime: false,
             themes,
+            connected: false,
+            banner: None,
+            brief_wake: false,
+            call: None,
+            music: None,
         }
     }
 
     pub fn set_daytime(&mut self, daytime: bool) {
         self.daytime = daytime;
+    }
+
+    /// Media info is only meaningful while connected: forget it on
+    /// disconnect (which also removes the music screen).
+    pub fn set_connected(&mut self, connected: bool) {
+        self.connected = connected;
+        if !connected {
+            self.music = None;
+            if self.screen == Screen::Music {
+                self.screen = Screen::Clock;
+            }
+        }
     }
 
     pub fn theme(&self) -> &'static Theme {
@@ -127,6 +231,24 @@ impl App {
         self.transition.take()
     }
 
+    /// Screens in swipe order (wrapping around). The music screen only
+    /// exists while the phone has told us about media.
+    fn screens(&self) -> heapless::Vec<Screen, 3> {
+        let mut screens = heapless::Vec::new();
+        let _ = screens.push(Screen::Clock);
+        if self.music.is_some() {
+            let _ = screens.push(Screen::Music);
+        }
+        let _ = screens.push(Screen::Info);
+        screens
+    }
+
+    fn neighbour(&self, step: isize) -> Screen {
+        let screens = self.screens();
+        let i = screens.iter().position(|&s| s == self.screen).unwrap_or(0);
+        screens[(i as isize + step).rem_euclid(screens.len() as isize) as usize]
+    }
+
     /// Switches screens. The sweep follows the finger: swiping left moves
     /// content left, so the new screen comes in from the right.
     fn go_to(&mut self, screen: Screen, sweep: Sweep) {
@@ -137,14 +259,45 @@ impl App {
     }
 
     pub fn on_input(&mut self, event: InputEvent, now: Instant) {
+        let event = match event {
+            InputEvent::Phone(event) => return self.on_phone(event, now),
+            other => other,
+        };
+        // A user input (or a request for attention) from here on.
         self.last_input = now;
+        self.brief_wake = false;
         if !self.awake {
             self.awake = true;
             self.screen = Screen::Clock;
             return;
         }
 
+        if let Some(call) = &mut self.call {
+            match event {
+                InputEvent::Button if !call.silenced => {
+                    call.silenced = true;
+                    motor::buzz(Pattern::STOP);
+                    send(Outgoing::Call(CallAction::Ignore));
+                }
+                InputEvent::Touch(touch)
+                    if touch.gesture == Gesture::Tap && touch.y >= CALL_BUTTONS_Y =>
+                {
+                    let action = if touch.x < 40 {
+                        CallAction::Reject
+                    } else {
+                        CallAction::Accept
+                    };
+                    send(Outgoing::Call(action));
+                    self.call = None;
+                    motor::buzz(Pattern::STOP);
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match event {
+            InputEvent::Phone(_) => unreachable!("handled above"),
             // Only ever a reason to wake up, handled above.
             InputEvent::Attention => {}
             InputEvent::Button => {
@@ -157,9 +310,21 @@ impl App {
                 }
             }
             InputEvent::Touch(touch) => match (touch.gesture, self.screen) {
-                (Gesture::SwipeLeft, _) => self.go_to(self.screen.neighbour(1), Sweep::RightToLeft),
-                (Gesture::SwipeRight, _) => {
-                    self.go_to(self.screen.neighbour(-1), Sweep::LeftToRight)
+                (Gesture::SwipeLeft, _) => self.go_to(self.neighbour(1), Sweep::RightToLeft),
+                (Gesture::SwipeRight, _) => self.go_to(self.neighbour(-1), Sweep::LeftToRight),
+                (Gesture::Tap, Screen::Music) if touch.y >= MUSIC_CONTROLS_Y => {
+                    // Left, middle, and right thirds.
+                    let command = match touch.x {
+                        ..27 => MusicCommand::Previous,
+                        27..53 => MusicCommand::PlayPause,
+                        _ => MusicCommand::Next,
+                    };
+                    send(Outgoing::Music(command));
+                    // Show the new state straight away; the phone confirms
+                    // (or corrects) it shortly after.
+                    if let (MusicCommand::PlayPause, Some(music)) = (command, &mut self.music) {
+                        music.playing = !music.playing;
+                    }
                 }
                 // TODO: remove once something real uses the motor; for now
                 // this is how we check it works.
@@ -170,10 +335,80 @@ impl App {
         }
     }
 
+    fn on_phone(&mut self, event: PhoneEvent, now: Instant) {
+        match event {
+            PhoneEvent::Notification { app, who } => {
+                // Long enough to read, and for long lines to scroll through
+                // once.
+                let overflow = (font::small_text_width(&app).max(font::small_text_width(&who)))
+                    - BANNER_TEXT_WIDTH;
+                let shown_for = BANNER_TIME.max(marquee_cycle(overflow));
+                self.banner = Some(Banner {
+                    app,
+                    who,
+                    since: now,
+                    until: now + shown_for,
+                });
+                motor::buzz(Pattern::NOTIFY);
+                if !self.awake {
+                    self.awake = true;
+                    self.brief_wake = true;
+                    self.screen = Screen::Clock;
+                }
+            }
+            PhoneEvent::IncomingCall { caller } => {
+                self.call = Some(Call {
+                    caller,
+                    since: now,
+                    until: now + MAX_RING,
+                    silenced: false,
+                });
+                motor::buzz(Pattern::RING);
+                self.awake = true;
+                self.brief_wake = false;
+                self.last_input = now;
+            }
+            PhoneEvent::CallOver => {
+                if self.call.take().is_some() {
+                    motor::buzz(Pattern::STOP);
+                }
+            }
+            PhoneEvent::MusicInfo { artist, track } => {
+                let music = self.music.get_or_insert_with(|| Music::new(now));
+                if music.track != track || music.artist != artist {
+                    music.since = now;
+                }
+                music.artist = artist;
+                music.track = track;
+            }
+            PhoneEvent::MusicState { playing } => {
+                self.music.get_or_insert_with(|| Music::new(now)).playing = playing
+            }
+            PhoneEvent::Find { on } => {
+                motor::buzz(if on { Pattern::RING } else { Pattern::STOP });
+                if on {
+                    self.awake = true;
+                    self.last_input = now;
+                }
+            }
+        }
+    }
+
     /// `keep_awake` holds the screen on regardless of input, e.g. while a
     /// pairing passkey is showing and the user is typing it on the phone.
     pub fn on_tick(&mut self, now: Instant, keep_awake: bool) {
-        if keep_awake {
+        if self.banner.as_ref().is_some_and(|b| now >= b.until) {
+            self.banner = None;
+            if self.brief_wake {
+                self.awake = false;
+                self.brief_wake = false;
+            }
+        }
+        if self.call.as_ref().is_some_and(|c| now >= c.until) {
+            self.call = None;
+            motor::buzz(Pattern::STOP);
+        }
+        if keep_awake || self.call.is_some() || self.brief_wake {
             self.last_input = now;
         }
         if self.awake && now - self.last_input >= SCREEN_TIMEOUT {
@@ -181,17 +416,56 @@ impl App {
         }
     }
 
-    pub fn render(&self, canvas: &mut Canvas, status: &Status) {
-        // Pairing takes over the screen until it's done, whatever was showing.
+    /// Whether something on screen is scrolling, so frames are needed more
+    /// often than once a second (see [`crate::canvas::MARQUEE_FRAME`]).
+    pub fn animating(&self) -> bool {
+        let overflows =
+            |text: &str, scale: i32, room: i32| font::small_text_width(text) * scale > room;
+        if !self.awake {
+            return false;
+        }
+        if let Some(call) = &self.call {
+            return overflows(&call.caller, 2, CALL_TEXT_WIDTH);
+        }
+        let banner = self.banner.as_ref().is_some_and(|b| {
+            overflows(&b.app, 1, BANNER_TEXT_WIDTH) || overflows(&b.who, 1, BANNER_TEXT_WIDTH)
+        });
+        let music = self.screen == Screen::Music
+            && self.music.as_ref().is_some_and(|m| {
+                overflows(&m.artist, 1, MUSIC_TEXT_WIDTH)
+                    || overflows(&m.track, 2, MUSIC_TEXT_WIDTH)
+            });
+        banner || music
+    }
+
+    pub fn render(&self, canvas: &mut Canvas, status: &Status, now: Instant) {
+        // Pairing, then calls, take over the screen until they're done.
         if let Some(passkey) = status.passkey {
             render_pairing(canvas, passkey);
             return;
         }
+        if let Some(call) = &self.call {
+            render_call(canvas, call, now);
+            return;
+        }
         match self.screen {
             Screen::Clock => render_clock(canvas, status),
+            Screen::Music => match &self.music {
+                Some(music) => render_music(canvas, music, now),
+                None => render_clock(canvas, status),
+            },
             Screen::Info => render_info(canvas, status, self.theme()),
         }
+        if let Some(banner) = &self.banner {
+            render_banner(canvas, banner, now);
+        }
     }
+}
+
+/// Queues a message for the phone (dropped if not connected or the queue is
+/// full; none of these are worth retrying later).
+fn send(message: Outgoing) {
+    let _ = ble::OUTBOX.try_send(message);
 }
 
 // ==============================================================================
@@ -410,5 +684,117 @@ fn render_pairing(canvas: &mut Canvas, passkey: u32) {
     }
     for (i, &digit) in digits.iter().enumerate() {
         draw_digit(canvas, 5 + 12 * i as i32, 36, digit, 2, Color::TEXT);
+    }
+}
+
+// ==============================================================================
+// Notifications, calls, and music
+// ==============================================================================
+
+/// Text columns of the banner: 3..77.
+const BANNER_TEXT_WIDTH: i32 = 74;
+
+/// Across the bottom rows (free on the clock face): app, then sender.
+fn render_banner(canvas: &mut Canvas, banner: &Banner, now: Instant) {
+    let elapsed = now - banner.since;
+    canvas.fill_rect(0, 63, 80, 17, BACKGROUND);
+    canvas.fill_rect(0, 63, 80, 1, Color::ACCENT);
+    canvas.marquee(
+        3..3 + BANNER_TEXT_WIDTH,
+        67,
+        &banner.app,
+        Color::ACCENT,
+        1,
+        elapsed,
+    );
+    canvas.marquee(
+        3..3 + BANNER_TEXT_WIDTH,
+        74,
+        &banner.who,
+        Color::TEXT,
+        1,
+        elapsed,
+    );
+}
+
+/// Where the decline/answer buttons start, for both drawing and tapping.
+const CALL_BUTTONS_Y: i32 = 55;
+/// The caller's name scrolls within columns 4..76.
+const CALL_TEXT_WIDTH: i32 = 72;
+
+fn render_call(canvas: &mut Canvas, call: &Call, now: Instant) {
+    canvas.clear(BACKGROUND);
+    canvas.text_centered(40, 6, "INCOMING CALL", Color::ACCENT);
+
+    // The caller at 2×, centred if it fits, scrolling if not.
+    let width = font::small_text_width(&call.caller) * 2;
+    let left = if width <= CALL_TEXT_WIDTH {
+        40 - width / 2
+    } else {
+        4
+    };
+    canvas.marquee(
+        left..4 + CALL_TEXT_WIDTH,
+        24,
+        &call.caller,
+        Color::TEXT,
+        2,
+        now - call.since,
+    );
+
+    let hint = if call.silenced {
+        "SILENCED"
+    } else {
+        "BUTTON: SILENCE"
+    };
+    canvas.text_centered(40, 44, hint, Color::TEXT_FAINT);
+
+    for (x, label, color) in [(2, "DECLINE", Color::BAD), (42, "ANSWER", Color::GOOD)] {
+        canvas.fill_rect(x, CALL_BUTTONS_Y, 36, 18, color);
+        canvas.text_centered(x + 18, CALL_BUTTONS_Y + 7, label, BACKGROUND);
+    }
+}
+
+/// Where the transport controls start, for both drawing and tapping.
+const MUSIC_CONTROLS_Y: i32 = 52;
+/// Artist and track scroll within columns 3..77.
+const MUSIC_TEXT_WIDTH: i32 = 74;
+
+fn render_music(canvas: &mut Canvas, music: &Music, now: Instant) {
+    let elapsed = now - music.since;
+    canvas.clear(BACKGROUND);
+    canvas.text(3, 4, "MUSIC", Color::ACCENT);
+    canvas.text_right(
+        77,
+        4,
+        if music.playing { "PLAYING" } else { "PAUSED" },
+        Color::TEXT_DIM,
+    );
+
+    canvas.marquee(
+        3..3 + MUSIC_TEXT_WIDTH,
+        17,
+        &music.artist,
+        Color::TEXT_DIM,
+        1,
+        elapsed,
+    );
+    canvas.marquee(
+        3..3 + MUSIC_TEXT_WIDTH,
+        29,
+        &music.track,
+        Color::TEXT,
+        2,
+        elapsed,
+    );
+
+    // Previous, play/pause, next: 5×5 icons at 3×, centred in thirds.
+    let play_pause = if music.playing {
+        &font::PAUSE
+    } else {
+        &font::PLAY
+    };
+    for (x, icon) in [(6, &font::PREVIOUS), (33, play_pause), (60, &font::NEXT)] {
+        canvas.sprite(x, MUSIC_CONTROLS_Y + 6, 5, icon, 3, Color::TEXT);
     }
 }

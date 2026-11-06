@@ -215,6 +215,14 @@ impl<'a> Value<'a> {
         Some(())
     }
 
+    pub fn as_bool(&self) -> Option<bool> {
+        match self.0 {
+            b"true" => Some(true),
+            b"false" => Some(false),
+            _ => None,
+        }
+    }
+
     pub fn as_f64(&self) -> Option<f64> {
         core::str::from_utf8(self.0).ok()?.parse().ok()
     }
@@ -288,6 +296,25 @@ pub enum Outgoing {
     GpsPower(bool),
     /// Bracket an activity-sample transfer (samples come in milestone 2).
     ActivityFetch { done: bool },
+    /// Answer an incoming call.
+    Call(CallAction),
+    /// Control the phone's media player.
+    Music(MusicCommand),
+}
+
+#[derive(Clone, Copy, Format)]
+pub enum CallAction {
+    Accept,
+    Reject,
+    /// Silence the phone's ringer, leaving the call ringing.
+    Ignore,
+}
+
+#[derive(Clone, Copy, Format)]
+pub enum MusicCommand {
+    PlayPause,
+    Next,
+    Previous,
 }
 
 impl Outgoing {
@@ -317,6 +344,26 @@ impl Outgoing {
                 line,
                 r#"{{"t":"actfetch","state":"{}"}}"#,
                 if done { "end" } else { "start" }
+            ),
+            // Gadgetbridge upper-cases these and looks them up in its call
+            // and media event enums.
+            Self::Call(action) => write!(
+                line,
+                r#"{{"t":"call","n":"{}"}}"#,
+                match action {
+                    CallAction::Accept => "accept",
+                    CallAction::Reject => "reject",
+                    CallAction::Ignore => "ignore",
+                }
+            ),
+            Self::Music(command) => write!(
+                line,
+                r#"{{"t":"music","n":"{}"}}"#,
+                match command {
+                    MusicCommand::PlayPause => "playpause",
+                    MusicCommand::Next => "next",
+                    MusicCommand::Previous => "previous",
+                }
             ),
         };
         result

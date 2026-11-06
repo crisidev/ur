@@ -42,7 +42,7 @@ use core::sync::atomic::Ordering;
 use defmt::{info, warn};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{Either3, select3};
 use embassy_nrf::gpio::{Input, Level, Output, OutputDrive, Pull};
 use embassy_nrf::interrupt::{self, InterruptExt, Priority};
 use embassy_nrf::wdt::{self, HaltConfig, Watchdog};
@@ -86,13 +86,15 @@ const APP_PRIORITY: Priority = Priority::P2;
 // Input
 // ==============================================================================
 
-#[derive(Clone, Copy, defmt::Format)]
+#[derive(defmt::Format)]
 pub enum InputEvent {
     Button,
     Touch(Touch),
     /// Something needs the user to look (e.g. a pairing passkey): wake the
     /// screen if it's off, and redraw.
     Attention,
+    /// A notification, call, or media update from the phone.
+    Phone(ui::PhoneEvent),
 }
 
 /// Every user input, in order, for the UI loop.
@@ -394,8 +396,9 @@ async fn main(spawner: Spawner) {
                 battery: &battery,
             };
             app.set_daytime(geo::is_daytime());
+            app.set_connected(status.connected);
             canvas.set_theme(app.theme());
-            app.render(canvas, &status);
+            app.render(canvas, &status, now);
             match app.take_transition() {
                 // Waking straight into a transition would animate over a
                 // stale frame; just show the new one.
@@ -420,11 +423,21 @@ async fn main(spawner: Spawner) {
         }
         clock::checkpoint();
 
-        match select(ticker.next(), INPUT.receive()).await {
-            Either::First(()) => {
+        // Wake for the next second, the next input, or, while text is
+        // scrolling, the next animation frame (which only redraws).
+        let frame = async {
+            if app.animating() {
+                Timer::after(canvas::MARQUEE_FRAME).await;
+            } else {
+                core::future::pending::<()>().await;
+            }
+        };
+        match select3(ticker.next(), INPUT.receive(), frame).await {
+            Either3::Third(()) => {}
+            Either3::First(()) => {
                 app.on_tick(Instant::now(), ble::PASSKEY.lock(Cell::get).is_some())
             }
-            Either::Second(event) => {
+            Either3::Second(event) => {
                 info!("input: {}", event);
                 let before = app.themes;
                 app.on_input(event, Instant::now());

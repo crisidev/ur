@@ -8,20 +8,99 @@
 // 3×5: all general-purpose text
 // ==============================================================================
 
-pub const SMALL_W: u32 = 3;
-/// Glyph width plus one column of spacing.
-pub const SMALL_ADVANCE: i32 = 4;
-
-/// Width in pixels of `text`, excluding the trailing spacing column.
-pub fn small_text_width(text: &str) -> i32 {
-    (text.chars().count() as i32 * SMALL_ADVANCE - 1).max(0)
+/// A glyph of the small font: `width` columns, and seven rows. Rows 2–6 are
+/// the 3×5 capitals; rows 0–1, above them, hold only accents, so text is
+/// positioned by its capitals (`y` is the top of row 2) and accents rise into
+/// the space above the line.
+pub struct Glyph {
+    pub width: u32,
+    pub rows: [u8; 7],
 }
 
-/// Looks up a glyph. Lowercase is drawn as uppercase (3×5 has no room for
-/// distinct lowercase forms), and anything else unknown becomes `?`.
-///
-/// TODO: notification sender names will contain non-ASCII letters (å, ø, é,
-/// …). Map common accented letters to their base letter at least.
+/// Rows above the capitals.
+pub const ACCENT_ROWS: i32 = 2;
+
+/// Width in pixels of `text` at 1×, excluding the trailing spacing column.
+pub fn small_text_width(text: &str) -> i32 {
+    let total: u32 = text.chars().map(|c| glyph(c).width + 1).sum();
+    (total as i32 - 1).max(0)
+}
+
+/// Accent marks, two rows each.
+const ACUTE: [u8; 2] = [0b001, 0b010];
+const GRAVE: [u8; 2] = [0b100, 0b010];
+const CIRCUMFLEX: [u8; 2] = [0b010, 0b101];
+const TILDE: [u8; 2] = [0b011, 0b110];
+const DIAERESIS: [u8; 2] = [0b000, 0b101];
+/// Over A's pointed top, this closes into a little ring.
+const RING: [u8; 2] = [0b111, 0b101];
+
+/// The glyph for any character. Names in notifications arrive as Latin-1
+/// (Gadgetbridge's encoding; anything beyond it is already `?`), so this
+/// covers every Latin-1 letter. Lowercase is drawn as uppercase: 3×5 has no
+/// room for distinct lowercase forms.
+pub fn glyph(c: char) -> Glyph {
+    let plain = |rows: [u8; 5]| Glyph {
+        width: 3,
+        rows: [0, 0, rows[0], rows[1], rows[2], rows[3], rows[4]],
+    };
+    let accented = |base: char, [a, b]: [u8; 2]| {
+        let r = small_glyph(base);
+        Glyph {
+            width: 3,
+            rows: [a, b, r[0], r[1], r[2], r[3], r[4]],
+        }
+    };
+    if c.is_ascii() {
+        return plain(small_glyph(c));
+    }
+    match c.to_uppercase().next().unwrap_or(c) {
+        'À' => accented('A', GRAVE),
+        'Á' => accented('A', ACUTE),
+        'Â' => accented('A', CIRCUMFLEX),
+        'Ã' => accented('A', TILDE),
+        'Ä' => accented('A', DIAERESIS),
+        'Å' => accented('A', RING),
+        'Æ' => Glyph {
+            width: 5,
+            rows: [0, 0, 0b01111, 0b10100, 0b11110, 0b10100, 0b10111],
+        },
+        'Ç' => plain([0b011, 0b100, 0b100, 0b011, 0b010]),
+        'È' => accented('E', GRAVE),
+        'É' => accented('E', ACUTE),
+        'Ê' => accented('E', CIRCUMFLEX),
+        'Ë' => accented('E', DIAERESIS),
+        'Ì' => accented('I', GRAVE),
+        'Í' => accented('I', ACUTE),
+        'Î' => accented('I', CIRCUMFLEX),
+        'Ï' => accented('I', DIAERESIS),
+        'Ð' => plain([0b110, 0b101, 0b111, 0b101, 0b110]),
+        'Ñ' => accented('N', TILDE),
+        'Ò' => accented('O', GRAVE),
+        'Ó' => accented('O', ACUTE),
+        'Ô' => accented('O', CIRCUMFLEX),
+        'Õ' => accented('O', TILDE),
+        'Ö' => accented('O', DIAERESIS),
+        // An O with a slash poking out at both ends.
+        'Ø' => plain([0b011, 0b101, 0b111, 0b101, 0b110]),
+        'Ù' => accented('U', GRAVE),
+        'Ú' => accented('U', ACUTE),
+        'Û' => accented('U', CIRCUMFLEX),
+        'Ü' => accented('U', DIAERESIS),
+        'Ý' => accented('Y', ACUTE),
+        'Ÿ' => accented('Y', DIAERESIS),
+        'Þ' => plain([0b100, 0b110, 0b101, 0b110, 0b100]),
+        // `to_uppercase` turns ß into "SS"; its first character would lose
+        // the second, so it gets its own glyph instead.
+        'S' if c == 'ß' => plain([0b010, 0b101, 0b110, 0b101, 0b110]),
+        '\u{a0}' => plain(small_glyph(' ')),
+        _ => plain(small_glyph('?')),
+    }
+}
+
+/// Looks up a glyph for an ASCII character (see [`fold`] for the rest).
+/// Lowercase is drawn as uppercase (3×5 has no room for distinct lowercase
+/// forms), and anything else unknown becomes `?`.
 pub fn small_glyph(c: char) -> [u8; 5] {
     match c.to_ascii_uppercase() {
         ' ' => [0b000, 0b000, 0b000, 0b000, 0b000],
@@ -137,3 +216,9 @@ pub const BLUETOOTH_W: u32 = 5;
 pub const BLUETOOTH: [u8; 7] = [
     0b00100, 0b00110, 0b10101, 0b01110, 0b10101, 0b00110, 0b00100,
 ];
+
+/// 5×5 media controls.
+pub const PREVIOUS: [u8; 5] = [0b10001, 0b10011, 0b10111, 0b10011, 0b10001];
+pub const NEXT: [u8; 5] = [0b10001, 0b11001, 0b11101, 0b11001, 0b10001];
+pub const PLAY: [u8; 5] = [0b01000, 0b01100, 0b01110, 0b01100, 0b01000];
+pub const PAUSE: [u8; 5] = [0b11011, 0b11011, 0b11011, 0b11011, 0b11011];

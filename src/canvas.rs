@@ -14,6 +14,8 @@ use core::ops::Range;
 
 use embassy_time::{Duration, Instant, Ticker};
 
+pub use self::marquee::{MARQUEE_FRAME, marquee_cycle, marquee_offset};
+
 use crate::display::Display;
 use crate::font;
 use crate::theme::{self, Theme};
@@ -42,6 +44,8 @@ pub struct Canvas {
     theme: &'static Theme,
     /// Pixel bytes waiting to be sent; see [`stream`].
     batch: [u8; BATCH],
+    /// While set, drawing only touches these columns (for [`Canvas::marquee`]).
+    clip: Option<Range<i32>>,
 }
 
 impl Canvas {
@@ -52,6 +56,7 @@ impl Canvas {
             front_valid: false,
             theme: &theme::ARCADE,
             batch: [0; BATCH],
+            clip: None,
         }
     }
 
@@ -76,6 +81,9 @@ impl Canvas {
     /// callers can draw shapes that hang off the edge.
     pub fn pixel(&mut self, x: i32, y: i32, color: Color) {
         if !(0..WIDTH as i32).contains(&x) || !(0..HEIGHT as i32).contains(&y) {
+            return;
+        }
+        if self.clip.as_ref().is_some_and(|clip| !clip.contains(&x)) {
             return;
         }
         set_nibble(&mut self.back, y as usize * WIDTH + x as usize, color.0);
@@ -105,12 +113,45 @@ impl Canvas {
 
     /// Draws text in the 3×5 font and returns the x just past its end.
     pub fn text(&mut self, x: i32, y: i32, text: &str, color: Color) -> i32 {
+        self.text_scaled(x, y, text, color, 1)
+    }
+
+    /// Text in the small font at `scale`× (each font pixel a `scale`-sided
+    /// square); returns the x just past its end. `y` is the top of the
+    /// capitals; accents extend above it.
+    pub fn text_scaled(&mut self, x: i32, y: i32, text: &str, color: Color, scale: i32) -> i32 {
         let mut cursor = x;
+        let top = y - font::ACCENT_ROWS * scale;
         for c in text.chars() {
-            self.sprite(cursor, y, font::SMALL_W, &font::small_glyph(c), 1, color);
-            cursor += font::SMALL_ADVANCE;
+            let glyph = font::glyph(c);
+            self.sprite(cursor, top, glyph.width, &glyph.rows, scale, color);
+            cursor += (glyph.width as i32 + 1) * scale;
         }
         cursor
+    }
+
+    /// Text confined to `columns`. If it doesn't fit, it scrolls:
+    /// a pause at the start, a steady crawl to the end, a pause there, and
+    /// round again. `elapsed` is how long the text has been showing.
+    pub fn marquee(
+        &mut self,
+        columns: Range<i32>,
+        y: i32,
+        text: &str,
+        color: Color,
+        scale: i32,
+        elapsed: Duration,
+    ) {
+        let overflow = font::small_text_width(text) * scale - columns.len() as i32;
+        let offset = if overflow > 0 {
+            marquee_offset(overflow, elapsed)
+        } else {
+            0
+        };
+        let left = columns.start;
+        self.clip = Some(columns);
+        self.text_scaled(left - offset, y, text, color, scale);
+        self.clip = None;
     }
 
     /// Like [`Canvas::text`], but horizontally centred on `center_x`.
@@ -333,4 +374,38 @@ fn set_nibble(buffer: &mut [u8; BYTES], i: usize, value: u8) {
     } else {
         (*byte & 0x0F) | (value << 4)
     };
+}
+
+// ==============================================================================
+// Scrolling text
+// ==============================================================================
+
+mod marquee {
+    use embassy_time::Duration;
+
+    /// Scroll speed, in canvas pixels per second (about 2.5 characters).
+    const SPEED: u64 = 10;
+    /// Hold still this long at each end, so the start and end can be read.
+    const PAUSE: Duration = Duration::from_millis(1200);
+    /// How often to redraw while text scrolls: one pixel per frame.
+    pub const MARQUEE_FRAME: Duration = Duration::from_millis(1000 / SPEED);
+
+    /// How long one full pause–scroll–pause cycle takes for text that
+    /// overflows its space by `overflow` pixels.
+    pub fn marquee_cycle(overflow: i32) -> Duration {
+        PAUSE * 2 + Duration::from_millis(overflow.max(0) as u64 * 1000 / SPEED)
+    }
+
+    /// How far to have scrolled after `elapsed`.
+    pub fn marquee_offset(overflow: i32, elapsed: Duration) -> i32 {
+        let travel = marquee_cycle(overflow) - PAUSE * 2;
+        let t = Duration::from_ticks(elapsed.as_ticks() % marquee_cycle(overflow).as_ticks());
+        if t < PAUSE {
+            0
+        } else if t < PAUSE + travel {
+            ((t - PAUSE).as_millis() * SPEED / 1000) as i32
+        } else {
+            overflow
+        }
+    }
 }

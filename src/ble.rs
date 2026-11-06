@@ -32,6 +32,7 @@ use trouble_host::prelude::*;
 
 use crate::gb::{self, Incoming, LineBuffer, Outgoing};
 use crate::geo::{self, GpsPolicy, Location};
+use crate::ui::PhoneEvent;
 use crate::{clock, storage};
 
 /// The advertised and GAP device name. Gadgetbridge's Bangle.js support
@@ -369,31 +370,18 @@ fn interpret(line: &[u8], actions: &mut Vec<Action, 4>) {
         },
         Some(Incoming::IsGpsActive) => Action::ReportGps,
         Some(Incoming::ActivityFetch) => Action::ActivityFetch,
-        Some(Incoming::Other {
-            kind: "notify",
-            object,
-        }) => {
-            // TODO: show these (milestone 3). For now, log what we'd show:
-            // app, sender, and title, never the body.
-            let field = |key| {
-                let mut text = heapless::String::<40>::new();
-                if let Some(value) = object.get(key) {
-                    let _ = value.decode_into(&mut text);
+        Some(Incoming::Other { kind, object }) => {
+            match phone_event(kind, object) {
+                Some(event) => {
+                    if crate::INPUT
+                        .try_send(crate::InputEvent::Phone(event))
+                        .is_err()
+                    {
+                        warn!("ble: UI busy; dropped a {=str} message", kind);
+                    }
                 }
-                text
-            };
-            let (app, sender, title) = (field("src"), field("sender"), field("title"));
-            info!(
-                "ble: notification from {=str}: sender {=str}, title {=str}",
-                app.as_str(),
-                sender.as_str(),
-                title.as_str()
-            );
-            return;
-        }
-        Some(Incoming::Other { kind, .. }) => {
-            // TODO: calls and music (milestones 3 and 4).
-            debug!("ble: ignoring {=str} message", kind);
+                None => debug!("ble: ignoring {=str} message", kind),
+            }
             return;
         }
         None => {
@@ -404,6 +392,59 @@ fn interpret(line: &[u8], actions: &mut Vec<Action, 4>) {
     if actions.push(action).is_err() {
         warn!("ble: too many messages in one write; dropping one");
     }
+}
+
+/// Translates the phone's notification, call, music, and find-my-watch
+/// messages for the UI. Only the fields we show are copied; in particular a
+/// notification's body never leaves this function.
+fn phone_event(kind: &str, object: gb::Object<'_>) -> Option<PhoneEvent> {
+    fn text<const N: usize>(object: gb::Object<'_>, key: &str) -> heapless::String<N> {
+        let mut out = heapless::String::new();
+        if let Some(value) = object.get(key) {
+            let _ = value.decode_into(&mut out);
+        }
+        out
+    }
+    Some(match kind {
+        "notify" => {
+            // Messaging apps usually put the sender's name in the title and
+            // leave `sender` empty.
+            let sender: heapless::String<40> = text(object, "sender");
+            let who = if sender.is_empty() {
+                text(object, "title")
+            } else {
+                sender
+            };
+            PhoneEvent::Notification {
+                app: text(object, "src"),
+                who,
+            }
+        }
+        "call" => match object.get("cmd").and_then(|v| v.as_raw_str()) {
+            Some("incoming") => {
+                let name: heapless::String<40> = text(object, "name");
+                let caller = if name.is_empty() {
+                    text(object, "number")
+                } else {
+                    name
+                };
+                PhoneEvent::IncomingCall { caller }
+            }
+            // Answered, rejected, ended, …: the call no longer needs us.
+            _ => PhoneEvent::CallOver,
+        },
+        "musicinfo" => PhoneEvent::MusicInfo {
+            artist: text(object, "artist"),
+            track: text(object, "track"),
+        },
+        "musicstate" => PhoneEvent::MusicState {
+            playing: object.get("state").and_then(|v| v.as_raw_str()) == Some("play"),
+        },
+        "find" => PhoneEvent::Find {
+            on: object.get("n").and_then(|v| v.as_bool()) == Some(true),
+        },
+        _ => return None,
+    })
 }
 
 /// Adopts a new location, saving it only when it moved noticeably (about a
