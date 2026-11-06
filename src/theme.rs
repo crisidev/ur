@@ -23,6 +23,7 @@ impl Color {
     /// Hints and placeholders.
     pub const TEXT_FAINT: Self = Self(4);
     /// The unfilled part of bars and gauges.
+    #[allow(dead_code)] // Unused since seconds became digits; timers will use it.
     pub const TRACK: Self = Self(5);
     /// Titles, the blinking colon, filled bars.
     pub const ACCENT: Self = Self(6);

@@ -148,10 +148,10 @@ impl App {
 // Canvas layout (80×80), y ranges inclusive:
 //
 //    3..7    status bar: battery % and icon (right)
-//   20..41   HH:MM in 5×7 digits at 3× (15×21 each), with a drop shadow
-//   48..52   date
-//   57..62   heart rate
-//   72..73   seconds bar
+//   14..35   HH:MM in 5×7 digits at 3× (15×21 each), with a drop shadow
+//   40..53   SS in the same digits at 2× (10×14), centred
+//   60..64   date
+//   68..73   heart rate
 
 const BACKGROUND: Color = Color::BACKGROUND;
 
@@ -166,53 +166,52 @@ fn render_clock(canvas: &mut Canvas, status: &Status) {
 
     // HH:MM. Each digit cell is 15 px wide with 2 px gaps; the colon gets a
     // 3 px column. That's 71 px, leaving 4 px either side (+1 for shadow).
-    let digits = [hours / 10, hours % 10, minutes / 10, minutes % 10];
-    let digit_x = [4, 21, 43, 60];
-    const TIME_Y: i32 = 20;
-    const DIGIT_SCALE: i32 = 3;
-    for (&digit, &x) in digits.iter().zip(&digit_x) {
-        let glyph = &font::DIGITS[digit as usize];
-        canvas.sprite(
-            x + 1,
-            TIME_Y + 1,
-            font::DIGIT_W,
-            glyph,
-            DIGIT_SCALE,
-            Color::SHADOW,
-        );
-        canvas.sprite(x, TIME_Y, font::DIGIT_W, glyph, DIGIT_SCALE, Color::TEXT);
+    const TIME_Y: i32 = 14;
+    const TIME_SCALE: i32 = 3;
+    let hhmm = [hours / 10, hours % 10, minutes / 10, minutes % 10];
+    for (&digit, x) in hhmm.iter().zip([4, 21, 43, 60]) {
+        draw_digit(canvas, x, TIME_Y, digit, TIME_SCALE, Color::TEXT);
     }
     // The colon blinks: a heartbeat that shows the watch is alive even when
     // the minutes aren't changing. Its dots line up with glyph rows 2 and 4.
     if seconds % 2 == 0 {
         for row in [2, 4] {
-            let y = TIME_Y + row * DIGIT_SCALE;
+            let y = TIME_Y + row * TIME_SCALE;
             canvas.fill_rect(39, y + 1, 3, 3, Color::SHADOW);
             canvas.fill_rect(38, y, 3, 3, Color::ACCENT);
         }
     }
 
-    canvas.text_centered(40, 48, "NOT SYNCED", Color::TEXT_FAINT);
+    // Seconds: smaller and dimmer, so they read as secondary to HH:MM. Two
+    // 10 px cells with a 2 px gap, centred.
+    for (digit, x) in [seconds / 10, seconds % 10].into_iter().zip([29, 41]) {
+        draw_digit(canvas, x, 40, digit, 2, Color::TEXT_DIM);
+    }
+
+    canvas.text_centered(40, 60, "NOT SYNCED", Color::TEXT_FAINT);
 
     // Heart rate, centred as a group: icon, 2 px gap, value.
     // TODO: real readings once the HRS3300 driver lands (milestone 6).
     let bpm = "--";
     let group_w = font::HEART_W as i32 + 2 + font::small_text_width(bpm);
     let x = 40 - group_w / 2;
-    canvas.sprite(x, 57, font::HEART_W, &font::HEART, 1, Color::HEART);
+    canvas.sprite(x, 68, font::HEART_W, &font::HEART, 1, Color::HEART);
     canvas.sprite(
         x,
-        57,
+        68,
         font::HEART_W,
         &font::HEART_SHINE,
         1,
         Color::HEART_SHINE,
     );
-    canvas.text(x + font::HEART_W as i32 + 2, 58, bpm, Color::TEXT);
+    canvas.text(x + font::HEART_W as i32 + 2, 69, bpm, Color::TEXT);
+}
 
-    // Seconds bar: 60 px, one per second, so it's full on second 59.
-    canvas.fill_rect(10, 72, 60, 2, Color::TRACK);
-    canvas.fill_rect(10, 72, seconds as i32 + 1, 2, Color::ACCENT);
+/// One big 5×7 digit at `scale`, with a 1 px drop shadow down and right.
+fn draw_digit(canvas: &mut Canvas, x: i32, y: i32, digit: u64, scale: i32, color: Color) {
+    let glyph = &font::DIGITS[digit as usize];
+    canvas.sprite(x + 1, y + 1, font::DIGIT_W, glyph, scale, Color::SHADOW);
+    canvas.sprite(x, y, font::DIGIT_W, glyph, scale, color);
 }
 
 fn render_battery(canvas: &mut Canvas, battery: &Battery) {
