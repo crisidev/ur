@@ -72,7 +72,8 @@ const fn theme(name: &'static str, hex: [u32; Color::COUNT]) -> Theme {
 }
 
 // Three themes survived trying six on the real panel (also tried: amber
-// terminal, '80s home-computer blue, and the original navy/teal). They are
+// terminal, '80s home-computer blue, and the original navy/teal); Terminal
+// was designed afterwards as a second dark theme. They are
 // grouped by whether they suit darkness or daylight; the UI picks the group
 // from sunrise/sunset and remembers a choice within each group.
 //
@@ -83,6 +84,15 @@ const fn theme(name: &'static str, hex: [u32; Color::COUNT]) -> Theme {
 pub static ARCADE: Theme = theme("ARCADE", [
     0x101010, 0x5a1010, 0xe8e8e8, 0xa8a8a8, 0x606060, 0x303030, 0xd82828,
     0xd82828, 0x101010, 0xd82828, 0xff9090, 0xffffff, 0xff5050,
+]);
+
+/// A hacker terminal: phosphor green on near-black, everything one hue at
+/// different intensities. The drop shadow is a dim green "glow" rather than
+/// a shadow, and only low battery breaks the monochrome (near-white).
+#[rustfmt::skip]
+pub static TERMINAL: Theme = theme("TERMINAL", [
+    0x020c04, 0x0b3d18, 0x4dff7a, 0x2aa84a, 0x146b2c, 0x0a2a12, 0xb8ffc8,
+    0x2aa84a, 0x020c04, 0x4dff7a, 0xe0ffe8, 0xb8ffc8, 0xf0fff0,
 ]);
 
 /// Four shades of olive green, dark on light, like an early handheld LCD.
@@ -100,9 +110,7 @@ pub static PARCHMENT: Theme = theme("PARCHMENT", [
 ]);
 
 /// Themes for after sunset. Long press cycles within this list at night.
-/// TODO: only one so far; long press at night does nothing until there's a
-/// second dark theme.
-pub static DARK: [&Theme; 1] = [&ARCADE];
+pub static DARK: [&Theme; 2] = [&ARCADE, &TERMINAL];
 
 /// Themes for daylight. Long press cycles within this list by day.
 pub static LIGHT: [&Theme; 2] = [&HANDHELD, &PARCHMENT];
