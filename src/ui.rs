@@ -23,8 +23,8 @@ use crate::InputEvent;
 use crate::battery::Battery;
 use crate::canvas::{Canvas, Color, Sweep};
 use crate::clock::DateTime;
-use crate::clock::Sun;
 use crate::font;
+use crate::geo::Sun;
 use crate::motor::{self, Pattern};
 use crate::theme::{self, Theme};
 use crate::touch::Gesture;
@@ -40,8 +40,8 @@ pub struct Status<'a> {
     pub connected: bool,
     /// While pairing: the passkey to type on the phone.
     pub passkey: Option<u32>,
-    /// Today's sunrise/sunset, for the info screen.
-    pub sun: Sun,
+    /// Today's sunrise/sunset, for the info screen (once the time is known).
+    pub sun: Option<Sun>,
     pub battery: &'a Battery,
 }
 
@@ -364,16 +364,18 @@ fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
     let y = y + INFO_LINE;
     canvas.text(4, y, "SUN", Color::TEXT_DIM);
     let mut daylight = heapless::String::<12>::new();
-    let (rise, set) = (status.sun.sunrise, status.sun.sunset);
-    write!(
-        daylight,
-        "{:02}:{:02}-{:02}:{:02}",
-        rise / 60,
-        rise % 60,
-        set / 60,
-        set % 60
-    )
-    .expect("11 chars");
+    match status.sun {
+        Some(Sun { sunrise, sunset }) => write!(
+            daylight,
+            "{:02}:{:02}-{:02}:{:02}",
+            sunrise / 60,
+            sunrise % 60,
+            sunset / 60,
+            sunset % 60
+        )
+        .expect("11 chars"),
+        None => daylight.push_str("--:-----:--").expect("11 chars"),
+    }
     canvas.text_right(77, y, &daylight, Color::TEXT);
     let y = y + INFO_LINE;
     canvas.text(4, y, "PHONE", Color::TEXT_DIM);

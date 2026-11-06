@@ -16,6 +16,7 @@ embassy-sync = { version = "0.8.0", features = ["defmt"] }
 embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime"] }
 embedded-hal-async = "1"
 heapless = "0.9.3"
+libm = "0.2.16"
 nrf-mpsl = { version = "0.4.0", features = ["nrf52832", "defmt", "critical-section-impl"] }
 nrf-sdc = { version = "0.4.0", features = ["nrf52832", "peripheral", "defmt"] }
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }

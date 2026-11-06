@@ -1,27 +1,15 @@
-//! Bluetooth LE: a GATT server that Gadgetbridge recognises as InfiniTime.
+//! Bluetooth LE: a Nordic UART service speaking Gadgetbridge's Bangle.js
+//! protocol (see [`crate::gb`] for the protocol itself).
 //!
-//! We don't patch Gadgetbridge, so the watch speaks the protocol of the
-//! firmware Gadgetbridge already supports for the PineTime, InfiniTime. The
-//! relevant facts, from reading both projects' source:
-//!
-//! - Gadgetbridge identifies the watch *only* by its advertised name, which
-//!   must match `InfiniTime.*` (see [`NAME`]).
-//! - It gates protocol details on the Device Information firmware revision
-//!   (see [`FIRMWARE_REVISION`]).
-//! - Every characteristic it uses is optional: it skips ones that don't exist.
-//!   But one that exists and *errors* aborts its whole connection setup, so
-//!   everything we expose must accept reads, writes, and subscriptions.
-//! - On every connect it writes the local time to the Current Time Service,
-//!   which is how the watch learns the time at all (see [`crate::clock`]).
+//! Gadgetbridge recognises a Bangle.js by its advertised name alone (see
+//! [`NAME`]), then subscribes to the UART's TX characteristic and writes
+//! lines to its RX characteristic. Everything else (time, notifications,
+//! GPS, activity) travels as text over that pair.
 //!
 //! Pairing is required in practice: Android starts it on connect (a request
 //! the watch must answer within 30 s, or the phone gives up and disconnects),
 //! so we support LE Secure Connections with a passkey shown on the watch, and
 //! keep the resulting bonds in flash so the phone needn't pair again.
-//!
-//! This milestone covers time sync and battery level. Notifications (Alert
-//! Notification Service) and media control (InfiniTime's music service) come
-//! next, as more services on the same server.
 //!
 //! The stack is Nordic's SoftDevice Controller (link layer, a binary blob
 //! wrapped by `nrf-sdc`) under TrouBLE (host, in Rust), with Nordic's MPSL
@@ -29,39 +17,49 @@
 //! channels, and interrupt priority 0; see `main` for the setup.
 
 use core::cell::Cell;
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use defmt::{debug, info, warn};
 use embassy_futures::join::join;
-use embassy_futures::select::select;
+use embassy_futures::select::{Either3, select3};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_time::{Duration, Timer};
+use embassy_sync::channel::Channel;
+use embassy_time::{Duration, Instant, Timer};
 use heapless::Vec;
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 use trouble_host::prelude::*;
 
-use crate::clock::{self, DateTime};
-use crate::storage;
+use crate::gb::{self, Incoming, LineBuffer, Outgoing};
+use crate::geo::{self, GpsPolicy, Location};
+use crate::{clock, storage};
 
-/// The advertised and GAP device name. Gadgetbridge's PineTime support only
-/// recognises devices named `InfiniTime.*` (or `Pinetime-JF.*`).
-const NAME: &str = "InfiniTime ur";
-
-/// The Device Information firmware revision we report.
-///
-/// Gadgetbridge parses this as exactly three numeric parts and changes
-/// protocol based on it. Notably, from 0.15.0 it sends notifications as
-/// `"<app>: <sender>\0<body>"` rather than just the body, and we need the app
-/// and sender. Anything that isn't `N.N.N` silently gets the old format.
-const FIRMWARE_REVISION: &str = "1.15.0";
+/// The advertised and GAP device name. Gadgetbridge's Bangle.js support
+/// recognises `Bangle.js.*` (among a few other Espruino names).
+const NAME: &str = "Bangle.js ur";
 
 /// Whether a phone is connected, for the status bar.
 pub static CONNECTED: AtomicBool = AtomicBool::new(false);
-/// Battery percentage, published by the UI loop for the Battery Service.
-pub static BATTERY_PERCENT: AtomicU8 = AtomicU8::new(0);
 /// The passkey to show while pairing, for the user to type on the phone.
 pub static PASSKEY: Mutex<CriticalSectionRawMutex, Cell<Option<u32>>> = Mutex::new(Cell::new(None));
+/// Battery state, published by the UI loop for status reports to the phone.
+pub static BATTERY: Mutex<CriticalSectionRawMutex, Cell<BatteryReport>> =
+    Mutex::new(Cell::new(BatteryReport {
+        percent: 0,
+        charging: false,
+        millivolts: 0,
+    }));
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct BatteryReport {
+    pub percent: u8,
+    pub charging: bool,
+    pub millivolts: u32,
+}
+
+/// Messages for the phone, from anywhere in the firmware; sent while
+/// connected, dropped otherwise.
+pub static OUTBOX: Channel<CriticalSectionRawMutex, Outgoing, 8> = Channel::new();
 
 /// One connection (the phone), and the two L2CAP channels it needs
 /// (signalling and ATT).
@@ -77,118 +75,25 @@ pub type Controller = nrf_sdc::SoftdeviceController<'static>;
 // GATT server
 // ==============================================================================
 
-/// The full InfiniTime-compatible layout, including services whose behaviour
-/// isn't implemented yet (calls, music, heart rate).
-///
-/// Android caches a bonded device's GATT layout, and TrouBLE doesn't offer
-/// the Service Changed indication or Database Hash that tell it to look
-/// again. So the layout is defined completely up front: if a later milestone
-/// added a service, the phone would keep using the cached list without it
-/// until re-paired.
 #[gatt_server]
 struct Server {
-    device_information: DeviceInformation,
-    current_time: CurrentTimeService,
-    battery: BatteryService,
-    alert_notification: AlertNotificationService,
-    music: MusicService,
-    weather: SimpleWeatherService,
-    heart_rate: HeartRateService,
+    uart: UartService,
 }
 
-#[gatt_service(uuid = service::DEVICE_INFORMATION)]
-struct DeviceInformation {
-    #[characteristic(uuid = characteristic::MANUFACTURER_NAME_STRING, read)]
-    manufacturer: Vec<u8, 16>,
-    #[characteristic(uuid = characteristic::MODEL_NUMBER_STRING, read)]
-    model: Vec<u8, 16>,
-    #[characteristic(uuid = characteristic::FIRMWARE_REVISION_STRING, read)]
-    firmware_revision: Vec<u8, 16>,
-}
-
-#[gatt_service(uuid = service::CURRENT_TIME)]
-struct CurrentTimeService {
-    /// Year (u16 LE), month, day, hour, minute, second, weekday (Mon = 1),
-    /// 1/256 s fractions, adjust reason. Gadgetbridge writes *local* time.
-    #[characteristic(uuid = characteristic::CURRENT_TIME, read, write, notify)]
-    current_time: [u8; 10],
-    /// UTC offset and DST offset, each in 15-minute units. Gadgetbridge
-    /// writes it alongside the current time; we accept and ignore it.
-    #[characteristic(uuid = characteristic::LOCAL_TIME_INFORMATION, read, write)]
-    local_time_information: [u8; 2],
-}
-
-#[gatt_service(uuid = service::BATTERY)]
-struct BatteryService {
-    #[characteristic(uuid = characteristic::BATTERY_LEVEL, read, notify)]
-    level: u8,
-}
-
-/// Notifications and calls. Gadgetbridge writes each notification to New
-/// Alert as `[category, count, icon, text…]`; the watch answers calls on
-/// InfiniTime's extra characteristic. (Handled from milestone 3.)
-#[gatt_service(uuid = service::ALERT_NOTIFICATION)]
-struct AlertNotificationService {
-    /// Up to 3 header bytes plus Gadgetbridge's 100-character text, which
-    /// can be up to ~300 bytes of UTF-8, but one ATT write carries at most
-    /// MTU − 3 = 244 bytes.
-    /// TODO: accept longer (queued) writes for heavily non-ASCII texts.
-    #[characteristic(uuid = characteristic::NEW_ALERT, write)]
-    new_alert: Vec<u8, 244>,
-    /// One byte, watch to phone: 0 reject, 1 accept, 2 mute.
-    #[characteristic(uuid = "00020001-78fc-48fe-8e23-433b3a1942d0", read, notify)]
-    call_response: u8,
-}
-
-/// InfiniTime's music service. Gadgetbridge only writes characteristics that
-/// have the *write* property (write-without-response alone isn't enough).
-/// (Handled from milestone 4.)
-#[gatt_service(uuid = "00000000-78fc-48fe-8e23-433b3a1942d0")]
-struct MusicService {
-    /// Watch to phone: 0 play, 1 pause, 3 next, 4 previous.
-    #[characteristic(uuid = "00000001-78fc-48fe-8e23-433b3a1942d0", read, notify)]
-    event: u8,
-    /// 1 while playing.
-    #[characteristic(uuid = "00000002-78fc-48fe-8e23-433b3a1942d0", read, write)]
-    status: u8,
-    #[characteristic(uuid = "00000003-78fc-48fe-8e23-433b3a1942d0", read, write)]
-    artist: Vec<u8, 64>,
-    #[characteristic(uuid = "00000004-78fc-48fe-8e23-433b3a1942d0", read, write)]
-    track: Vec<u8, 64>,
-    #[characteristic(uuid = "00000005-78fc-48fe-8e23-433b3a1942d0", read, write)]
-    album: Vec<u8, 64>,
-    /// Big-endian seconds and counts. We don't use these, but Gadgetbridge
-    /// writes them, so they must exist and accept writes.
-    #[characteristic(uuid = "00000006-78fc-48fe-8e23-433b3a1942d0", read, write)]
-    position: [u8; 4],
-    #[characteristic(uuid = "00000007-78fc-48fe-8e23-433b3a1942d0", read, write)]
-    length: [u8; 4],
-    #[characteristic(uuid = "00000008-78fc-48fe-8e23-433b3a1942d0", read, write)]
-    track_number: [u8; 4],
-    #[characteristic(uuid = "00000009-78fc-48fe-8e23-433b3a1942d0", read, write)]
-    track_count: [u8; 4],
-    #[characteristic(uuid = "0000000a-78fc-48fe-8e23-433b3a1942d0", read, write)]
-    playback_speed: [u8; 4],
-    #[characteristic(uuid = "0000000b-78fc-48fe-8e23-433b3a1942d0", read, write)]
-    repeat: [u8; 4],
-    #[characteristic(uuid = "0000000c-78fc-48fe-8e23-433b3a1942d0", read, write)]
-    shuffle: [u8; 4],
-}
-
-/// InfiniTime's "simple weather". We only want the sunrise and sunset in the
-/// current-conditions packet; see [`parse_sun`].
-#[gatt_service(uuid = "00050000-78fc-48fe-8e23-433b3a1942d0")]
-struct SimpleWeatherService {
-    #[characteristic(uuid = "00050001-78fc-48fe-8e23-433b3a1942d0", write)]
-    data: Vec<u8, 64>,
-}
-
-/// Standard heart rate, `[flags, bpm]`. Gadgetbridge records it if present.
-/// (Fed from milestone 6.)
-#[gatt_service(uuid = service::HEART_RATE)]
-struct HeartRateService {
-    #[characteristic(uuid = characteristic::HEART_RATE_MEASUREMENT, notify)]
-    measurement: [u8; 2],
+/// The Nordic UART service: a byte pipe each way. "RX" and "TX" are from the
+/// watch's point of view.
+#[gatt_service(uuid = "6e400001-b5a3-f393-e0a9-e50e24dcca9e")]
+struct UartService {
+    /// Phone to watch. Writes arrive in pieces of at most MTU − 3 bytes.
+    #[characteristic(
+        uuid = "6e400002-b5a3-f393-e0a9-e50e24dcca9e",
+        write,
+        write_without_response
+    )]
+    rx: Vec<u8, 244>,
+    /// Watch to phone, as notifications.
+    #[characteristic(uuid = "6e400003-b5a3-f393-e0a9-e50e24dcca9e", notify)]
+    tx: Vec<u8, 244>,
 }
 
 // ==============================================================================
@@ -229,26 +134,6 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
         appearance: &appearance::watch::GENERIC_WATCH,
     }))
     .expect("the attribute table is sized for this server");
-    let text = |s: &str| Vec::from_slice(s.as_bytes()).expect("DIS strings fit in 16 bytes");
-    let dis = &server.device_information;
-    for (characteristic, value) in [
-        (&dis.manufacturer, text("ur")),
-        (&dis.model, text("PineTime")),
-        (&dis.firmware_revision, text(FIRMWARE_REVISION)),
-    ] {
-        server
-            .set(characteristic, &value)
-            .expect("characteristic belongs to this server");
-    }
-
-    // These services exist for the stable layout (see `Server`), but nothing
-    // reads them until milestones 3, 4, and 6. (`#[gatt_server]` drops
-    // `#[allow(dead_code)]`, so acknowledge them here instead.)
-    let _ = (
-        &server.alert_notification,
-        &server.music,
-        &server.heart_rate,
-    );
 
     let host = async {
         loop {
@@ -258,6 +143,7 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
         }
     };
     let connections = async {
+        let mut gps = GpsPolicy::default();
         loop {
             let conn = match advertise(&mut peripheral, &server).await {
                 Ok(conn) => conn,
@@ -272,14 +158,19 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
             if let Err(e) = conn.raw().set_bondable(true) {
                 warn!("ble: enabling bonding failed: {}", defmt::Debug2Format(&e));
             }
-            // Serve the phone until it disconnects; the battery reporter
+            // Anything queued while disconnected is stale.
+            OUTBOX.clear();
+            gps.on_connect(Instant::now());
+            let _ = OUTBOX.try_send(Outgoing::Version);
+            // Serve the phone until it disconnects; the status reporter
             // never finishes on its own.
-            select(
-                serve(&stack, &server, &conn),
-                report_battery(&server, &conn),
+            embassy_futures::select::select(
+                serve(&stack, &server, &conn, &mut gps),
+                report_status(),
             )
             .await;
             CONNECTED.store(false, Ordering::Relaxed);
+            gps.on_disconnect(Instant::now());
             show_passkey(None);
         }
     };
@@ -319,49 +210,108 @@ async fn advertise<'values, 'server, C: trouble_host::Controller>(
     Ok(advertiser.accept().await?.with_attribute_server(server)?)
 }
 
-/// Handles the phone's GATT requests and pairing until it disconnects.
+/// What a received line asks us to do; collected while parsing (which
+/// happens inside a non-async callback) and acted on afterwards.
+enum Action {
+    SetTime {
+        utc_seconds: i64,
+        offset_minutes: i16,
+    },
+    Fix(Location),
+    ReportGps,
+    ActivityFetch,
+}
+
+/// Handles the phone's GATT traffic, pairing, and our outgoing messages
+/// until it disconnects.
 async fn serve<C: trouble_host::Controller>(
     stack: &Stack<'_, C, DefaultPacketPool>,
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
+    gps: &mut GpsPolicy,
 ) {
-    let current_time = server.current_time.current_time.handle;
-    let weather = server.weather.data.handle;
+    let rx = server.uart.rx.handle;
+    let mut lines = LineBuffer::new();
+    // While we've asked the phone for GPS: when to give up waiting.
+    let mut gps_deadline: Option<Instant> = None;
+    let request_gps = |deadline: &mut Option<Instant>| {
+        info!("ble: asking the phone for a location");
+        *deadline = Some(Instant::now() + geo::FIX_TIMEOUT);
+        let _ = OUTBOX.try_send(Outgoing::GpsPower(true));
+    };
+    if gps.take_request() {
+        request_gps(&mut gps_deadline);
+    }
+
     let reason = loop {
-        match conn.next().await {
+        let gps_timeout = async {
+            match gps_deadline {
+                Some(deadline) => Timer::at(deadline).await,
+                None => core::future::pending().await,
+            }
+        };
+        let event = match select3(conn.next(), OUTBOX.receive(), gps_timeout).await {
+            Either3::First(event) => event,
+            Either3::Second(message) => {
+                send(server, conn, message).await;
+                continue;
+            }
+            Either3::Third(()) => {
+                warn!("ble: no location from the phone; is GPS forwarding enabled?");
+                gps_deadline = None;
+                send(server, conn, Outgoing::GpsPower(false)).await;
+                continue;
+            }
+        };
+        match event {
             GattConnectionEvent::Disconnected { reason } => break reason,
             GattConnectionEvent::Gatt { event } => {
-                match &event {
-                    GattEvent::Read(e) => debug!("ble: read handle {}", e.handle()),
-                    GattEvent::Write(e) => debug!("ble: write handle {}", e.handle()),
-                    GattEvent::Other(e) => debug!("ble: other gatt request {}", e.payload()),
-                    GattEvent::NotAllowed(_) => debug!("ble: disallowed gatt request"),
-                }
+                let mut actions: Vec<Action, 4> = Vec::new();
                 if let GattEvent::Write(write) = &event
-                    && write.handle() == weather
-                    && let Some(sun) = write.with_data(|_offset, data| parse_sun(data))
+                    && write.handle() == rx
                 {
-                    update_sun(sun).await;
-                }
-                if let GattEvent::Write(write) = &event
-                    && write.handle() == current_time
-                {
-                    write.with_data(|_offset, data| match parse_current_time(data) {
-                        Some(now) => {
-                            info!("ble: time set to {}", now);
-                            clock::set(now);
-                        }
-                        None => warn!("ble: ignoring malformed current time {=[u8]:x}", data),
+                    write.with_data(|_offset, data| {
+                        lines.push(data, |line| interpret(line, &mut actions))
                     });
                 }
-                // Accept everything else as-is: the attribute table stores
-                // writes and answers reads.
+                // The attribute table stores writes and answers reads.
                 match event.accept() {
-                    Ok(reply) => {
-                        reply.send().await;
-                        debug!("ble: replied");
-                    }
+                    Ok(reply) => reply.send().await,
                     Err(e) => warn!("ble: failed to reply: {}", defmt::Debug2Format(&e)),
+                }
+                for action in actions {
+                    match action {
+                        Action::SetTime {
+                            utc_seconds,
+                            offset_minutes,
+                        } => {
+                            clock::set(utc_seconds, offset_minutes);
+                            info!("ble: time set (UTC offset {} min)", offset_minutes);
+                            gps.on_time_sync(offset_minutes);
+                            if gps.take_request() && gps_deadline.is_none() {
+                                request_gps(&mut gps_deadline);
+                            }
+                        }
+                        Action::Fix(location) => {
+                            // The phone keeps sending fixes until told to
+                            // stop; one is all we wanted.
+                            if gps_deadline.take().is_some() {
+                                send(server, conn, Outgoing::GpsPower(false)).await;
+                            }
+                            gps.on_fix(Instant::now());
+                            update_location(location).await;
+                        }
+                        Action::ReportGps => {
+                            send(server, conn, Outgoing::GpsPower(gps_deadline.is_some())).await
+                        }
+                        Action::ActivityFetch => {
+                            // TODO: send samples once the accelerometer is
+                            // tracked (milestone 2). An empty transfer keeps
+                            // Gadgetbridge from waiting forever.
+                            send(server, conn, Outgoing::ActivityFetch { done: false }).await;
+                            send(server, conn, Outgoing::ActivityFetch { done: true }).await;
+                        }
+                    }
                 }
             }
             GattConnectionEvent::PassKeyDisplay(passkey) => {
@@ -394,84 +344,116 @@ async fn serve<C: trouble_host::Controller>(
             GattConnectionEvent::Encrypted { security_level, .. } => {
                 info!("ble: link encrypted ({})", security_level);
             }
-            _ => debug!("ble: other connection event"),
+            _ => {}
         }
     };
     info!("ble: disconnected: {}", defmt::Debug2Format(&reason));
 }
 
-/// Keeps the Battery Service value current, notifying the phone on change.
-async fn report_battery(server: &Server<'_>, conn: &GattConnection<'_, '_, DefaultPacketPool>) {
-    let level = &server.battery.level;
+/// Parses one line from the phone into actions; logs what we ignore.
+fn interpret(line: &[u8], actions: &mut Vec<Action, 4>) {
+    let action = match gb::parse(line) {
+        Some(Incoming::SetTime {
+            utc_seconds,
+            offset_minutes,
+        }) => Action::SetTime {
+            utc_seconds,
+            offset_minutes,
+        },
+        Some(Incoming::Gps {
+            latitude,
+            longitude,
+        }) => match Location::from_degrees(latitude, longitude) {
+            Some(location) => Action::Fix(location),
+            None => return,
+        },
+        Some(Incoming::IsGpsActive) => Action::ReportGps,
+        Some(Incoming::ActivityFetch) => Action::ActivityFetch,
+        Some(Incoming::Other {
+            kind: "notify",
+            object,
+        }) => {
+            // TODO: show these (milestone 3). For now, log what we'd show:
+            // app, sender, and title, never the body.
+            let field = |key| {
+                let mut text = heapless::String::<40>::new();
+                if let Some(value) = object.get(key) {
+                    let _ = value.decode_into(&mut text);
+                }
+                text
+            };
+            let (app, sender, title) = (field("src"), field("sender"), field("title"));
+            info!(
+                "ble: notification from {=str}: sender {=str}, title {=str}",
+                app.as_str(),
+                sender.as_str(),
+                title.as_str()
+            );
+            return;
+        }
+        Some(Incoming::Other { kind, .. }) => {
+            // TODO: calls and music (milestones 3 and 4).
+            debug!("ble: ignoring {=str} message", kind);
+            return;
+        }
+        None => {
+            debug!("ble: ignoring line {=[u8]:a}", line);
+            return;
+        }
+    };
+    if actions.push(action).is_err() {
+        warn!("ble: too many messages in one write; dropping one");
+    }
+}
+
+/// Adopts a new location, saving it only when it moved noticeably (about a
+/// kilometre), since the phone may send several fixes in a row.
+async fn update_location(location: Location) {
+    let previous = geo::has_fix().then(geo::location);
+    geo::set_location(location);
+    let moved = previous.is_none_or(|p| {
+        p.latitude_micro.abs_diff(location.latitude_micro)
+            + p.longitude_micro.abs_diff(location.longitude_micro)
+            > 10_000
+    });
+    if moved {
+        info!("ble: location now {}", location);
+        storage::save(storage::key::LOCATION, &location.to_bytes()).await;
+    }
+}
+
+/// Sends one message, split into notifications that fit the MTU.
+async fn send(
+    server: &Server<'_>,
+    conn: &GattConnection<'_, '_, DefaultPacketPool>,
+    message: Outgoing,
+) {
+    let line = message.to_line();
+    let chunk = usize::from(conn.raw().att_mtu().saturating_sub(3)).clamp(20, 244);
+    for piece in line.as_bytes().chunks(chunk) {
+        let value = Vec::from_slice(piece).expect("chunks are at most 244 bytes");
+        if let Err(e) = server.uart.tx.notify(conn, &value, false).await {
+            warn!("ble: send failed: {}", defmt::Debug2Format(&e));
+            return;
+        }
+    }
+}
+
+/// Reports the battery to the phone at connect and whenever it changes.
+async fn report_status() {
     let mut reported = None;
     loop {
-        let percent = BATTERY_PERCENT.load(Ordering::Relaxed);
-        if reported != Some(percent) {
-            // Stores the value for reads, then notifies if the phone has
-            // subscribed (silently skipped if not).
-            if let Err(e) = level.notify(conn, &percent, true).await {
-                warn!(
-                    "ble: battery notification failed: {}",
-                    defmt::Debug2Format(&e)
-                );
-            }
-            reported = Some(percent);
+        let battery = BATTERY.lock(Cell::get);
+        if reported != Some(battery) {
+            let _ = OUTBOX.try_send(Outgoing::Status {
+                percent: battery.percent,
+                charging: battery.charging,
+                millivolts: battery.millivolts,
+            });
+            reported = Some(battery);
         }
         Timer::after_secs(60).await;
     }
-}
-
-/// Extracts sunrise and sunset from a simple-weather write.
-///
-/// Gadgetbridge writes three kinds of packet to this one characteristic,
-/// told apart by the first byte and length: current conditions (type 0),
-/// forecasts (type 1), and a 40-byte world-clock table it sends to every
-/// InfiniTime ≥ 1.14 regardless. Only current conditions in format version
-/// ≥ 1 carry the sun, as minutes after local midnight, `u16` LE at offsets
-/// 49 and 51.
-fn parse_sun(data: &[u8]) -> Option<clock::Sun> {
-    match data {
-        &[0, version, ..] if version >= 1 && data.len() >= 53 => {
-            clock::Sun::from_bytes([data[49], data[50], data[51], data[52]])
-        }
-        _ => None,
-    }
-}
-
-/// Adopts new sunrise/sunset times, saving them only when they've moved
-/// noticeably (weather arrives about hourly; the sun moves minutes a day).
-async fn update_sun(sun: clock::Sun) {
-    let previous = clock::sun();
-    clock::set_sun(sun);
-    let moved = previous.sunrise.abs_diff(sun.sunrise) + previous.sunset.abs_diff(sun.sunset);
-    if moved >= 5 {
-        info!("ble: sunrise/sunset now {}", sun);
-        storage::save(storage::key::SUN, &sun.to_bytes()).await;
-    }
-}
-
-/// Decodes a Current Time characteristic value (Bluetooth CTS, "Exact Time
-/// 256" plus adjust reason). Weekday and fractions are ignored: we derive the
-/// weekday ourselves and don't need sub-second precision.
-fn parse_current_time(data: &[u8]) -> Option<DateTime> {
-    let &[year_lo, year_hi, month, day, hour, minute, second, ..] = data else {
-        return None;
-    };
-    let time = DateTime {
-        year: u16::from_le_bytes([year_lo, year_hi]),
-        month,
-        day,
-        hour,
-        minute,
-        second,
-    };
-    let valid = (2000..=2199).contains(&time.year)
-        && (1..=12).contains(&month)
-        && (1..=31).contains(&day)
-        && hour < 24
-        && minute < 60
-        && second < 60;
-    valid.then_some(time)
 }
 
 // ==============================================================================

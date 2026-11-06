@@ -37,8 +37,9 @@ pub mod key {
     /// The chosen theme within [`crate::theme::LIGHT`] and `DARK`.
     pub const THEME_LIGHT: u8 = 17;
     pub const THEME_DARK: u8 = 18;
-    /// The last sunrise/sunset from the phone; see [`crate::clock::Sun`].
-    pub const SUN: u8 = 19;
+    // 19: retired (sunrise/sunset from weather, before we computed them).
+    /// The last location from the phone; see [`crate::geo::Location`].
+    pub const LOCATION: u8 = 20;
 }
 
 /// Big enough for the largest item (a 43-byte bond) plus its key, rounded up

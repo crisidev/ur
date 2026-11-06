@@ -10,7 +10,9 @@
 //! - [`motor`]: vibration patterns.
 //! - [`battery`]: battery voltage and charge state.
 //! - [`i2c`]: the shared sensor bus.
-//! - [`ble`] / [`clock`]: Bluetooth (Gadgetbridge) and the wall clock it sets.
+//! - [`ble`] / [`gb`]: Bluetooth, speaking Gadgetbridge's Bangle.js protocol.
+//! - [`clock`] / [`geo`]: wall-clock time and location, both from the phone,
+//!   and the sunrise/sunset derived from them.
 //! - [`storage`]: settings and Bluetooth bonds in flash.
 //!
 //! Tasks talk to the UI loop only through [`INPUT`]; the UI loop owns the
@@ -25,6 +27,8 @@ mod canvas;
 mod clock;
 mod display;
 mod font;
+mod gb;
+mod geo;
 mod i2c;
 mod motor;
 mod storage;
@@ -351,11 +355,8 @@ async fn main(spawner: Spawner) {
         dark: load_u8(storage::key::THEME_DARK).await,
     };
     let mut app = App::new(Instant::now(), themes);
-    if let Some(sun) = storage::load(storage::key::SUN)
-        .await
-        .and_then(clock::Sun::from_bytes)
-    {
-        clock::set_sun(sun);
+    if let Some(location) = storage::load(storage::key::LOCATION).await {
+        geo::set_location(geo::Location::from_bytes(location));
     }
     // Start "asleep" so the first pass goes through the wake path: render the
     // first frame, then turn the backlight on. (Waking an already-awake
@@ -371,7 +372,12 @@ async fn main(spawner: Spawner) {
         let mut samples = [0i16; 1];
         adc.sample(&mut samples).await;
         battery.update(samples[0], charging.is_low(), power_present.is_low());
-        ble::BATTERY_PERCENT.store(battery.percent() as u8, Ordering::Relaxed);
+        let report = ble::BatteryReport {
+            percent: battery.percent() as u8,
+            charging: battery.charging,
+            millivolts: battery.millivolts(),
+        };
+        ble::BATTERY.lock(|cell| cell.set(report));
 
         // Apply screen power changes. Waking renders before the backlight
         // comes on, so the old frame never flashes up.
@@ -384,10 +390,10 @@ async fn main(spawner: Spawner) {
                 local_time: clock::now(),
                 connected: ble::CONNECTED.load(Ordering::Relaxed),
                 passkey: ble::PASSKEY.lock(Cell::get),
-                sun: clock::sun(),
+                sun: geo::sun(),
                 battery: &battery,
             };
-            app.set_daytime(clock::is_daytime());
+            app.set_daytime(geo::is_daytime());
             canvas.set_theme(app.theme());
             app.render(canvas, &status);
             match app.take_transition() {

@@ -1,22 +1,21 @@
 //! Wall-clock time.
 //!
 //! The watch has no battery-backed RTC, so after every boot it knows only
-//! time-since-boot until the phone tells it the time (over Bluetooth's
-//! Current Time Service, see [`crate::ble`]). We then remember the pair
-//! "at uptime X, local time was Y" and derive the time from the RTC-driven
-//! uptime from then on. Between syncs, accuracy is that of the 32.768 kHz
-//! crystal (±20 ppm, i.e. under 2 s/day).
+//! time-since-boot until the phone tells it the time (Gadgetbridge sends UTC
+//! and the UTC offset on every connect and when the phone's time zone
+//! changes; see [`crate::gb`]). We then remember "at uptime X, it was UTC
+//! time Y, in offset Z" and derive the time from the RTC-driven uptime from
+//! then on. Between syncs, accuracy is that of the 32.768 kHz crystal
+//! (±20 ppm, i.e. under 2 s/day).
 //!
 //! The time also survives resets that keep power on (reflashing, watchdog,
 //! panics): [`checkpoint`] saves it once a second in RAM that startup doesn't
 //! clear, and [`restore`] picks it up at boot, off by at most about a second
-//! until the phone next syncs. A drained battery still loses it.
+//! (plus however long a debugger halted the core) until the phone next syncs.
+//! A drained battery still loses it.
 //!
-//! Everything here is *local* time, as sent by the phone; nothing on the
-//! watch needs UTC yet.
-//!
-//! TODO: keep the UTC offset (Local Time Information) once something needs
-//! it, e.g. to handle DST changes between syncs.
+//! TODO: daylight-saving changes between syncs keep the old offset until the
+//! phone next connects (which it normally does within minutes).
 
 use core::cell::Cell;
 
@@ -24,7 +23,7 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Instant;
 
-/// A local calendar date and time.
+/// A calendar date and time (local, wherever it's used for display).
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct DateTime {
     pub year: u16,
@@ -41,20 +40,16 @@ impl DateTime {
     /// 0 = Monday … 6 = Sunday.
     pub fn weekday(&self) -> u8 {
         // 1970-01-01 was a Thursday (3, with Monday = 0).
-        (days_from_civil(self.year.into(), self.month.into(), self.day.into()) + 3).rem_euclid(7)
-            as u8
+        (self.days_since_epoch() + 3).rem_euclid(7) as u8
     }
 
     pub fn weekday_name(&self) -> &'static str {
         ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"][usize::from(self.weekday())]
     }
 
-    fn to_epoch_seconds(self) -> i64 {
-        let days = days_from_civil(self.year.into(), self.month.into(), self.day.into());
-        days * 86_400
-            + i64::from(self.hour) * 3600
-            + i64::from(self.minute) * 60
-            + i64::from(self.second)
+    /// Days since 1970-01-01 of this date.
+    pub fn days_since_epoch(&self) -> i64 {
+        days_from_civil(self.year.into(), self.month.into(), self.day.into())
     }
 
     fn from_epoch_seconds(seconds: i64) -> Self {
@@ -71,108 +66,76 @@ impl DateTime {
     }
 }
 
-/// When the clock was last set: the uptime then, and the local time (as
-/// seconds since 1970-01-01T00:00 local) at that uptime.
-static SYNC: Mutex<CriticalSectionRawMutex, Cell<Option<(Instant, i64)>>> =
-    Mutex::new(Cell::new(None));
+#[derive(Clone, Copy)]
+struct Sync {
+    /// Uptime when the time was set.
+    at: Instant,
+    /// Seconds since 1970-01-01T00:00Z at `at`.
+    utc_seconds: i64,
+    offset_minutes: i16,
+}
 
-pub fn set(now: DateTime) {
+static SYNC: Mutex<CriticalSectionRawMutex, Cell<Option<Sync>>> = Mutex::new(Cell::new(None));
+
+pub fn set(utc_seconds: i64, offset_minutes: i16) {
     // How far off we were shows crystal drift between syncs, and how much a
     // reset (e.g. a reflash, which halts the core) set us back.
-    if let Some(before) = self::now() {
-        let error = before.to_epoch_seconds() - now.to_epoch_seconds();
-        defmt::info!("clock: was off by {} s", error);
+    if let Some(before) = now_utc_seconds() {
+        defmt::info!("clock: was off by {} s", before - utc_seconds);
     }
-    SYNC.lock(|sync| sync.set(Some((Instant::now(), now.to_epoch_seconds()))));
+    let sync = Sync {
+        at: Instant::now(),
+        utc_seconds,
+        offset_minutes,
+    };
+    SYNC.lock(|cell| cell.set(Some(sync)));
+}
+
+fn now_utc_seconds() -> Option<i64> {
+    let sync = SYNC.lock(Cell::get)?;
+    Some(sync.utc_seconds + (Instant::now() - sync.at).as_secs() as i64)
 }
 
 /// The current local time, if the phone has told us yet.
 pub fn now() -> Option<DateTime> {
-    let (synced_at, epoch_seconds) = SYNC.lock(Cell::get)?;
-    let elapsed = (Instant::now() - synced_at).as_secs() as i64;
-    Some(DateTime::from_epoch_seconds(epoch_seconds + elapsed))
+    let offset = utc_offset_minutes()?;
+    Some(DateTime::from_epoch_seconds(
+        now_utc_seconds()? + i64::from(offset) * 60,
+    ))
 }
 
-// ==============================================================================
-// Daylight
-// ==============================================================================
-//
-// The theme follows the sun: dark themes from sunset to sunrise. The watch
-// can't know where it is, but Gadgetbridge forwards weather from a weather
-// app, and that includes today's sunrise and sunset in local time (see
-// `ble`). They're also saved in flash; they drift only minutes per day, so
-// old values are fine until the next weather update.
-
-/// Assumed until the phone has ever sent weather.
-const DEFAULT_SUN: Sun = Sun {
-    sunrise: 7 * 60,
-    sunset: 19 * 60,
-};
-
-/// Sunrise and sunset, in minutes after local midnight.
-#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct Sun {
-    pub sunrise: u16,
-    pub sunset: u16,
-}
-
-impl Sun {
-    pub fn to_bytes(self) -> [u8; 4] {
-        let [a, b] = self.sunrise.to_le_bytes();
-        let [c, d] = self.sunset.to_le_bytes();
-        [a, b, c, d]
-    }
-
-    /// `None` unless both times are within a day and sunrise comes first.
-    /// (Polar day and night don't fit this model; we'd rather keep the
-    /// previous values than flip themes on nonsense.)
-    pub fn from_bytes([a, b, c, d]: [u8; 4]) -> Option<Self> {
-        let sun = Self {
-            sunrise: u16::from_le_bytes([a, b]),
-            sunset: u16::from_le_bytes([c, d]),
-        };
-        (sun.sunrise < sun.sunset && sun.sunset < 24 * 60).then_some(sun)
-    }
-}
-
-static SUN: Mutex<CriticalSectionRawMutex, Cell<Option<Sun>>> = Mutex::new(Cell::new(None));
-
-pub fn set_sun(sun: Sun) {
-    SUN.lock(|cell| cell.set(Some(sun)));
-}
-
-pub fn sun() -> Sun {
-    SUN.lock(Cell::get).unwrap_or(DEFAULT_SUN)
-}
-
-/// Whether it's currently between sunrise and sunset. Without wall-clock
-/// time, it's treated as night (the dark theme is the safe default when the
-/// screen might be lit in a dark room).
-pub fn is_daytime() -> bool {
-    let Some(now) = now() else { return false };
-    let minute = u16::from(now.hour) * 60 + u16::from(now.minute);
-    let sun = sun();
-    (sun.sunrise..sun.sunset).contains(&minute)
+/// The phone's UTC offset at the last sync.
+pub fn utc_offset_minutes() -> Option<i16> {
+    SYNC.lock(Cell::get).map(|sync| sync.offset_minutes)
 }
 
 // ==============================================================================
 // Surviving resets
 // ==============================================================================
 
-/// The last known local time, in the last 32 bytes of RAM, which `memory.x`
-/// keeps out of the linker's hands. Nothing initialises it at startup, so it
+/// The last known time, in the last 32 bytes of RAM, which `memory.x` keeps
+/// out of the linker's hands. Nothing initialises it at startup, so it
 /// survives any reset that keeps power on, and its fixed address means even a
 /// different firmware build (after reflashing) finds it.
 #[repr(C)]
 struct Retained {
     magic: u32,
-    epoch_seconds: i64,
-    /// `epoch_seconds` inverted, so random power-on RAM contents can't pass
-    /// for a valid time.
+    offset_minutes: i16,
+    utc_seconds: i64,
+    /// `utc_seconds` and `offset_minutes` mixed and inverted, so random
+    /// power-on RAM contents can't pass for a valid time.
     check: i64,
 }
 
-const RETAINED_MAGIC: u32 = 0x7572_434B; // "urCK"
+impl Retained {
+    fn check(utc_seconds: i64, offset_minutes: i16) -> i64 {
+        !(utc_seconds ^ (i64::from(offset_minutes) << 48))
+    }
+}
+
+/// Changed whenever `Retained`'s layout does, so a new build never misreads
+/// an old build's checkpoint.
+const RETAINED_MAGIC: u32 = 0x7572_4332; // "urC2"
 
 /// Must match the `RETAINED` region in `memory.x`.
 const RETAINED_ADDRESS: usize = 0x2000_FFE0;
@@ -185,18 +148,21 @@ fn retained() -> *mut Retained {
 /// Saves the current time for [`restore`]. Call about once a second; the
 /// interval bounds how far behind a restored clock can be.
 pub fn checkpoint() {
-    let Some(now) = now() else { return };
-    let epoch_seconds = now.to_epoch_seconds();
-    let retained_value = Retained {
+    let Some(sync) = SYNC.lock(Cell::get) else {
+        return;
+    };
+    let utc_seconds = now_utc_seconds().expect("synced, checked above");
+    let value = Retained {
         magic: RETAINED_MAGIC,
-        epoch_seconds,
-        check: !epoch_seconds,
+        offset_minutes: sync.offset_minutes,
+        utc_seconds,
+        check: Retained::check(utc_seconds, sync.offset_minutes),
     };
     // SAFETY: The address is reserved RAM (see `memory.x`), suitably
     // aligned, and only ever accessed from the UI loop (checkpoint) and once
     // at boot before any task runs (restore); never concurrently. Volatile so
     // the write isn't optimised away as dead.
-    unsafe { retained().write_volatile(retained_value) };
+    unsafe { retained().write_volatile(value) };
 }
 
 /// Resumes the clock from the last [`checkpoint`] before a reset, if there
@@ -205,16 +171,17 @@ pub fn restore() {
     // SAFETY: See `checkpoint`. Any bit pattern is a valid `Retained`
     // (plain integers), so reading uninitialised-looking RAM is fine; the
     // magic and check fields tell us whether it's real.
-    let retained = unsafe { retained().read_volatile() };
-    if retained.magic != RETAINED_MAGIC || retained.check != !retained.epoch_seconds {
+    let saved = unsafe { retained().read_volatile() };
+    if saved.magic != RETAINED_MAGIC
+        || saved.check != Retained::check(saved.utc_seconds, saved.offset_minutes)
+    {
         return;
     }
     // The checkpoint was up to a second before the reset, and booting takes
     // a fraction of a second more; splitting the difference keeps the error
     // within about half a second either way.
-    let time = DateTime::from_epoch_seconds(retained.epoch_seconds + 1);
-    defmt::info!("clock: resumed at {} after reset", time);
-    set(time);
+    set(saved.utc_seconds + 1, saved.offset_minutes);
+    defmt::info!("clock: resumed after reset");
 }
 
 // ==============================================================================

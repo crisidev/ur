@@ -1,0 +1,328 @@
+//! Gadgetbridge's Bangle.js protocol: what we speak over Bluetooth.
+//!
+//! We present ourselves to Gadgetbridge as a Bangle.js (an Espruino watch),
+//! because its Bangle.js support has everything we want: notifications with
+//! the app and sender as separate fields, call start *and* end, music, phone
+//! GPS forwarding, and activity/sleep samples that land in Gadgetbridge's
+//! database (and from there in Health Connect). We only ever implemented what
+//! Gadgetbridge's driver (`BangleJSDeviceSupport.java`) sends and expects.
+//!
+//! The transport is the Nordic UART service: a byte stream each way.
+//!
+//! **Phone → watch** is lines of text, each starting with `\x10` (Espruino's
+//! "don't echo this" marker) and ending in `\n`, in ISO-8859-1. Two shapes:
+//!
+//! ```text
+//! \x10GB({"t":"notify","id":17,"src":"Signal","sender":"Alice",…})
+//! \x10setTime(1762436800);E.setTimeZone(1.0);(s=>s&&…)(…)
+//! ```
+//!
+//! The second is JavaScript for a real Bangle.js; we recognise its shape and
+//! pull out the UTC timestamp and the UTC offset (hours, possibly fractional).
+//!
+//! **Watch → phone** is lines of plain JSON ending in `\r\n`. (Gadgetbridge
+//! drops the character before each `\n`, expecting a `\r`.)
+
+use core::fmt::Write as _;
+
+use defmt::{Format, debug, warn};
+use heapless::String;
+
+// ==============================================================================
+// Incoming: line assembly
+// ==============================================================================
+
+/// Longest line we accept. Gadgetbridge caps notification fields at 80
+/// (title, subject), 40 (sender), and 400 (body) characters, so a notification
+/// line stays under ~700 bytes. Longer lines are dropped whole.
+const MAX_LINE: usize = 1024;
+
+/// Reassembles lines from the arbitrary chunks Gadgetbridge writes (it splits
+/// lines at its idea of the MTU).
+pub struct LineBuffer {
+    buffer: heapless::Vec<u8, MAX_LINE>,
+    /// Set when the current line outgrew the buffer: skip to its end.
+    overflowed: bool,
+}
+
+impl LineBuffer {
+    pub const fn new() -> Self {
+        Self {
+            buffer: heapless::Vec::new(),
+            overflowed: false,
+        }
+    }
+
+    /// Adds received bytes, calling `on_line` for each completed line
+    /// (without the leading `\x10` and trailing `\r\n`).
+    pub fn push(&mut self, data: &[u8], mut on_line: impl FnMut(&[u8])) {
+        for &byte in data {
+            if byte == b'\n' {
+                if !self.overflowed {
+                    let mut line = &self.buffer[..];
+                    while let [b'\x10', rest @ ..] = line {
+                        line = rest;
+                    }
+                    if let [rest @ .., b'\r'] = line {
+                        line = rest;
+                    }
+                    on_line(line);
+                } else {
+                    warn!("gb: dropped a line longer than {} bytes", MAX_LINE);
+                }
+                self.buffer.clear();
+                self.overflowed = false;
+            } else if self.buffer.push(byte).is_err() {
+                self.overflowed = true;
+            }
+        }
+    }
+}
+
+// ==============================================================================
+// Incoming: messages
+// ==============================================================================
+
+/// The messages we act on. Everything else Gadgetbridge sends (calendar,
+/// weather, navigation, …) is logged and ignored.
+pub enum Incoming<'a> {
+    /// From `setTime(…);E.setTimeZone(…)`.
+    SetTime {
+        utc_seconds: i64,
+        offset_minutes: i16,
+    },
+    /// `{"t":"gps",…}`: a location from the phone.
+    Gps { latitude: f64, longitude: f64 },
+    /// `{"t":"is_gps_active"}`: Gadgetbridge asking whether we want GPS.
+    IsGpsActive,
+    /// `{"t":"actfetch","ts":…}`: send activity samples since `ts`.
+    ActivityFetch,
+    /// Anything else in `GB(…)`, for the caller to dispatch on `t` (the
+    /// object is still available to read fields from).
+    Other { kind: &'a str, object: Object<'a> },
+}
+
+/// Parses one line. `None` for lines that aren't one of the two shapes.
+pub fn parse(line: &[u8]) -> Option<Incoming<'_>> {
+    if let Some(rest) = line.strip_prefix(b"setTime(") {
+        return parse_set_time(rest);
+    }
+    let json = line.strip_prefix(b"GB(")?.strip_suffix(b")")?;
+    let object = Object(json);
+    let kind = object.get("t")?.as_raw_str()?;
+    Some(match kind {
+        "gps" => Incoming::Gps {
+            latitude: object.get("lat")?.as_f64()?,
+            longitude: object.get("lon")?.as_f64()?,
+        },
+        "is_gps_active" => Incoming::IsGpsActive,
+        "actfetch" => Incoming::ActivityFetch,
+        _ => Incoming::Other { kind, object },
+    })
+}
+
+/// `1762436800);E.setTimeZone(1.0);…` → UTC seconds and offset.
+fn parse_set_time(rest: &[u8]) -> Option<Incoming<'static>> {
+    let end = rest.iter().position(|&b| b == b')')?;
+    let utc_seconds = core::str::from_utf8(&rest[..end]).ok()?.parse().ok()?;
+    let zone = find(rest, b"E.setTimeZone(")?;
+    let zone = &rest[zone + b"E.setTimeZone(".len()..];
+    let end = zone.iter().position(|&b| b == b')')?;
+    let hours: f32 = core::str::from_utf8(&zone[..end]).ok()?.parse().ok()?;
+    // Offsets are whole quarter-hours in practice (e.g. +5:45); rounding to
+    // minutes absorbs float noise in Gadgetbridge's division.
+    let offset_minutes = libm::roundf(hours * 60.0) as i16;
+    Some(Incoming::SetTime {
+        utc_seconds,
+        offset_minutes,
+    })
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+// ==============================================================================
+// A minimal JSON reader
+// ==============================================================================
+//
+// Just enough for Gadgetbridge's flat objects: look up a top-level member by
+// key and read it as a string or number. Nested values are skipped over, not
+// interpreted. No allocation; values borrow from the line.
+
+/// A JSON object's text, from `{` to `}`.
+#[derive(Clone, Copy)]
+pub struct Object<'a>(&'a [u8]);
+
+/// One member's value, still as raw text.
+#[derive(Clone, Copy)]
+pub struct Value<'a>(&'a [u8]);
+
+impl<'a> Object<'a> {
+    pub fn get(&self, key: &str) -> Option<Value<'a>> {
+        let mut rest = self.0.strip_prefix(b"{")?;
+        loop {
+            rest = skip_whitespace(rest);
+            if rest.first() == Some(&b'}') {
+                return None;
+            }
+            let (member_key, after_key) = take_value(rest)?;
+            rest = skip_whitespace(after_key).strip_prefix(b":")?;
+            let (value, after_value) = take_value(skip_whitespace(rest))?;
+            if member_key.strip_prefix(b"\"")?.strip_suffix(b"\"")? == key.as_bytes() {
+                return Some(Value(value));
+            }
+            rest = skip_whitespace(after_value);
+            rest = rest.strip_prefix(b",").unwrap_or(rest);
+        }
+    }
+}
+
+impl<'a> Value<'a> {
+    /// The string's contents if it needs no unescaping (e.g. `"gps"`).
+    pub fn as_raw_str(&self) -> Option<&'a str> {
+        let inner = self.0.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
+        if inner.contains(&b'\\') {
+            return None;
+        }
+        core::str::from_utf8(inner).ok()
+    }
+
+    /// Decodes a string value into `out`, truncating if it doesn't fit.
+    /// Bytes are ISO-8859-1 (Gadgetbridge encodes that way; anything outside
+    /// Latin-1 already arrives as `?`).
+    pub fn decode_into<const N: usize>(&self, out: &mut String<N>) -> Option<()> {
+        let inner = self.0.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
+        let mut bytes = inner.iter();
+        while let Some(&byte) = bytes.next() {
+            let c = match byte {
+                b'\\' => match bytes.next()? {
+                    b'n' | b'r' | b't' => ' ',
+                    b'u' => {
+                        let hex: heapless::Vec<u8, 4> = bytes.by_ref().take(4).copied().collect();
+                        let code =
+                            u32::from_str_radix(core::str::from_utf8(&hex).ok()?, 16).ok()?;
+                        char::from_u32(code).unwrap_or('?')
+                    }
+                    &other => char::from(other), // \" \\ \/
+                },
+                _ => char::from(byte), // Latin-1 maps straight onto U+0000–U+00FF
+            };
+            if out.push(c).is_err() {
+                break;
+            }
+        }
+        Some(())
+    }
+
+    pub fn as_f64(&self) -> Option<f64> {
+        core::str::from_utf8(self.0).ok()?.parse().ok()
+    }
+}
+
+fn skip_whitespace(s: &[u8]) -> &[u8] {
+    let start = s
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(s.len());
+    &s[start..]
+}
+
+/// Splits one JSON value (any kind) off the front of `s`.
+fn take_value(s: &[u8]) -> Option<(&[u8], &[u8])> {
+    let end = match *s.first()? {
+        b'"' => {
+            let mut i = 1;
+            loop {
+                match *s.get(i)? {
+                    b'\\' => i += 2,
+                    b'"' => break i + 1,
+                    _ => i += 1,
+                }
+            }
+        }
+        b'{' | b'[' => {
+            // Skip to the matching bracket, minding brackets inside strings.
+            let (mut depth, mut i, mut in_string) = (0usize, 0, false);
+            loop {
+                match (*s.get(i)?, in_string) {
+                    (b'\\', true) => i += 1,
+                    (b'"', _) => in_string = !in_string,
+                    (b'{' | b'[', false) => depth += 1,
+                    (b'}' | b']', false) => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break i + 1;
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+        }
+        // Numbers, true, false, null: up to the next delimiter.
+        _ => s
+            .iter()
+            .position(|&b| matches!(b, b',' | b'}' | b']') || b.is_ascii_whitespace())
+            .unwrap_or(s.len()),
+    };
+    Some(s.split_at(end))
+}
+
+// ==============================================================================
+// Outgoing
+// ==============================================================================
+
+/// Messages from the watch to Gadgetbridge.
+#[derive(Clone, Copy, Format)]
+pub enum Outgoing {
+    /// Firmware version, shown in Gadgetbridge's device details.
+    Version,
+    /// Battery level and charging state.
+    Status {
+        percent: u8,
+        charging: bool,
+        millivolts: u32,
+    },
+    /// Ask Gadgetbridge to start (or stop) forwarding phone GPS.
+    GpsPower(bool),
+    /// Bracket an activity-sample transfer (samples come in milestone 2).
+    ActivityFetch { done: bool },
+}
+
+impl Outgoing {
+    /// Renders the message as one `\r\n`-terminated JSON line.
+    pub fn to_line(self) -> String<128> {
+        let mut line = String::new();
+        let result = match self {
+            Self::Version => write!(
+                line,
+                r#"{{"t":"ver","fw":"ur {}","hw":"PineTime"}}"#,
+                env!("CARGO_PKG_VERSION")
+            ),
+            Self::Status {
+                percent,
+                charging,
+                millivolts,
+            } => write!(
+                line,
+                r#"{{"t":"status","bat":{},"chg":{},"volt":{}.{:02}}}"#,
+                percent,
+                u8::from(charging),
+                millivolts / 1000,
+                millivolts % 1000 / 10
+            ),
+            Self::GpsPower(on) => write!(line, r#"{{"t":"gps_power","status":{}}}"#, on),
+            Self::ActivityFetch { done } => write!(
+                line,
+                r#"{{"t":"actfetch","state":"{}"}}"#,
+                if done { "end" } else { "start" }
+            ),
+        };
+        result
+            .and_then(|()| line.push_str("\r\n").map_err(|_| core::fmt::Error))
+            .expect("every message fits in 128 bytes");
+        debug!("gb: sending {}", line.as_str());
+        line
+    }
+}
