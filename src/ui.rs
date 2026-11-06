@@ -21,6 +21,7 @@ use embassy_time::{Duration, Instant};
 use crate::InputEvent;
 use crate::battery::Battery;
 use crate::canvas::{Canvas, Color, Sweep};
+use crate::clock::DateTime;
 use crate::font;
 use crate::motor::{self, Pattern};
 use crate::theme::{THEMES, Theme};
@@ -31,6 +32,10 @@ const SCREEN_TIMEOUT: Duration = Duration::from_secs(15);
 /// Everything screens may display that the UI doesn't own itself.
 pub struct Status<'a> {
     pub uptime_secs: u64,
+    /// Local wall-clock time, once the phone has set it.
+    pub local_time: Option<DateTime>,
+    /// Whether a phone is connected over Bluetooth.
+    pub connected: bool,
     pub battery: &'a Battery,
 }
 
@@ -159,12 +164,21 @@ fn render_clock(canvas: &mut Canvas, status: &Status) {
     canvas.clear(BACKGROUND);
     render_battery(canvas, status.battery);
 
-    // TODO: wall-clock time, weekday, and date once Bluetooth time sync
-    // lands (milestone 2). Until then: time since boot, placeholders, and a
-    // status-bar note saying so.
-    canvas.text(3, 3, "NO TIME", Color::TEXT_FAINT);
-    let secs = status.uptime_secs;
-    let (hours, minutes, seconds) = ((secs / 3600) % 24, (secs / 60) % 60, secs % 60);
+    // Status bar, left: Bluetooth when connected; a note if we don't know
+    // the time (in which case the clock shows time since boot).
+    if status.connected {
+        canvas.sprite(3, 2, font::BLUETOOTH_W, &font::BLUETOOTH, 1, Color::ACCENT);
+    } else if status.local_time.is_none() {
+        canvas.text(3, 3, "NO TIME", Color::TEXT_FAINT);
+    }
+
+    let (hours, minutes, seconds) = match &status.local_time {
+        Some(t) => (u64::from(t.hour), u64::from(t.minute), u64::from(t.second)),
+        None => {
+            let secs = status.uptime_secs;
+            ((secs / 3600) % 24, (secs / 60) % 60, secs % 60)
+        }
+    };
 
     // HH:MM. Each digit cell is 15 px wide with 2 px gaps; the colon gets a
     // 3 px column. That's 71 px, leaving 4 px either side (+1 for shadow).
@@ -192,7 +206,11 @@ fn render_clock(canvas: &mut Canvas, status: &Status) {
     for (digit, x) in [seconds / 10, seconds % 10].into_iter().zip([29, 41]) {
         draw_digit(canvas, x, ROW_Y, digit, 2, Color::TEXT_DIM);
     }
-    canvas.text(4, TEXT_Y, "---", Color::TEXT_DIM);
+    let weekday = status
+        .local_time
+        .as_ref()
+        .map_or("---", DateTime::weekday_name);
+    canvas.text(4, TEXT_Y, weekday, Color::TEXT_DIM);
 
     // Heart rate, right-aligned as a group: icon, 2 px gap, value.
     // TODO: real readings once the HRS3300 driver lands (milestone 6).
@@ -209,7 +227,14 @@ fn render_clock(canvas: &mut Canvas, status: &Status) {
     );
     canvas.text(x + font::HEART_W as i32 + 2, TEXT_Y, bpm, Color::TEXT);
 
-    canvas.text_centered(40, 58, "----------", Color::TEXT_DIM);
+    let mut date = heapless::String::<10>::new();
+    match &status.local_time {
+        Some(t) => {
+            write!(date, "{:04}-{:02}-{:02}", t.year, t.month, t.day).expect("exactly 10 chars")
+        }
+        None => date.push_str("----------").expect("exactly 10 chars"),
+    }
+    canvas.text_centered(40, 58, &date, Color::TEXT_DIM);
 }
 
 /// One big 5×7 digit at `scale`, with a 1 px drop shadow down and right.
@@ -248,6 +273,10 @@ fn render_battery(canvas: &mut Canvas, battery: &Battery) {
 // Info screen
 // ==============================================================================
 
+/// First value row, and the spacing between rows.
+const INFO_TOP: i32 = 13;
+const INFO_LINE: i32 = 8;
+
 fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
     canvas.clear(BACKGROUND);
     canvas.text(
@@ -275,14 +304,22 @@ fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
 
     let labels = ["BATTERY", "CHARGE", "POWER", "UPTIME"];
     for (i, (label, value)) in labels.iter().zip(&values).enumerate() {
-        let y = 16 + 9 * i as i32;
+        let y = INFO_TOP + INFO_LINE * i as i32;
         canvas.text(4, y, label, Color::TEXT_DIM);
         canvas.text_right(77, y, value, Color::TEXT);
     }
 
-    let y = 16 + 9 * labels.len() as i32;
+    let y = INFO_TOP + INFO_LINE * labels.len() as i32;
     canvas.text(4, y, "THEME", Color::TEXT_DIM);
     canvas.text_right(77, y, theme.name, Color::TEXT);
+    let y = y + INFO_LINE;
+    canvas.text(4, y, "PHONE", Color::TEXT_DIM);
+    let phone = if status.connected {
+        "CONNECTED"
+    } else {
+        "WAITING"
+    };
+    canvas.text_right(77, y, phone, Color::TEXT);
 
     canvas.text(4, 62, "TAP: TEST BUZZ", Color::TEXT_FAINT);
     canvas.text(4, 68, "HOLD: NEXT THEME", Color::TEXT_FAINT);

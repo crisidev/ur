@@ -10,6 +10,7 @@
 //! - [`motor`]: vibration patterns.
 //! - [`battery`]: battery voltage and charge state.
 //! - [`i2c`]: the shared sensor bus.
+//! - [`ble`] / [`clock`]: Bluetooth (Gadgetbridge) and the wall clock it sets.
 //!
 //! Tasks talk to the UI loop only through [`INPUT`]; the UI loop owns the
 //! display and everything shown on it.
@@ -18,7 +19,9 @@
 #![no_main]
 
 mod battery;
+mod ble;
 mod canvas;
+mod clock;
 mod display;
 mod font;
 mod i2c;
@@ -27,17 +30,21 @@ mod theme;
 mod touch;
 mod ui;
 
+use core::sync::atomic::Ordering;
+
 use defmt::{info, warn};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_nrf::gpio::{Input, Level, Output, OutputDrive, Pull};
+use embassy_nrf::interrupt::{self, InterruptExt, Priority};
 use embassy_nrf::wdt::{self, HaltConfig, Watchdog};
-use embassy_nrf::{bind_interrupts, peripherals, saadc, spim, twim};
+use embassy_nrf::{bind_interrupts, peripherals, rng, saadc, spim, twim};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Instant, Ticker, Timer};
+use nrf_sdc::mpsl;
 use static_cell::StaticCell;
 
 use {defmt_rtt as _, panic_probe as _};
@@ -52,7 +59,21 @@ bind_interrupts!(struct Irqs {
     SPI2 => spim::InterruptHandler<peripherals::SPI2>;
     TWISPI1 => twim::InterruptHandler<peripherals::TWISPI1>;
     SAADC => saadc::InterruptHandler;
+    RNG => rng::InterruptHandler<peripherals::RNG>;
+    // Bluetooth (MPSL): radio timing at priority 0, housekeeping on a SWI.
+    EGU0_SWI0 => mpsl::LowPrioInterruptHandler;
+    CLOCK_POWER => mpsl::ClockInterruptHandler;
+    RADIO => mpsl::HighPrioInterruptHandler;
+    TIMER0 => mpsl::HighPrioInterruptHandler;
+    RTC0 => mpsl::HighPrioInterruptHandler;
 });
+
+/// Priority for every interrupt of ours. MPSL needs priority 0 to itself
+/// (radio timing must never wait), and Nordic reserves 1 as well, so all
+/// application interrupts sit below. embassy-nrf drivers enable their
+/// interrupts at the hardware default of 0, so each one is lowered explicitly
+/// after the driver is created.
+const APP_PRIORITY: Priority = Priority::P2;
 
 // ==============================================================================
 // Input
@@ -108,7 +129,14 @@ impl Backlight {
 async fn main(spawner: Spawner) {
     // TODO: enable the DC/DC regulator (the PineTime has the inductor for it)
     // to roughly halve current draw; the LDO default is just the safe choice.
-    let mut p = embassy_nrf::init(Default::default());
+    let mut config = embassy_nrf::config::Config::default();
+    // The PineTime has a 32.768 kHz crystal. embassy defaults to the internal
+    // RC oscillator, which is far less accurate, and the wall clock is kept by
+    // RTC1 off this clock.
+    config.lfclk_source = embassy_nrf::config::LfclkSource::ExternalXtal;
+    config.gpiote_interrupt_priority = APP_PRIORITY;
+    config.time_interrupt_priority = APP_PRIORITY;
+    let mut p = embassy_nrf::init(config);
     info!("ur booting");
 
     // ==========================================================================
@@ -180,6 +208,7 @@ async fn main(spawner: Spawner) {
     let mut battery_channel = saadc::ChannelConfig::single_ended(p.P0_31);
     battery_channel.time = saadc::Time::_40US;
     let mut adc = saadc::Saadc::new(p.SAADC, Irqs, saadc::Config::default(), [battery_channel]);
+    interrupt::SAADC.set_priority(APP_PRIORITY);
     adc.calibrate().await;
 
     // ==========================================================================
@@ -200,6 +229,7 @@ async fn main(spawner: Spawner) {
         twim_config,
         TWIM_TX_BUFFER.init([0; 16]),
     );
+    interrupt::TWISPI1.set_priority(APP_PRIORITY);
     let i2c_bus = I2C_BUS.init(Mutex::new(twim));
 
     let touch_interrupt = Input::new(p.P0_28, Pull::Up);
@@ -208,6 +238,65 @@ async fn main(spawner: Spawner) {
         touch::touch_task(I2cDevice::new(i2c_bus), touch_interrupt, touch_reset)
             .expect("spawned once"),
     );
+
+    // ==========================================================================
+    // Bluetooth
+    // ==========================================================================
+
+    // MPSL (Nordic's radio scheduler) must come up before the controller. It
+    // takes over the LF clock too, so tell it the same source embassy uses.
+    let lfclk = mpsl::raw::mpsl_clock_lfclk_cfg_t {
+        source: mpsl::raw::MPSL_CLOCK_LF_SRC_XTAL as u8,
+        // Calibration intervals only apply to the RC oscillator.
+        rc_ctiv: 0,
+        rc_temp_ctiv: 0,
+        // The crystal is ±20 ppm; 50 leaves margin for temperature and ageing.
+        // Overstating it only costs a little power (wider receive windows).
+        accuracy_ppm: 50,
+        skip_wait_lfclk_started: false,
+    };
+    static MPSL: StaticCell<mpsl::MultiprotocolServiceLayer> = StaticCell::new();
+    let mpsl_peripherals =
+        mpsl::Peripherals::new(p.RTC0, p.TIMER0, p.TEMP, p.PPI_CH19, p.PPI_CH30, p.PPI_CH31);
+    let mpsl = MPSL.init(
+        mpsl::MultiprotocolServiceLayer::new(mpsl_peripherals, Irqs, lfclk)
+            .expect("MPSL initialises once, with valid clock config"),
+    );
+    spawner.spawn(ble::mpsl_task(mpsl).expect("spawned once"));
+
+    static RNG: StaticCell<rng::Rng<'static, embassy_nrf::mode::Async>> = StaticCell::new();
+    let rng = RNG.init(rng::Rng::new(p.RNG, Irqs));
+    interrupt::RNG.set_priority(APP_PRIORITY);
+
+    // The controller's memory needs depend on its configuration; `build`
+    // logs the required size if this is wrong (and fails if it's too small).
+    static SDC_MEM: StaticCell<nrf_sdc::Mem<2880>> = StaticCell::new();
+    let sdc_mem = SDC_MEM.init(nrf_sdc::Mem::new());
+    let sdc_peripherals = nrf_sdc::Peripherals::new(
+        p.PPI_CH17, p.PPI_CH18, p.PPI_CH20, p.PPI_CH21, p.PPI_CH22, p.PPI_CH23, p.PPI_CH24,
+        p.PPI_CH25, p.PPI_CH26, p.PPI_CH27, p.PPI_CH28, p.PPI_CH29,
+    );
+    let packet_size =
+        <trouble_host::prelude::DefaultPacketPool as trouble_host::PacketPool>::MTU as u16;
+    let controller = nrf_sdc::Builder::new()
+        .and_then(|b| b.support_adv().support_peripheral().peripheral_count(1))
+        // Data length extension, so 251-byte packets go out as one radio
+        // packet instead of ten 27-byte ones.
+        .map(|b| b.support_dle_peripheral())
+        .and_then(|b| b.buffer_cfg(packet_size, packet_size, 3, 3))
+        .and_then(|b| b.build(sdc_peripherals, rng, mpsl, sdc_mem))
+        .expect("controller configuration is valid and its memory is large enough");
+
+    // A stable address, so the phone recognises us after a reboot. FICR holds
+    // a factory-random 48-bit address per chip; static random addresses need
+    // the top two bits set.
+    let ficr = embassy_nrf::pac::FICR;
+    let (lo, hi) = (ficr.deviceaddr(0).read(), ficr.deviceaddr(1).read());
+    let mut address = [0u8; 6];
+    address[..4].copy_from_slice(&lo.to_le_bytes());
+    address[4..].copy_from_slice(&hi.to_le_bytes()[..2]);
+    address[5] |= 0xC0;
+    spawner.spawn(ble::host_task(controller, address).expect("spawned once"));
 
     // ==========================================================================
     // Display
@@ -223,6 +312,7 @@ async fn main(spawner: Spawner) {
     // MISO is wired (for the flash), but the LCD is write-only, so leave it
     // unconnected rather than claiming a pin we never read.
     let spi = spim::Spim::new_txonly(p.SPI2, Irqs, p.P0_02, p.P0_03, spi_config);
+    interrupt::SPI2.set_priority(APP_PRIORITY);
     let lcd_cs = Output::new(p.P0_25, Level::High, OutputDrive::Standard);
     let lcd_dc = Output::new(p.P0_18, Level::Low, OutputDrive::Standard);
     let lcd_reset = Output::new(p.P0_26, Level::High, OutputDrive::Standard);
@@ -255,6 +345,7 @@ async fn main(spawner: Spawner) {
         let mut samples = [0i16; 1];
         adc.sample(&mut samples).await;
         battery.update(samples[0], charging.is_low(), power_present.is_low());
+        ble::BATTERY_PERCENT.store(battery.percent() as u8, Ordering::Relaxed);
 
         // Apply screen power changes. Waking renders before the backlight
         // comes on, so the old frame never flashes up.
@@ -264,6 +355,8 @@ async fn main(spawner: Spawner) {
             }
             let status = Status {
                 uptime_secs: now.as_secs(),
+                local_time: clock::now(),
+                connected: ble::CONNECTED.load(Ordering::Relaxed),
                 battery: &battery,
             };
             canvas.set_theme(app.theme());
