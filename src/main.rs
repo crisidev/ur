@@ -11,6 +11,7 @@
 //! - [`battery`]: battery voltage and charge state.
 //! - [`i2c`]: the shared sensor bus.
 //! - [`ble`] / [`clock`]: Bluetooth (Gadgetbridge) and the wall clock it sets.
+//! - [`storage`]: settings and Bluetooth bonds in flash.
 //!
 //! Tasks talk to the UI loop only through [`INPUT`]; the UI loop owns the
 //! display and everything shown on it.
@@ -26,10 +27,12 @@ mod display;
 mod font;
 mod i2c;
 mod motor;
+mod storage;
 mod theme;
 mod touch;
 mod ui;
 
+use core::cell::Cell;
 use core::sync::atomic::Ordering;
 
 use defmt::{info, warn};
@@ -83,6 +86,9 @@ const APP_PRIORITY: Priority = Priority::P2;
 pub enum InputEvent {
     Button,
     Touch(Touch),
+    /// Something needs the user to look (e.g. a pairing passkey): wake the
+    /// screen if it's off, and redraw.
+    Attention,
 }
 
 /// Every user input, in order, for the UI loop.
@@ -138,6 +144,7 @@ async fn main(spawner: Spawner) {
     config.time_interrupt_priority = APP_PRIORITY;
     let mut p = embassy_nrf::init(config);
     info!("ur booting");
+    clock::restore();
 
     // ==========================================================================
     // Watchdog
@@ -258,11 +265,19 @@ async fn main(spawner: Spawner) {
     static MPSL: StaticCell<mpsl::MultiprotocolServiceLayer> = StaticCell::new();
     let mpsl_peripherals =
         mpsl::Peripherals::new(p.RTC0, p.TIMER0, p.TEMP, p.PPI_CH19, p.PPI_CH30, p.PPI_CH31);
+    // One timeslot session: MPSL's flash driver (used by `storage`) books
+    // radio-free time slots for erases and writes, and fails with ENOMEM
+    // without session memory to do so.
+    static MPSL_SESSIONS: StaticCell<mpsl::SessionMem<1>> = StaticCell::new();
+    let sessions = MPSL_SESSIONS.init(mpsl::SessionMem::new());
     let mpsl = MPSL.init(
-        mpsl::MultiprotocolServiceLayer::new(mpsl_peripherals, Irqs, lfclk)
+        mpsl::MultiprotocolServiceLayer::with_timeslots(mpsl_peripherals, Irqs, lfclk, sessions)
             .expect("MPSL initialises once, with valid clock config"),
     );
     spawner.spawn(ble::mpsl_task(mpsl).expect("spawned once"));
+    // Flash writes go through MPSL so they don't disturb the radio; see
+    // `storage`.
+    storage::init(mpsl::Flash::take(mpsl, p.NVMC));
 
     static RNG: StaticCell<rng::Rng<'static, embassy_nrf::mode::Async>> = StaticCell::new();
     let rng = RNG.init(rng::Rng::new(p.RNG, Irqs));
@@ -330,7 +345,10 @@ async fn main(spawner: Spawner) {
     static CANVAS: StaticCell<Canvas> = StaticCell::new();
     let canvas = CANVAS.init(Canvas::new());
     let mut battery = Battery::new();
-    let mut app = App::new(Instant::now());
+    let saved_theme = storage::load::<1>(storage::key::THEME)
+        .await
+        .map(|[theme]| theme);
+    let mut app = App::new(Instant::now(), saved_theme.unwrap_or(0));
     // Start "asleep" so the first pass goes through the wake path: render the
     // first frame, then turn the backlight on. (Waking an already-awake
     // ST7789 is harmless.)
@@ -357,6 +375,7 @@ async fn main(spawner: Spawner) {
                 uptime_secs: now.as_secs(),
                 local_time: clock::now(),
                 connected: ble::CONNECTED.load(Ordering::Relaxed),
+                passkey: ble::PASSKEY.lock(Cell::get),
                 battery: &battery,
             };
             canvas.set_theme(app.theme());
@@ -383,12 +402,19 @@ async fn main(spawner: Spawner) {
         if let Some(watchdog) = &mut watchdog {
             watchdog.pet();
         }
+        clock::checkpoint();
 
         match select(ticker.next(), INPUT.receive()).await {
-            Either::First(()) => app.on_tick(Instant::now()),
+            Either::First(()) => {
+                app.on_tick(Instant::now(), ble::PASSKEY.lock(Cell::get).is_some())
+            }
             Either::Second(event) => {
                 info!("input: {}", event);
+                let theme = app.theme_index();
                 app.on_input(event, Instant::now());
+                if app.theme_index() != theme {
+                    storage::save(storage::key::THEME, &[app.theme_index()]).await;
+                }
             }
         }
     }

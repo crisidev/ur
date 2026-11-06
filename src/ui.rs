@@ -36,6 +36,8 @@ pub struct Status<'a> {
     pub local_time: Option<DateTime>,
     /// Whether a phone is connected over Bluetooth.
     pub connected: bool,
+    /// While pairing: the passkey to type on the phone.
+    pub passkey: Option<u32>,
     pub battery: &'a Battery,
 }
 
@@ -71,18 +73,25 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(now: Instant) -> Self {
+    /// `theme` is an index into [`THEMES`], e.g. as saved from a previous
+    /// run; out-of-range values (a theme since removed) fall back to the first.
+    pub fn new(now: Instant, theme: u8) -> Self {
         Self {
             screen: Screen::Clock,
             awake: true,
             last_input: now,
             transition: None,
-            theme: 0,
+            theme: usize::from(theme) % THEMES.len(),
         }
     }
 
     pub fn theme(&self) -> &'static Theme {
         &THEMES[self.theme]
+    }
+
+    /// For persisting the theme choice.
+    pub fn theme_index(&self) -> u8 {
+        self.theme as u8
     }
 
     /// The transition to show the next frame with, if any.
@@ -108,6 +117,8 @@ impl App {
         }
 
         match event {
+            // Only ever a reason to wake up, handled above.
+            InputEvent::Attention => {}
             InputEvent::Button => {
                 if self.screen == Screen::Clock {
                     self.awake = false;
@@ -131,13 +142,23 @@ impl App {
         }
     }
 
-    pub fn on_tick(&mut self, now: Instant) {
+    /// `keep_awake` holds the screen on regardless of input, e.g. while a
+    /// pairing passkey is showing and the user is typing it on the phone.
+    pub fn on_tick(&mut self, now: Instant, keep_awake: bool) {
+        if keep_awake {
+            self.last_input = now;
+        }
         if self.awake && now - self.last_input >= SCREEN_TIMEOUT {
             self.awake = false;
         }
     }
 
     pub fn render(&self, canvas: &mut Canvas, status: &Status) {
+        // Pairing takes over the screen until it's done, whatever was showing.
+        if let Some(passkey) = status.passkey {
+            render_pairing(canvas, passkey);
+            return;
+        }
         match self.screen {
             Screen::Clock => render_clock(canvas, status),
             Screen::Info => render_info(canvas, status, self.theme()),
@@ -324,4 +345,27 @@ fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
     canvas.text(4, 62, "TAP: TEST BUZZ", Color::TEXT_FAINT);
     canvas.text(4, 68, "HOLD: NEXT THEME", Color::TEXT_FAINT);
     canvas.text(4, 74, "SWIPE: CLOCK", Color::TEXT_FAINT);
+}
+
+// ==============================================================================
+// Pairing
+// ==============================================================================
+
+/// The six-digit passkey, big enough to read at a glance while typing it on
+/// the phone.
+fn render_pairing(canvas: &mut Canvas, passkey: u32) {
+    canvas.clear(BACKGROUND);
+    canvas.text_centered(40, 12, "PAIRING", Color::ACCENT);
+    canvas.text_centered(40, 22, "ENTER ON PHONE:", Color::TEXT_DIM);
+
+    // Six 2× digits (10 px) with 2 px gaps: 70 px, centred.
+    let mut digits = [0u64; 6];
+    let mut rest = u64::from(passkey);
+    for digit in digits.iter_mut().rev() {
+        *digit = rest % 10;
+        rest /= 10;
+    }
+    for (i, &digit) in digits.iter().enumerate() {
+        draw_digit(canvas, 5 + 12 * i as i32, 36, digit, 2, Color::TEXT);
+    }
 }

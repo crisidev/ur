@@ -7,6 +7,11 @@
 //! uptime from then on. Between syncs, accuracy is that of the 32.768 kHz
 //! crystal (±20 ppm, i.e. under 2 s/day).
 //!
+//! The time also survives resets that keep power on (reflashing, watchdog,
+//! panics): [`checkpoint`] saves it once a second in RAM that startup doesn't
+//! clear, and [`restore`] picks it up at boot, off by at most about a second
+//! until the phone next syncs. A drained battery still loses it.
+//!
 //! Everything here is *local* time, as sent by the phone; nothing on the
 //! watch needs UTC yet.
 //!
@@ -14,6 +19,7 @@
 //! it, e.g. to handle DST changes between syncs.
 
 use core::cell::Cell;
+use core::mem::MaybeUninit;
 
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -72,6 +78,12 @@ static SYNC: Mutex<CriticalSectionRawMutex, Cell<Option<(Instant, i64)>>> =
     Mutex::new(Cell::new(None));
 
 pub fn set(now: DateTime) {
+    // How far off we were shows crystal drift between syncs, and how much a
+    // reset (e.g. a reflash, which halts the core) set us back.
+    if let Some(before) = self::now() {
+        let error = before.to_epoch_seconds() - now.to_epoch_seconds();
+        defmt::info!("clock: was off by {} s", error);
+    }
     SYNC.lock(|sync| sync.set(Some((Instant::now(), now.to_epoch_seconds()))));
 }
 
@@ -80,6 +92,64 @@ pub fn now() -> Option<DateTime> {
     let (synced_at, epoch_seconds) = SYNC.lock(Cell::get)?;
     let elapsed = (Instant::now() - synced_at).as_secs() as i64;
     Some(DateTime::from_epoch_seconds(epoch_seconds + elapsed))
+}
+
+// ==============================================================================
+// Surviving resets
+// ==============================================================================
+
+/// The last known local time, in RAM that cortex-m-rt leaves alone at
+/// startup (`.uninit`), so it survives any reset that keeps power on.
+#[repr(C)]
+struct Retained {
+    magic: u32,
+    epoch_seconds: i64,
+    /// `epoch_seconds` inverted, so random power-on RAM contents can't pass
+    /// for a valid time.
+    check: i64,
+}
+
+const RETAINED_MAGIC: u32 = 0x7572_434B; // "urCK"
+
+#[unsafe(link_section = ".uninit.ur_clock")]
+static mut RETAINED: MaybeUninit<Retained> = MaybeUninit::uninit();
+
+/// Saves the current time for [`restore`]. Call about once a second; the
+/// interval bounds how far behind a restored clock can be.
+pub fn checkpoint() {
+    let Some(now) = now() else { return };
+    let epoch_seconds = now.to_epoch_seconds();
+    let retained = Retained {
+        magic: RETAINED_MAGIC,
+        epoch_seconds,
+        check: !epoch_seconds,
+    };
+    // SAFETY: Only ever accessed from the UI loop (checkpoint) and once at
+    // boot before any task runs (restore); never concurrently. Volatile so
+    // the write isn't optimised away as dead.
+    unsafe {
+        (&raw mut RETAINED)
+            .cast::<Retained>()
+            .write_volatile(retained)
+    };
+}
+
+/// Resumes the clock from the last [`checkpoint`] before a reset, if there
+/// was one. Call once, early at boot.
+pub fn restore() {
+    // SAFETY: See `checkpoint`. Any bit pattern is a valid `Retained`
+    // (plain integers), so reading uninitialised-looking RAM is fine; the
+    // magic and check fields tell us whether it's real.
+    let retained = unsafe { (&raw const RETAINED).cast::<Retained>().read_volatile() };
+    if retained.magic != RETAINED_MAGIC || retained.check != !retained.epoch_seconds {
+        return;
+    }
+    // The checkpoint was up to a second before the reset, and booting takes
+    // a fraction of a second more; splitting the difference keeps the error
+    // within about half a second either way.
+    let time = DateTime::from_epoch_seconds(retained.epoch_seconds + 1);
+    defmt::info!("clock: resumed at {} after reset", time);
+    set(time);
 }
 
 // ==============================================================================
