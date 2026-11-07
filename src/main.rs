@@ -10,6 +10,8 @@
 //! - [`motor`]: vibration patterns.
 //! - [`battery`]: battery voltage and charge state.
 //! - [`activity`]: steps and movement from the accelerometer.
+//! - [`heart`] / [`ppg`]: heart rate from the optical sensor, and the
+//!   signal processing behind it.
 //! - [`i2c`]: the shared sensor bus.
 //! - [`ble`] / [`gb`]: Bluetooth, speaking Gadgetbridge's Bangle.js protocol.
 //! - [`clock`] / [`geo`]: wall-clock time and location, both from the phone,
@@ -31,8 +33,10 @@ mod display;
 mod font;
 mod gb;
 mod geo;
+mod heart;
 mod i2c;
 mod motor;
+mod ppg;
 mod storage;
 mod theme;
 mod touch;
@@ -257,6 +261,7 @@ async fn main(spawner: Spawner) {
             .expect("spawned once"),
     );
     spawner.spawn(activity::activity_task(I2cDevice::new(i2c_bus)).expect("spawned once"));
+    spawner.spawn(heart::heart_task(I2cDevice::new(i2c_bus)).expect("spawned once"));
 
     // ==========================================================================
     // Bluetooth
@@ -400,6 +405,7 @@ async fn main(spawner: Spawner) {
                 passkey: ble::PASSKEY.lock(Cell::get),
                 sun: geo::sun(),
                 steps: activity::steps_today(),
+                heart_rate: heart::current(now),
                 battery: &battery,
             };
             app.set_daytime(geo::is_daytime());
@@ -425,6 +431,7 @@ async fn main(spawner: Spawner) {
             display.sleep().await;
             panel_awake = false;
         }
+        heart::set_watching(app.showing_clock());
         if let Some(watchdog) = &mut watchdog {
             watchdog.pet();
         }

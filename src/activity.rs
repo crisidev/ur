@@ -16,9 +16,12 @@
 //!
 //! Both are kept per minute for the last day ([`History`]), which is what
 //! Gadgetbridge fetches as activity samples, and today's step total is
-//! shown on the clock face.
+//! shown on the clock face. The history also holds each minute's heart
+//! rate, recorded by [`crate::heart`], and the heart-rate measurement asks
+//! [`movement`] whether the wrist is still enough to trust.
 
 use core::cell::RefCell;
+use core::sync::atomic::{AtomicU16, Ordering};
 
 use defmt::{info, warn};
 use embassy_sync::blocking_mutex::Mutex;
@@ -238,6 +241,9 @@ pub struct Sample {
     /// Average change of the acceleration vector between samples, in
     /// Bangle.js units (8192 per g), since that's what Gadgetbridge expects.
     pub movement: u16,
+    /// The heart rate measured during the minute, or 0 if none was (as in
+    /// Gadgetbridge, which treats 0 as "not measured").
+    pub heart_rate: u8,
 }
 
 /// A ring of per-minute samples, indexed by UTC minute. Minutes the watch
@@ -254,6 +260,7 @@ impl History {
             samples: [Sample {
                 steps: 0,
                 movement: 0,
+                heart_rate: 0,
             }; HISTORY_MINUTES],
             newest: None,
         }
@@ -284,7 +291,7 @@ impl History {
         let oldest = newest.saturating_sub(HISTORY_MINUTES as i64 - 1).max(since);
         (oldest..=newest)
             .map(|m| (m, self.samples[Self::slot(m)]))
-            .filter(|(_, s)| s.steps > 0 || s.movement > 0)
+            .filter(|(_, s)| s.steps > 0 || s.movement > 0 || s.heart_rate > 0)
     }
 }
 
@@ -298,6 +305,26 @@ pub static HISTORY: Mutex<CriticalSectionRawMutex, RefCell<History>> =
     Mutex::new(RefCell::new(History::new()));
 static TODAY: Mutex<CriticalSectionRawMutex, RefCell<Option<Today>>> =
     Mutex::new(RefCell::new(None));
+
+/// Records a heart-rate reading in the current minute's sample (if the
+/// time is known). A later reading in the same minute replaces it.
+///
+/// TODO: average the readings within a minute, for the continuous
+/// measurement while the clock face is showing.
+pub fn record_heart_rate(bpm: u8) {
+    let Some(utc_minute) = clock::now_utc_seconds().map(|s| s.div_euclid(60)) else {
+        return;
+    };
+    HISTORY.lock(|history| history.borrow_mut().at(utc_minute).heart_rate = bpm);
+}
+
+/// How much the wrist moved over the last few seconds (one poll of the
+/// FIFO), in the same units as [`Sample::movement`].
+pub fn movement() -> u16 {
+    MOVEMENT.load(Ordering::Relaxed)
+}
+
+static MOVEMENT: AtomicU16 = AtomicU16::new(0);
 
 /// Today's steps, for the clock face.
 pub fn steps_today() -> Option<u32> {
@@ -380,6 +407,9 @@ pub async fn activity_task(i2c: Device) {
         );
 
         add_steps_today(new_steps);
+        // Counts (1024 per g) to Bangle.js units (8192 per g).
+        let recent = (moved * 8 / u64::from(samples.max(1))).min(u64::from(u16::MAX)) as u16;
+        MOVEMENT.store(recent, Ordering::Relaxed);
 
         // Per-minute history needs wall-clock time.
         let Some(utc_minute) = clock::now_utc_seconds().map(|s| s.div_euclid(60)) else {

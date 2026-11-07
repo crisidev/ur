@@ -483,6 +483,7 @@ async fn send_activity(
                 utc_minute,
                 steps: sample.steps,
                 movement: sample.movement,
+                heart_rate: sample.heart_rate,
             };
             send(server, conn, message).await;
             sent += 1;

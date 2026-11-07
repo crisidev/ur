@@ -356,6 +356,9 @@ pub enum Outgoing {
         utc_minute: i64,
         steps: u16,
         movement: u16,
+        /// 0 if not measured, which is also what Gadgetbridge assumes when
+        /// `hrm` is missing.
+        heart_rate: u8,
     },
     /// Answer an incoming call.
     Call(CallAction),
@@ -410,12 +413,14 @@ impl Outgoing {
                 utc_minute,
                 steps,
                 movement,
+                heart_rate,
             } => write!(
                 line,
-                r#"{{"t":"act","ts":{},"stp":{},"mov":{}}}"#,
+                r#"{{"t":"act","ts":{},"stp":{},"mov":{},"hrm":{}}}"#,
                 utc_minute * 60_000,
                 steps,
-                movement
+                movement,
+                heart_rate
             ),
             // Gadgetbridge upper-cases these and looks them up in its call
             // and media event enums.
