@@ -65,6 +65,8 @@ pub struct Status<'a> {
     pub sun: Option<Sun>,
     /// Today's steps (once the time is known).
     pub steps: Option<u32>,
+    /// The latest heart rate, unless there's none recent enough to show.
+    pub heart_rate: Option<u8>,
     pub battery: &'a Battery,
 }
 
@@ -193,6 +195,13 @@ impl App {
             call: None,
             music: None,
         }
+    }
+
+    /// Whether the clock face is on screen for someone to read: awake, and
+    /// not just showing a notification or a call. That's when a fresh heart
+    /// rate is worth measuring for.
+    pub fn showing_clock(&self) -> bool {
+        self.awake && self.screen == Screen::Clock && !self.brief_wake && self.call.is_none()
     }
 
     pub fn set_daytime(&mut self, daytime: bool) {
@@ -545,8 +554,12 @@ fn render_clock(canvas: &mut Canvas, status: &Status) {
     canvas.text(4, TEXT_Y, weekday, Color::TEXT_DIM);
 
     // Heart rate, right-aligned as a group: icon, 2 px gap, value.
-    // TODO: real readings once the HRS3300 driver lands (milestone 6).
-    let bpm = "--";
+    let mut bpm = heapless::String::<3>::new();
+    match status.heart_rate {
+        Some(rate) => write!(bpm, "{rate}").expect("a u8 is at most 3 digits"),
+        None => bpm.push_str("--").expect("2 chars fit in 3"),
+    }
+    let bpm = bpm.as_str();
     let x = 77 - (font::HEART_W as i32 + 2 + font::small_text_width(bpm));
     canvas.sprite(x, TEXT_Y - 1, font::HEART_W, &font::HEART, 1, Color::HEART);
     canvas.sprite(
