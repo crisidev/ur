@@ -12,7 +12,7 @@ integration through [Gadgetbridge].
   <br>
   <img src="docs/screenshots/alarms.png" width="180" alt="The alarms screen: smart wake, two alarms, two timers">
   <img src="docs/screenshots/notification.png" width="180" alt="A notification that arrived with the screen off: the app at the top, the sender large in the middle, white on black">
-  <img src="docs/screenshots/glance.png" width="180" alt="A glance: just the time, white on black">
+  <img src="docs/screenshots/glance.png" width="180" alt="A glance: just the time, the hours above the minutes, large, white on black">
   <img src="docs/screenshots/info.png" width="180" alt="The info screen: version, battery, uptime, theme, phone, last night's sleep, and build">
 </p>
 
