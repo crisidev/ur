@@ -21,7 +21,7 @@
 //! [`movement`] whether the wrist is still enough to trust.
 
 use core::cell::{Cell, RefCell};
-use core::sync::atomic::{AtomicU16, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
 use defmt::{info, warn};
 use embassy_sync::blocking_mutex::Mutex;
@@ -41,9 +41,8 @@ use crate::{clock, sleep};
 
 const ADDRESS: u8 = 0x18;
 const REG_CHIP_ID: u8 = 0x00;
-const REG_INT1_IO_CTRL: u8 = 0x53;
-const REG_INT_LATCH: u8 = 0x55;
-const REG_INT1_MAP: u8 = 0x56;
+/// The current acceleration, x/y/z (LSB first), 12 bits left-justified.
+const REG_ACC_DATA: u8 = 0x12;
 const REG_STEP_COUNT: u8 = 0x1E;
 const REG_FIFO_LENGTH: u8 = 0x24;
 const REG_FIFO_DATA: u8 = 0x26;
@@ -73,22 +72,6 @@ const FEATURES_LEN: usize = 70;
 /// Within it: the step counter's settings (offset 0x3A) high byte, whose
 /// bit 4 enables counting.
 const STEP_COUNTER_ENABLE: (usize, u8) = (0x3A + 1, 0x10);
-/// And the wrist-wear gesture's settings (offset 0x40) low byte, whose bit 0
-/// enables it: the feature engine recognises the wrist being turned to look
-/// at the watch, and pulses INT1 (see `glance_task` in `main`).
-const WRIST_WEAR_ENABLE: (usize, u8) = (0x40, 0x01);
-/// And the axis remap (offset 0x44, two bytes), which tells the feature
-/// engine how the sensor sits in the watch. Bosch's gestures assume the
-/// usual device axes (x to 3 o'clock, y to 12 o'clock, z out of the
-/// screen; the watch on the left wrist). Measured on the dev kit (flat,
-/// upright, on its side), the PineTime's sensor reads those as
-/// (−y, −x, −z) — the x/y swap InfiniTime also corrects for, and z
-/// pointing into the watch. Encoded as Bosch's driver does: for each of
-/// device x, y, z, the source axis (0 x, 1 y, 2 z) and an "invert" bit:
-/// x ← y inverted (1 | 1 << 2), y ← x inverted (0 << 3 | 1 << 5),
-/// z ← z (2 << 6), with z's invert bit in the second byte.
-const AXES_REMAP: (usize, [u8; 2]) = (0x44, [1 | 1 << 2 | 1 << 5 | 2 << 6, 0x01]);
-
 /// Upload granularity: the config goes over I2C in pieces this size, each
 /// preceded by its position (in 16-bit words). Even, and small enough to
 /// stage in RAM (the TWIM can't send from flash).
@@ -196,18 +179,7 @@ impl Bma421 {
         self.read(REG_FEATURES, &mut features[1..]).await?;
         features[0] = REG_FEATURES;
         features[1 + STEP_COUNTER_ENABLE.0] |= STEP_COUNTER_ENABLE.1;
-        features[1 + WRIST_WEAR_ENABLE.0] |= WRIST_WEAR_ENABLE.1;
-        let (remap, [first, second]) = AXES_REMAP;
-        features[1 + remap] = first;
-        features[1 + remap + 1] = (features[1 + remap + 1] & !0x01) | second;
         self.write_bytes(&features).await?;
-        // The wrist-wear gesture to INT1 (P0.08), as a pulse (not latched,
-        // so nothing has to read a status register to re-arm it): output
-        // enabled, push-pull, active high.
-        //
-        self.write(REG_INT1_IO_CTRL, 0x0A).await?;
-        self.write(REG_INT_LATCH, 0x00).await?;
-        self.write(REG_INT1_MAP, 0x08).await?;
 
         // Accelerometer: 100 Hz (what the step counter wants), ±2 g,
         // averaging 4 samples, low-power averaging mode, as InfiniTime does.
@@ -526,6 +498,55 @@ pub fn movement() -> u16 {
 
 static MOVEMENT: AtomicU16 = AtomicU16::new(0);
 
+/// Set once the accelerometer is configured; nothing else may talk to it
+/// before (setup soft-resets it and uploads its program).
+static READY: AtomicBool = AtomicBool::new(false);
+
+// ==============================================================================
+// Glances
+// ==============================================================================
+
+/// How often to look at the wrist's pose while the screen is off: fast
+/// enough that the time is up within ~0.5 s of turning the wrist.
+const GLANCE_POLL: Duration = Duration::from_millis(200);
+
+/// Watches for the wrist turning to look at the watch (see
+/// [`crate::glance`]) while the screen is off, and asks the UI for a
+/// glance.
+///
+/// Reads the current acceleration (6 bytes) rather than the FIFO: one
+/// short transfer, no power save dance. A misread in power save shows up
+/// as an implausible magnitude, which the detector ignores.
+#[embassy_executor::task]
+pub async fn glance_task(i2c: Device) {
+    let mut bma = Bma421 { i2c };
+    let mut detector = crate::glance::Detector::default();
+    let mut screen_was_on = true;
+    loop {
+        Timer::after(GLANCE_POLL).await;
+        if !READY.load(Ordering::Relaxed) {
+            continue;
+        }
+        let screen_on = crate::glance::screen_on();
+        if screen_on != screen_was_on {
+            detector.reset();
+            screen_was_on = screen_on;
+        }
+        if screen_on {
+            continue;
+        }
+        let mut data = [0u8; 6];
+        if bma.read(REG_ACC_DATA, &mut data).await.is_err() {
+            continue;
+        }
+        let axis = |i: usize| i16::from_le_bytes([data[i], data[i + 1]]) >> 4;
+        let sample = crate::glance::from_sensor([axis(0), axis(2), axis(4)]);
+        if detector.push(sample) {
+            let _ = crate::INPUT.try_send(crate::InputEvent::Glance);
+        }
+    }
+}
+
 /// Today's steps, for the clock face.
 pub fn steps_today() -> Option<u32> {
     let today = clock::now()?.days_since_epoch();
@@ -569,6 +590,7 @@ pub async fn activity_task(i2c: Device) {
         Timer::after_millis(100).await;
     }
     info!("activity: accelerometer running");
+    READY.store(true, Ordering::Relaxed);
 
     let mut last_count = 0u32;
     // The previous sample, to measure movement against.

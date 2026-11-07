@@ -45,6 +45,7 @@ mod firmware;
 mod font;
 mod gb;
 mod geo;
+mod glance;
 mod heart;
 mod i2c;
 mod motor;
@@ -118,7 +119,7 @@ pub enum InputEvent {
     Attention,
     /// A notification, call, or media update from the phone.
     Phone(ui::PhoneEvent),
-    /// The wrist turned to look at the watch (the accelerometer's gesture).
+    /// The wrist turned to look at the watch (see [`glance`]).
     Glance,
 }
 
@@ -171,19 +172,6 @@ fn local_second() -> Option<i64> {
     let utc = clock::now_utc_seconds()?;
     let offset = i64::from(clock::utc_offset_minutes()?);
     Some(utc + offset * 60)
-}
-
-/// Watches the accelerometer's wrist-turn gesture (its INT1, on P0.08).
-#[embassy_executor::task]
-async fn glance_task(mut interrupt: Input<'static>) {
-    loop {
-        interrupt.wait_for_rising_edge().await;
-        // Not awaited-for space: if the queue is full, the UI is busy and
-        // awake anyway.
-        let _ = INPUT.try_send(InputEvent::Glance);
-        // One glance per gesture, however it pulses.
-        Timer::after_secs(1).await;
-    }
 }
 
 /// The three active-low backlight transistors (low/mid/high), which sum.
@@ -360,7 +348,7 @@ async fn main(spawner: Spawner) {
             .expect("spawned once"),
     );
     spawner.spawn(activity::activity_task(I2cDevice::new(i2c_bus)).expect("spawned once"));
-    spawner.spawn(glance_task(Input::new(p.P0_08, Pull::None)).expect("spawned once"));
+    spawner.spawn(activity::glance_task(I2cDevice::new(i2c_bus)).expect("spawned once"));
     spawner.spawn(heart::heart_task(I2cDevice::new(i2c_bus)).expect("spawned once"));
 
     // ==========================================================================
@@ -585,6 +573,7 @@ async fn main(spawner: Spawner) {
         // glance once there's a reading from the last few minutes.
         let fresh = heart::latest().is_some_and(|(_, at)| now - at < Duration::from_secs(5 * 60));
         heart::set_watching(app.showing_clock() && !fresh);
+        glance::set_screen_on(app.awake);
         // Holding the button long enough to starve the watchdog is the
         // user's way back into the bootloader (and to rollback), even when
         // this firmware is otherwise wedged in a way that still runs this loop.
