@@ -4,8 +4,8 @@
 //! watch short of the backlight and radio (12.5–40 mA while lit), so it
 //! isn't run continuously. Instead, a measurement *session* runs:
 //!
-//! - every [`INTERVAL`], for up to [`SESSION_LIMIT`] or until it has a
-//!   reading (typically ~13 s), and
+//! - every [`INTERVAL`], at the first still moment (see [`CALM`]), for up
+//!   to [`SESSION_LIMIT`] or until it has a reading (typically ~13 s), and
 //! - while the clock face is showing (see [`set_watching`]), continuously,
 //!   since then someone is looking at the number.
 //!
@@ -61,6 +61,19 @@ const STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 ///
 /// TODO: tune from a 0.8.x field log with walking in it.
 const MOTION_LIMIT: u16 = 1500;
+
+/// Wrist movement (see [`activity::movement`]) at or below which a
+/// background session may start. A due session waits for it, however long
+/// that takes: measuring a busy wrist only spends LED time.
+///
+/// On the wrist the pulse is tiny (±5 counts on ~3000), and sitting at a
+/// desk, a hand's small movements make bursts ten times that every few
+/// seconds, so no window gets the ~12 s of calm a reading needs. In a
+/// field log compared against a Garmin (0.8.13, 14 sessions), all four
+/// readings came once movement had dropped to 30–130; sessions spent at
+/// 300–2500 throughout never read. Two sessions at 75–240 failed too:
+/// calm is necessary, not sufficient.
+const CALM: u16 = 150;
 
 /// Seconds of movement readings kept (one per level check, i.e. a second),
 /// to judge a whole window: an analysis window is ~8 s.
@@ -364,6 +377,12 @@ pub async fn heart_task(i2c: Device) {
         }
         if !watching() && Instant::now() < next_due {
             continue;
+        }
+        // Due: wait for a still wrist (or someone looking). Movement is
+        // only updated every 3 s, with each read of the accelerometer.
+        while !watching() && activity::movement() > CALM {
+            WATCH_STARTED.reset();
+            select(Timer::after_secs(3), WATCH_STARTED.wait()).await;
         }
 
         let started = Instant::now();

@@ -482,7 +482,70 @@ fn tolerance(scenario: &Scenario) -> f64 {
     (scenario.bpm.expect("a pulse") * 0.03).max(3.5)
 }
 
+// ==============================================================================
+// Replaying real wrists
+// ==============================================================================
+
+/// Replays sessions extracted from a field log (`scripts/ppg_sessions.py`
+/// writes them: UTC start, a reference rate, the conversion period, the
+/// firmware's outcome, then raw samples) through `Ppg` and `Consensus`, and
+/// prints each window's verdict next to the reference.
+fn replay(path: &str) {
+    let text = std::fs::read_to_string(path).expect("readable sessions file");
+    let (mut sessions, mut read, mut right) = (0, 0, 0);
+    for line in text.lines() {
+        let mut fields = line.split_whitespace();
+        let mut next = || fields.next().expect("session line has its header");
+        let (start, reference, period, outcome) = (next(), next(), next(), next());
+        let reference: f32 = reference.parse().expect("a number");
+        let period: f32 = period.parse().expect("a number");
+        let samples: Vec<u32> = fields.map(|v| v.parse().expect("a number")).collect();
+        let mut ppg = Ppg::new();
+        let mut consensus = Consensus::new();
+        let mut verdicts = Vec::new();
+        let mut reading = None;
+        for (i, &sample) in samples.iter().enumerate() {
+            let Some(verdict) = ppg.push(sample) else {
+                continue;
+            };
+            verdicts.push(match verdict {
+                Ok(estimate) => {
+                    let bpm = estimate.bpm_at(period);
+                    if let Some(agreed) = consensus.push(bpm)
+                        && reading.is_none()
+                    {
+                        reading = Some((agreed, i as f32 * period / 1e6));
+                    }
+                    format!("{bpm:.0}({:.2})", estimate.quality)
+                }
+                Err(Rejection::Flat) => "flat".into(),
+                Err(Rejection::Unsteady { ratio }) => format!("U{ratio:.1}"),
+                Err(Rejection::Aperiodic { quality, bpm }) => format!("a{bpm:.0}({quality:.2})"),
+            });
+        }
+        sessions += 1;
+        let verdict = match reading {
+            Some((bpm, at)) => {
+                read += 1;
+                if reference > 0.0 && (f32::from(bpm) - reference).abs() <= 8.0 {
+                    right += 1;
+                }
+                format!("{bpm} BPM at {at:.0} s")
+            }
+            None => "none".into(),
+        };
+        println!(
+            "{start} ref {reference:3.0} fw {outcome:>4} replay {verdict:16} {}",
+            verdicts.join(" ")
+        );
+    }
+    println!("{read}/{sessions} sessions read, {right} within 8 BPM of the reference");
+}
+
 fn main() {
+    if let Some(path) = std::env::args().nth(1) {
+        return replay(&path);
+    }
     println!("== pulses (20 seeds each; readings within a 30 s session, 40 s with motion) ==");
     for (name, scenario) in scenarios() {
         print_row(&name, &summarise(&scenario, 20, no_gate));
