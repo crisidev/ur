@@ -1211,16 +1211,16 @@ fn render_battery(canvas: &mut Canvas, battery: &Battery, uptime_secs: u64) {
 // Info screen
 // ==============================================================================
 
-/// First value row, and the spacing between rows: nine rows, the last
-/// ending on the screen's bottom pixel row.
-const INFO_TOP: i32 = 11;
+/// First value row, and the spacing between rows: nine rows, below the
+/// title, with a pixel to spare at the bottom.
+const INFO_TOP: i32 = 10;
 const INFO_LINE: i32 = 8;
 
 fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
     canvas.clear(BACKGROUND);
     // The version without its build metadata (`0.9.0-pr.12`); the commit
     // goes at the bottom (see `build.rs`).
-    canvas.text(4, 3, concat!("UR ", env!("UR_RELEASE")), Color::ACCENT);
+    canvas.text(4, 2, concat!("UR ", env!("UR_RELEASE")), Color::ACCENT);
 
     let battery = status.battery;
     let mv = battery.millivolts();
