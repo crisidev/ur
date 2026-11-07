@@ -431,6 +431,16 @@ impl History {
         }
     }
 
+    /// Whether the newest minute is classified as asleep (light or deep).
+    fn asleep_now(&self) -> bool {
+        self.newest.is_some_and(|minute| {
+            matches!(
+                self.samples[Self::slot(minute)].sleep(),
+                sleep::Kind::Light | sleep::Kind::Deep
+            )
+        })
+    }
+
     /// The most recent sleep in the history (see [`sleep::last_sleep`]).
     fn last_sleep(&self) -> Option<Sleep> {
         let newest = self.newest?;
@@ -460,6 +470,16 @@ pub struct Sleep {
 
 static LAST_SLEEP: Mutex<CriticalSectionRawMutex, Cell<Option<Sleep>>> =
     Mutex::new(Cell::new(None));
+
+/// Whether the wearer is asleep, as of the last minute's classification.
+/// Falling asleep is recognised once [`sleep::ONSET`] minutes of stillness
+/// have passed, waking after [`sleep::WAKE_RUN`] minutes of movement (or
+/// at once on getting up and walking), so this lags both by that much.
+pub fn asleep() -> bool {
+    ASLEEP.load(Ordering::Relaxed)
+}
+
+static ASLEEP: AtomicBool = AtomicBool::new(false);
 
 /// The most recent sleep in the last 24 hours, for the UI; updated every
 /// minute.
@@ -532,7 +552,13 @@ pub async fn glance_task(i2c: Device) {
             detector.reset();
             screen_was_on = screen_on;
         }
-        if screen_on {
+        // Asleep, turning over in bed shouldn't light the screen (and the
+        // accelerometer needn't be read five times a second all night). The
+        // button and a tap still wake it. On waking, glances return once the
+        // classifier has seen it: after a few minutes of movement, or at
+        // once on getting up and walking.
+        if screen_on || asleep() {
+            detector.reset();
             continue;
         }
         let mut data = [0u8; 6];
@@ -664,12 +690,15 @@ pub async fn activity_task(i2c: Device) {
         });
         // Once a minute: revise the recent past's sleep, and the summary.
         if new_minute {
-            let (summary, changed) = HISTORY.lock(|history| {
+            let (summary, changed, asleep) = HISTORY.lock(|history| {
                 let mut history = history.borrow_mut();
                 history.classify_sleep();
                 let summary = history.last_sleep();
-                (summary, summary != LAST_SLEEP.lock(Cell::get))
+                (summary, summary != LAST_SLEEP.lock(Cell::get), history.asleep_now())
             });
+            if asleep != ASLEEP.swap(asleep, Ordering::Relaxed) {
+                info!("sleep: {}", if asleep { "asleep now" } else { "awake now" });
+            }
             if changed && let Some(sleep) = summary {
                 info!(
                     "sleep: {} min asleep, minutes {}..{} (UTC)",
