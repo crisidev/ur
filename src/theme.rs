@@ -41,6 +41,8 @@ impl Color {
     const COUNT: usize = 13;
 }
 
+/// `repr(C)`, so `scripts/screenshot.py` can find the palette.
+#[repr(C)]
 pub struct Theme {
     pub name: &'static str,
     /// Each role as the two bytes the panel expects: RGB565, big-endian.

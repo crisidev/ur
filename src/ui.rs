@@ -149,21 +149,18 @@ struct Ringing {
 enum Editing {
     SmartWeekday,
     SmartWeekend,
-    At,
+    /// Which of [`alarm::ALARMS`].
+    At(u8),
     /// Which of [`alarm::TIMERS`].
     Timer(u8),
 }
 
-/// What the alarms screen's rows are, top to bottom; also what a tap on
-/// each edits.
-const ALARM_ROWS: [Editing; 4] = [
-    Editing::SmartWeekday,
-    Editing::At,
-    Editing::Timer(0),
-    Editing::Timer(1),
-];
-const ALARM_ROW_TOP: i32 = 11;
-const ALARM_ROW_HEIGHT: i32 = 17;
+// The alarms screen: smart wake across the top, then the two alarms side by
+// side, then the two timers side by side. These are the tops of those
+// bands (also what a tap hits).
+const SMART_TOP: i32 = 11;
+const ALARMS_TOP: i32 = 30;
+const TIMERS_TOP: i32 = 53;
 /// Where the editor's buttons start.
 const EDITOR_BUTTONS_Y: i32 = 60;
 
@@ -457,13 +454,13 @@ impl App {
                     }
                 }
                 (Gesture::Tap, Screen::Alarms) => {
-                    if let Some(&row) = alarm_row(touch.y) {
+                    if let Some(row) = alarm_at(touch.x, touch.y) {
                         self.editing = Some(row);
                     }
                 }
                 // A quick switch, without opening the editor.
                 (Gesture::LongPress, Screen::Alarms) => {
-                    if let Some(&row) = alarm_row(touch.y) {
+                    if let Some(row) = alarm_at(touch.x, touch.y) {
                         self.toggle(row);
                         motor::buzz(Pattern::NOTIFY);
                     }
@@ -481,10 +478,11 @@ impl App {
     fn toggle(&mut self, row: Editing) {
         match row {
             Editing::SmartWeekday | Editing::SmartWeekend => self.alarms.smart = !self.alarms.smart,
-            Editing::At => {
-                self.alarms.at = !self.alarms.at;
-                if let Some(minute) = self.local_second {
-                    self.alarm_state.arm_at(&self.alarms, minute);
+            Editing::At(i) => {
+                let i = usize::from(i);
+                self.alarms.at[i] = !self.alarms.at[i];
+                if let Some(now) = self.local_second {
+                    self.alarm_state.arm_at(i, &self.alarms, now);
                 }
             }
             Editing::Timer(i) => {
@@ -503,8 +501,8 @@ impl App {
         let done = |app: &mut Self| {
             app.editing = None;
             // A changed time for an armed alarm moves it.
-            if let Some(minute) = app.local_second {
-                app.alarm_state.arm_at(&app.alarms, minute);
+            if let (Editing::At(i), Some(now)) = (editing, app.local_second) {
+                app.alarm_state.arm_at(usize::from(i), &app.alarms, now);
             }
         };
         let InputEvent::Touch(touch) = event else {
@@ -538,7 +536,7 @@ impl App {
         let value = match editing {
             Editing::SmartWeekday => &mut self.alarms.smart_weekday,
             Editing::SmartWeekend => &mut self.alarms.smart_weekend,
-            Editing::At => &mut self.alarms.at_time,
+            Editing::At(i) => &mut self.alarms.at_time[usize::from(i)],
             Editing::Timer(i) => &mut self.alarms.timers[usize::from(i)],
         };
         let changed = i32::from(*value) + up * step;
@@ -863,7 +861,11 @@ fn render_clock(canvas: &mut Canvas, status: &Status, next_alarm: Option<(alarm:
         };
         let x = 77 - font::small_text_width(&time);
         canvas.text(x, 68, &time, Color::TEXT);
-        canvas.sprite(x - font::BELL_W as i32 - 2, 67, font::BELL_W, &font::BELL, 1, Color::ACCENT);
+        let (icon, width) = match kind {
+            alarm::Kind::Timer(_) => (&font::HOURGLASS, font::HOURGLASS_W),
+            _ => (&font::BELL, font::BELL_W),
+        };
+        canvas.sprite(x - width as i32 - 2, 67, width, icon, 1, Color::ACCENT);
     }
 }
 
@@ -909,12 +911,23 @@ fn hhmm(minutes: i64) -> heapless::String<6> {
 // Alarms
 // ==============================================================================
 
-fn alarm_row(y: i32) -> Option<&'static Editing> {
-    ALARM_ROWS.get(usize::try_from((y - ALARM_ROW_TOP) / ALARM_ROW_HEIGHT).ok()?)
+/// What a touch at (x, y) on the alarms screen is on.
+fn alarm_at(x: i32, y: i32) -> Option<Editing> {
+    let right = u8::from(x >= 40);
+    if y < SMART_TOP {
+        None
+    } else if y < ALARMS_TOP {
+        Some(Editing::SmartWeekday)
+    } else if y < TIMERS_TOP {
+        Some(Editing::At(right))
+    } else {
+        Some(Editing::Timer(right))
+    }
 }
 
-/// Three rows (smart wake, alarm, timer), each a label with its state on
-/// the right, and its time(s) below.
+/// Smart wake across the top (label and state, then both times), then the
+/// two alarms and the two timers in pairs of cells, each cell a label, its
+/// time, and its state.
 fn render_alarms(
     canvas: &mut Canvas,
     settings: &alarm::Settings,
@@ -924,44 +937,55 @@ fn render_alarms(
     canvas.clear(BACKGROUND);
     canvas.text(4, 3, "ALARMS", Color::ACCENT);
     let switch = |on: bool| if on { ("ON", Color::GOOD) } else { ("OFF", Color::TEXT_FAINT) };
-    for (i, row) in ALARM_ROWS.iter().enumerate() {
-        let y = ALARM_ROW_TOP + 1 + ALARM_ROW_HEIGHT * i as i32;
-        let (label, (state_text, state_color), value) = match row {
-            Editing::SmartWeekday | Editing::SmartWeekend => {
-                let mut value = heapless::String::<20>::new();
-                write!(
-                    value,
-                    "{} / {}",
-                    hhmm(settings.smart_weekday.into()),
-                    hhmm(settings.smart_weekend.into())
-                )
-                .expect("fits in 20");
-                ("SMART WAKE", switch(settings.smart), value)
-            }
-            Editing::At => {
-                let mut value = heapless::String::<20>::new();
-                value.push_str(&hhmm(settings.at_time.into())).expect("fits in 20");
-                ("ALARM", switch(settings.at), value)
-            }
-            Editing::Timer(t) => {
-                let t = usize::from(*t);
-                let mut value = heapless::String::<20>::new();
-                // While running: time left; otherwise the duration.
-                let left = status.local_second.and_then(|now| state.remaining(t, now));
-                let shown = left.unwrap_or(i64::from(settings.timers[t]) * 60);
-                value.push_str(&countdown(shown)).expect("fits in 20");
-                let running = if left.is_some() {
-                    ("RUNNING", Color::GOOD)
-                } else {
-                    ("", Color::TEXT_FAINT)
-                };
-                (["TIMER 1", "TIMER 2"][t], running, value)
-            }
-        };
-        canvas.text(4, y, label, Color::TEXT_DIM);
-        canvas.text_right(77, y, state_text, state_color);
-        canvas.text(4, y + 7, &value, Color::TEXT);
+
+    let (text, color) = switch(settings.smart);
+    canvas.text(4, SMART_TOP + 1, "SMART WAKE", Color::TEXT_DIM);
+    canvas.text_right(77, SMART_TOP + 1, text, color);
+    let mut times = heapless::String::<20>::new();
+    write!(
+        times,
+        "{} / {}",
+        hhmm(settings.smart_weekday.into()),
+        hhmm(settings.smart_weekend.into())
+    )
+    .expect("fits in 20");
+    canvas.text(4, SMART_TOP + 8, &times, Color::TEXT);
+
+    // Hairlines between the bands, so the pairs read as pairs.
+    for y in [ALARMS_TOP - 2, TIMERS_TOP - 2] {
+        canvas.fill_rect(4, y, 72, 1, Color::TEXT_FAINT);
     }
+    let cell = |canvas: &mut Canvas, column: usize, top: i32, label: &str, value: &str, status: (&str, Color)| {
+        let x = 4 + 40 * column as i32;
+        canvas.text(x, top + 1, label, Color::TEXT_DIM);
+        canvas.text(x, top + 8, value, Color::TEXT);
+        canvas.text(x, top + 15, status.0, status.1);
+    };
+    for i in 0..alarm::ALARMS {
+        let time = hhmm(settings.at_time[i].into());
+        cell(canvas, i, ALARMS_TOP, ["ALARM 1", "ALARM 2"][i], &time, switch(settings.at[i]));
+    }
+    for t in 0..alarm::TIMERS {
+        // While running: time left, ticking; otherwise the duration.
+        let left = status.local_second.and_then(|now| state.remaining(t, now));
+        let (value, running) = match left {
+            Some(left) => (countdown(left), ("RUNNING", Color::GOOD)),
+            None => (duration(settings.timers[t]), ("", Color::TEXT_FAINT)),
+        };
+        cell(canvas, t, TIMERS_TOP, ["TIMER 1", "TIMER 2"][t], &value, running);
+    }
+}
+
+/// A timer's duration (not counting down): "3 MIN", "1H30".
+fn duration(minutes: u16) -> heapless::String<8> {
+    let mut text = heapless::String::new();
+    let result = if minutes < 60 {
+        write!(text, "{minutes} MIN")
+    } else {
+        write!(text, "{}H{:02}", minutes / 60, minutes % 60)
+    };
+    result.expect("fits in 8");
+    text
 }
 
 /// One setting, big, with how to change it.
@@ -982,7 +1006,11 @@ fn render_editor(
     let (title, value, on) = match editing {
         Editing::SmartWeekday => ("SMART: WEEKDAYS", settings.smart_weekday, settings.smart),
         Editing::SmartWeekend => ("SMART: WEEKENDS", settings.smart_weekend, settings.smart),
-        Editing::At => ("ALARM", settings.at_time, settings.at),
+        Editing::At(i) => (
+            ["ALARM 1", "ALARM 2"][usize::from(i)],
+            settings.at_time[usize::from(i)],
+            settings.at[usize::from(i)],
+        ),
         Editing::Timer(t) => (
             ["TIMER 1", "TIMER 2"][usize::from(t)],
             settings.timers[usize::from(t)],
@@ -1033,7 +1061,7 @@ fn render_ringing(canvas: &mut Canvas, ringing: &Ringing, status: &Status) {
     canvas.clear(BACKGROUND);
     let title = match ringing.kind {
         alarm::Kind::Smart => "GOOD MORNING",
-        alarm::Kind::At | alarm::Kind::Snooze => "ALARM",
+        alarm::Kind::At(_) | alarm::Kind::Snooze => "ALARM",
         alarm::Kind::Timer(_) => "TIME'S UP",
     };
     canvas.text_centered(40, 6, title, Color::ACCENT);

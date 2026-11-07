@@ -232,3 +232,7 @@ pub const FOOT: [u8; 7] = [0b0110, 0b1111, 0b1110, 0b1110, 0b0000, 0b0110, 0b011
 /// 5×7 bell, for alarms.
 pub const BELL_W: u32 = 5;
 pub const BELL: [u8; 7] = [0b00100, 0b01110, 0b01110, 0b01110, 0b11111, 0b00000, 0b00100];
+
+/// 5×7 hourglass, for timers (so a countdown isn't read as a time of day).
+pub const HOURGLASS_W: u32 = 5;
+pub const HOURGLASS: [u8; 7] = [0b11111, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b11111];

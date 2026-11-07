@@ -32,6 +32,9 @@ const BYTES: usize = WIDTH * HEIGHT / 2;
 /// Two full-width canvas rows of panel pixel bytes.
 const BATCH: usize = 2 * WIDTH * SCALE * SCALE * 2;
 
+/// `repr(C)`, so `scripts/screenshot.py` can find `front` and `theme` (see
+/// [`crate::debug`]).
+#[repr(C)]
 pub struct Canvas {
     /// The frame being drawn.
     back: [u8; BYTES],

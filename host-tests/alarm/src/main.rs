@@ -109,13 +109,24 @@ mod tests {
 
     #[test]
     fn at_rings_once_then_turns_off() {
-        let mut s = Settings { at: true, at_time: 6 * 60 + 15, ..Settings::default() };
+        let mut s = Settings { at: [true, false], at_time: [6 * 60 + 15, 0], ..Settings::default() };
         let mut state = State::default();
         // Armed lazily on the first check (as after a reset).
         let rang = first_ring(&mut s, &mut state, at(MONDAY, 12, 0), at(MONDAY + 3, 0, 0), |_| false);
-        assert_eq!(rang, Some((at(MONDAY + 1, 6, 15), Kind::At)));
-        assert!(!s.at);
+        assert_eq!(rang, Some((at(MONDAY + 1, 6, 15), Kind::At(0))));
+        assert!(!s.at[0]);
         assert_eq!(first_ring(&mut s, &mut state, at(MONDAY + 1, 6, 16), at(MONDAY + 3, 0, 0), |_| false), None);
+    }
+
+    #[test]
+    fn two_alarms_ring_each_at_its_time() {
+        let mut s = Settings { at: [true, true], at_time: [6 * 60, 6 * 60 + 20], ..Settings::default() };
+        let mut state = State::default();
+        let rings: Vec<_> = (at(MONDAY, 0, 0)..at(MONDAY + 2, 0, 0))
+            .filter_map(|now| state.due(&mut s, now * 60, false).map(|k| (now, k)))
+            .collect();
+        assert_eq!(rings, vec![(at(MONDAY, 6, 0), Kind::At(0)), (at(MONDAY, 6, 20), Kind::At(1))]);
+        assert_eq!(s.at, [false, false]);
     }
 
     #[test]
@@ -159,15 +170,22 @@ mod tests {
 
     #[test]
     fn next_picks_the_soonest() {
-        let s = Settings { at: true, at_time: 6 * 60, ..smart() };
+        let s = Settings { at: [true, false], at_time: [6 * 60, 0], ..smart() };
         let state = State::default();
-        assert_eq!(state.next(&s, at(MONDAY, 1, 0) * 60), Some((Kind::At, at(MONDAY, 6, 0) * 60)));
+        assert_eq!(state.next(&s, at(MONDAY, 1, 0) * 60), Some((Kind::At(0), at(MONDAY, 6, 0) * 60)));
         assert_eq!(state.next(&s, at(MONDAY, 6, 30) * 60), Some((Kind::Smart, at(MONDAY, 7, 0) * 60)));
     }
 
     #[test]
     fn settings_round_trip_and_reject_nonsense() {
-        let s = Settings { smart: true, at: true, smart_weekday: 391, smart_weekend: 545, at_time: 1, timers: [90, 7] };
+        let s = Settings {
+            smart: true,
+            at: [true, false],
+            smart_weekday: 391,
+            smart_weekend: 545,
+            at_time: [1, 1000],
+            timers: [90, 7],
+        };
         assert_eq!(Settings::from_bytes(s.to_bytes()), s);
         let garbage = Settings::from_bytes([0xFF; Settings::BYTES]);
         assert_eq!(garbage.smart_weekday, Settings::default().smart_weekday);

@@ -23,6 +23,7 @@
 //! - [`firmware`] / [`dfu`]: cooperating with the bootloader, and receiving
 //!   updates over Bluetooth.
 //! - [`field_log`]: logs kept in flash on watches without a debug probe.
+//! - [`debug`]: screenshots and injected input over the debug probe.
 //!
 //! Tasks talk to the UI loop only through [`INPUT`]; the UI loop owns the
 //! display and everything shown on it.
@@ -36,6 +37,7 @@ mod battery;
 mod ble;
 mod canvas;
 mod clock;
+mod debug;
 mod dfu;
 mod display;
 mod field_log;
@@ -467,6 +469,8 @@ async fn main(spawner: Spawner) {
     // Static rather than on the stack: two 3.2 KB frame buffers.
     static CANVAS: StaticCell<Canvas> = StaticCell::new();
     let canvas = CANVAS.init(Canvas::new());
+    debug::register_canvas(canvas);
+    spawner.spawn(debug::input_task().expect("spawned once"));
     let mut battery = Battery::new();
     let load_u8 = async |key| storage::load::<1>(key).await.map_or(0, |[value]| value);
     let themes = ThemeChoice {

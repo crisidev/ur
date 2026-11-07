@@ -9,8 +9,8 @@
 //!   sign of light sleep: a stir. Being woken mid-stir rather than from
 //!   deep stillness is the whole point. At the time itself it rings
 //!   regardless.
-//! - **At**: one alarm at a time of day, the next time it comes round. It
-//!   turns itself off after ringing.
+//! - **Alarms**: two, each at a time of day, the next time it comes round.
+//!   Each turns itself off after ringing.
 //! - **Timers**: two, each ringing after a duration. Each remembers its last
 //!   duration, as that's usually the one wanted again (the tea, the
 //!   laundry).
@@ -32,6 +32,8 @@ pub const SNOOZE: i64 = 9 * 60;
 pub const RING_FOR: i64 = 3;
 /// How many timers there are.
 pub const TIMERS: usize = 2;
+/// How many one-off alarms there are.
+pub const ALARMS: usize = 2;
 
 const DAY: i64 = 24 * 60;
 
@@ -43,8 +45,9 @@ pub struct Settings {
     /// Minutes after local midnight.
     pub smart_weekday: u16,
     pub smart_weekend: u16,
-    pub at: bool,
-    pub at_time: u16,
+    /// Each one-off alarm's switch and time (minutes after midnight).
+    pub at: [bool; ALARMS],
+    pub at_time: [u16; ALARMS],
     /// Each timer's duration, in minutes.
     pub timers: [u16; TIMERS],
 }
@@ -55,24 +58,31 @@ impl Default for Settings {
             smart: false,
             smart_weekday: 7 * 60,
             smart_weekend: 9 * 60,
-            at: false,
-            at_time: 7 * 60,
+            at: [false; ALARMS],
+            at_time: [7 * 60, 7 * 60 + 30],
             timers: [10, 3],
         }
     }
 }
 
 impl Settings {
-    pub const BYTES: usize = 11;
+    pub const BYTES: usize = 13;
 
     pub fn to_bytes(self) -> [u8; Self::BYTES] {
-        let [a, b] = self.smart_weekday.to_le_bytes();
-        let [c, d] = self.smart_weekend.to_le_bytes();
-        let [e, f] = self.at_time.to_le_bytes();
-        let [g, h] = self.timers[0].to_le_bytes();
-        let [i, j] = self.timers[1].to_le_bytes();
-        let flags = u8::from(self.smart) | u8::from(self.at) << 1;
-        [flags, a, b, c, d, e, f, g, h, i, j]
+        let flags = u8::from(self.smart) | u8::from(self.at[0]) << 1 | u8::from(self.at[1]) << 2;
+        let mut bytes = [flags; Self::BYTES];
+        let words = [
+            self.smart_weekday,
+            self.smart_weekend,
+            self.at_time[0],
+            self.at_time[1],
+            self.timers[0],
+            self.timers[1],
+        ];
+        for (i, word) in words.into_iter().enumerate() {
+            bytes[1 + 2 * i..3 + 2 * i].copy_from_slice(&word.to_le_bytes());
+        }
+        bytes
     }
 
     /// Out-of-range values (corrupt or from a future format) fall back to
@@ -86,11 +96,14 @@ impl Settings {
             smart: bytes[0] & 1 != 0,
             smart_weekday: time(word(1), default.smart_weekday),
             smart_weekend: time(word(3), default.smart_weekend),
-            at: bytes[0] & 2 != 0,
-            at_time: time(word(5), default.at_time),
+            at: [bytes[0] & 2 != 0, bytes[0] & 4 != 0],
+            at_time: [
+                time(word(5), default.at_time[0]),
+                time(word(7), default.at_time[1]),
+            ],
             timers: [
-                timer(word(7), default.timers[0]),
-                timer(word(9), default.timers[1]),
+                timer(word(9), default.timers[0]),
+                timer(word(11), default.timers[1]),
             ],
         }
     }
@@ -104,7 +117,8 @@ pub const MAX_TIMER: u16 = 16 * 60;
 #[cfg_attr(target_os = "none", derive(defmt::Format))]
 pub enum Kind {
     Smart,
-    At,
+    /// Which of the [`ALARMS`].
+    At(u8),
     /// Which of the [`TIMERS`].
     Timer(u8),
     Snooze,
@@ -151,19 +165,18 @@ pub struct State {
     /// The smart alarm occurrence (its latest time, local minutes) that has
     /// already rung, so it rings once per morning.
     smart_rang: Option<i64>,
-    /// The "at" alarm occurrence (local minutes) it's armed for: fixed when
-    /// it's switched on (or first checked after a reset, since this isn't
-    /// stored), so that ringing (which switches it off) is for that one
-    /// only.
-    at_armed: Option<i64>,
+    /// The occurrence (local minutes) each one-off alarm is armed for: fixed
+    /// when it's switched on (or first checked after a reset, since this
+    /// isn't stored), so that ringing (which switches it off) is for that
+    /// one only.
+    at_armed: [Option<i64>; ALARMS],
 }
 
 impl State {
-    /// Call when the "at" alarm is switched on (or its time changes).
-    pub fn arm_at(&mut self, settings: &Settings, now: i64) {
-        self.at_armed = settings
-            .at
-            .then(|| next_daily(settings.at_time, now.div_euclid(60)));
+    /// Call when a one-off alarm is switched on (or its time changes).
+    pub fn arm_at(&mut self, alarm: usize, settings: &Settings, now: i64) {
+        self.at_armed[alarm] = settings.at[alarm]
+            .then(|| next_daily(settings.at_time[alarm], now.div_euclid(60)));
     }
 
     pub fn start_timer(&mut self, timer: usize, settings: &Settings, now: i64) {
@@ -190,17 +203,16 @@ impl State {
         let smart = settings
             .smart
             .then(|| (Kind::Smart, self.pending_smart(settings, minute) * 60));
-        let at = settings.at.then(|| {
-            let at = self
-                .at_armed
-                .unwrap_or_else(|| next_daily(settings.at_time, minute));
-            (Kind::At, at * 60)
+        let alarms = (0..ALARMS).filter(|&i| settings.at[i]).map(|i| {
+            let at = self.at_armed[i].unwrap_or_else(|| next_daily(settings.at_time[i], minute));
+            (Kind::At(i as u8), at * 60)
         });
         let timers = (0..TIMERS).filter_map(|i| self.timers[i].map(|t| (Kind::Timer(i as u8), t)));
         let snooze = self.snooze_at.map(|t| (Kind::Snooze, t));
-        [smart, at, snooze]
+        [smart, snooze]
             .into_iter()
             .flatten()
+            .chain(alarms)
             .chain(timers)
             .min_by_key(|&(_, t)| t)
     }
@@ -221,7 +233,7 @@ impl State {
     /// Checks, every second or so, whether an alarm should start ringing
     /// now (`now` in local seconds). `stirring` says the wearer just moved
     /// after being still (see `crate::activity`), which is what a smart
-    /// alarm waits for in its window. Turns off what rings (the "at" alarm,
+    /// alarm waits for in its window. Turns off what rings (a one-off alarm,
     /// a timer), and remembers the smart one.
     pub fn due(&mut self, settings: &mut Settings, now: i64, stirring: bool) -> Option<Kind> {
         if self.snooze_at.is_some_and(|t| now >= t) {
@@ -235,16 +247,18 @@ impl State {
             }
         }
         let minute = now.div_euclid(60);
-        if settings.at && self.at_armed.is_none() {
-            self.arm_at(settings, now);
-        }
-        if settings.at
-            && let Some(t) = self.at_armed
-            && minute >= t
-        {
-            settings.at = false;
-            self.at_armed = None;
-            return Some(Kind::At);
+        for i in 0..ALARMS {
+            if settings.at[i] && self.at_armed[i].is_none() {
+                self.arm_at(i, settings, now);
+            }
+            if settings.at[i]
+                && let Some(t) = self.at_armed[i]
+                && minute >= t
+            {
+                settings.at[i] = false;
+                self.at_armed[i] = None;
+                return Some(Kind::At(i as u8));
+            }
         }
         if settings.smart {
             let latest = self.pending_smart(settings, minute);
