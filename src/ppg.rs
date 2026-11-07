@@ -83,15 +83,20 @@ const LOWPASS_HZ: f32 = 4.0;
 /// of the loudest to the quietest quarter. A pulse's amplitude wanders
 /// slowly (with breathing, say, by tens of percent); an arm movement
 /// produces a burst many times larger.
-const MAX_AMPLITUDE_RATIO: f32 = 3.0;
+///
+/// On a real wrist (field log, sitting) the pulse's own ratio ran 3.1–4.0,
+/// rejecting most windows at the first guess of 3; arm movement read 5–10.
+const MAX_AMPLITUDE_RATIO: f32 = 4.5;
 
 /// The normalised autocorrelation a window's beat period must reach (1.0
 /// is perfectly periodic). Clean synthetic pulses with realistic heart-rate
 /// variability reach 0.7–0.95 (fast ones the least, as a few percent of
 /// variation in a short period is more samples' worth of smearing);
 /// bandpass-filtered noise has peaks around 0.3–0.5, because the filter
-/// itself makes noise look a bit periodic.
-const MIN_CORRELATION: f32 = 0.6;
+/// itself makes noise look a bit periodic. A real wrist window at 70 BPM
+/// reached 0.595 (and the Garmin agreed), so slightly under 0.6; noise is
+/// still kept out by needing three windows to agree (`Consensus`).
+const MIN_CORRELATION: f32 = 0.55;
 
 /// The first autocorrelation peak within this fraction of the highest one
 /// is the period. A clean signal correlates almost as well at two or three
