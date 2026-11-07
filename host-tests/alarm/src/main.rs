@@ -38,7 +38,9 @@ mod tests {
         to: i64,
         stir: impl Fn(i64) -> bool,
     ) -> Option<(i64, Kind)> {
-        (from..to).find_map(|now| state.due(settings, now, stir(now)).map(|k| (now, k)))
+        // A check a minute (the firmware checks every second; minutes are
+        // enough for these).
+        (from..to).find_map(|now| state.due(settings, now * 60, stir(now)).map(|k| (now, k)))
     }
 
     #[test]
@@ -87,7 +89,7 @@ mod tests {
         let mut state = State::default();
         let mut rings = Vec::new();
         for now in at(MONDAY, 0, 0)..at(MONDAY + 2, 0, 0) {
-            if let Some(kind) = state.due(&mut s, now, true) {
+            if let Some(kind) = state.due(&mut s, now * 60, true) {
                 rings.push((now, kind));
             }
         }
@@ -118,40 +120,57 @@ mod tests {
 
     #[test]
     fn the_timer_rings_after_its_duration() {
-        let mut s = Settings { timer: 25, ..Settings::default() };
+        let mut s = Settings { timers: [25, 3], ..Settings::default() };
         let mut state = State::default();
-        state.start_timer(&s, at(MONDAY, 10, 0));
-        assert_eq!(state.next(&s, at(MONDAY, 10, 0)), Some((Kind::Timer, at(MONDAY, 10, 25))));
-        let rang = first_ring(&mut s, &mut state, at(MONDAY, 10, 0), at(MONDAY, 12, 0), |_| false);
-        assert_eq!(rang, Some((at(MONDAY, 10, 25), Kind::Timer)));
-        assert_eq!(state.timer_at, None);
+        let start = at(MONDAY, 10, 0) * 60;
+        state.start_timer(0, &s, start);
+        assert_eq!(state.next(&s, start), Some((Kind::Timer(0), start + 25 * 60)));
+        assert_eq!(state.remaining(0, start + 61), Some(25 * 60 - 61));
+        // To the second.
+        assert_eq!(state.due(&mut s, start + 25 * 60 - 1, false), None);
+        assert_eq!(state.due(&mut s, start + 25 * 60, false), Some(Kind::Timer(0)));
+        assert_eq!(state.timers[0], None);
         // The duration is remembered.
-        assert_eq!(s.timer, 25);
+        assert_eq!(s.timers[0], 25);
+    }
+
+    #[test]
+    fn two_timers_run_side_by_side() {
+        let mut s = Settings { timers: [5, 2], ..Settings::default() };
+        let mut state = State::default();
+        let start = at(MONDAY, 10, 0) * 60;
+        state.start_timer(0, &s, start);
+        state.start_timer(1, &s, start + 30);
+        assert_eq!(state.next(&s, start), Some((Kind::Timer(1), start + 30 + 120)));
+        let rings: Vec<_> = (start..start + 600)
+            .filter_map(|now| state.due(&mut s, now, false).map(|k| (now - start, k)))
+            .collect();
+        assert_eq!(rings, vec![(150, Kind::Timer(1)), (300, Kind::Timer(0))]);
     }
 
     #[test]
     fn snooze_rings_again() {
         let mut s = Settings::default();
         let mut state = State::default();
-        state.snooze(at(MONDAY, 7, 0));
+        state.snooze(at(MONDAY, 7, 0) * 60);
         let rang = first_ring(&mut s, &mut state, at(MONDAY, 7, 0), at(MONDAY, 8, 0), |_| false);
-        assert_eq!(rang, Some((at(MONDAY, 7, 0) + SNOOZE, Kind::Snooze)));
+        assert_eq!(rang, Some((at(MONDAY, 7, 0) + SNOOZE / 60, Kind::Snooze)));
     }
 
     #[test]
     fn next_picks_the_soonest() {
         let s = Settings { at: true, at_time: 6 * 60, ..smart() };
         let state = State::default();
-        assert_eq!(state.next(&s, at(MONDAY, 1, 0)), Some((Kind::At, at(MONDAY, 6, 0))));
-        assert_eq!(state.next(&s, at(MONDAY, 6, 30)), Some((Kind::Smart, at(MONDAY, 7, 0))));
+        assert_eq!(state.next(&s, at(MONDAY, 1, 0) * 60), Some((Kind::At, at(MONDAY, 6, 0) * 60)));
+        assert_eq!(state.next(&s, at(MONDAY, 6, 30) * 60), Some((Kind::Smart, at(MONDAY, 7, 0) * 60)));
     }
 
     #[test]
     fn settings_round_trip_and_reject_nonsense() {
-        let s = Settings { smart: true, at: true, smart_weekday: 391, smart_weekend: 545, at_time: 1, timer: 90 };
+        let s = Settings { smart: true, at: true, smart_weekday: 391, smart_weekend: 545, at_time: 1, timers: [90, 7] };
         assert_eq!(Settings::from_bytes(s.to_bytes()), s);
         let garbage = Settings::from_bytes([0xFF; Settings::BYTES]);
         assert_eq!(garbage.smart_weekday, Settings::default().smart_weekday);
-        assert_eq!(garbage.timer, Settings::default().timer);
+        assert_eq!(garbage.timers, Settings::default().timers);
     }
 }

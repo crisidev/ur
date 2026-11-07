@@ -163,12 +163,12 @@ async fn button_task(mut enable: Output<'static>, mut button: Input<'static>) {
     }
 }
 
-/// Local minutes since 1970 (UTC plus the phone's UTC offset), once the
+/// Local seconds since 1970 (UTC plus the phone's UTC offset), once the
 /// phone has set the clock; what [`alarm`] works in.
-fn local_minute() -> Option<i64> {
+fn local_second() -> Option<i64> {
     let utc = clock::now_utc_seconds()?;
     let offset = i64::from(clock::utc_offset_minutes()?);
-    Some(utc.div_euclid(60) + offset)
+    Some(utc + offset * 60)
 }
 
 /// Watches the accelerometer's wrist-turn gesture (its INT1, on P0.08).
@@ -540,7 +540,7 @@ async fn main(spawner: Spawner) {
                 sun: geo::sun(),
                 steps: activity::steps_today(),
                 sleep: activity::last_sleep(),
-                local_minute: local_minute(),
+                local_second: local_second(),
                 heart_rate: heart::current(now),
                 battery: &battery,
             };
@@ -606,7 +606,7 @@ async fn main(spawner: Spawner) {
             Either3::First(()) => {
                 // A stir after stillness: what a smart alarm waits for.
                 let stirring = activity::movement() >= sleep::STILL_LIMIT;
-                app.check_alarms(Instant::now(), local_minute(), stirring);
+                app.check_alarms(Instant::now(), local_second(), stirring);
                 // Pairing and updates need the user to watch the screen.
                 let watching = ble::PASSKEY.lock(Cell::get).is_some()
                     || dfu::PROGRESS.lock(Cell::get).is_some();
