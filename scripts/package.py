@@ -19,7 +19,11 @@ SHA-256 only), so neither tool, nor Python beyond the standard library, is
 needed. The output was checked byte-for-byte against InfiniTime's release
 packages (header layout, init packet, CRC).
 
-Usage: package.py <elf> [--version MAJOR.MINOR.REVISION]
+Usage: package.py <elf> [--version VERSION]
+
+VERSION defaults to Cargo.toml's. The image header only holds numbers, so a
+prerelease or build suffix (`0.9.0-pr.12+1a2b3c4`) is dropped there; the
+firmware carries the full version itself (see `build.rs`).
 """
 
 import argparse
@@ -28,8 +32,10 @@ import hashlib
 import io
 import json
 import struct
+import re
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -174,22 +180,35 @@ def dfu_package(image: bytes, name: str) -> bytes:
             "dfu_version": 0.5,
         }
     }
+    # Byte-for-byte reproducible: fixed timestamps and permissions (the
+    # default is the time of packaging), and no compression, since deflate's
+    # output depends on the zlib build (zlib and zlib-ng differ).
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(f"{name}.bin", image)
-        archive.writestr(f"{name}.dat", init_packet)
-        archive.writestr("manifest.json", json.dumps(manifest, indent=4))
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        for member, data in [
+            (f"{name}.bin", image),
+            (f"{name}.dat", init_packet),
+            ("manifest.json", json.dumps(manifest, indent=4).encode()),
+        ]:
+            info = zipfile.ZipInfo(member, date_time=(1980, 1, 1, 0, 0, 0))
+            info.external_attr = 0o644 << 16
+            archive.writestr(info, data)
     return buffer.getvalue()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("elf", type=Path)
-    parser.add_argument("--version", default="0.1.0")
+    parser.add_argument("--version")
     args = parser.parse_args()
-    version = tuple(int(part) for part in args.version.split("."))
-    if len(version) != 3:
-        sys.exit("--version must be MAJOR.MINOR.REVISION")
+    if args.version is None:
+        manifest = Path(__file__).resolve().parent.parent / "Cargo.toml"
+        args.version = tomllib.loads(manifest.read_text())["package"]["version"]
+    numbers = re.match(r"(\d+)\.(\d+)\.(\d+)(?:[-+]|$)", args.version)
+    if numbers is None:
+        sys.exit(f"--version must start MAJOR.MINOR.REVISION, not {args.version!r}")
+    version = tuple(int(part) for part in numbers.groups())
+    args.version = ".".join(numbers.groups())
 
     # `objcopy -O binary` emits every loadable section by load address, from
     # the lowest: here the vector table at 0x8100, through `.data`'s initial

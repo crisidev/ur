@@ -1,12 +1,17 @@
 # Runs whenever a PR is opened or updated, or a commit is pushed to main:
 # - fmt: rustfmt, for the firmware and each host-test crate
 # - clippy: lints, for the firmware as released (both variants; see
-#   scripts/release.sh), on stable and beta
+#   scripts/release.sh), with the pinned toolchain and on beta
 # - scripts: shellcheck, and that the Python scripts at least parse
 #
 # Most of jonhoo/rust-ci-conf's library checks (semver, minimal versions,
 # MSRV, feature powersets, docs.rs) don't apply: this is firmware for one
 # target, built from Cargo.lock, with nothing downstream depending on it.
+#
+# The toolchain is the one rust-toolchain.toml pins, for releases to be
+# reproducible; `rustup toolchain install` installs it. Beta, for early
+# warning of new lints and breakage, is installed alongside and selected
+# with `cargo +beta`, which overrides the pin.
 permissions:
   contents: read
 # Restricting the push trigger to main means a PR from a branch of this repo
@@ -23,18 +28,15 @@ name: check
 jobs:
   fmt:
     runs-on: ubuntu-latest
-    name: stable / fmt / ${{ matrix.crate }}
+    name: fmt / ${{ matrix.crate }}
     strategy:
       fail-fast: false
       matrix:
         crate: [".", host-tests/alarm, host-tests/glance, host-tests/ppg, host-tests/sleep]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
-      - name: Install stable
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # branch=master
-        with:
-          toolchain: stable
-          components: rustfmt
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
       - name: cargo fmt --check
         working-directory: ${{ matrix.crate }}
         run: cargo fmt --check
@@ -44,27 +46,33 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Beta gives early warning of new lints.
-        toolchain: [stable, beta]
-        variant: [ur, ur-field]
+        toolchain: [pinned, beta]
+        variant: [ur, ur-logging]
         include:
           - variant: ur
             features: ""
-          - variant: ur-field
+          - variant: ur-logging
             features: field-log
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
-      - name: Install ${{ matrix.toolchain }}
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Install beta
+        if: matrix.toolchain == 'beta'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # branch=master
         with:
-          toolchain: ${{ matrix.toolchain }}
+          toolchain: beta
           targets: thumbv7em-none-eabihf
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
+        with:
+          key: ${{ matrix.toolchain }}
       # The target comes from .cargo/config.toml. Release profile, as that's
       # what ships (and some lints depend on the profile's cfgs).
       - name: cargo clippy
-        run: cargo clippy --locked --release --features "${{ matrix.features }}" -- -D warnings
+        run: >-
+          cargo ${{ matrix.toolchain == 'beta' && '+beta' || '' }}
+          clippy --locked --release --features "${{ matrix.features }}" -- -D warnings
   scripts:
     runs-on: ubuntu-latest
     name: scripts

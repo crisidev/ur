@@ -1,0 +1,7 @@
+# The exact compiler releases are built with, so anyone can rebuild a
+# release byte for byte (see CONTRIBUTING.md). Dependabot proposes updates.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+targets = ["thumbv7em-none-eabihf"]
+components = ["clippy", "rustfmt", "llvm-tools"]

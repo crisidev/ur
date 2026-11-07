@@ -1,4 +1,5 @@
-# Publishes a release when a version tag is pushed:
+# Publishes a release when a version tag is pushed. Cargo.toml's version is
+# the source of truth, and the tag must match it (see CONTRIBUTING.md):
 #
 #     git tag v0.9.0
 #     git push origin v0.9.0
@@ -6,19 +7,20 @@
 # Shaped after what cargo-dist generates (plan, build, host), for firmware
 # instead of host binaries:
 #
-# - plan: the version comes from the tag (vMAJOR.MINOR.REVISION, with an
-#   optional -suffix for a prerelease), and goes into the image header that
-#   the watch logs at boot and the bootloader compares. The tag is the
-#   source of truth; Cargo.toml's version isn't used for anything.
-# - build: scripts/release.sh builds and packages both variants, then
-#   GitHub attests their build provenance (actions/attest): a signed
-#   statement that this workflow, at this commit, produced exactly these
-#   files. Anyone can check a download with
+# - plan: checks the tag against Cargo.toml's version, and fails the
+#   release if they differ. A version with a prerelease part (0.9.0-rc.1)
+#   makes a GitHub prerelease.
+# - build: scripts/release.sh builds and packages both variants, as
+#   `<version>+<commit>`, then GitHub attests their build provenance
+#   (actions/attest): a signed statement that this workflow, at this
+#   commit, produced exactly these files. Anyone can check a download with
 #
-#       gh attestation verify ur-0.9.0-dfu.zip --repo OWNER/REPO
+#       gh attestation verify ur-0.9.0-dfu.zip --repo jonhoo/ur
 #
 #   The build deliberately uses no cache, so nothing from an earlier run
-#   (which a PR could have influenced) goes into an attested release.
+#   (which a PR could have influenced) goes into an attested release. It's
+#   also reproducible: the same commit rebuilt anywhere gives the same
+#   files (see scripts/release.sh).
 # - host: creates the GitHub release, with every file and the checksums.
 #
 # Unlike cargo-dist, there's no installer and no per-platform matrix: the
@@ -38,19 +40,18 @@ jobs:
       version: ${{ steps.plan.outputs.version }}
       prerelease: ${{ steps.plan.outputs.prerelease }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
       - id: plan
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          # v1.2.3 → 1.2.3; v1.2.3-rc.1 → 1.2.3, as a prerelease. The image
-          # header only holds numbers, so a prerelease carries the version it
-          # leads up to.
-          if [[ ! $TAG =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-.+)?$ ]]; then
-            echo "::error::tag $TAG isn't vMAJOR.MINOR.REVISION[-suffix]"
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          if [[ $TAG != "v$version" ]]; then
+            echo "::error::tag $TAG doesn't match Cargo.toml's version ($version); the tag should be v$version"
             exit 1
           fi
-          echo "version=${BASH_REMATCH[1]}" >>"$GITHUB_OUTPUT"
-          echo "prerelease=$([[ -n ${BASH_REMATCH[2]} ]] && echo true || echo false)" >>"$GITHUB_OUTPUT"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "prerelease=$([[ $version == *-* ]] && echo true || echo false)" >>"$GITHUB_OUTPUT"
   build:
     needs: plan
     runs-on: ubuntu-latest
@@ -63,18 +64,14 @@ jobs:
       artifact-metadata: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
-      - name: Install stable
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # branch=master
-        with:
-          toolchain: stable
-          targets: thumbv7em-none-eabihf
-          components: llvm-tools
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
       - name: build and package
-        run: scripts/release.sh "${{ needs.plan.outputs.version }}" dist
+        run: scripts/release.sh dist
       - name: attest build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # tag=v4.2.2
         with:
-          subject-path: dist/ur-*
+          subject-path: dist/*
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # tag=v7.0.2
         with:
           name: release
@@ -94,6 +91,7 @@ jobs:
       - name: release notes
         env:
           VERSION: ${{ needs.plan.outputs.version }}
+          TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
         run: |
           cat >notes.md <<EOF
@@ -102,16 +100,17 @@ jobs:
           Send \`ur-$VERSION-dfu.zip\` to the watch over Bluetooth, from a phone
           with Nordic's nRF Device Firmware Update app or from a computer with
           \`scripts/dfu.py\`. It installs over InfiniTime and updates ur alike;
-          see the README's Installing section.
+          see the README's [Installing](https://github.com/$REPO#installing)
+          section.
 
-          \`ur-field-$VERSION-dfu.zip\` is the same firmware keeping a log in
+          \`ur-logging-$VERSION-dfu.zip\` is the same firmware keeping a log in
           the watch's flash, which \`scripts/fetch-log.py\` fetches over
           Bluetooth, for reporting problems. It writes to flash constantly and
           costs a little battery.
 
           ## Files
 
-          For each of \`ur\` and \`ur-field\`:
+          For each of \`ur\` and \`ur-logging\`:
 
           - \`-dfu.zip\`: the Bluetooth update package.
           - \`.img\`: the raw MCUBoot image.
@@ -128,6 +127,15 @@ jobs:
           workflow, unmodified:
 
               gh attestation verify ur-$VERSION-dfu.zip --repo $REPO
+
+          The build is also reproducible: the same files, byte for byte, come
+          out of
+
+              git checkout $TAG
+              scripts/release.sh
+              (cd dist && sha256sum -c sha256.sum)
+
+          given the toolchain rust-toolchain.toml pins.
           EOF
       - name: create release
         env:

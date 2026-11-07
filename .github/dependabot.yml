@@ -1,9 +1,11 @@
+# Quarterly: releases are no more frequent than that, and each update is
+# best tried on a watch before it ships.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: monthly
+      interval: quarterly
     groups:
       gha-bump:
         applies-to: version-updates
@@ -12,11 +14,11 @@ updates:
           - "minor"
   # The firmware ships what Cargo.lock says, so lockfile updates matter
   # (unlike for a library, whose users resolve their own): propose them,
-  # grouped so a week's embassy releases arrive as one PR to try on a watch.
+  # grouped into one PR.
   - package-ecosystem: cargo
     directory: /
     schedule:
-      interval: weekly
+      interval: quarterly
     groups:
       cargo-bump:
         applies-to: version-updates
@@ -27,10 +29,15 @@ updates:
     directories:
       - /host-tests/*
     schedule:
-      interval: monthly
+      interval: quarterly
     groups:
       host-tests-bump:
         applies-to: version-updates
         update-types:
           - "patch"
           - "minor"
+  # The compiler rust-toolchain.toml pins for reproducible releases.
+  - package-ecosystem: rust-toolchain
+    directory: /
+    schedule:
+      interval: quarterly

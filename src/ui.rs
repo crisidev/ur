@@ -1217,12 +1217,9 @@ const INFO_LINE: i32 = 8;
 
 fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
     canvas.clear(BACKGROUND);
-    canvas.text(
-        4,
-        3,
-        concat!("UR ", env!("CARGO_PKG_VERSION")),
-        Color::ACCENT,
-    );
+    // The version without its build metadata (`0.9.0-pr.12`); the commit
+    // goes at the bottom (see `build.rs`).
+    canvas.text(4, 3, concat!("UR ", env!("UR_RELEASE")), Color::ACCENT);
 
     let battery = status.battery;
     let mv = battery.millivolts();
@@ -1291,9 +1288,16 @@ fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
     }
     canvas.text_right(77, y, &slept, Color::TEXT);
 
+    // Which commit this build is from, for bug reports: "DEV" for a local
+    // `cargo build`, which doesn't know.
     // TODO: tapping still buzzes (a motor test); drop that once alarms
     // exercise the motor.
-    canvas.text(4, 74, "HOLD: NEXT THEME", Color::TEXT_FAINT);
+    canvas.text(4, 74, "BUILD", Color::TEXT_DIM);
+    let build = match env!("UR_BUILD") {
+        "" => "DEV",
+        build => build,
+    };
+    canvas.text_right(77, 74, build, Color::TEXT);
 }
 
 // ==============================================================================

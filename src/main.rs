@@ -239,8 +239,7 @@ async fn main(spawner: Spawner) {
     config.gpiote_interrupt_priority = APP_PRIORITY;
     config.time_interrupt_priority = APP_PRIORITY;
     let mut p = embassy_nrf::init(config);
-    let (major, minor, revision) = firmware::version();
-    info!("ur {}.{}.{} booting", major, minor, revision);
+    info!("ur {=str} booting", env!("UR_VERSION"));
     clock::restore();
     field_log::report_last_reset();
 

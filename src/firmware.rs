@@ -83,15 +83,11 @@ pub fn clean_up_after_bootloader() {
         .write_value(embassy_nrf::pac::ppi::regs::Chen(u32::MAX));
 }
 
-/// The running image's version, from its MCUBoot header (`ih_ver`: major,
-/// minor, revision), as `scripts/package.py --version` set it.
-pub fn version() -> (u8, u8, u16) {
-    let [major, minor, low, high] = version_word().to_le_bytes();
-    (major, minor, u16::from_le_bytes([low, high]))
-}
-
-/// [`version`] as one word, as stored in the header (and in field log
-/// sectors, to pick the ELF that decodes them).
+/// The running image's version numbers, from its MCUBoot header (`ih_ver`:
+/// a byte each for major and minor, 16 bits of revision, as
+/// `scripts/package.py` set them from Cargo.toml), as one
+/// word, as also stored in field log sectors to pick the ELF that decodes
+/// them.
 pub fn version_word() -> u32 {
     // SAFETY: Internal flash is memory-mapped and always readable; the
     // header's version starts 20 bytes into the slot.

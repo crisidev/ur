@@ -1,13 +1,14 @@
 # The main CI workflow, on all pushes to main and all PRs:
 # - host-tests: the firmware's hardware-free modules (signal processing,
 #   sleep, alarms, glance detection), each built into a host crate under
-#   host-tests/ and tested on the computer, on stable and beta
+#   host-tests/ and tested on the computer, with the pinned toolchain and on
+#   beta
 # - firmware: builds and packages both variants exactly as a release would
-#   (scripts/release.sh), and uploads them, so every PR has a package to try
-#   on a watch
+#   (scripts/release.sh), and uploads them, so every PR, and every commit on
+#   main, has a package to try on a watch
 #
 # The firmware itself has no tests that run in CI: it needs the watch. See
-# check.yml for how the concurrency cancellation and triggers work.
+# check.yml for the toolchains, concurrency cancellation and triggers.
 permissions:
   contents: read
 on:
@@ -25,41 +26,60 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        toolchain: [stable, beta]
+        toolchain: [pinned, beta]
         crate: [alarm, glance, ppg, sleep]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
-      - name: Install ${{ matrix.toolchain }}
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Install beta
+        if: matrix.toolchain == 'beta'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # branch=master
         with:
-          toolchain: ${{ matrix.toolchain }}
+          toolchain: beta
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
         with:
           workspaces: host-tests/${{ matrix.crate }}
+          key: ${{ matrix.toolchain }}
       # Each crate has its own .cargo/config.toml pointing it at the host,
       # which cargo only finds when run from the crate's directory.
       # --release: the PPG simulations are slow unoptimised.
       - name: cargo test
         working-directory: host-tests/${{ matrix.crate }}
-        run: cargo test --locked --release
+        run: cargo ${{ matrix.toolchain == 'beta' && '+beta' || '' }} test --locked --release
   firmware:
     runs-on: ubuntu-latest
-    name: stable / firmware
+    name: firmware
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
-      - name: Install stable
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # branch=master
         with:
-          toolchain: stable
-          targets: thumbv7em-none-eabihf
-          components: llvm-tools
+          # A PR's own head commit, not the merge commit GitHub builds by
+          # default: the version names the commit, and only the PR's own
+          # exists for anyone to look up.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # All of history, to count commits for snapshot versions.
+          fetch-depth: 0
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
-      # A version no release will have (0.0.x), unique per run, so a
-      # watch's boot log says which CI run it's running.
+      # Cargo.toml's version, plus `-pr.<number>` for a PR, or
+      # `-snap.<commits on main>` for main, plus `+<commit>` (see
+      # scripts/release.sh). The commit count only grows along main, so
+      # snapshots sort in order.
+      - name: version
+        id: version
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [[ -n $PR ]]; then
+            echo "pre=pr.$PR" >>"$GITHUB_OUTPUT"
+          else
+            echo "pre=snap.$(git rev-list --count HEAD)" >>"$GITHUB_OUTPUT"
+          fi
       - name: build and package
-        run: scripts/release.sh "0.0.$(( ${{ github.run_number }} % 65536 ))" dist
+        run: scripts/release.sh --pre "${{ steps.version.outputs.pre }}" dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # tag=v7.0.2
         with:
-          name: firmware-${{ github.run_number }}
+          name: ur-${{ steps.version.outputs.pre }}
           path: dist/
           if-no-files-found: error
