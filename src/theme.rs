@@ -97,11 +97,13 @@ pub static TERMINAL: Theme = theme("TERMINAL", [
     0x2aa84a, 0x020c04, 0x4dff7a, 0xe0ffe8, 0xb8ffc8, 0xf0fff0,
 ]);
 
-/// Four shades of olive green, dark on light, like an early handheld LCD.
+/// Four shades of olive green, dark on light, like an early handheld LCD,
+/// plus one dash of red, like its power light: for the heart, low battery,
+/// and an update's progress. Nothing else.
 #[rustfmt::skip]
 pub static HANDHELD: Theme = theme("HANDHELD", [
     0xc3cf8c, 0x8a9f3a, 0x1e2a14, 0x3c5428, 0x8a9f3a, 0x8a9f3a, 0x3c5428,
-    0x1e2a14, 0x8a9f3a, 0x1e2a14, 0x8a9f3a, 0x3c5428, 0x1e2a14,
+    0x1e2a14, 0x8a9f3a, 0xb8342a, 0xe8836c, 0x3c5428, 0xb8342a,
 ]);
 
 /// Brown ink on cream, muted red: an old printed game manual.

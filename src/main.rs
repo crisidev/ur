@@ -487,6 +487,8 @@ async fn main(spawner: Spawner) {
     let mut last_power_report = Instant::now();
     // Since when the panel (and backlight) have been on, for `power`.
     let mut panel_since = Instant::now();
+    // Whether the last frame was in the dim look; see below.
+    let mut was_dim = false;
     loop {
         let now = Instant::now();
         let mut samples = [0i16; 1];
@@ -538,6 +540,14 @@ async fn main(spawner: Spawner) {
             };
             app.set_daytime(geo::is_daytime());
             app.set_connected(status.connected);
+            // Into or out of the dim white-on-black look (a glance, a quiet
+            // notification) with the panel lit: go dark for the redraw.
+            // Otherwise the old frame (often a light theme, at full
+            // backlight) flashes up while the new one is drawn over it.
+            if panel_awake && app.dim() != was_dim {
+                backlight.off();
+            }
+            was_dim = app.dim();
             canvas.set_theme(app.theme());
             app.render(canvas, &status, now);
             match app.take_transition() {
@@ -550,7 +560,7 @@ async fn main(spawner: Spawner) {
             first_frame = false;
             // Dim for a glance (white on black reads fine), and back up if
             // it turns into a proper wake.
-            if app.glancing() {
+            if app.dim() {
                 backlight.dim();
             } else {
                 backlight.on();

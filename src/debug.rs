@@ -21,8 +21,9 @@ use crate::{INPUT, InputEvent};
 static UR_CANVAS: AtomicPtr<Canvas> = AtomicPtr::new(core::ptr::null_mut());
 
 /// An input to inject: 0 for none; otherwise the low byte is the kind (1
-/// button, 2 tap, 3 long press, 4–7 swipe up, down, left, right) and the
-/// next two the canvas x and y. Cleared once taken.
+/// button, 2 tap, 3 long press, 4–7 swipe up, down, left, right, 8 a
+/// glance, 9 a test notification) and the next two the canvas x and y.
+/// Cleared once taken.
 #[unsafe(no_mangle)]
 static UR_INPUT: AtomicU32 = AtomicU32::new(0);
 
@@ -43,6 +44,19 @@ pub async fn input_task() {
         let gesture = match kind {
             1 => {
                 INPUT.send(InputEvent::Button).await;
+                continue;
+            }
+            8 => {
+                INPUT.send(InputEvent::Glance).await;
+                continue;
+            }
+            9 => {
+                let mut app = heapless::String::new();
+                let mut who = heapless::String::new();
+                let _ = app.push_str("Signal");
+                let _ = who.push_str("Åse Kristiansen");
+                let notification = crate::ui::PhoneEvent::Notification { app, who };
+                INPUT.send(InputEvent::Phone(notification)).await;
                 continue;
             }
             2 => Gesture::Tap,

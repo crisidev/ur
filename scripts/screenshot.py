@@ -11,7 +11,8 @@ Usage:
 
 Each STEP is applied in order, with --wait seconds after each (default 1.5,
 enough for a transition): `button`, `tap:X,Y`, `long:X,Y`, or `up`, `down`,
-`left`, `right` (swipes, optionally with `:X,Y`), in canvas pixels (0–79).
+`left`, `right` (swipes, optionally with `:X,Y`), in canvas pixels (0–79);
+`glance` (as if the wrist turned) and `notify` (a test notification).
 """
 
 import argparse
@@ -26,7 +27,17 @@ TARGET = ["esprobe", "--target", "nRF52832_xxAA"]
 WIDTH = HEIGHT = 80
 BYTES = WIDTH * HEIGHT // 2
 SCALE = 3
-KINDS = {"button": 1, "tap": 2, "long": 3, "up": 4, "down": 5, "left": 6, "right": 7}
+KINDS = {
+    "button": 1,
+    "tap": 2,
+    "long": 3,
+    "up": 4,
+    "down": 5,
+    "left": 6,
+    "right": 7,
+    "glance": 8,
+    "notify": 9,
+}
 
 
 def symbol(elf: Path, name: str) -> int:

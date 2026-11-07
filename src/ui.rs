@@ -33,8 +33,9 @@
 //! From the phone:
 //!
 //! - Notifications: a two-line banner (app, then sender) for
-//!   [`BANNER_TIME`] and a short buzz. If the screen was off, it wakes just
-//!   for the banner and sleeps again after.
+//!   [`BANNER_TIME`] and a short buzz. If the screen was off, the
+//!   notification gets the whole (dim, white on black) screen instead, like
+//!   a glance, and the screen sleeps again after.
 //! - Calls: take over the screen, ringing, until the phone says the call is
 //!   over (answered, rejected, ended) or the user acts.
 //! - Media info: enables the music screen.
@@ -59,7 +60,7 @@ use crate::touch::Gesture;
 
 const SCREEN_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long a glance shows the time.
-const GLANCE_TIME: Duration = Duration::from_secs(4);
+const GLANCE_TIME: Duration = Duration::from_secs(5);
 /// How long a notification banner shows.
 const BANNER_TIME: Duration = Duration::from_secs(4);
 /// Stop ringing after this long, in case the phone never says the call is
@@ -266,6 +267,18 @@ impl App {
         self.glance_until.is_some()
     }
 
+    /// Whether a notification has the screen to itself, because it arrived
+    /// with the screen off.
+    fn quiet_notification(&self) -> bool {
+        self.brief_wake && self.banner.is_some()
+    }
+
+    /// Whether the screen shows the dim white-on-black look (a glance, or a
+    /// notification that arrived with the screen off), for the backlight.
+    pub fn dim(&self) -> bool {
+        self.glancing() || self.quiet_notification()
+    }
+
     /// Whether the clock face is on screen for someone to read: awake, and
     /// not just showing a notification or a call. That's when a fresh heart
     /// rate is worth measuring for.
@@ -295,7 +308,7 @@ impl App {
     }
 
     pub fn theme(&self) -> &'static Theme {
-        if self.glancing() {
+        if self.dim() {
             return &theme::GLANCE;
         }
         let (group, choice): (&[&Theme], u8) = if self.daytime {
@@ -560,9 +573,17 @@ impl App {
         match event {
             PhoneEvent::Notification { app, who } => {
                 // Long enough to read, and for long lines to scroll through
-                // once.
-                let overflow = (font::small_text_width(&app).max(font::small_text_width(&who)))
-                    - BANNER_TEXT_WIDTH;
+                // once. With the screen off, the sender shows at 2×,
+                // wrapped (it only scrolls if even three lines won't do).
+                let who_overflow = if self.awake {
+                    font::small_text_width(&who)
+                } else if wrap(&who, BANNER_TEXT_WIDTH, 2).is_some() {
+                    0
+                } else {
+                    font::small_text_width(&who) * 2
+                };
+                let overflow =
+                    font::small_text_width(&app).max(who_overflow) - BANNER_TEXT_WIDTH;
                 let shown_for = BANNER_TIME.max(marquee_cycle(overflow));
                 self.banner = Some(Banner {
                     app,
@@ -645,9 +666,13 @@ impl App {
     /// `keep_awake` holds the screen on regardless of input, e.g. while a
     /// pairing passkey is showing and the user is typing it on the phone.
     pub fn on_tick(&mut self, now: Instant, keep_awake: bool) {
-        if self.glance_until.is_some_and(|until| now >= until) {
-            self.glance_until = None;
-            self.awake = false;
+        // A glance has its own timer: it isn't input, so the screen timeout
+        // (which counts from the last input) would end it at once.
+        if let Some(until) = self.glance_until {
+            if now >= until {
+                self.glance_until = None;
+                self.awake = false;
+            }
             return;
         }
         if self.banner.as_ref().is_some_and(|b| now >= b.until) {
@@ -680,8 +705,14 @@ impl App {
         if let Some(call) = &self.call {
             return overflows(&call.caller, 2, CALL_TEXT_WIDTH);
         }
+        let quiet = self.quiet_notification();
         let banner = self.banner.as_ref().is_some_and(|b| {
-            overflows(&b.app, 1, BANNER_TEXT_WIDTH) || overflows(&b.who, 1, BANNER_TEXT_WIDTH)
+            let who = if quiet {
+                wrap(&b.who, BANNER_TEXT_WIDTH, 2).is_none()
+            } else {
+                overflows(&b.who, 1, BANNER_TEXT_WIDTH)
+            };
+            overflows(&b.app, 1, BANNER_TEXT_WIDTH) || who
         });
         let music = self.screen == Screen::Music
             && self.music.as_ref().is_some_and(|m| {
@@ -712,6 +743,12 @@ impl App {
         }
         if self.glancing() {
             render_glance(canvas, status);
+            return;
+        }
+        if self.quiet_notification()
+            && let Some(banner) = &self.banner
+        {
+            render_quiet_notification(canvas, banner, now);
             return;
         }
         if let Some(editing) = self.editing {
@@ -1295,7 +1332,9 @@ fn render_update(canvas: &mut Canvas, percent: u8, now: Instant) {
     for cell in 0..CELLS {
         let x = LEFT + cell * CELL;
         if cell < filled {
-            canvas.fill_rect(x, TOP, CELL - 1, CELL, Color::ACCENT);
+            // The heart's red: the one dash of colour in otherwise
+            // single-hue themes (handheld), so progress pops.
+            canvas.fill_rect(x, TOP, CELL - 1, CELL, Color::HEART);
             canvas.fill_rect(x, TOP, CELL - 1, 1, Color::HEART_SHINE);
         } else if cell == filled {
             // Flip the checkerboard's phase every frame (one a second).
@@ -1355,6 +1394,107 @@ fn render_banner(canvas: &mut Canvas, banner: &Banner, now: Instant) {
         1,
         elapsed,
     );
+}
+
+/// How many lines a quiet notification's sender may wrap onto.
+const QUIET_LINES: usize = 3;
+/// Line pitch of 2× text (5 px glyphs, 2 accent rows, a gap), doubled.
+const QUIET_LINE_HEIGHT: i32 = 18;
+
+/// One wrapped line: the longest sender line at 2× is 9 characters, plus
+/// a hyphen; room for multi-byte letters.
+type Line = heapless::String<48>;
+
+/// `text` broken at spaces into lines of at most `width` pixels at
+/// `scale`, if it fits in [`QUIET_LINES`]. A word too long for a line of
+/// its own is hyphenated, keeping at least three letters for the next
+/// line ("KRISTIAN-" / "SEN").
+fn wrap(text: &str, width: i32, scale: i32) -> Option<heapless::Vec<Line, QUIET_LINES>> {
+    let fits = |s: &str| font::small_text_width(s) * scale <= width;
+    let mut lines = heapless::Vec::new();
+    let mut rest = text.trim();
+    while !rest.is_empty() {
+        // The longest prefix that fits, and the last space within it.
+        let mut end = 0;
+        let mut last_space = None;
+        for (i, c) in rest.char_indices() {
+            let next = i + c.len_utf8();
+            if !fits(&rest[..next]) {
+                break;
+            }
+            end = next;
+            if c == ' ' {
+                last_space = Some(i);
+            }
+        }
+        if end == 0 {
+            return None;
+        }
+        let mut line = Line::new();
+        if end == rest.len() {
+            line.push_str(rest).ok()?;
+            rest = "";
+        } else if let Some(space) = last_space {
+            line.push_str(rest[..space].trim_end()).ok()?;
+            rest = rest[space..].trim_start();
+        } else {
+            // Mid-word: back off until the hyphen fits and at least three
+            // letters of the word go on to the next line.
+            let word_end = rest.find(' ').unwrap_or(rest.len());
+            let mut cut = end;
+            loop {
+                let hyphenated_fits = {
+                    let mut probe = Line::new();
+                    probe.push_str(&rest[..cut]).ok()?;
+                    probe.push('-').ok()?;
+                    fits(&probe)
+                };
+                let left_over = rest[cut..word_end].chars().count();
+                if hyphenated_fits && left_over >= 3 {
+                    break;
+                }
+                cut = rest[..cut].char_indices().last().map(|(i, _)| i)?;
+                if cut == 0 {
+                    return None;
+                }
+            }
+            line.push_str(&rest[..cut]).ok()?;
+            line.push('-').ok()?;
+            rest = &rest[cut..];
+        }
+        lines.push(line).ok()?;
+    }
+    Some(lines)
+}
+
+/// A notification that arrived with the screen off: the whole screen,
+/// white on black like a glance, the app small at the top and the sender
+/// big (2×), wrapped onto up to three lines and centred (scrolling only if
+/// it's longer still).
+fn render_quiet_notification(canvas: &mut Canvas, banner: &Banner, now: Instant) {
+    let elapsed = now - banner.since;
+    canvas.clear(BACKGROUND);
+    canvas.marquee(3..3 + BANNER_TEXT_WIDTH, 12, &banner.app, Color::TEXT_DIM, 1, elapsed);
+    match wrap(&banner.who, BANNER_TEXT_WIDTH, 2) {
+        Some(lines) => {
+            // Centred in the space below the app name (y 22..80).
+            let block = QUIET_LINE_HEIGHT * lines.len() as i32;
+            let top = 22 + (58 - block) / 2 + 4;
+            for (i, line) in lines.iter().enumerate() {
+                let y = top + QUIET_LINE_HEIGHT * i as i32;
+                let x = 40 - font::small_text_width(line);
+                canvas.text_scaled(x, y, line, Color::TEXT, 2);
+            }
+        }
+        None => canvas.marquee(
+            3..3 + BANNER_TEXT_WIDTH,
+            44,
+            &banner.who,
+            Color::TEXT,
+            2,
+            elapsed,
+        ),
+    }
 }
 
 /// Where the decline/answer buttons start, for both drawing and tapping.
