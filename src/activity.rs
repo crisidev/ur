@@ -59,6 +59,7 @@ const REG_FEATURES: u8 = 0x5E;
 const REG_POWER_CONF: u8 = 0x7C;
 const REG_POWER_CTRL: u8 = 0x7D;
 const REG_CMD: u8 = 0x7E;
+const CMD_FIFO_FLUSH: u8 = 0xB0;
 
 const CHIP_ID: u8 = 0x11;
 /// Far longer than any transfer here takes (the longest, 252 bytes of FIFO
@@ -201,10 +202,11 @@ impl Bma421 {
         // averaging 4 samples, low-power averaging mode, as InfiniTime does.
         self.write(REG_ACC_CONF, 0x28).await?;
         self.write(REG_ACC_RANGE, 0x00).await?;
-        // FIFO: filtered accelerometer data only, no frame headers,
-        // downsampled 8× to 12.5 Hz (75 bytes/s; the 1 KB FIFO holds 13 s).
+        // FIFO: filtered accelerometer data only, downsampled 8× to 12.5 Hz
+        // (87.5 bytes/s with headers; the 1 KB FIFO holds 11 s).
         self.write(REG_FIFO_DOWNSAMPLING, 0x80 | (3 << 4)).await?;
-        self.write(REG_FIFO_CONFIG_1, 0x40).await?;
+        // Accelerometer frames, with headers (see `drain_fifo`).
+        self.write(REG_FIFO_CONFIG_1, 0x50).await?;
         self.write(REG_POWER_CTRL, 0x04).await?;
         // Advanced power save back on (with FIFO self-wake-up), now that
         // configuration is done.
@@ -222,25 +224,83 @@ impl Bma421 {
     /// Reads queued samples, calling `on_sample` with each (x, y, z) in
     /// 12-bit counts (1024 per g).
     ///
-    /// One I2C transfer only, so at most 42 frames (252 bytes: the nRF52832's
+    /// One I2C transfer only, so at most 36 frames (252 bytes: the nRF52832's
     /// TWIM moves at most 255 bytes per transfer); anything beyond stays
     /// queued for next time. A second back-to-back burst doesn't work: with
     /// advanced power save on, the chip returns filler (`e0 e0 …`) without
     /// removing frames from the FIFO, which looked like data arriving at
     /// twice the configured rate.
+    ///
+    /// The chip's advanced power save corrupts FIFO reads: bytes go missing
+    /// (no I2C error is reported). Headerless, every later frame then came
+    /// out shifted, as nonsense (axes rotating, impossible values), and the
+    /// movement measure (which sleep tracking and the heart rate motion
+    /// veto rely on) was wrong from the first glitch until the next reset.
+    /// So power save is suspended around the read (see below), and frames
+    /// carry headers anyway: a bad header means a broken batch, which is
+    /// dropped and the FIFO flushed, losing a few seconds of samples
+    /// instead of everything after.
     async fn drain_fifo(&mut self, mut on_sample: impl FnMut([i16; 3])) -> Result<(), ()> {
         let mut length = [0u8; 2];
         self.read(REG_FIFO_LENGTH, &mut length).await?;
         let queued = usize::from(u16::from_le_bytes(length) & 0x3FFF);
         let mut buffer = [0u8; 252];
-        let take = queued.min(buffer.len()) / 6 * 6;
+        let take = queued.min(buffer.len());
         if take == 0 {
             return Ok(());
         }
-        self.read(REG_FIFO_DATA, &mut buffer[..take]).await?;
-        for frame in buffer[..take].as_chunks::<6>().0 {
-            let axis = |i: usize| i16::from_le_bytes([frame[i], frame[i + 1]]) >> 4;
-            on_sample([axis(0), axis(2), axis(4)]);
+        // Advanced power save off for the read, and the 450 µs the chip
+        // then needs before the next access. With it on, the FIFO stream
+        // came out corrupted (missing frame headers) in most reads of a
+        // still watch on the desk; with it off, none were, over minutes.
+        self.write(REG_POWER_CONF, 0x00).await?;
+        Timer::after_millis(1).await;
+        let read = self.read(REG_FIFO_DATA, &mut buffer[..take]).await;
+        Timer::after_micros(500).await;
+        self.write(REG_POWER_CONF, 0x03).await?;
+        read?;
+
+        // Parse first, deliver after, so a broken batch delivers nothing.
+        let mut frames = heapless::Vec::<[i16; 3], 36>::new();
+        let mut i = 0;
+        let broken = loop {
+            let Some(&header) = buffer[..take].get(i) else {
+                break false;
+            };
+            match header & 0xFC {
+                // Accelerometer data.
+                0x84 => {
+                    let Some(data) = buffer[..take].get(i + 1..i + 7) else {
+                        // A frame cut off by the end of our read: it stays
+                        // in the FIFO only if we haven't read it, and we
+                        // have, so this batch's tail is lost; resync.
+                        break true;
+                    };
+                    let axis = |a: usize| i16::from_le_bytes([data[a], data[a + 1]]) >> 4;
+                    let _ = frames.push([axis(0), axis(2), axis(4)]);
+                    i += 7;
+                }
+                // Skip (frames dropped by overflow), configuration change,
+                // or "dropped" frames: one parameter byte.
+                0x40 | 0x48 | 0x50 => i += 2,
+                // Sensor time: three bytes.
+                0x44 => i += 4,
+                // Empty FIFO.
+                0x80 => break false,
+                _ => break true,
+            }
+        };
+        if broken {
+            warn!(
+                "activity: FIFO out of step (header {=u8:#04x} at {}); flushing",
+                buffer[i.min(take - 1)],
+                i
+            );
+            self.write(REG_CMD, CMD_FIFO_FLUSH).await?;
+            return Ok(());
+        }
+        for frame in frames {
+            on_sample(frame);
         }
         Ok(())
     }
@@ -527,12 +587,19 @@ pub async fn activity_task(i2c: Device) {
         };
         let new_steps = count.wrapping_sub(last_count);
         last_count = count;
+        // The last sample too: which way up the watch is (1024 per g, in
+        // the sensor's own axes), for orientation questions such as how
+        // it's mounted, or sleep position.
+        let [x, y, z] = previous.unwrap_or_default();
         defmt::debug!(
-            "activity: {} samples, movement {}, {} new steps (counter {})",
+            "activity: {} samples, movement {}, {} new steps (counter {}), last ({}, {}, {})",
             samples,
             moved * 8 / u64::from(samples.max(1)),
             new_steps,
-            count
+            count,
+            x,
+            y,
+            z
         );
 
         add_steps_today(new_steps);
