@@ -163,10 +163,13 @@ impl Backlight {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    // TODO: enable the DC/DC regulator (the PineTime has the inductor for it)
-    // to roughly halve current draw; the LDO default is just the safe choice.
     firmware::clean_up_after_bootloader();
     let mut config = embassy_nrf::config::Config::default();
+    // The DC/DC regulator instead of the LDO: the same power at roughly half
+    // the current while the CPU or radio runs. It needs an inductor, which
+    // the PineTime has; InfiniTime, Mynewt, and TinyGo all enable it on this
+    // board. (Without one, the chip would brown out at boot.)
+    config.dcdc.reg1 = true;
     // The PineTime has a 32.768 kHz crystal. embassy defaults to the internal
     // RC oscillator, which is far less accurate, and the wall clock is kept by
     // RTC1 off this clock.

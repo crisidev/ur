@@ -756,10 +756,15 @@ async fn report_status(phone: &Cell<bool>) {
 /// Shows (or with `None`, hides) the pairing passkey on the watch, waking the
 /// screen if needed.
 fn show_passkey(passkey: Option<u32>) {
-    PASSKEY.lock(|cell| cell.set(passkey));
-    // Not awaited-for space: if the input queue is full, the UI is awake and
-    // busy anyway and will pick up the passkey on its next frame.
-    let _ = crate::INPUT.try_send(crate::InputEvent::Attention);
+    let before = PASSKEY.lock(|cell| cell.replace(passkey));
+    // Only a change needs the screen: every disconnect hides the passkey,
+    // and waking the screen each time (often while nobody's pairing) cost
+    // power and lit the watch for no reason.
+    if before != passkey {
+        // Not awaited-for space: if the input queue is full, the UI is awake
+        // and busy anyway and will pick up the passkey on its next frame.
+        let _ = crate::INPUT.try_send(crate::InputEvent::Attention);
+    }
 }
 
 /// Writes the stack's current bonds to flash, one per slot, and clears
