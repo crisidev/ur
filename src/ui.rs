@@ -910,18 +910,35 @@ fn render_clock(canvas: &mut Canvas, status: &Status, next_alarm: Option<(alarm:
     }
 }
 
-/// The glance: HH:MM and nothing else, in the middle.
+/// The glance: the hours above the minutes, as big as fits, and nothing
+/// else. Stacked, each digit can be 5× (25×35): two rows of two, with
+/// the shadow, fill 76 of the 80 rows, where HH:MM on one line only fits
+/// 3×.
 fn render_glance(canvas: &mut Canvas, status: &Status) {
     canvas.clear(BACKGROUND);
     let Some(t) = &status.local_time else {
         return;
     };
-    let digits = [t.hour / 10, t.hour % 10, t.minute / 10, t.minute % 10];
-    for (&digit, x) in digits.iter().zip([4, 21, 43, 60]) {
-        draw_digit(canvas, x, 29, u64::from(digit), 3, Color::TEXT);
-    }
-    for row in [2, 4] {
-        canvas.fill_rect(38, 29 + row * 3, 3, 3, Color::TEXT);
+    const SCALE: i32 = 5;
+    const WIDTH: i32 = font::DIGIT_W as i32 * SCALE;
+    const HEIGHT: i32 = 7 * SCALE;
+    const GAP_X: i32 = 5;
+    const GAP_Y: i32 = 4;
+    // Centred, counting the 1 px shadow.
+    const LEFT: i32 = (80 - (2 * WIDTH + GAP_X + 1)) / 2;
+    const TOP: i32 = (80 - (2 * HEIGHT + GAP_Y + 1)) / 2;
+    for (row, value) in [t.hour, t.minute].into_iter().enumerate() {
+        let y = TOP + row as i32 * (HEIGHT + GAP_Y);
+        let value = u64::from(value);
+        draw_digit(canvas, LEFT, y, value / 10, SCALE, Color::TEXT);
+        draw_digit(
+            canvas,
+            LEFT + WIDTH + GAP_X,
+            y,
+            value % 10,
+            SCALE,
+            Color::TEXT,
+        );
     }
 }
 
