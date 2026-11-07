@@ -10,8 +10,10 @@
 //!   0x040000  MCUBoot's secondary slot: where updates land, and where the
 //!             previous image goes after a swap (464 KiB)
 //!   0x0B4000  free (InfiniTime keeps its file system here)
+//!   0x200000  our field log (2 MiB)
 //!
-//! Only [`crate::dfu`] uses it, to write updates into the secondary slot.
+//! [`crate::dfu`] writes updates into the secondary slot, and
+//! [`crate::field_log`] keeps logs in the top 2 MiB.
 //!
 //! The flash shares SPIM2 with the LCD (see [`crate::spi`]). Every operation
 //! here locks the bus only for the length of one command, so the screen keeps
@@ -22,6 +24,8 @@
 //! instead of ~25 µA in standby.
 
 use embassy_nrf::gpio::Output;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Instant, Timer};
 
 use crate::spi;
@@ -53,6 +57,11 @@ pub enum Error {
     /// is written to an unknown chip.
     UnknownChip([u8; 3]),
 }
+
+/// The chip, set at boot. Users ([`crate::dfu`], [`crate::field_log`]) hold
+/// the lock for a whole operation, and wake the chip first: whoever used it
+/// last may have put it to sleep.
+pub static FLASH: Mutex<CriticalSectionRawMutex, Option<SpiFlash>> = Mutex::new(None);
 
 pub struct SpiFlash {
     cs: Output<'static>,

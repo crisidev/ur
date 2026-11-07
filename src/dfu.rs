@@ -36,10 +36,9 @@ use core::cell::Cell;
 use defmt::{info, warn};
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::mutex::Mutex;
 use heapless::Vec;
 
-use crate::spi_flash::{self, SpiFlash};
+use crate::spi_flash::{self, FLASH};
 
 // ==============================================================================
 // The secondary slot
@@ -58,9 +57,6 @@ const TRAILER_SIZE: u32 = 0x1B0;
 const BOOT_MAGIC: [u32; 4] = [0xf395c277, 0x7fefd260, 0x0f505235, 0x8079b62c];
 /// The image header's magic, checked before we'll activate anything.
 const IMAGE_MAGIC: u32 = 0x96f3b83d;
-
-/// The SPI flash, set at boot.
-pub static FLASH: Mutex<CriticalSectionRawMutex, Option<SpiFlash>> = Mutex::new(None);
 
 /// How far an update has got (percent), while one is in progress; the UI
 /// shows it.

@@ -139,7 +139,7 @@ impl Retained {
 const RETAINED_MAGIC: u32 = 0x7572_4332; // "urC2"
 
 /// Must match the `RETAINED` region in `memory.x`.
-const RETAINED_ADDRESS: usize = 0x2000_C020;
+const RETAINED_ADDRESS: usize = 0x2000_E020;
 const _: () = assert!(size_of::<Retained>() <= 32);
 
 fn retained() -> *mut Retained {

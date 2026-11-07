@@ -19,7 +19,6 @@ heapless = "0.9.3"
 libm = "0.2.16"
 nrf-mpsl = { version = "0.4.0", features = ["nrf52832", "defmt", "critical-section-impl"] }
 nrf-sdc = { version = "0.4.0", features = ["nrf52832", "peripheral", "defmt"] }
-panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 sequential-storage = { version = "8.0.2", features = ["defmt"] }
 static_cell = "2.1.1"
 trouble-host = { version = "0.8.0", default-features = false, features = ["peripheral", "gatt", "derive", "default-packet-pool-mtu-251", "defmt", "security"] }
@@ -40,3 +39,8 @@ opt-level = "s"
 [profile.dev]
 # Unoptimized embassy code is both large and slow enough to miss SPI timing.
 opt-level = 1
+
+[features]
+# Keep the defmt log in the SPI flash, for watches without a debug probe; see
+# `src/field_log.rs`. Not for builds read through a probe.
+field-log = []

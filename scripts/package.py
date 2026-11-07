@@ -10,6 +10,8 @@ Takes the linked ELF and produces, next to it:
 - `<name>-dfu.zip`: a Nordic legacy-DFU package of the image, for updating
   over Bluetooth (InfiniTime's DFU, or ours, with nRF Connect / the nRF
   Device Firmware Update app / `scripts/dfu.py`).
+- `<name>-<version>.elf`: a copy of the ELF, which decodes the field log
+  (see `scripts/fetch-log.py`) of watches running this build.
 
 This does the work of MCUBoot's `imgtool create` and `adafruit-nrfutil dfu
 genpkg` for the one configuration the PineTime bootloader uses (unsigned,
@@ -203,6 +205,7 @@ def main() -> None:
     Path(f"{stem}.img").write_bytes(image)
     Path(f"{stem}-slot.elf").write_bytes(wrap_in_elf(image, SLOT_START))
     Path(f"{stem}-dfu.zip").write_bytes(dfu_package(image, f"{stem.name}-{args.version}"))
+    Path(f"{stem}-{args.version}.elf").write_bytes(args.elf.read_bytes())
     used = len(image) / (SLOT_SIZE - TRAILER_SIZE)
     print(f"package: {len(image)} bytes ({used:.0%} of the slot), version {args.version}")
 

@@ -16,14 +16,14 @@
 //! scheduling the radio. MPSL owns RTC0, TIMER0, the RADIO, TEMP, some PPI
 //! channels, and interrupt priority 0; see `main` for the setup.
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use defmt::{debug, info, warn};
-use embassy_futures::join::join;
+use embassy_futures::join::join3;
 use embassy_futures::select::{Either3, select3};
 use embassy_sync::blocking_mutex::Mutex;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Instant, Timer};
 use heapless::Vec;
@@ -62,10 +62,12 @@ pub struct BatteryReport {
 /// connected, dropped otherwise.
 pub static OUTBOX: Channel<CriticalSectionRawMutex, Outgoing, 8> = Channel::new();
 
-/// One connection (the phone), and the two L2CAP channels it needs
-/// (signalling and ATT).
-const CONNECTIONS: usize = 1;
-const L2CAP_CHANNELS: usize = 2;
+/// Two connections: the phone, plus one more for tools that can't share the
+/// phone's (a firmware updater app, or a computer fetching the field log; see
+/// [`crate::dfu`] and [`crate::field_log`]). Each needs two L2CAP channels
+/// (signalling and ATT), and its own GATT client state in [`Server`].
+pub const CONNECTIONS: usize = 2;
+const L2CAP_CHANNELS: usize = 2 * CONNECTIONS;
 /// The phone, plus room for one more (e.g. a re-pair before the old bond is
 /// cleared). Must match the number of bond slots in [`storage::key::BONDS`].
 const BONDS: usize = 2;
@@ -76,10 +78,11 @@ pub type Controller = nrf_sdc::SoftdeviceController<'static>;
 // GATT server
 // ==============================================================================
 
-#[gatt_server]
+#[gatt_server(connections_max = CONNECTIONS)]
 struct Server {
     uart: UartService,
     dfu: DfuService,
+    log: LogService,
 }
 
 /// The Nordic UART service: a byte pipe each way. "RX" and "TX" are from the
@@ -125,6 +128,33 @@ struct DfuService {
     revision: u16,
 }
 
+/// Fetching the field log ([`crate::field_log`]), one 4 KiB sector at a
+/// time: write a sector index (u16, little-endian) to `control`, and `data`
+/// notifies, in order:
+///
+/// - `00 <index: u16> <present: u8> <sequence: u32> <version: u32>
+///   <length: u32>`: the sector's header (the rest is meaningless if
+///   `present` is 0),
+/// - `01 <offset: u16> <bytes>`: its frames, in pieces,
+/// - `02 <index: u16>`: the end.
+///
+/// For paired clients only: logs show who messaged you.
+#[gatt_service(uuid = "75726c00-6f67-4c6f-8000-000000000001")]
+struct LogService {
+    #[characteristic(
+        uuid = "75726c00-6f67-4c6f-8000-000000000002",
+        write,
+        permissions(authenticated)
+    )]
+    control: Vec<u8, 4>,
+    #[characteristic(
+        uuid = "75726c00-6f67-4c6f-8000-000000000003",
+        notify,
+        permissions(authenticated)
+    )]
+    data: Vec<u8, 244>,
+}
+
 // ==============================================================================
 // Tasks
 // ==============================================================================
@@ -156,7 +186,8 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
         }
     }
     let mut runner = stack.runner();
-    let mut peripheral = stack.peripheral();
+    // Shared by the connection slots below: one advertises at a time.
+    let peripheral = embassy_sync::mutex::Mutex::<NoopRawMutex, _>::new(stack.peripheral());
 
     let server = Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
         name: NAME,
@@ -171,39 +202,43 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
             }
         }
     };
-    let connections = async {
-        let mut gps = GpsPolicy::default();
+    let gps = RefCell::new(GpsPolicy::default());
+    // Each slot advertises until something connects, serves it until it
+    // disconnects, and repeats. While one slot serves, the other advertises,
+    // so a second client can always find us.
+    let slot = async || {
         loop {
-            let conn = match advertise(&mut peripheral, &server).await {
-                Ok(conn) => conn,
-                Err(e) => {
-                    warn!("ble: advertising failed: {}", defmt::Debug2Format(&e));
-                    Timer::after_secs(5).await;
-                    continue;
+            let conn = {
+                let mut peripheral = peripheral.lock().await;
+                match advertise(&mut peripheral, &server).await {
+                    Ok(conn) => conn,
+                    Err(e) => {
+                        warn!("ble: advertising failed: {}", defmt::Debug2Format(&e));
+                        Timer::after_secs(5).await;
+                        continue;
+                    }
                 }
             };
             info!("ble: connected");
-            CONNECTED.store(true, Ordering::Relaxed);
             if let Err(e) = conn.raw().set_bondable(true) {
                 warn!("ble: enabling bonding failed: {}", defmt::Debug2Format(&e));
             }
-            // Anything queued while disconnected is stale.
-            OUTBOX.clear();
-            gps.on_connect(Instant::now());
-            let _ = OUTBOX.try_send(Outgoing::Version);
-            // Serve the phone until it disconnects; the status reporter
-            // never finishes on its own.
+            // Whether this is the phone; see `serve`. The status reporter
+            // waits for that, and never finishes on its own.
+            let phone = Cell::new(false);
             embassy_futures::select::select(
-                serve(&stack, &server, &conn, &mut gps),
-                report_status(),
+                serve(&stack, &server, &conn, &gps, &phone),
+                report_status(&phone),
             )
             .await;
-            CONNECTED.store(false, Ordering::Relaxed);
-            gps.on_disconnect(Instant::now());
+            if phone.get() {
+                CONNECTED.store(false, Ordering::Relaxed);
+                gps.borrow_mut().on_disconnect(Instant::now());
+            }
             show_passkey(None);
         }
     };
-    join(host, connections).await;
+    join3(host, slot(), slot()).await;
 }
 
 /// Advertises until the phone connects.
@@ -239,7 +274,67 @@ async fn advertise<'values, 'server, C: trouble_host::Controller>(
     Ok(advertiser.accept().await?.with_attribute_server(server)?)
 }
 
-/// Asks the client for the shortest connection interval, for an update:
+/// Sends one field log sector; see [`LogService`].
+async fn send_log_sector(
+    server: &Server<'_>,
+    conn: &GattConnection<'_, '_, DefaultPacketPool>,
+    index: u16,
+) {
+    let notify = async |bytes: &[u8]| {
+        let value = Vec::<u8, 244>::from_slice(bytes).expect("sized to fit");
+        if let Err(e) = server.log.data.notify(conn, &value, false).await {
+            warn!(
+                "ble: sending the field log failed: {}",
+                defmt::Debug2Format(&e)
+            );
+        }
+    };
+    let info = crate::field_log::sector_info(u32::from(index)).await;
+    let mut header: Vec<u8, 20> = Vec::new();
+    let _ = header.push(0x00);
+    let _ = header.extend_from_slice(&index.to_le_bytes());
+    let _ = header.push(u8::from(info.is_some()));
+    let (sequence, version, length) = info.map_or((0, 0, 0), |i| (i.sequence, i.version, i.length));
+    for word in [sequence, version, length] {
+        let _ = header.extend_from_slice(&word.to_le_bytes());
+    }
+    notify(&header).await;
+    let mut offset = 0;
+    while offset < length {
+        let mut piece = [0u8; 243];
+        let n = (length - offset).min(240) as usize;
+        piece[0] = 0x01;
+        piece[1..3].copy_from_slice(&(offset as u16).to_le_bytes());
+        crate::field_log::read(u32::from(index), offset, &mut piece[3..3 + n]).await;
+        notify(&piece[..3 + n]).await;
+        offset += n as u32;
+    }
+    let [low, high] = index.to_le_bytes();
+    notify(&[0x02, low, high]).await;
+}
+
+/// Marks this connection as the phone's (see [`serve`]).
+fn become_phone(
+    phone: &Cell<bool>,
+    gps: &RefCell<GpsPolicy>,
+    gps_deadline: &mut Option<Instant>,
+    request_gps: impl Fn(&mut Option<Instant>),
+) {
+    info!("ble: the phone is here");
+    phone.set(true);
+    CONNECTED.store(true, Ordering::Relaxed);
+    // Anything queued while it was away is stale.
+    OUTBOX.clear();
+    let _ = OUTBOX.try_send(Outgoing::Version);
+    let mut gps = gps.borrow_mut();
+    gps.on_connect(Instant::now());
+    if gps.take_request() {
+        request_gps(gps_deadline);
+    }
+}
+
+/// Asks the client for the shortest connection interval, for an update or
+/// a field log fetch:
 /// throughput is a few packets per connection event, so the interval is the
 /// limit. Phones and BlueZ default to 30–50 ms; 7.5 ms is the minimum. The
 /// client may refuse, and the phone's usual parameters return with the next
@@ -256,7 +351,10 @@ async fn speed_up(
         ..Default::default()
     };
     if let Err(e) = conn.raw().update_connection_params(stack, &params).await {
-        warn!("dfu: asking for a faster connection failed: {}", defmt::Debug2Format(&e));
+        warn!(
+            "dfu: asking for a faster connection failed: {}",
+            defmt::Debug2Format(&e)
+        );
     }
 }
 
@@ -274,17 +372,24 @@ enum Action {
     },
 }
 
-/// Handles the phone's GATT traffic, pairing, and our outgoing messages
-/// until it disconnects.
+/// Handles one client's GATT traffic and pairing, and, if it's the phone,
+/// our outgoing messages, until it disconnects.
+///
+/// A connection counts as the phone once it writes to the UART (Gadgetbridge
+/// sends the time first thing): only then does it get our messages, and set
+/// `phone`. Other clients (an updater, a log fetcher) never see them, so
+/// they can't swallow messages meant for the phone.
 async fn serve(
     stack: &Stack<'_, Controller, DefaultPacketPool>,
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
-    gps: &mut GpsPolicy,
+    gps: &RefCell<GpsPolicy>,
+    phone: &Cell<bool>,
 ) {
     let rx = server.uart.rx.handle;
     let dfu_control = server.dfu.control_point.handle;
     let dfu_packet = server.dfu.packet.handle;
+    let log_control = server.log.control.handle;
     let mut lines = LineBuffer::new();
     let mut update = dfu::Session::new();
     // While we've asked the phone for GPS: when to give up waiting.
@@ -294,9 +399,6 @@ async fn serve(
         *deadline = Some(Instant::now() + geo::FIX_TIMEOUT);
         let _ = OUTBOX.try_send(Outgoing::GpsPower(true));
     };
-    if gps.take_request() {
-        request_gps(&mut gps_deadline);
-    }
 
     let reason = loop {
         let gps_timeout = async {
@@ -305,7 +407,14 @@ async fn serve(
                 None => core::future::pending().await,
             }
         };
-        let event = match select3(conn.next(), OUTBOX.receive(), gps_timeout).await {
+        let outgoing = async {
+            if phone.get() {
+                OUTBOX.receive().await
+            } else {
+                core::future::pending().await
+            }
+        };
+        let event = match select3(conn.next(), outgoing, gps_timeout).await {
             Either3::First(event) => event,
             Either3::Second(message) => {
                 send(server, conn, message).await;
@@ -325,11 +434,21 @@ async fn serve(
                 // DFU writes are acted on after replying (flash work is
                 // async; this callback isn't), so keep a copy.
                 let mut dfu_write: Option<(u16, Vec<u8, 244>)> = None;
+                let mut log_request: Option<u16> = None;
                 if let GattEvent::Write(write) = &event {
                     let handle = write.handle();
                     if handle == rx {
+                        if !phone.get() {
+                            become_phone(phone, gps, &mut gps_deadline, request_gps);
+                        }
                         write.with_data(|_offset, data| {
                             lines.push(data, |line| interpret(line, &mut actions))
+                        });
+                    } else if handle == log_control {
+                        write.with_data(|_offset, data| {
+                            if let [low, high, ..] = *data {
+                                log_request = Some(u16::from_le_bytes([low, high]));
+                            }
                         });
                     } else if handle == dfu_control || handle == dfu_packet {
                         write.with_data(|_offset, data| {
@@ -342,6 +461,13 @@ async fn serve(
                 match event.accept() {
                     Ok(reply) => reply.send().await,
                     Err(e) => warn!("ble: failed to reply: {}", defmt::Debug2Format(&e)),
+                }
+                if let Some(index) = log_request {
+                    // A fetch is hundreds of requests; make them quick.
+                    if index == 0 {
+                        speed_up(stack, conn).await;
+                    }
+                    send_log_sector(server, conn, index).await;
                 }
                 if let Some((handle, data)) = dfu_write {
                     let was_updating = update.active();
@@ -373,8 +499,8 @@ async fn serve(
                             // Proof that this image can talk to the phone,
                             // and so receive the next update.
                             crate::firmware::confirm().await;
-                            gps.on_time_sync(offset_minutes);
-                            if gps.take_request() && gps_deadline.is_none() {
+                            gps.borrow_mut().on_time_sync(offset_minutes);
+                            if gps.borrow_mut().take_request() && gps_deadline.is_none() {
                                 request_gps(&mut gps_deadline);
                             }
                         }
@@ -384,7 +510,7 @@ async fn serve(
                             if gps_deadline.take().is_some() {
                                 send(server, conn, Outgoing::GpsPower(false)).await;
                             }
-                            gps.on_fix(Instant::now());
+                            gps.borrow_mut().on_fix(Instant::now());
                             update_location(location).await;
                         }
                         Action::ReportGps => {
@@ -598,7 +724,10 @@ async fn send(
 /// Reports the battery to the phone at connect and whenever its percentage
 /// or charging state changes. (Not the voltage: it jitters by millivolts
 /// from sample to sample, which made this report every minute.)
-async fn report_status() {
+async fn report_status(phone: &Cell<bool>) {
+    while !phone.get() {
+        Timer::after_secs(1).await;
+    }
     let mut reported = None;
     loop {
         let battery = BATTERY.lock(Cell::get);

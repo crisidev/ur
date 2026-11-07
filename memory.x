@@ -30,19 +30,21 @@ MEMORY
   FLASH    : ORIGIN = 0x00008100, LENGTH = 0x7C000 - 0x8100 - 0x1B0 - 0x28
   STORAGE  : ORIGIN = 0x0007D000, LENGTH = 12K
   /* Our statics. The stack doesn't live here; see `_stack_start`. */
-  RAM      : ORIGIN = 0x20000000, LENGTH = 48K
+  RAM      : ORIGIN = 0x20000000, LENGTH = 56K
   /* State that survives resets, at fixed addresses so it survives resets
    * into *different* firmware (reflashing, updates), whose RAM layout may
    * differ: today's steps (src/activity.rs) at +0, the wall-clock checkpoint
-   * (src/clock.rs) at +0x20.
+   * (src/clock.rs) at +0x20, where the last panic happened
+   * (src/field_log.rs) at +0x40.
    *
    * Every reset runs the bootloader first, which uses the bottom 26 KiB of
    * RAM for its statics and the top for its stack, so the retained block
    * sits between them, well clear of both. */
-  RETAINED : ORIGIN = 0x2000C000, LENGTH = 64
+  RETAINED : ORIGIN = 0x2000E000, LENGTH = 128
 }
 
-/* The stack takes the top 16 KiB, above the retained block, growing down
- * towards it. (It runs at a few KiB: embassy tasks keep their state in
- * statics, not on the stack.) */
+/* The stack takes the top 8 KiB, above the retained block, growing down
+ * towards it. Measured (by painting it over SWD and reading it back after a
+ * few minutes of use): under 4 KiB, since embassy tasks keep their state in
+ * statics, not on the stack. */
 _stack_start = 0x20010000;

@@ -20,6 +20,7 @@
 //! - [`storage`]: settings and Bluetooth bonds in flash.
 //! - [`firmware`] / [`dfu`]: cooperating with the bootloader, and receiving
 //!   updates over Bluetooth.
+//! - [`field_log`]: logs kept in flash on watches without a debug probe.
 //!
 //! Tasks talk to the UI loop only through [`INPUT`]; the UI loop owns the
 //! display and everything shown on it.
@@ -34,6 +35,7 @@ mod canvas;
 mod clock;
 mod dfu;
 mod display;
+mod field_log;
 mod firmware;
 mod font;
 mod gb;
@@ -67,7 +69,8 @@ use embassy_time::{Duration, Instant, Ticker, Timer};
 use nrf_sdc::mpsl;
 use static_cell::StaticCell;
 
-use {defmt_rtt as _, panic_probe as _};
+// The panic handler is `field_log::panic`.
+use defmt_rtt as _;
 
 use crate::battery::Battery;
 use crate::canvas::{Canvas, Sweep};
@@ -172,6 +175,7 @@ async fn main(spawner: Spawner) {
     let (major, minor, revision) = firmware::version();
     info!("ur {}.{}.{} booting", major, minor, revision);
     clock::restore();
+    field_log::report_last_reset();
 
     // ==========================================================================
     // Watchdog
@@ -316,7 +320,7 @@ async fn main(spawner: Spawner) {
 
     // The controller's memory needs depend on its configuration; `build`
     // logs the required size if this is wrong (and fails if it's too small).
-    static SDC_MEM: StaticCell<nrf_sdc::Mem<2880>> = StaticCell::new();
+    static SDC_MEM: StaticCell<nrf_sdc::Mem<5184>> = StaticCell::new();
     let sdc_mem = SDC_MEM.init(nrf_sdc::Mem::new());
     let sdc_peripherals = nrf_sdc::Peripherals::new(
         p.PPI_CH17, p.PPI_CH18, p.PPI_CH20, p.PPI_CH21, p.PPI_CH22, p.PPI_CH23, p.PPI_CH24,
@@ -325,7 +329,11 @@ async fn main(spawner: Spawner) {
     let packet_size =
         <trouble_host::prelude::DefaultPacketPool as trouble_host::PacketPool>::MTU as u16;
     let controller = nrf_sdc::Builder::new()
-        .and_then(|b| b.support_adv().support_peripheral().peripheral_count(1))
+        .and_then(|b| {
+            b.support_adv()
+                .support_peripheral()
+                .peripheral_count(ble::CONNECTIONS as u8)
+        })
         // Data length extension, so 251-byte packets go out as one radio
         // packet instead of ten 27-byte ones.
         .map(|b| b.support_dle_peripheral())
@@ -365,7 +373,9 @@ async fn main(spawner: Spawner) {
     let lcd_reset = Output::new(p.P0_26, Level::High, OutputDrive::Standard);
     let mut display = Display::new(lcd_cs, lcd_dc, lcd_reset).await;
     info!("display initialised");
-    *dfu::FLASH.lock().await = Some(spi_flash::SpiFlash::new(flash_cs).await);
+    *spi_flash::FLASH.lock().await = Some(spi_flash::SpiFlash::new(flash_cs).await);
+    #[cfg(feature = "field-log")]
+    spawner.spawn(field_log::task().expect("spawned once"));
 
     // ==========================================================================
     // UI loop
@@ -396,6 +406,8 @@ async fn main(spawner: Spawner) {
     let mut first_frame = true;
 
     let mut ticker = Ticker::every(Duration::from_secs(1));
+    // The first reading is still settling (it's smoothed); log after a minute.
+    let mut next_battery_log = Instant::now() + Duration::from_secs(60);
     loop {
         let now = Instant::now();
         let mut samples = [0i16; 1];
@@ -407,6 +419,14 @@ async fn main(spawner: Spawner) {
             millivolts: battery.millivolts(),
         };
         ble::BATTERY.lock(|cell| cell.set(report));
+        // For battery-life analysis from the field log.
+        if now >= next_battery_log {
+            info!(
+                "battery: {} mV, {}%, charging: {}",
+                report.millivolts, report.percent, report.charging
+            );
+            next_battery_log = now + Duration::from_secs(10 * 60);
+        }
 
         // Apply screen power changes. Waking renders before the backlight
         // comes on, so the old frame never flashes up.
