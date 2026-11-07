@@ -42,7 +42,8 @@ tested on real hardware by a human.
 The PineTime's bootloader (MCUBoot, as shipped with every PineTime) only
 accepts firmware over Bluetooth, from the firmware that's running. ur
 receives updates the same way InfiniTime does, so one package,
-`ur-dfu.zip`, installs it over InfiniTime and updates it afterwards.
+`ur-<version>-dfu.zip`, installs it over InfiniTime and updates it
+afterwards.
 
 Tested so far, on a dev kit and a sealed watch (both InfiniTime 1.14.1,
 bootloader 1.0.1):
@@ -57,23 +58,33 @@ bootloader 1.0.1):
   time sync, and holding the button into the bootloader.
 - Gadgetbridge's firmware installer hasn't been tried.
 
-### Building the package
+### Getting the package
+
+Download `ur-<version>-dfu.zip` from the repository's GitHub Releases.
+Each release file carries a GitHub build provenance attestation; to check
+that a download is exactly what the release workflow built from this
+repository:
 
 ```sh
-cargo build --release
-python3 scripts/package.py target/thumbv7em-none-eabihf/release/ur --version 0.2.0
+gh attestation verify ur-<version>-dfu.zip --repo <owner>/ur
 ```
 
-This needs `llvm-objcopy` on your `PATH`, and writes
-`target/thumbv7em-none-eabihf/release/ur-dfu.zip`. `--version` (default
-0.1.0) goes in the image header, and the watch logs it at boot; raise it
-for each build so you can tell them apart.
+Or build it yourself (needs the `thumbv7em-none-eabihf` target, and
+`llvm-objcopy` on your `PATH` or rustup's `llvm-tools` component):
+
+```sh
+scripts/release.sh 0.9.0
+```
+
+That builds what a release ships into `dist/`. The version goes in the
+image header, and the watch logs it at boot; raise it for each build so you
+can tell them apart.
 
 To install from a phone, copy the zip onto it any way you like (USB, cloud
 storage, email), or with `adb`:
 
 ```sh
-adb push target/thumbv7em-none-eabihf/release/ur-dfu.zip /sdcard/Download/
+adb push dist/ur-0.9.0-dfu.zip /sdcard/Download/
 ```
 
 ### Sending the package
@@ -90,7 +101,7 @@ install and updates):
    so the app wouldn't find it. (ur takes a second connection
    alongside the phone's, so for updates Gadgetbridge can stay connected.)
 3. Select File, choose the ZIP ("Distribution packet") type, and pick
-   `ur-dfu.zip`.
+   `ur-<version>-dfu.zip`.
 4. Select Device, and pick the watch: "InfiniTime" for the first install,
    "Bangle.js ur" after that.
 5. Start, and wait for the transfer to finish.
@@ -104,8 +115,9 @@ pairing.)
 
 1. Add the watch, still running InfiniTime, as a new device in Gadgetbridge
    (it shows up as "InfiniTime"), and let it pair and connect.
-2. While it's connected, open `ur-dfu.zip` from a file manager and pick
-   Gadgetbridge's firmware installer ("Open with" → Gadgetbridge).
+2. While it's connected, open `ur-<version>-dfu.zip` from a file manager
+   and pick Gadgetbridge's firmware installer ("Open with" →
+   Gadgetbridge).
    Gadgetbridge only offers its installer while the watch is connected.
 3. Tap Install.
 
@@ -116,17 +128,25 @@ support doesn't install firmware: use one of the other two for updates.
 bleak`). `<MAC>` is the watch's Bluetooth address, which `bluetoothctl`
 shows while scanning.
 
-- First install: `python3 scripts/dfu.py ur-dfu.zip --address <MAC>`.
+- First install:
+
+  ```sh
+  python3 scripts/dfu.py ur-<version>-dfu.zip --address <MAC>
+  ```
+
 - Updates: pair once in `bluetoothctl` (`agent KeyboardOnly`,
   `default-agent`, `pair <MAC>`, then type the passkey the watch shows).
-  Then `python3 scripts/dfu.py ur-dfu.zip --address <MAC> --packet-size 240`
-  takes about half a minute. (InfiniTime only takes the default 20-byte
-  packets.)
+  Then this takes about half a minute (InfiniTime only takes the default
+  20-byte packets):
+
+  ```sh
+  python3 scripts/dfu.py ur-<version>-dfu.zip --address <MAC> --packet-size 240
+  ```
 
 ### First install, over InfiniTime
 
 1. On InfiniTime 1.16 or later, turn on the OTA switch in Settings.
-2. Send `ur-dfu.zip` with any of the methods above.
+2. Send `ur-<version>-dfu.zip` with any of the methods above.
 3. The watch resets and shows the PINE64 logo for about a minute while the
    bootloader swaps the images. Leave it alone until the ur clock face
    appears.
@@ -136,8 +156,8 @@ shows while scanning.
 
 ### Updating
 
-Send a newer `ur-dfu.zip` with the nRF Device Firmware Update app or
-`scripts/dfu.py`. The watch shows a progress bar, resets into the new
+Send a newer `ur-<version>-dfu.zip` with the nRF Device Firmware Update
+app or `scripts/dfu.py`. The watch shows a progress bar, resets into the new
 version, and keeps it once Gadgetbridge reconnects and syncs the time. If
 the watch resets before that, it goes back to the previous version.
 
@@ -151,22 +171,17 @@ reinstalling from.
 
 ### Field logs
 
-A build with `--features field-log` keeps everything it logs in the
-watch's SPI flash (about two days' worth), for debugging a sealed watch:
-
-```sh
-DEFMT_LOG="info,ur::heart=debug,ur::activity=debug" \
-  cargo build --release --features field-log
-python3 scripts/package.py target/thumbv7em-none-eabihf/release/ur --version 0.3.1
-```
+The `ur-field` build (`ur-field-<version>-dfu.zip`, in every release and
+from `scripts/release.sh`) keeps everything it logs in the watch's SPI
+flash, about a day and a half of it, for debugging a sealed watch.
 
 Install it as above and wear it. Then, from a computer paired with the
-watch (the phone can stay connected), fetch and decode the log with the
-ELF that `package.py` kept:
+watch (the phone can stay connected), fetch the log, and decode it with the
+build's ELF:
 
 ```sh
 python3 scripts/fetch-log.py --address <MAC> --out logs
-defmt-print -e target/thumbv7em-none-eabihf/release/ur-0.3.1.elf < logs/field-log-0.3.1.defmt
+defmt-print -e ur-field-0.9.0.elf < logs/field-log-0.9.0.defmt
 ```
 
 Every build also logs why the chip last reset, and where the previous run

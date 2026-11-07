@@ -1,0 +1,77 @@
+# Runs whenever a PR is opened or updated, or a commit is pushed to main:
+# - fmt: rustfmt, for the firmware and each host-test crate
+# - clippy: lints, for the firmware as released (both variants; see
+#   scripts/release.sh), on stable and beta
+# - scripts: shellcheck, and that the Python scripts at least parse
+#
+# Most of jonhoo/rust-ci-conf's library checks (semver, minimal versions,
+# MSRV, feature powersets, docs.rs) don't apply: this is firmware for one
+# target, built from Cargo.lock, with nothing downstream depending on it.
+permissions:
+  contents: read
+# Restricting the push trigger to main means a PR from a branch of this repo
+# only gets built once.
+on:
+  push:
+    branches: [main]
+  pull_request:
+# New pushes to a PR cancel its in-progress runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+name: check
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    name: stable / fmt / ${{ matrix.crate }}
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [".", host-tests/alarm, host-tests/glance, host-tests/ppg, host-tests/sleep]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # branch=master
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: cargo fmt --check
+        working-directory: ${{ matrix.crate }}
+        run: cargo fmt --check
+  clippy:
+    runs-on: ubuntu-latest
+    name: ${{ matrix.toolchain }} / clippy / ${{ matrix.variant }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Beta gives early warning of new lints.
+        toolchain: [stable, beta]
+        variant: [ur, ur-field]
+        include:
+          - variant: ur
+            features: ""
+          - variant: ur-field
+            features: field-log
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      - name: Install ${{ matrix.toolchain }}
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # branch=master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          targets: thumbv7em-none-eabihf
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
+      # The target comes from .cargo/config.toml. Release profile, as that's
+      # what ships (and some lints depend on the profile's cfgs).
+      - name: cargo clippy
+        run: cargo clippy --locked --release --features "${{ matrix.features }}" -- -D warnings
+  scripts:
+    runs-on: ubuntu-latest
+    name: scripts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      # shellcheck comes with the runner image.
+      - name: shellcheck
+        run: shellcheck scripts/*.sh
+      - name: python syntax
+        run: python3 -m py_compile scripts/*.py docs/*.py

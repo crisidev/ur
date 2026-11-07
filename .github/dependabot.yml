@@ -1,0 +1,36 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      gha-bump:
+        applies-to: version-updates
+        update-types:
+          - "patch"
+          - "minor"
+  # The firmware ships what Cargo.lock says, so lockfile updates matter
+  # (unlike for a library, whose users resolve their own): propose them,
+  # grouped so a week's embassy releases arrive as one PR to try on a watch.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo-bump:
+        applies-to: version-updates
+        update-types:
+          - "patch"
+          - "minor"
+  - package-ecosystem: cargo
+    directories:
+      - /host-tests/*
+    schedule:
+      interval: monthly
+    groups:
+      host-tests-bump:
+        applies-to: version-updates
+        update-types:
+          - "patch"
+          - "minor"
