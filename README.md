@@ -44,10 +44,18 @@ accepts firmware over Bluetooth, from the firmware that's running. ur
 receives updates the same way InfiniTime does, so one package,
 `ur-dfu.zip`, installs it over InfiniTime and updates it afterwards.
 
-Tested so far: the first install from InfiniTime 1.14.1, and the updates,
-rollbacks, and confirmations after it, all with `scripts/dfu.py` from Linux
-on a dev kit. The phone apps below should work, since they speak the same
-protocol, but have not been tried yet.
+Tested so far, on a dev kit and a sealed watch (both InfiniTime 1.14.1,
+bootloader 1.0.1):
+
+- The first install from InfiniTime works with `scripts/dfu.py` from Linux.
+  With the nRF Device Firmware Update app on Android it stopped at 14%
+  every time ("GATT CONN TIMEOUT"), apparently InfiniTime stalling its
+  radio mid-transfer; if that happens, use a computer.
+- Updates from ur to ur work with both the nRF Device Firmware Update app
+  (Gadgetbridge connected throughout) and `scripts/dfu.py`.
+- Rollback of an unconfirmed update, confirmation on the phone's first
+  time sync, and holding the button into the bootloader.
+- Gadgetbridge's firmware installer hasn't been tried.
 
 ### Building the package
 
