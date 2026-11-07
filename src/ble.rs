@@ -238,11 +238,16 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
             // waits for that, and never finishes on its own.
             let phone = Cell::new(false);
             let since = Instant::now();
+            let peer = conn.raw().peer_identity();
+            ACTIVE.lock(|active| {
+                let _ = active.borrow_mut().push(peer);
+            });
             select(
                 serve(&stack, &server, &conn, &gps, &phone),
                 report_status(&phone),
             )
             .await;
+            ACTIVE.lock(|active| active.borrow_mut().retain(|p| !p.match_identity(&peer)));
             crate::power::add(crate::power::Meter::Connected, since);
             crate::power::count(crate::power::Count::Disconnects);
             if phone.get() {
@@ -634,6 +639,7 @@ async fn serve(
             }
             GattConnectionEvent::PassKeyDisplay(passkey) => {
                 info!("ble: pairing; showing passkey");
+                make_room_for_bond(stack, conn);
                 show_passkey(Some(passkey.value()));
             }
             GattConnectionEvent::PairingComplete {
@@ -831,6 +837,42 @@ async fn send_activity(
     }
     send(server, conn, Outgoing::ActivityFetch { done: true }).await;
     info!("ble: sent {} minutes of activity", sent);
+}
+
+/// Who's connected right now, so pairing never evicts their bonds.
+static ACTIVE: Mutex<CriticalSectionRawMutex, RefCell<Vec<Identity, CONNECTIONS>>> =
+    Mutex::new(RefCell::new(Vec::new()));
+
+/// Called as a pairing starts: if it will need a new bond and every slot
+/// is taken, drops the bond of a device that isn't connected now, so the
+/// new one fits. (The bond table has exactly [`BONDS`] slots, and a full
+/// one fails the pairing with `OutOfMemory`.) A device re-pairing after
+/// losing its bond needs no room: its new bond replaces its old one.
+///
+/// The eviction only reaches flash once the pairing completes (see
+/// `save_bonds`), so a pairing that fails costs nothing after a reboot.
+fn make_room_for_bond(
+    stack: &Stack<'_, Controller, DefaultPacketPool>,
+    conn: &GattConnection<'_, '_, DefaultPacketPool>,
+) {
+    let peer = conn.raw().peer_identity();
+    let bonds: Vec<Identity, BONDS> =
+        stack.with_bond_information(|bonds| bonds.iter().map(|b| b.identity).collect());
+    if bonds.len() < BONDS || bonds.iter().any(|b| b.match_identity(&peer)) {
+        return;
+    }
+    let active = ACTIVE.lock(|active| active.borrow().clone());
+    let Some(&victim) = bonds
+        .iter()
+        .find(|b| !active.iter().any(|a| a.match_identity(b)))
+    else {
+        warn!("ble: every bonded device is connected; the new pairing won't be kept");
+        return;
+    };
+    match stack.remove_bond_information(victim) {
+        Ok(()) => info!("ble: dropped the bond with {} to make room", victim.addr),
+        Err(e) => warn!("ble: dropping a bond failed: {}", defmt::Debug2Format(&e)),
+    }
 }
 
 /// Sends one message, split into notifications that fit the MTU.
