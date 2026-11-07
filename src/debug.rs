@@ -64,6 +64,7 @@ pub async fn input_task() {
                     1 => ("Pocket Casts", "Into the Mists: Talia Rossi"),
                     // As long as a sender gets (`ui::PhoneEvent`'s 40).
                     2 => ("Calendar", "Quarterly planning: platform team, 4B"),
+                    3 => ("Signal", "Matteo Bigoi"),
                     _ => ("Signal", "Åse Kristiansen"),
                 };
                 let _ = app.push_str(from);

@@ -1523,12 +1523,15 @@ fn render_quiet_notification(canvas: &mut Canvas, banner: &Banner, now: Instant)
     );
     match quiet_layout(&banner.who) {
         Some((lines, scale)) => {
-            // Centred below the app name: from the first line's accents
-            // to the last line's baseline.
+            // The capitals centred on the screen, which is where the eye
+            // expects a name (centring the space below the app name put
+            // two lines 8 px low), unless that would run into the app name:
+            // three or more big lines start just below it instead. Accents
+            // above the first line are left out of the centring, as most
+            // names have none.
             let pitch = QUIET_PITCH * scale;
-            let block = pitch * (lines.len() as i32 - 1) + (font::ACCENT_ROWS + 5) * scale;
-            let accents = QUIET_TOP + (80 - QUIET_TOP - block) / 2;
-            let top = accents + font::ACCENT_ROWS * scale;
+            let capitals = pitch * (lines.len() as i32 - 1) + 5 * scale;
+            let top = (40 - capitals / 2).max(QUIET_TOP + font::ACCENT_ROWS * scale);
             for (i, line) in lines.iter().enumerate() {
                 let y = top + pitch * i as i32;
                 let x = 40 - font::small_text_width(line) * scale / 2;
