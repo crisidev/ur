@@ -910,20 +910,27 @@ fn render_clock(canvas: &mut Canvas, status: &Status, next_alarm: Option<(alarm:
     }
 }
 
-/// The glance: the hours above the minutes, as big as fits, and nothing
-/// else. Stacked, each digit can be 5× (25×35): two rows of two, with
-/// the shadow, fill 76 of the 80 rows, where HH:MM on one line only fits
-/// 3×.
+/// The glance: the hours above the minutes, as big as fits with room
+/// around them, and nothing else.
+///
+/// The sizes follow from three rules. The digits scale by whole numbers
+/// (they're pixel art). The block keeps a margin of about a tenth of the
+/// screen (8 px), as one big focal element needs room to read as placed
+/// rather than spilling over. And by proximity, the gap between the
+/// hours' digits (one glyph cell) is half the gap between hours and
+/// minutes (two cells), so they read as two numbers rather than a grid of
+/// four digits. 5× (25×35 digits) can't keep the margin; 4× (20×28) can:
+/// a 45×65 block, with 7–8 px above and below.
 fn render_glance(canvas: &mut Canvas, status: &Status) {
     canvas.clear(BACKGROUND);
     let Some(t) = &status.local_time else {
         return;
     };
-    const SCALE: i32 = 5;
+    const SCALE: i32 = 4;
     const WIDTH: i32 = font::DIGIT_W as i32 * SCALE;
     const HEIGHT: i32 = 7 * SCALE;
-    const GAP_X: i32 = 5;
-    const GAP_Y: i32 = 4;
+    const GAP_X: i32 = SCALE;
+    const GAP_Y: i32 = 2 * SCALE;
     // Centred, counting the 1 px shadow.
     const LEFT: i32 = (80 - (2 * WIDTH + GAP_X + 1)) / 2;
     const TOP: i32 = (80 - (2 * HEIGHT + GAP_Y + 1)) / 2;
