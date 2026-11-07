@@ -53,10 +53,13 @@ const STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 /// trusted: moving the sensor against the skin changes the light far more
 /// than the pulse does.
 ///
-/// TODO: tune on the wrist. This is ~0.04 g of average change between
-/// accelerometer samples: a guess at "more than sitting still", based only
-/// on the units.
-const MOTION_LIMIT: u16 = 300;
+/// Measured on the dev kit: ~25 lying untouched, 300–700 with a fingertip
+/// resting on the sensor (which still gave a clean, steady 57 BPM), and
+/// thousands when handled. 300, the first guess, vetoed that clean signal;
+/// 1000 (~0.12 g average change between samples) still rejects handling.
+///
+/// TODO: tune on the wrist, from field logs.
+const MOTION_LIMIT: u16 = 1000;
 
 /// How long after movement windows stay vetoed: one analysis window, plus
 /// the accelerometer's poll interval (it reports movement a few seconds
