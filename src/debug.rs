@@ -22,8 +22,9 @@ static UR_CANVAS: AtomicPtr<Canvas> = AtomicPtr::new(core::ptr::null_mut());
 
 /// An input to inject: 0 for none; otherwise the low byte is the kind (1
 /// button, 2 tap, 3 long press, 4–7 swipe up, down, left, right, 8 a
-/// glance, 9 a test notification) and the next two the canvas x and y.
-/// Cleared once taken.
+/// glance, 9 a test notification, 10 hang (spin forever, to test what the
+/// watchdog records)) and the next two the canvas x and y. Cleared once
+/// taken.
 #[unsafe(no_mangle)]
 static UR_INPUT: AtomicU32 = AtomicU32::new(0);
 
@@ -49,6 +50,11 @@ pub async fn input_task() {
             8 => {
                 INPUT.send(InputEvent::Glance).await;
                 continue;
+            }
+            10 => {
+                defmt::warn!("debug: hanging on purpose");
+                #[allow(clippy::empty_loop)]
+                loop {}
             }
             9 => {
                 let mut app = heapless::String::new();

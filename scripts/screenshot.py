@@ -37,6 +37,7 @@ KINDS = {
     "right": 7,
     "glance": 8,
     "notify": 9,
+    "hang": 10,
 }
 
 

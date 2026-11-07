@@ -265,6 +265,9 @@ async fn main(spawner: Spawner) {
         config.action_during_debug_halt = HaltConfig::Pause;
         config
     });
+    // Before adopting (which consumes the peripheral): note where we were
+    // if it ever bites.
+    field_log::catch_watchdog();
     let mut watchdog = match Watchdog::try_new::<_, 1>(p.WDT, wdt_config) {
         Ok((_wdt, [handle])) => Some(handle),
         Err(_) => {
