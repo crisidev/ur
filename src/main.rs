@@ -9,6 +9,7 @@
 //! - [`touch`], the button task here: input, delivered through [`INPUT`].
 //! - [`motor`]: vibration patterns.
 //! - [`battery`]: battery voltage and charge state.
+//! - [`activity`]: steps and movement from the accelerometer.
 //! - [`i2c`]: the shared sensor bus.
 //! - [`ble`] / [`gb`]: Bluetooth, speaking Gadgetbridge's Bangle.js protocol.
 //! - [`clock`] / [`geo`]: wall-clock time and location, both from the phone,
@@ -21,6 +22,7 @@
 #![no_std]
 #![no_main]
 
+mod activity;
 mod battery;
 mod ble;
 mod canvas;
@@ -233,7 +235,9 @@ async fn main(spawner: Spawner) {
     static I2C_BUS: StaticCell<Mutex<CriticalSectionRawMutex, twim::Twim<'static>>> =
         StaticCell::new();
     let mut twim_config = twim::Config::default();
-    twim_config.frequency = twim::Frequency::K400;
+    // Not 400 kHz: the nRF52832's TWIM slightly violates I2C timing there
+    // (Nordic anomaly 219), and the accelerometer occasionally stalled.
+    twim_config.frequency = twim::Frequency::K250;
     let twim = twim::Twim::new(
         p.TWISPI1,
         Irqs,
@@ -243,7 +247,8 @@ async fn main(spawner: Spawner) {
         TWIM_TX_BUFFER.init([0; 16]),
     );
     interrupt::TWISPI1.set_priority(APP_PRIORITY);
-    let i2c_bus = I2C_BUS.init(Mutex::new(twim));
+    let i2c_bus: &'static _ = I2C_BUS.init(Mutex::new(twim));
+    let _ = i2c::BUS.init(i2c_bus);
 
     let touch_interrupt = Input::new(p.P0_28, Pull::Up);
     let touch_reset = Output::new(p.P0_10, Level::High, OutputDrive::Standard);
@@ -251,6 +256,7 @@ async fn main(spawner: Spawner) {
         touch::touch_task(I2cDevice::new(i2c_bus), touch_interrupt, touch_reset)
             .expect("spawned once"),
     );
+    spawner.spawn(activity::activity_task(I2cDevice::new(i2c_bus)).expect("spawned once"));
 
     // ==========================================================================
     // Bluetooth
@@ -393,6 +399,7 @@ async fn main(spawner: Spawner) {
                 connected: ble::CONNECTED.load(Ordering::Relaxed),
                 passkey: ble::PASSKEY.lock(Cell::get),
                 sun: geo::sun(),
+                steps: activity::steps_today(),
                 battery: &battery,
             };
             app.set_daytime(geo::is_daytime());

@@ -33,7 +33,7 @@ use trouble_host::prelude::*;
 use crate::gb::{self, Incoming, LineBuffer, Outgoing};
 use crate::geo::{self, GpsPolicy, Location};
 use crate::ui::PhoneEvent;
-use crate::{clock, storage};
+use crate::{activity, clock, storage};
 
 /// The advertised and GAP device name. Gadgetbridge's Bangle.js support
 /// recognises `Bangle.js.*` (among a few other Espruino names).
@@ -220,7 +220,9 @@ enum Action {
     },
     Fix(Location),
     ReportGps,
-    ActivityFetch,
+    ActivityFetch {
+        since_ms: i64,
+    },
 }
 
 /// Handles the phone's GATT traffic, pairing, and our outgoing messages
@@ -305,12 +307,8 @@ async fn serve<C: trouble_host::Controller>(
                         Action::ReportGps => {
                             send(server, conn, Outgoing::GpsPower(gps_deadline.is_some())).await
                         }
-                        Action::ActivityFetch => {
-                            // TODO: send samples once the accelerometer is
-                            // tracked (milestone 2). An empty transfer keeps
-                            // Gadgetbridge from waiting forever.
-                            send(server, conn, Outgoing::ActivityFetch { done: false }).await;
-                            send(server, conn, Outgoing::ActivityFetch { done: true }).await;
+                        Action::ActivityFetch { since_ms } => {
+                            send_activity(server, conn, since_ms).await
                         }
                     }
                 }
@@ -369,7 +367,7 @@ fn interpret(line: &[u8], actions: &mut Vec<Action, 4>) {
             None => return,
         },
         Some(Incoming::IsGpsActive) => Action::ReportGps,
-        Some(Incoming::ActivityFetch) => Action::ActivityFetch,
+        Some(Incoming::ActivityFetch { since_ms }) => Action::ActivityFetch { since_ms },
         Some(Incoming::Other { kind, object }) => {
             match phone_event(kind, object) {
                 Some(event) => {
@@ -461,6 +459,38 @@ async fn update_location(location: Location) {
         info!("ble: location now {}", location);
         storage::save(storage::key::LOCATION, &location.to_bytes()).await;
     }
+}
+
+/// Sends the per-minute activity samples Gadgetbridge asked for.
+async fn send_activity(
+    server: &Server<'_>,
+    conn: &GattConnection<'_, '_, DefaultPacketPool>,
+    since_ms: i64,
+) {
+    send(server, conn, Outgoing::ActivityFetch { done: false }).await;
+    // Copy out in small batches: the history can't be borrowed across the
+    // awaits while sending.
+    let mut next = since_ms.div_euclid(60_000);
+    let mut sent = 0;
+    loop {
+        let batch: Vec<(i64, activity::Sample), 16> =
+            activity::HISTORY.lock(|history| history.borrow().since(next).take(16).collect());
+        let Some(&(last, _)) = batch.last() else {
+            break;
+        };
+        for (utc_minute, sample) in batch {
+            let message = Outgoing::Activity {
+                utc_minute,
+                steps: sample.steps,
+                movement: sample.movement,
+            };
+            send(server, conn, message).await;
+            sent += 1;
+        }
+        next = last + 1;
+    }
+    send(server, conn, Outgoing::ActivityFetch { done: true }).await;
+    info!("ble: sent {} minutes of activity", sent);
 }
 
 /// Sends one message, split into notifications that fit the MTU.

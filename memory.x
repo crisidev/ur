@@ -11,9 +11,10 @@ MEMORY
 {
   FLASH    : ORIGIN = 0x00000000, LENGTH = 512K - 16K
   STORAGE  : ORIGIN = 0x0007C000, LENGTH = 16K
-  RAM      : ORIGIN = 0x20000000, LENGTH = 64K - 32
-  /* The wall-clock checkpoint (src/clock.rs, RETAINED_ADDRESS), at a fixed
-   * address so it survives resets into *different* firmware (reflashing),
-   * whose RAM layout may differ. The stack starts just below it. */
-  RETAINED : ORIGIN = 0x2000FFE0, LENGTH = 32
+  RAM      : ORIGIN = 0x20000000, LENGTH = 64K - 64
+  /* State that survives resets, at fixed addresses so it survives resets
+   * into *different* firmware (reflashing), whose RAM layout may differ:
+   * today's steps (src/activity.rs) at 0x2000FFC0, the wall-clock
+   * checkpoint (src/clock.rs) at 0x2000FFE0. The stack starts below. */
+  RETAINED : ORIGIN = 0x2000FFC0, LENGTH = 64
 }

@@ -91,7 +91,8 @@ pub fn set(utc_seconds: i64, offset_minutes: i16) {
     SYNC.lock(|cell| cell.set(Some(sync)));
 }
 
-fn now_utc_seconds() -> Option<i64> {
+/// Seconds since 1970-01-01T00:00Z, if the phone has told us the time.
+pub fn now_utc_seconds() -> Option<i64> {
     let sync = SYNC.lock(Cell::get)?;
     Some(sync.utc_seconds + (Instant::now() - sync.at).as_secs() as i64)
 }

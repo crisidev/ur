@@ -61,6 +61,8 @@ pub struct Status<'a> {
     pub passkey: Option<u32>,
     /// Today's sunrise/sunset, for the info screen (once the time is known).
     pub sun: Option<Sun>,
+    /// Today's steps (once the time is known).
+    pub steps: Option<u32>,
     pub battery: &'a Battery,
 }
 
@@ -479,7 +481,7 @@ fn send(message: Outgoing) {
 //   39..52   weekday (left), SS in the same digits at 2× (centred), heart
 //            rate (right)
 //   58..62   date, YYYY-MM-DD
-//   66..79   free; meant for the next alarm (milestone 5)
+//   67..73   steps today (left); right half meant for the next alarm
 
 const BACKGROUND: Color = Color::BACKGROUND;
 
@@ -558,6 +560,14 @@ fn render_clock(canvas: &mut Canvas, status: &Status) {
         None => date.push_str("----------").expect("exactly 10 chars"),
     }
     canvas.text_centered(40, 58, &date, Color::TEXT_DIM);
+
+    // Steps today, with a little footprint.
+    if let Some(steps) = status.steps {
+        canvas.sprite(3, 67, font::FOOT_W, &font::FOOT, 1, Color::TEXT_DIM);
+        let mut text = heapless::String::<8>::new();
+        write!(text, "{steps}").expect("u32 fits in 8 digits... almost always");
+        canvas.text(9, 68, &text, Color::TEXT);
+    }
 }
 
 /// One big 5×7 digit at `scale`, with a 1 px drop shadow down and right.

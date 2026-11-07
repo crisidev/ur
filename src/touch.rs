@@ -135,6 +135,7 @@ pub async fn touch_task(
         let mut report = [0u8; 6];
         if let Err(e) = i2c.write_read(ADDRESS, &[REG_REPORT], &mut report).await {
             warn!("touch: read failed: {}", e);
+            crate::i2c::reset_controller().await;
             continue;
         }
         let [_chip_gesture, fingers, x_hi, x_lo, y_hi, y_lo] = report;

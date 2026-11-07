@@ -95,8 +95,9 @@ pub enum Incoming<'a> {
     Gps { latitude: f64, longitude: f64 },
     /// `{"t":"is_gps_active"}`: Gadgetbridge asking whether we want GPS.
     IsGpsActive,
-    /// `{"t":"actfetch","ts":…}`: send activity samples since `ts`.
-    ActivityFetch,
+    /// `{"t":"actfetch","ts":…}`: send activity samples since `ts` (UTC
+    /// milliseconds).
+    ActivityFetch { since_ms: i64 },
     /// Anything else in `GB(…)`, for the caller to dispatch on `t` (the
     /// object is still available to read fields from).
     Other { kind: &'a str, object: Object<'a> },
@@ -116,7 +117,9 @@ pub fn parse(line: &[u8]) -> Option<Incoming<'_>> {
             longitude: object.get("lon")?.as_f64()?,
         },
         "is_gps_active" => Incoming::IsGpsActive,
-        "actfetch" => Incoming::ActivityFetch,
+        "actfetch" => Incoming::ActivityFetch {
+            since_ms: object.get("ts").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64,
+        },
         _ => Incoming::Other { kind, object },
     })
 }
@@ -346,8 +349,14 @@ pub enum Outgoing {
     },
     /// Ask Gadgetbridge to start (or stop) forwarding phone GPS.
     GpsPower(bool),
-    /// Bracket an activity-sample transfer (samples come in milestone 2).
+    /// Bracket an activity-sample transfer.
     ActivityFetch { done: bool },
+    /// One minute of activity.
+    Activity {
+        utc_minute: i64,
+        steps: u16,
+        movement: u16,
+    },
     /// Answer an incoming call.
     Call(CallAction),
     /// Control the phone's media player.
@@ -396,6 +405,17 @@ impl Outgoing {
                 line,
                 r#"{{"t":"actfetch","state":"{}"}}"#,
                 if done { "end" } else { "start" }
+            ),
+            Self::Activity {
+                utc_minute,
+                steps,
+                movement,
+            } => write!(
+                line,
+                r#"{{"t":"act","ts":{},"stp":{},"mov":{}}}"#,
+                utc_minute * 60_000,
+                steps,
+                movement
             ),
             // Gadgetbridge upper-cases these and looks them up in its call
             // and media event enums.
