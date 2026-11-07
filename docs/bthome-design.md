@@ -26,7 +26,7 @@ produced every example payload below.
 | Encryption | Encrypted by default (device info byte `0x45`). The key is generated on the watch from the RNG at first boot, stored in flash, and shown on a setup page for typing into HA. The counter starts at 256 and the watch reserves blocks of 64 in flash. |
 | Radio | Stays on **legacy advertising with one advertising set** (verified: our SDC library has no extended advertising). While connected, a burst runs alongside the connection. While disconnected, the connectable advertising pauses for the burst (about 1.2 s) and then resumes. |
 | Burst | 20–30 ms interval for 1.2 s, about 45 events. This stays well under HA's 4 s duplicate window. It costs roughly 0.3 µAh per press. |
-| Feedback | A buzz plus a tile flash plus the word "SENT", which only means the watch transmitted. An optional "HA OK" ack can come back through the phone via HA Companion → Gadgetbridge intent → UART line. |
+| Feedback | A buzz plus a tile flash plus the word "SENT", which only means the watch transmitted. No ack from HA (see 6.2). |
 | Cost | About 0.3 KiB of static RAM if sealing runs on the stack. About 5–10 KiB of flash (estimate) because `aes 0.8` is already linked through trouble-host's `security` feature. |
 
 ---
@@ -49,7 +49,7 @@ produced every example payload below.
 ### 1.2 Layout (80×80 canvas, 3×5 capitals font)
 
 ```
- y 0..9    "HOME"            ack text ("SENT", "HA OK", "NOT SENT")
+ y 0..9    "HOME"            ack text ("SENT", "NOT SENT")
  y 10..44  [ tile 1 ][ tile 2 ]     each 40×35 canvas px ≈ 120×105 panel px
  y 45..79  [ tile 3 ][ tile 4 ]     (≈13 mm targets; 1 px gutters)
 ```
@@ -512,24 +512,11 @@ loop {
   so the watch can't know whether HA heard it. Never show a checkmark for
   this state.
 
-### 6.2 Optional end-to-end ack (when the phone is connected)
+### 6.2 No end-to-end ack
 
-- The automation's last action sends a broadcast intent through HA Companion
-  to Gadgetbridge's `com.banglejs.uart.tx` with the line
-  `GB({"t":"ur_ha","b":<tile>})`. Gadgetbridge has to be connected and have
-  "Allow intents" enabled.
-  - Package name: `nodomain.freeyourgadget.gadgetbridge` (`.nightly` for
-    nightly builds).
-  - Intent-extras syntax: per REPORT.md option 2 and
-    `web/companion_notification_commands.txt`.
-- `ble::phone_event` maps `"ur_ha"` to `PhoneEvent::HaAck { tile }`. The UI
-  shows "HA OK" and a second short tick, but only if that tile was pressed in
-  the last ~10 s. Otherwise it ignores the ack, so a stale ack never confirms
-  the wrong press.
-- Latency (assumed): under 1 s when Companion has a local-push websocket on
-  home Wi-Fi, otherwise seconds via FCM.
-- The ack is best-effort. Its absence proves nothing, so the UI never shows
-  "failed" for a missing ack.
+Out of scope (decided 2026-11-07): no confirmation path back from HA. An
+ack through the HA Companion app and Gadgetbridge intents was considered
+and dropped, so "SENT" is all the watch ever knows.
 
 ---
 
@@ -663,7 +650,6 @@ loop {
 | T9 | Wrong key in HA | HA raises a repair issue. The watch still shows "SENT", which is honest. |
 | T10 | Range: ESP32 proxy at the far end of the flat | Count misses over 50 presses. If more than 1 % are missed, lengthen the burst toward 2 s or raise the proxy scan window. |
 | T11 | Battery | Compare the daily drain over 2 days with ~50 presses a day against a baseline. The difference should be indistinguishable. |
-| T12 | Optional ack | HA automation → Companion intent → "HA OK" on the watch within ~1–3 s. A stale ack (>10 s) is ignored. |
 
 ---
 
