@@ -1211,8 +1211,9 @@ fn render_battery(canvas: &mut Canvas, battery: &Battery, uptime_secs: u64) {
 // Info screen
 // ==============================================================================
 
-/// First value row, and the spacing between rows.
-const INFO_TOP: i32 = 12;
+/// First value row, and the spacing between rows: nine rows, the last
+/// ending on the screen's bottom pixel row.
+const INFO_TOP: i32 = 11;
 const INFO_LINE: i32 = 8;
 
 fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
@@ -1292,12 +1293,13 @@ fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
     // `cargo build`, which doesn't know.
     // TODO: tapping still buzzes (a motor test); drop that once alarms
     // exercise the motor.
-    canvas.text(4, 74, "BUILD", Color::TEXT_DIM);
+    let y = y + INFO_LINE;
+    canvas.text(4, y, "BUILD", Color::TEXT_DIM);
     let build = match env!("UR_BUILD") {
         "" => "DEV",
         build => build,
     };
-    canvas.text_right(77, 74, build, Color::TEXT);
+    canvas.text_right(77, y, build, Color::TEXT);
 }
 
 // ==============================================================================
