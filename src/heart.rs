@@ -72,6 +72,16 @@ static WATCHING: AtomicBool = AtomicBool::new(false);
 /// Raised when [`WATCHING`] becomes true, to start a session right away.
 static WATCH_STARTED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
+/// Whether the last session saw skin; for sleep tracking, which must tell
+/// a still wrist from a watch on the nightstand.
+static WORN: Mutex<CriticalSectionRawMutex, Cell<Option<bool>>> = Mutex::new(Cell::new(None));
+
+/// Whether the watch is on a wrist, as of the last measurement session
+/// (`None` before the first). Up to [`INTERVAL`] stale.
+pub fn worn() -> Option<bool> {
+    WORN.lock(Cell::get)
+}
+
 /// The latest reading and when it was taken.
 static LATEST: Mutex<CriticalSectionRawMutex, Cell<Option<(u8, Instant)>>> =
     Mutex::new(Cell::new(None));
@@ -355,6 +365,16 @@ pub async fn heart_task(i2c: Device) {
             Ok(Ended::TooBright) => info!("heart: too much light (after {} s)", elapsed),
             Err(()) => warn!("heart: lost the sensor mid-session"),
         }
+        // A pulse means skin. No light coming back, or ambient light
+        // flooding in, means the sensor isn't against anything. Light
+        // without a pulse proves nothing: a desk reflects the LED too (the
+        // dev kit lying on one times out exactly like a busy wrist).
+        let worn = match outcome {
+            Ok(Ended::Measured) => Some(true),
+            Ok(Ended::NoContact | Ended::TooBright) => Some(false),
+            Ok(Ended::TimedOut) | Err(()) => None,
+        };
+        WORN.lock(|w| w.set(worn));
         // A reading resets the background schedule; so does a failed
         // background session (retrying right away would most likely fail
         // the same way: the watch is off the wrist, or the wrist is busy).

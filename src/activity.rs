@@ -20,7 +20,7 @@
 //! rate, recorded by [`crate::heart`], and the heart-rate measurement asks
 //! [`movement`] whether the wrist is still enough to trust.
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicU16, Ordering};
 
 use defmt::{info, warn};
@@ -29,7 +29,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::{Duration, Timer, with_timeout};
 use embedded_hal_async::i2c::I2c;
 
-use crate::clock;
+use crate::{clock, sleep};
 use crate::i2c::Device;
 
 // ==============================================================================
@@ -244,7 +244,57 @@ pub struct Sample {
     /// The heart rate measured during the minute, or 0 if none was (as in
     /// Gadgetbridge, which treats 0 as "not measured").
     pub heart_rate: u8,
+    /// Packed into the byte the struct would otherwise pad with (24 hours
+    /// of samples cost the same 8.6 KB either way): the minute's
+    /// [`sleep::Kind`] (bits 0–3), whether the watch was worn (bits 4–5: 0
+    /// unknown, 1 yes, 2 no), and whether the minute was recorded at all
+    /// (bit 6).
+    flags: u8,
 }
+
+impl Sample {
+    const SEEN: u8 = 0x40;
+
+    pub fn seen(&self) -> bool {
+        self.flags & Self::SEEN != 0
+    }
+
+    pub fn sleep(&self) -> sleep::Kind {
+        sleep::Kind::from_bits(self.flags & 0x0F)
+    }
+
+    fn worn(&self) -> Option<bool> {
+        match (self.flags >> 4) & 0x3 {
+            1 => Some(true),
+            2 => Some(false),
+            _ => None,
+        }
+    }
+
+    fn set_seen(&mut self, worn: Option<bool>) {
+        let worn = match worn {
+            None => 0,
+            Some(true) => 1,
+            Some(false) => 2,
+        };
+        self.flags = (self.flags & 0x0F) | Self::SEEN | (worn << 4);
+    }
+
+    fn set_sleep(&mut self, kind: sleep::Kind) {
+        self.flags = (self.flags & 0xF0) | kind as u8;
+    }
+
+    fn evidence(&self) -> sleep::Minute {
+        sleep::Minute {
+            seen: self.seen(),
+            movement: self.movement,
+            steps: self.steps,
+            worn: self.worn(),
+        }
+    }
+}
+
+const _: () = assert!(size_of::<Sample>() == 6, "flags must fit in the padding");
 
 /// A ring of per-minute samples, indexed by UTC minute. Minutes the watch
 /// didn't see (off, or before the phone set the clock) stay zero.
@@ -261,6 +311,7 @@ impl History {
                 steps: 0,
                 movement: 0,
                 heart_rate: 0,
+                flags: 0,
             }; HISTORY_MINUTES],
             newest: None,
         }
@@ -291,8 +342,68 @@ impl History {
         let oldest = newest.saturating_sub(HISTORY_MINUTES as i64 - 1).max(since);
         (oldest..=newest)
             .map(|m| (m, self.samples[Self::slot(m)]))
-            .filter(|(_, s)| s.steps > 0 || s.movement > 0 || s.heart_rate > 0)
+            .filter(|(_, s)| s.seen() || s.heart_rate > 0)
     }
+
+    /// Re-classifies the recent past's sleep (see [`sleep`]): the last
+    /// [`sleep::WINDOW`] minutes, with [`sleep::CONTEXT`] more before them
+    /// for context.
+    fn classify_sleep(&mut self) {
+        const SPAN: usize = sleep::WINDOW + sleep::CONTEXT;
+        let Some(newest) = self.newest else {
+            return;
+        };
+        let start = newest - SPAN as i64 + 1;
+        let before = if newest - (start - 1) < HISTORY_MINUTES as i64 {
+            self.samples[Self::slot(start - 1)].sleep()
+        } else {
+            sleep::Kind::Unknown
+        };
+        let mut evidence = [sleep::Minute::default(); SPAN];
+        for (i, minute) in evidence.iter_mut().enumerate() {
+            *minute = self.samples[Self::slot(start + i as i64)].evidence();
+        }
+        let mut kinds = [sleep::Kind::Unknown; SPAN];
+        sleep::classify(before, &evidence, &mut kinds);
+        for (i, kind) in kinds.iter().enumerate().skip(sleep::CONTEXT) {
+            self.samples[Self::slot(start + i as i64)].set_sleep(*kind);
+        }
+    }
+
+    /// The most recent sleep in the history (see [`sleep::last_sleep`]).
+    fn last_sleep(&self) -> Option<Sleep> {
+        let newest = self.newest?;
+        let oldest = newest - HISTORY_MINUTES as i64 + 1;
+        let mut kinds = [sleep::Kind::Unknown; HISTORY_MINUTES];
+        for (i, kind) in kinds.iter_mut().enumerate() {
+            *kind = self.samples[Self::slot(oldest + i as i64)].sleep();
+        }
+        let (start, end, asleep) = sleep::last_sleep(&kinds)?;
+        Some(Sleep {
+            start_utc_minute: oldest + start as i64,
+            end_utc_minute: oldest + end as i64,
+            asleep_minutes: asleep as u16,
+        })
+    }
+}
+
+/// A night's (or nap's) sleep.
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct Sleep {
+    pub start_utc_minute: i64,
+    /// The minute after the last asleep one.
+    pub end_utc_minute: i64,
+    /// Minutes actually asleep (light or deep) in between.
+    pub asleep_minutes: u16,
+}
+
+static LAST_SLEEP: Mutex<CriticalSectionRawMutex, Cell<Option<Sleep>>> =
+    Mutex::new(Cell::new(None));
+
+/// The most recent sleep in the last 24 hours, for the UI; updated every
+/// minute.
+pub fn last_sleep() -> Option<Sleep> {
+    LAST_SLEEP.lock(Cell::get)
 }
 
 struct Today {
@@ -415,7 +526,8 @@ pub async fn activity_task(i2c: Device) {
         let Some(utc_minute) = clock::now_utc_seconds().map(|s| s.div_euclid(60)) else {
             continue;
         };
-        if minute != Some(utc_minute) {
+        let new_minute = minute != Some(utc_minute);
+        if new_minute {
             (minute, movement_sum, movement_samples) = (Some(utc_minute), 0, 0);
         }
         movement_sum += moved;
@@ -430,7 +542,24 @@ pub async fn activity_task(i2c: Device) {
                 .steps
                 .saturating_add(new_steps.min(u32::from(u16::MAX)) as u16);
             sample.movement = movement;
+            sample.set_seen(crate::heart::worn());
         });
+        // Once a minute: revise the recent past's sleep, and the summary.
+        if new_minute {
+            let (summary, changed) = HISTORY.lock(|history| {
+                let mut history = history.borrow_mut();
+                history.classify_sleep();
+                let summary = history.last_sleep();
+                (summary, summary != LAST_SLEEP.lock(Cell::get))
+            });
+            if changed && let Some(sleep) = summary {
+                info!(
+                    "sleep: {} min asleep, minutes {}..{} (UTC)",
+                    sleep.asleep_minutes, sleep.start_utc_minute, sleep.end_utc_minute
+                );
+            }
+            LAST_SLEEP.lock(|s| s.set(summary));
+        }
     }
 }
 

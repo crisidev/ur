@@ -1,0 +1,12 @@
+[package]
+name = "ppg-test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Host-side tests for `src/ppg.rs` (included via `#[path]`). Not part of the
+# firmware workspace: build with `--manifest-path` and the host target.
+[workspace]
+
+[dependencies]
+libm = "0.2.16"

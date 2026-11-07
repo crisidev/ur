@@ -359,6 +359,10 @@ pub enum Outgoing {
         /// 0 if not measured, which is also what Gadgetbridge assumes when
         /// `hrm` is missing.
         heart_rate: u8,
+        /// Gadgetbridge's `ActivityKind` name (e.g. `LIGHT_SLEEP`); `None`
+        /// for plain activity, its default. Its sleep charts, and its
+        /// Health Connect export, build sleep sessions from these.
+        kind: Option<&'static str>,
     },
     /// Answer an incoming call.
     Call(CallAction),
@@ -414,14 +418,19 @@ impl Outgoing {
                 steps,
                 movement,
                 heart_rate,
+                kind,
             } => write!(
                 line,
-                r#"{{"t":"act","ts":{},"stp":{},"mov":{},"hrm":{}}}"#,
+                r#"{{"t":"act","ts":{},"stp":{},"mov":{},"hrm":{}"#,
                 utc_minute * 60_000,
                 steps,
                 movement,
                 heart_rate
-            ),
+            )
+            .and_then(|()| match kind {
+                Some(kind) => write!(line, r#","act":"{}"}}"#, kind),
+                None => write!(line, "}}"),
+            }),
             // Gadgetbridge upper-cases these and looks them up in its call
             // and media event enums.
             Self::Call(action) => write!(

@@ -1,0 +1,289 @@
+//! Sleep, from wrist movement: which minutes were spent asleep (lightly or
+//! deeply), restless, awake, or with the watch off the wrist.
+//!
+//! This is actigraphy, the method of research sleep watches: during sleep
+//! the wrist is still, apart from brief stirs. The rules, applied to each
+//! minute's movement (from [`crate::activity`]) and to whether the heart
+//! rate sensor last saw skin:
+//!
+//! - **Falling asleep** is [`ONSET`] minutes of stillness, give or take
+//!   stirs of up to [`STIR`] minutes; the sleep is dated from the start of
+//!   the stillness, not the moment it qualified.
+//!   Within a night (after a wake of up to [`SAME_NIGHT_GAP`] minutes),
+//!   [`RESUME`] minutes are enough.
+//! - **Waking** is [`WAKE_RUN`] minutes of movement, or walking (at least
+//!   [`WAKE_STEPS`] steps in a minute). It's dated from the first of them.
+//! - Shorter movement within sleep is a stir: up to [`STIR`] minutes stay
+//!   light sleep, longer is **restless** (Gadgetbridge's "awake during
+//!   sleep").
+//! - **Deep sleep** is the inside of a long, nearly motionless stretch:
+//!   after [`DEEP_SETTLE`] minutes of a run of at least [`DEEP_RUN`]
+//!   minutes below [`DEEP_LIMIT`]. Wrist movement can't truly tell sleep
+//!   stages apart (that takes brain waves); deep stillness is the usual
+//!   stand-in, and good enough to steer a smart alarm away from it.
+//! - **Not worn** is when the heart rate sensor's last look found no skin.
+//!
+//! Since sleep is recognised only after the fact, classification runs over
+//! a trailing window ([`WINDOW`] minutes, plus [`CONTEXT`] before it) every
+//! minute, revising its recent past. Minutes older than the window are
+//! final.
+//!
+//! The thresholds are first guesses in our movement units (Bangle.js'
+//! 8192-per-g; ~25 lying on a desk, hundreds when handled), to be tuned from
+//! field logs of real nights.
+//!
+//! This module knows nothing about the hardware or the clock, so it can be
+//! tested on a computer (see `tmp/sleep-test`).
+
+/// What a minute was spent doing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[cfg_attr(target_os = "none", derive(defmt::Format))]
+#[repr(u8)]
+pub enum Kind {
+    /// No data (the watch was off, or the minute isn't classified yet).
+    #[default]
+    Unknown = 0,
+    Awake = 1,
+    Light = 2,
+    Deep = 3,
+    /// Awake for a while within sleep.
+    Restless = 4,
+    NotWorn = 5,
+}
+
+impl Kind {
+    pub fn from_bits(bits: u8) -> Self {
+        match bits {
+            1 => Self::Awake,
+            2 => Self::Light,
+            3 => Self::Deep,
+            4 => Self::Restless,
+            5 => Self::NotWorn,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn is_sleep(self) -> bool {
+        matches!(self, Self::Light | Self::Deep | Self::Restless)
+    }
+
+    /// The name Gadgetbridge's `ActivityKind` uses, for activity samples.
+    /// `None` for plain activity, which is Gadgetbridge's default.
+    pub fn gadgetbridge_name(self) -> Option<&'static str> {
+        match self {
+            Self::Unknown | Self::Awake => None,
+            Self::Light => Some("LIGHT_SLEEP"),
+            Self::Deep => Some("DEEP_SLEEP"),
+            Self::Restless => Some("AWAKE_SLEEP"),
+            Self::NotWorn => Some("NOT_WORN"),
+        }
+    }
+}
+
+/// One minute's evidence.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Minute {
+    /// Whether the watch recorded this minute at all.
+    pub seen: bool,
+    pub movement: u16,
+    pub steps: u16,
+    /// Whether the heart rate sensor last saw skin, if it has looked.
+    pub worn: Option<bool>,
+}
+
+// ==============================================================================
+// Thresholds
+// ==============================================================================
+
+/// Movement (averaged over three minutes) below which a minute is still.
+/// TODO: tune from field logs.
+pub const STILL_LIMIT: u16 = 120;
+/// Movement (averaged likewise) below which a still minute is nearly
+/// motionless, for deep sleep. TODO: tune from field logs.
+pub const DEEP_LIMIT: u16 = 50;
+/// Minutes of stillness that make sleep. Long enough that sitting still
+/// through a TV episode with the odd fidget doesn't count.
+pub const ONSET: usize = 20;
+/// Minutes of stillness that make sleep again soon after waking (within
+/// [`SAME_NIGHT_GAP`]): falling back asleep in the night is quicker, and a
+/// false wake (a cluster of stirs) shouldn't cost 20 minutes of sleep.
+pub const RESUME: usize = 10;
+/// Minutes of movement that end sleep. Two stirs in a row already make
+/// five (see [`STIR`]), so this is one more.
+pub const WAKE_RUN: usize = 6;
+/// Steps in a minute that end sleep at once: that's getting up.
+pub const WAKE_STEPS: u16 = 10;
+/// Moving minutes within sleep that are just a stir (light sleep). Three,
+/// because the three-minute smoothing turns one twitchy minute into three
+/// moving ones.
+pub const STIR: usize = 3;
+/// Minimum run of nearly motionless sleep minutes that contains deep sleep.
+pub const DEEP_RUN: usize = 20;
+/// How far into such a run deep sleep starts.
+pub const DEEP_SETTLE: usize = 10;
+/// How many recent minutes are re-classified (and rewritten) every minute.
+/// Must cover the longest look-back of any rule (onset: [`ONSET`]), with
+/// room to spare.
+pub const WINDOW: usize = 90;
+/// How many minutes before the window are classified along with it, as
+/// context, but not rewritten. Without it, the oldest minutes of every pass
+/// (the ones about to become final) would always look like the start of a
+/// stretch: never deep, since deep sleep starts [`DEEP_SETTLE`] minutes
+/// into one.
+pub const CONTEXT: usize = 30;
+
+// ==============================================================================
+// Classification
+// ==============================================================================
+
+/// Classifies `minutes` (oldest first) into `out`, given the class of the
+/// minute just before them (final, from an earlier pass).
+pub fn classify(before: Kind, minutes: &[Minute], out: &mut [Kind]) {
+    assert_eq!(minutes.len(), out.len(), "one class per minute");
+    let n = minutes.len();
+
+    // Movement averaged with each neighbour, so one twitchy minute in the
+    // middle of stillness (or one still minute while active) doesn't flip
+    // the verdict.
+    let smoothed = |t: usize| -> u16 {
+        let range = t.saturating_sub(1)..(t + 2).min(n);
+        let seen = minutes[range].iter().filter(|m| m.seen);
+        let (sum, count) = seen.fold((0u32, 0u32), |(s, c), m| (s + u32::from(m.movement), c + 1));
+        (sum / count.max(1)) as u16
+    };
+    let still = |t: usize| minutes[t].seen && minutes[t].steps == 0 && smoothed(t) < STILL_LIMIT;
+    // The length of the run of minutes from `t` for which `f` holds.
+    let run = |t: usize, f: &dyn Fn(usize) -> bool| (t..n).take_while(|&u| f(u)).count();
+    // The length of the stillness from `t`, bridging stirs of up to `STIR`
+    // minutes, up to its last still minute.
+    let stillness = |t: usize| {
+        let mut end = t;
+        let mut u = t;
+        while u < n {
+            if still(u) {
+                u += 1;
+                end = u;
+            } else {
+                let gap = run(u, &|v| minutes[v].seen && !still(v));
+                // An unseen minute (gap 0) ends the stillness too.
+                if gap == 0 || gap > STIR || u + gap == n {
+                    break;
+                }
+                u += gap;
+            }
+        }
+        end - t
+    };
+
+    let mut asleep = before.is_sleep();
+    // When we were last asleep (as a minute index, -1 being just before
+    // `minutes`), for the quicker return to sleep within a night.
+    let mut last_asleep: Option<isize> = asleep.then_some(-1);
+    let mut t = 0;
+    while t < n {
+        let minute = minutes[t];
+        if !minute.seen {
+            out[t] = Kind::Unknown;
+            t += 1;
+            continue;
+        }
+        if minute.worn == Some(false) {
+            out[t] = Kind::NotWorn;
+            asleep = false;
+            t += 1;
+            continue;
+        }
+        if !asleep {
+            // Sleep starts here if the stillness from here lasts long
+            // enough. (At the end of the window that's not known yet; this
+            // minute stays awake for now, and a later pass revises it.)
+            let length = if still(t) { stillness(t) } else { 0 };
+            let same_night =
+                last_asleep.is_some_and(|last| t as isize - last <= SAME_NIGHT_GAP as isize);
+            if length >= if same_night { RESUME } else { ONSET } {
+                asleep = true;
+                // Stirs inside are sorted out below, as within any sleep.
+                out[t] = Kind::Light;
+                t += 1;
+            } else {
+                out[t] = Kind::Awake;
+                t += 1;
+            }
+            continue;
+        }
+        // Asleep.
+        last_asleep = Some(t as isize);
+        if minute.steps >= WAKE_STEPS {
+            asleep = false;
+            out[t] = Kind::Awake;
+            t += 1;
+            continue;
+        }
+        if still(t) {
+            out[t] = Kind::Light;
+            t += 1;
+            continue;
+        }
+        let moving = run(t, &|u| {
+            minutes[u].seen && minutes[u].worn != Some(false) && !still(u)
+        });
+        let ends_window = t + moving == n;
+        let kind = if moving >= WAKE_RUN {
+            asleep = false;
+            Kind::Awake
+        } else if moving > STIR || ends_window {
+            // At the window's end, unfinished movement is restless until
+            // it's clear whether it becomes waking.
+            Kind::Restless
+        } else {
+            Kind::Light
+        };
+        out[t..t + moving].fill(kind);
+        t += moving;
+    }
+
+    // Deep sleep: the inside of long, nearly motionless stretches of sleep.
+    let mut t = 0;
+    while t < n {
+        let length = (t..n)
+            .take_while(|&u| out[u] == Kind::Light && smoothed(u) < DEEP_LIMIT)
+            .count();
+        if length >= DEEP_RUN {
+            out[t + DEEP_SETTLE..t + length].fill(Kind::Deep);
+        }
+        t += length.max(1);
+    }
+}
+
+// ==============================================================================
+// Summaries
+// ==============================================================================
+
+/// Awake minutes that still count as the same night (getting up for the
+/// bathroom, lying awake for a while).
+pub const SAME_NIGHT_GAP: usize = 45;
+
+/// The most recent sleep in `kinds` (oldest first): (index of its first
+/// minute, index after its last, minutes actually asleep). Wakes shorter
+/// than [`SAME_NIGHT_GAP`] are part of it; sleep still going on counts.
+pub fn last_sleep(kinds: &[Kind]) -> Option<(usize, usize, usize)> {
+    let end = kinds.iter().rposition(|k| k.is_sleep())? + 1;
+    let mut start = end - 1;
+    let mut gap = 0;
+    for i in (0..end).rev() {
+        if kinds[i].is_sleep() {
+            start = i;
+            gap = 0;
+        } else {
+            gap += 1;
+            if gap > SAME_NIGHT_GAP {
+                break;
+            }
+        }
+    }
+    let asleep = kinds[start..end]
+        .iter()
+        .filter(|k| matches!(k, Kind::Light | Kind::Deep))
+        .count();
+    Some((start, end, asleep))
+}

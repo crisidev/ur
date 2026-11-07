@@ -10,7 +10,8 @@
 //! - [`touch`], the button task here: input, delivered through [`INPUT`].
 //! - [`motor`]: vibration patterns.
 //! - [`battery`]: battery voltage and charge state.
-//! - [`activity`]: steps and movement from the accelerometer.
+//! - [`activity`] / [`sleep`]: steps, movement, and sleep, from the
+//!   accelerometer.
 //! - [`heart`] / [`ppg`]: heart rate from the optical sensor, and the
 //!   signal processing behind it.
 //! - [`i2c`]: the shared sensor bus.
@@ -44,6 +45,7 @@ mod heart;
 mod i2c;
 mod motor;
 mod ppg;
+mod sleep;
 mod spi;
 mod spi_flash;
 mod storage;
@@ -443,6 +445,7 @@ async fn main(spawner: Spawner) {
                 update_progress: dfu::PROGRESS.lock(Cell::get),
                 sun: geo::sun(),
                 steps: activity::steps_today(),
+                sleep: activity::last_sleep(),
                 heart_rate: heart::current(now),
                 battery: &battery,
             };

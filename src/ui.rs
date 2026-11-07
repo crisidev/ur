@@ -67,6 +67,8 @@ pub struct Status<'a> {
     pub steps: Option<u32>,
     /// The latest heart rate, unless there's none recent enough to show.
     pub heart_rate: Option<u8>,
+    /// The most recent sleep within the last day.
+    pub sleep: Option<crate::activity::Sleep>,
     pub battery: &'a Battery,
 }
 
@@ -689,9 +691,26 @@ fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
         "WAITING"
     };
     canvas.text_right(77, y, phone, Color::TEXT);
+    let y = y + INFO_LINE;
+    // How long the last night's (or nap's) sleep was, not counting time
+    // lying awake.
+    canvas.text(4, y, "SLEEP", Color::TEXT_DIM);
+    let mut slept = heapless::String::<12>::new();
+    match status.sleep {
+        Some(sleep) => write!(
+            slept,
+            "{}:{:02}",
+            sleep.asleep_minutes / 60,
+            sleep.asleep_minutes % 60
+        )
+        .expect("fits in 12"),
+        None => slept.push_str("--:--").expect("fits in 12"),
+    }
+    canvas.text_right(77, y, &slept, Color::TEXT);
 
-    canvas.text(4, 68, "HOLD: NEXT THEME", Color::TEXT_FAINT);
-    canvas.text(4, 74, "TAP: TEST BUZZ", Color::TEXT_FAINT);
+    // TODO: tapping still buzzes (a motor test); drop that once alarms
+    // exercise the motor.
+    canvas.text(4, 74, "HOLD: NEXT THEME", Color::TEXT_FAINT);
 }
 
 // ==============================================================================

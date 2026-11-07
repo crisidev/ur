@@ -680,7 +680,11 @@ async fn send_activity(
     send(server, conn, Outgoing::ActivityFetch { done: false }).await;
     // Copy out in small batches: the history can't be borrowed across the
     // awaits while sending.
-    let mut next = since_ms.div_euclid(60_000);
+    //
+    // Start a sleep window early: the recent past's sleep classes may have
+    // been revised since the last sync (sleep is only recognised after the
+    // fact), and Gadgetbridge overwrites samples it already has.
+    let mut next = since_ms.div_euclid(60_000) - crate::sleep::WINDOW as i64;
     let mut sent = 0;
     loop {
         let batch: Vec<(i64, activity::Sample), 16> =
@@ -694,6 +698,7 @@ async fn send_activity(
                 steps: sample.steps,
                 movement: sample.movement,
                 heart_rate: sample.heart_rate,
+                kind: sample.sleep().gadgetbridge_name(),
             };
             send(server, conn, message).await;
             sent += 1;
