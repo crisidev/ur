@@ -65,7 +65,9 @@ pub async fn input_task() {
                     // As long as a sender gets (`ui::PhoneEvent`'s 40).
                     2 => ("Calendar", "Quarterly planning: platform team, 4B"),
                     3 => ("Signal", "Nora Lindqvist"),
-                    _ => ("Signal", "Åse Kristiansen"),
+                    // Accents, and a hyphenated word.
+                    4 => ("Signal", "Åse Kristiansen"),
+                    _ => ("Signal", "Jane Smith"),
                 };
                 let _ = app.push_str(from);
                 let _ = who.push_str(sender);
