@@ -51,6 +51,9 @@ pub async fn input_task() {
                 INPUT.send(InputEvent::Glance).await;
                 continue;
             }
+            // The way a dependency's `defmt::panic!` or `defmt::unwrap!`
+            // fails, for testing the panic breadcrumb's backtrace.
+            11 => defmt::panic!("debug: panicking on purpose"),
             10 => {
                 defmt::warn!("debug: hanging on purpose");
                 #[allow(clippy::empty_loop)]

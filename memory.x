@@ -34,8 +34,8 @@ MEMORY
   /* State that survives resets, at fixed addresses so it survives resets
    * into *different* firmware (reflashing, updates), whose RAM layout may
    * differ: today's steps (src/activity.rs) at +0, the wall-clock checkpoint
-   * (src/clock.rs) at +0x20, where the last panic happened
-   * (src/field_log.rs) at +0x40.
+   * (src/clock.rs) at +0x20, where the last panic (or watchdog bite)
+   * happened, with a backtrace (src/field_log.rs), at +0x40 to the end.
    *
    * Every reset runs the bootloader first, and it uses far more RAM than
    * its symbols suggest. Painting RAM over SWD, then running the bootloader
@@ -45,7 +45,7 @@ MEMORY
    * middle of that gap. Other paths (a swap, a rollback) may reach further;
    * then the magic numbers reject what's left, and the state is lost, not
    * misread. */
-  RETAINED : ORIGIN = 0x2000D400, LENGTH = 128
+  RETAINED : ORIGIN = 0x2000D400, LENGTH = 256
 }
 
 /* The stack takes the 11 KiB above the retained block, growing down towards

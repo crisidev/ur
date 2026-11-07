@@ -200,7 +200,17 @@ defmt-print -e ur-logging-0.9.0.elf < logs/field-log-0.9.0.defmt > decoded.log
 ```
 
 Every build also logs why the chip last reset, and, after a panic or a
-watchdog reset, where the previous run was.
+watchdog reset, where the previous run was, with a backtrace: the call
+sites found on the stack, innermost first. A few are stale leftovers, but
+the real chain is among them. Decode them with the build's ELF (`-i`
+unfolds what was inlined into each):
+
+```sh
+llvm-addr2line -fipe ur-logging-0.9.0.elf 0x2b8b2 0x25c0a
+```
+
+A hang with interrupts masked can't be caught: the watchdog's interrupt
+never runs, so only the reset reason says it happened.
 
 Some host-test crates replay decoded logs, to tune against real wrists:
 

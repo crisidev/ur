@@ -376,6 +376,7 @@ pub fn report_last_reset() {
             "the previous run hung: watchdog at pc {=u32:#010x}, lr {=u32:#010x}",
             crumb.file as u32, crumb.file_len
         );
+        report_trace(&crumb.trace);
         return;
     }
     if crumb.magic != BREADCRUMB_MAGIC {
@@ -397,9 +398,33 @@ pub fn report_last_reset() {
         "?"
     };
     warn!("the previous run panicked at {}:{}", file, crumb.line);
+    report_trace(&crumb.trace);
 }
 
-/// Where a panic happened, kept across the reset that follows it.
+/// Logs a breadcrumb's backtrace: the calls whose return addresses check
+/// out as such (the watchdog's are recorded unchecked, for lack of time),
+/// innermost first, as the address of each call instruction, so that
+/// `llvm-addr2line -fipe <the ELF> <address>` names the calling line (with
+/// what was inlined into it). Not the return address itself: after a call
+/// that never returns (a panic), that's the first byte of the next function.
+fn report_trace(trace: &[u32; TRACE]) {
+    let text = text();
+    // Inside the call: BL's second half, or BLX itself.
+    let mut calls = trace
+        .iter()
+        .filter(|&&word| return_address(word, &text, true))
+        .map(|&word| (word & !1) - 2);
+    let Some(first) = calls.next() else {
+        return;
+    };
+    warn!("  backtrace (innermost call first): {=u32:#07x}", first);
+    for call in calls {
+        warn!("  backtrace: {=u32:#07x}", call);
+    }
+}
+
+/// Where a panic happened (or the watchdog bit), kept across the reset
+/// that follows it.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Breadcrumb {
@@ -408,6 +433,8 @@ struct Breadcrumb {
     file: *const u8,
     file_len: u32,
     line: u32,
+    /// A backtrace, of sorts: see [`scan_stack`].
+    trace: [u32; TRACE],
 }
 
 impl Breadcrumb {
@@ -417,7 +444,96 @@ impl Breadcrumb {
         file: core::ptr::null(),
         file_len: 0,
         line: 0,
+        trace: [0; TRACE],
     };
+}
+
+/// Return addresses kept in a breadcrumb: what fills its 192 bytes. Plenty
+/// are stale (a `defmt::panic!` logs its message first, leaving the logger's
+/// return addresses on the stack), so the real call chain needs room
+/// alongside them.
+const TRACE: usize = 43;
+
+// ==============================================================================
+// Backtraces
+// ==============================================================================
+//
+// The firmware is built without frame pointers or unwind tables, so there's
+// no exact unwinding. Instead, the classic embedded stand-in: scan the stack
+// for words that are return addresses. A call (`BL`, or `BLX` to a
+// register) leaves the address of the instruction after it, with the Thumb
+// bit set, in LR, which the callee pushes if it calls on. So a stack word
+// that's odd, points into our code, and follows a call instruction there is
+// almost certainly a frame's return address. The innermost ones name the
+// code that panicked (or hung), and their order is the call chain, give or
+// take a stale word left by an earlier, deeper call.
+//
+// This is what identifies a panic raised through `defmt::panic!` or
+// `defmt::unwrap!` in a dependency: those all report defmt's own location
+// (`__defmt_default_panic`), whose callers only the backtrace shows.
+
+/// Our code's addresses, from cortex-m-rt's linker script.
+fn text() -> core::ops::Range<u32> {
+    unsafe extern "C" {
+        static __stext: u32;
+        static __etext: u32;
+    }
+    // Only the symbols' addresses are taken, never their contents (which
+    // needs no `unsafe`).
+    (&raw const __stext) as u32..(&raw const __etext) as u32
+}
+
+/// Whether `word` could be a return address: Thumb (odd), into our code,
+/// and (with `check`) right after a call instruction.
+fn return_address(word: u32, text: &core::ops::Range<u32>, check: bool) -> bool {
+    let at = word & !1;
+    if word & 1 == 0 || !text.contains(&at) || at < text.start + 4 {
+        return false;
+    }
+    if !check {
+        return true;
+    }
+    // SAFETY: `at - 4..at` is inside our code (checked above), which is
+    // memory-mapped flash, always readable.
+    let half = |address: u32| unsafe { (address as *const u16).read_volatile() };
+    let (first, second) = (half(at - 4), half(at - 2));
+    // BL: 11110 S imm10, then 11 J1 1 J2 imm11.
+    let bl = first & 0xF800 == 0xF000 && second & 0xD000 == 0xD000;
+    // BLX Rm: 0100 0111 1 Rm 000.
+    let blx = second & 0xFF87 == 0x4780;
+    bl || blx
+}
+
+/// Up to [`TRACE`] return addresses from the stack, innermost first,
+/// looking at most `words` words up from `from` (and not past the top).
+/// With `check`, only words after a call instruction (see
+/// [`return_address`]); without, any odd word into our code, which is
+/// quicker, for when there's no time (see [`watchdog_bite`]).
+fn scan_stack(from: *const u32, words: usize, check: bool) -> [u32; TRACE] {
+    unsafe extern "C" {
+        static _stack_start: u32;
+    }
+    let top = (&raw const _stack_start) as usize;
+    let text = text();
+    let mut trace = [0; TRACE];
+    let mut found = 0;
+    for i in 0..words {
+        // SAFETY: `from` is the current stack (or an exception frame on it),
+        // and this stops at the stack's top: all RAM of ours.
+        let word = unsafe { from.add(i) };
+        if word as usize >= top {
+            break;
+        }
+        let value = unsafe { word.read_volatile() };
+        if return_address(value, &text, check) {
+            trace[found] = value;
+            found += 1;
+            if found == TRACE {
+                break;
+            }
+        }
+    }
+    trace
 }
 
 const BREADCRUMB_MAGIC: u32 = u32::from_le_bytes(*b"urP1");
@@ -425,7 +541,8 @@ const BREADCRUMB_MAGIC: u32 = u32::from_le_bytes(*b"urP1");
 const WATCHDOG_MAGIC: u32 = u32::from_le_bytes(*b"urW1");
 /// Must match the `RETAINED` region in `memory.x`.
 const BREADCRUMB_ADDRESS: usize = 0x2000_D440;
-const _: () = assert!(size_of::<Breadcrumb>() <= 32);
+// The retained block from +0x40 to its end (see `memory.x`).
+const _: () = assert!(size_of::<Breadcrumb>() <= 256 - 0x40);
 
 fn breadcrumb() -> *mut Breadcrumb {
     BREADCRUMB_ADDRESS as *mut Breadcrumb
@@ -458,16 +575,25 @@ unsafe extern "C" fn WDT() {
 }
 
 /// Records the interrupted code's PC and LR (frame words 6 and 5) for the
-/// next boot, then waits for the reset, ~60 µs away.
+/// next boot, with the return addresses on the stack above the frame, then
+/// waits for the reset.
+///
+/// That's ~60 µs away (two 32 kHz cycles), about 3800 cycles: enough to
+/// scan 48 words without checking each candidate, which the next boot does
+/// instead (see [`report_trace`]).
 extern "C" fn watchdog_bite(frame: *const u32) -> ! {
     // SAFETY: `frame` is the exception frame the hardware just pushed.
     let (pc, lr) = unsafe { (frame.add(6).read(), frame.add(5).read()) };
+    // The frame is 8 words; the interrupted code's own stack starts after.
+    // SAFETY: Still on the stack (the scan stops at its top).
+    let above = unsafe { frame.add(8) };
     let crumb = Breadcrumb {
         magic: WATCHDOG_MAGIC,
         version: crate::firmware::version_word(),
         file: pc as *const u8,
         file_len: lr,
         line: 0,
+        trace: scan_stack(above, 48, false),
     };
     // SAFETY: See `report_last_reset`.
     unsafe { breadcrumb().write_volatile(crumb) };
@@ -485,17 +611,22 @@ extern "C" fn watchdog_bite(frame: *const u32) -> ! {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     cortex_m::interrupt::disable();
-    if let Some(location) = info.location() {
-        let crumb = Breadcrumb {
-            magic: BREADCRUMB_MAGIC,
-            version: crate::firmware::version_word(),
-            file: location.file().as_ptr(),
-            file_len: location.file().len() as u32,
-            line: location.line(),
-        };
-        // SAFETY: See `report_last_reset`.
-        unsafe { breadcrumb().write_volatile(crumb) };
-    }
+    // The whole stack, checked: there's no hurry here. It starts in this
+    // handler's own frame, whose return addresses lead to `panic!`'s caller.
+    let sp = cortex_m::register::msp::read() as *const u32;
+    let (file, line) = info
+        .location()
+        .map_or(("?", 0), |location| (location.file(), location.line()));
+    let crumb = Breadcrumb {
+        magic: BREADCRUMB_MAGIC,
+        version: crate::firmware::version_word(),
+        file: file.as_ptr(),
+        file_len: file.len() as u32,
+        line,
+        trace: scan_stack(sp, 4096, true),
+    };
+    // SAFETY: See `report_last_reset`.
+    unsafe { breadcrumb().write_volatile(crumb) };
     defmt::error!("{}", defmt::Display2Format(info));
     // With a debugger attached, stop where we are so it can look.
     let dhcsr = cortex_m::peripheral::DCB::PTR;

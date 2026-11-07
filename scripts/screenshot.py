@@ -15,7 +15,8 @@ enough for a transition): `button`, `tap:X,Y`, `long:X,Y`, or `up`, `down`,
 `glance` (as if the wrist turned) and `notify` (a test notification;
 `notify:1,0` has a four-line sender, `notify:2,0` a much longer one,
 `notify:3,0` a two-line one, `notify:4,0` one with an accent and a
-hyphenated word).
+hyphenated word). `hang` and `panic` crash the watch on purpose, to test
+the crash reports.
 
 `--theme` renders the frame in another theme's colours (e.g. HANDHELD, for
 the day look at night): the canvas holds colour roles, not colours.
@@ -44,6 +45,7 @@ KINDS = {
     "glance": 8,
     "notify": 9,
     "hang": 10,
+    "panic": 11,
 }
 
 
