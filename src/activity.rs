@@ -77,6 +77,17 @@ const STEP_COUNTER_ENABLE: (usize, u8) = (0x3A + 1, 0x10);
 /// enables it: the feature engine recognises the wrist being turned to look
 /// at the watch, and pulses INT1 (see `glance_task` in `main`).
 const WRIST_WEAR_ENABLE: (usize, u8) = (0x40, 0x01);
+/// And the axis remap (offset 0x44, two bytes), which tells the feature
+/// engine how the sensor sits in the watch. Bosch's gestures assume the
+/// usual device axes (x to 3 o'clock, y to 12 o'clock, z out of the
+/// screen; the watch on the left wrist). Measured on the dev kit (flat,
+/// upright, on its side), the PineTime's sensor reads those as
+/// (−y, −x, −z) — the x/y swap InfiniTime also corrects for, and z
+/// pointing into the watch. Encoded as Bosch's driver does: for each of
+/// device x, y, z, the source axis (0 x, 1 y, 2 z) and an "invert" bit:
+/// x ← y inverted (1 | 1 << 2), y ← x inverted (0 << 3 | 1 << 5),
+/// z ← z (2 << 6), with z's invert bit in the second byte.
+const AXES_REMAP: (usize, [u8; 2]) = (0x44, [1 | 1 << 2 | 1 << 5 | 2 << 6, 0x01]);
 
 /// Upload granularity: the config goes over I2C in pieces this size, each
 /// preceded by its position (in 16-bit words). Even, and small enough to
@@ -186,14 +197,14 @@ impl Bma421 {
         features[0] = REG_FEATURES;
         features[1 + STEP_COUNTER_ENABLE.0] |= STEP_COUNTER_ENABLE.1;
         features[1 + WRIST_WEAR_ENABLE.0] |= WRIST_WEAR_ENABLE.1;
+        let (remap, [first, second]) = AXES_REMAP;
+        features[1 + remap] = first;
+        features[1 + remap + 1] = (features[1 + remap + 1] & !0x01) | second;
         self.write_bytes(&features).await?;
         // The wrist-wear gesture to INT1 (P0.08), as a pulse (not latched,
         // so nothing has to read a status register to re-arm it): output
         // enabled, push-pull, active high.
         //
-        // TODO: the gesture assumes Bosch's default axis orientation; if it
-        // misfires (or never fires) on the wrist, the feature engine's axis
-        // remap (feature offset 0x44) needs the PineTime's mounting.
         self.write(REG_INT1_IO_CTRL, 0x0A).await?;
         self.write(REG_INT_LATCH, 0x00).await?;
         self.write(REG_INT1_MAP, 0x08).await?;
