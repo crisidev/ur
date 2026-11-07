@@ -26,7 +26,7 @@ integration through [Gadgetbridge].
   as you stir from light sleep, with separate times for weekdays and
   weekends), two alarms, and two timers.
 - **Sleep and heart rate:** measured on the watch, and synced to
-  Gadgetbridge (and from there to Health Connect, if you like).
+  Gadgetbridge (and from there to [Health Connect], if you like).
 - **Notifications:** which app, and who from, briefly. With the screen off
   they're full-screen and dim. Calls take over the screen, and you can
   answer or decline.
@@ -46,6 +46,7 @@ hardware by a human.
 [PineTime]: https://pine64.org/devices/pinetime/
 [Gadgetbridge]: https://gadgetbridge.org
 [Bangle.js protocol]: https://www.espruino.com/Gadgetbridge
+[Health Connect]: https://developer.android.com/health-and-fitness/guides/health-connect
 
 ## Using it
 
@@ -68,19 +69,23 @@ hardware by a human.
 ## Installing
 
 The PineTime's bootloader only accepts firmware over Bluetooth, from the
-firmware that's running. ur receives updates the same way InfiniTime does,
+firmware that's running. ur receives updates the same way [InfiniTime] does,
 so one package, `ur-<version>-dfu.zip`, installs it over InfiniTime and
 updates it afterwards.
 
 Download it from the [releases]. Each file there carries a GitHub
-attestation; to check that a download is exactly what this repository's
-release workflow built:
+[attestation][attestations]; to check that a download is exactly what
+this repository's release workflow built, with the
+[GitHub CLI][gh attestation verify]:
 
 ```sh
 gh attestation verify ur-<version>-dfu.zip --repo jonhoo/ur
 ```
 
 [releases]: https://github.com/jonhoo/ur/releases
+[InfiniTime]: https://github.com/InfiniTimeOrg/InfiniTime
+[attestations]: https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds
+[gh attestation verify]: https://cli.github.com/manual/gh_attestation_verify
 
 ### Sending the package
 
@@ -90,7 +95,8 @@ Use whichever of these suits you:
 install and updates):
 
 1. Install "nRF Device Firmware Update" by Nordic Semiconductor from the
-   Play Store or App Store, and copy the zip onto the phone.
+   [Play Store][nrf-dfu-android] or [App Store][nrf-dfu-ios], and copy the
+   zip onto the phone.
 2. On the first install, if Gadgetbridge is connected to InfiniTime,
    disconnect it there first: InfiniTime takes one connection at a time,
    so the app wouldn't find it. (ur takes a second connection
@@ -118,7 +124,7 @@ After that, Gadgetbridge knows the watch as a Bangle.js, and its Bangle.js
 support doesn't install firmware: use one of the other two for updates.
 
 **A Linux computer** with Bluetooth, using `scripts/dfu.py` from this
-repository (needs `pip install bleak`). `<MAC>` is the watch's Bluetooth
+repository (needs [bleak]: `pip install bleak`). `<MAC>` is the watch's Bluetooth
 address, which `bluetoothctl` shows while scanning.
 
 - First install:
@@ -134,6 +140,10 @@ address, which `bluetoothctl` shows while scanning.
   ```sh
   python3 scripts/dfu.py ur-<version>-dfu.zip --address <MAC> --packet-size 240
   ```
+
+[nrf-dfu-android]: https://play.google.com/store/apps/details?id=no.nordicsemi.android.dfu
+[nrf-dfu-ios]: https://apps.apple.com/app/nrf-device-firmware-update/id1624454660
+[bleak]: https://github.com/hbldh/bleak
 
 On the first install, the nRF app on Android stopped at 14% every time
 ("GATT CONN TIMEOUT"), apparently InfiniTime stalling its radio
@@ -163,7 +173,9 @@ Hold the button. After about 7 seconds the watch resets into the
 bootloader. Keep holding while the logo shows: release when it turns blue to
 go back to the previous firmware. Holding until it turns red installs
 PINE64's recovery firmware from the SPI flash, a minimal InfiniTime to
-reinstall from.
+reinstall from. (This is the [bootloader] every PineTime ships with.)
+
+[bootloader]: https://github.com/InfiniTimeOrg/pinetime-mcuboot-bootloader
 
 ## Contributing
 

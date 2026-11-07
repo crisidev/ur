@@ -129,13 +129,13 @@ jobs:
               gh attestation verify ur-$VERSION-dfu.zip --repo $REPO
 
           The build is also reproducible: the same files, byte for byte, come
-          out of
+          out of building the tag again, which this checks against this
+          release's checksums:
 
               git checkout $TAG
               scripts/release.sh
-              (cd dist && sha256sum -c sha256.sum)
-
-          given the toolchain rust-toolchain.toml pins.
+              gh release download $TAG --repo $REPO --pattern sha256.sum --dir published
+              (cd dist && sha256sum -c ../published/sha256.sum)
           EOF
       - name: create release
         env:
