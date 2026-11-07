@@ -38,6 +38,10 @@ const IRQ_CTL: u8 = 0b0111_0000;
 const SWIPE_DISTANCE: i32 = 20;
 /// A stationary touch at least this long is a long press.
 const LONG_PRESS: Duration = Duration::from_millis(600);
+/// The panel's size in the chip's coordinates (pixels). Reports beyond it
+/// are garbage: the first report after the chip wakes from its own sleep
+/// sometimes reads e.g. x = 3584, which started phantom swipes.
+const PANEL: i32 = 240;
 /// While a finger is down, the chip reports every ~10 ms. If reports stop for
 /// this long without a lift report, assume we missed the lift.
 const LIFT_TIMEOUT: Duration = Duration::from_millis(250);
@@ -148,7 +152,15 @@ pub async fn touch_task(
             fingers, lifted, x, y
         );
 
+        // A position off the panel is a misread (see `PANEL`): it can still
+        // end a touch, but never starts or moves one.
+        let on_panel = (0..PANEL).contains(&x) && (0..PANEL).contains(&y);
+        if !on_panel {
+            debug!("touch: ignoring an off-panel position");
+        }
+
         match (&mut tracking, lifted) {
+            (None, false) if !on_panel => {}
             (None, false) => {
                 tracking = Some(Tracking {
                     start: (x, y),
@@ -156,11 +168,15 @@ pub async fn touch_task(
                     since: Instant::now(),
                 });
             }
-            (Some(touch), false) => touch.last = (x, y),
+            (Some(touch), false) => {
+                if on_panel {
+                    touch.last = (x, y);
+                }
+            }
             (Some(touch), true) => {
                 // Lift reports usually carry the final position, but some
                 // report (0, 0); don't let that look like a long swipe.
-                if (x, y) != (0, 0) {
+                if on_panel && (x, y) != (0, 0) {
                     touch.last = (x, y);
                 }
                 finish(touch).await;
