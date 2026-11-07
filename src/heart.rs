@@ -554,7 +554,11 @@ async fn measure(
                 ambient,
                 conversions.period_us()
             );
-            trace!("heart: samples {=[?]} movement {}", second.as_slice(), activity::movement());
+            trace!(
+                "heart: samples {=[?]} movement {}",
+                second.as_slice(),
+                activity::movement()
+            );
             second.clear();
             let before = *level;
             if peak >= SATURATED {

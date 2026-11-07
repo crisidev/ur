@@ -1526,8 +1526,7 @@ fn render_quiet_notification(canvas: &mut Canvas, banner: &Banner, now: Instant)
             // Centred below the app name: from the first line's accents
             // to the last line's baseline.
             let pitch = QUIET_PITCH * scale;
-            let block =
-                pitch * (lines.len() as i32 - 1) + (font::ACCENT_ROWS + 5) * scale;
+            let block = pitch * (lines.len() as i32 - 1) + (font::ACCENT_ROWS + 5) * scale;
             let accents = QUIET_TOP + (80 - QUIET_TOP - block) / 2;
             let top = accents + font::ACCENT_ROWS * scale;
             for (i, line) in lines.iter().enumerate() {

@@ -30,14 +30,18 @@ fn main() {
 
 #[test]
 fn raising_the_wrist_glances_once() {
-    let samples = [ARM_DOWN, ARM_DOWN, SWING, LOOKING, LOOKING, LOOKING, LOOKING, LOOKING];
+    let samples = [
+        ARM_DOWN, ARM_DOWN, SWING, LOOKING, LOOKING, LOOKING, LOOKING, LOOKING,
+    ];
     // The second steady readable sample, then not again while held.
     assert_eq!(run(&samples), vec![4]);
 }
 
 #[test]
 fn lowering_and_raising_again_glances_again() {
-    let samples = [ARM_DOWN, LOOKING, LOOKING, ARM_DOWN, ARM_DOWN, LOOKING, LOOKING];
+    let samples = [
+        ARM_DOWN, LOOKING, LOOKING, ARM_DOWN, ARM_DOWN, LOOKING, LOOKING,
+    ];
     assert_eq!(run(&samples), vec![2, 6]);
 }
 

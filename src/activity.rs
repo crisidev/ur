@@ -694,7 +694,11 @@ pub async fn activity_task(i2c: Device) {
                 let mut history = history.borrow_mut();
                 history.classify_sleep();
                 let summary = history.last_sleep();
-                (summary, summary != LAST_SLEEP.lock(Cell::get), history.asleep_now())
+                (
+                    summary,
+                    summary != LAST_SLEEP.lock(Cell::get),
+                    history.asleep_now(),
+                )
             });
             if asleep != ASLEEP.swap(asleep, Ordering::Relaxed) {
                 info!("sleep: {}", if asleep { "asleep now" } else { "awake now" });

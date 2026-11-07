@@ -441,7 +441,9 @@ fn breadcrumb() -> *mut Breadcrumb {
 /// section (which masks it) still goes unrecorded.
 pub fn catch_watchdog() {
     use embassy_nrf::interrupt::{self, InterruptExt, Priority};
-    embassy_nrf::pac::WDT.intenset().write(|w| w.set_timeout(true));
+    embassy_nrf::pac::WDT
+        .intenset()
+        .write(|w| w.set_timeout(true));
     interrupt::WDT.set_priority(Priority::P1);
     // SAFETY: `WDT` below is the handler; it only writes the breadcrumb.
     unsafe { interrupt::WDT.enable() };

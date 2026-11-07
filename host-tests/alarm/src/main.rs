@@ -67,19 +67,32 @@ mod tests {
         let mut s = smart();
         let mut state = State::default();
         // Stirring all night: only stirs inside the window count.
-        let rang = first_ring(&mut s, &mut state, at(MONDAY - 1, 23, 0), at(MONDAY, 8, 0), |t| {
-            t % 7 == 0
-        });
+        let rang = first_ring(
+            &mut s,
+            &mut state,
+            at(MONDAY - 1, 23, 0),
+            at(MONDAY, 8, 0),
+            |t| t % 7 == 0,
+        );
         let (when, kind) = rang.expect("rings");
         assert_eq!(kind, Kind::Smart);
-        assert!(when >= at(MONDAY, 6, 30) && when < at(MONDAY, 7, 0), "rang at {when}");
+        assert!(
+            when >= at(MONDAY, 6, 30) && when < at(MONDAY, 7, 0),
+            "rang at {when}"
+        );
     }
 
     #[test]
     fn smart_rings_at_its_time_without_a_stir() {
         let mut s = smart();
         let mut state = State::default();
-        let rang = first_ring(&mut s, &mut state, at(MONDAY, 0, 0), at(MONDAY, 8, 0), |_| false);
+        let rang = first_ring(
+            &mut s,
+            &mut state,
+            at(MONDAY, 0, 0),
+            at(MONDAY, 8, 0),
+            |_| false,
+        );
         assert_eq!(rang, Some((at(MONDAY, 7, 0), Kind::Smart)));
     }
 
@@ -96,50 +109,103 @@ mod tests {
         // A stir every minute: each morning at the window's start.
         assert_eq!(
             rings,
-            vec![(at(MONDAY, 6, 30), Kind::Smart), (at(MONDAY + 1, 6, 30), Kind::Smart)]
+            vec![
+                (at(MONDAY, 6, 30), Kind::Smart),
+                (at(MONDAY + 1, 6, 30), Kind::Smart)
+            ]
         );
     }
 
     #[test]
     fn smart_off_never_rings() {
-        let mut s = Settings { smart: false, ..smart() };
+        let mut s = Settings {
+            smart: false,
+            ..smart()
+        };
         let mut state = State::default();
-        assert_eq!(first_ring(&mut s, &mut state, at(MONDAY, 0, 0), at(MONDAY + 7, 0, 0), |_| true), None);
+        assert_eq!(
+            first_ring(
+                &mut s,
+                &mut state,
+                at(MONDAY, 0, 0),
+                at(MONDAY + 7, 0, 0),
+                |_| true
+            ),
+            None
+        );
     }
 
     #[test]
     fn at_rings_once_then_turns_off() {
-        let mut s = Settings { at: [true, false], at_time: [6 * 60 + 15, 0], ..Settings::default() };
+        let mut s = Settings {
+            at: [true, false],
+            at_time: [6 * 60 + 15, 0],
+            ..Settings::default()
+        };
         let mut state = State::default();
         // Armed lazily on the first check (as after a reset).
-        let rang = first_ring(&mut s, &mut state, at(MONDAY, 12, 0), at(MONDAY + 3, 0, 0), |_| false);
+        let rang = first_ring(
+            &mut s,
+            &mut state,
+            at(MONDAY, 12, 0),
+            at(MONDAY + 3, 0, 0),
+            |_| false,
+        );
         assert_eq!(rang, Some((at(MONDAY + 1, 6, 15), Kind::At(0))));
         assert!(!s.at[0]);
-        assert_eq!(first_ring(&mut s, &mut state, at(MONDAY + 1, 6, 16), at(MONDAY + 3, 0, 0), |_| false), None);
+        assert_eq!(
+            first_ring(
+                &mut s,
+                &mut state,
+                at(MONDAY + 1, 6, 16),
+                at(MONDAY + 3, 0, 0),
+                |_| false
+            ),
+            None
+        );
     }
 
     #[test]
     fn two_alarms_ring_each_at_its_time() {
-        let mut s = Settings { at: [true, true], at_time: [6 * 60, 6 * 60 + 20], ..Settings::default() };
+        let mut s = Settings {
+            at: [true, true],
+            at_time: [6 * 60, 6 * 60 + 20],
+            ..Settings::default()
+        };
         let mut state = State::default();
         let rings: Vec<_> = (at(MONDAY, 0, 0)..at(MONDAY + 2, 0, 0))
             .filter_map(|now| state.due(&mut s, now * 60, false).map(|k| (now, k)))
             .collect();
-        assert_eq!(rings, vec![(at(MONDAY, 6, 0), Kind::At(0)), (at(MONDAY, 6, 20), Kind::At(1))]);
+        assert_eq!(
+            rings,
+            vec![
+                (at(MONDAY, 6, 0), Kind::At(0)),
+                (at(MONDAY, 6, 20), Kind::At(1))
+            ]
+        );
         assert_eq!(s.at, [false, false]);
     }
 
     #[test]
     fn the_timer_rings_after_its_duration() {
-        let mut s = Settings { timers: [25, 3], ..Settings::default() };
+        let mut s = Settings {
+            timers: [25, 3],
+            ..Settings::default()
+        };
         let mut state = State::default();
         let start = at(MONDAY, 10, 0) * 60;
         state.start_timer(0, &s, start);
-        assert_eq!(state.next(&s, start), Some((Kind::Timer(0), start + 25 * 60)));
+        assert_eq!(
+            state.next(&s, start),
+            Some((Kind::Timer(0), start + 25 * 60))
+        );
         assert_eq!(state.remaining(0, start + 61), Some(25 * 60 - 61));
         // To the second.
         assert_eq!(state.due(&mut s, start + 25 * 60 - 1, false), None);
-        assert_eq!(state.due(&mut s, start + 25 * 60, false), Some(Kind::Timer(0)));
+        assert_eq!(
+            state.due(&mut s, start + 25 * 60, false),
+            Some(Kind::Timer(0))
+        );
         assert_eq!(state.timers[0], None);
         // The duration is remembered.
         assert_eq!(s.timers[0], 25);
@@ -147,12 +213,18 @@ mod tests {
 
     #[test]
     fn two_timers_run_side_by_side() {
-        let mut s = Settings { timers: [5, 2], ..Settings::default() };
+        let mut s = Settings {
+            timers: [5, 2],
+            ..Settings::default()
+        };
         let mut state = State::default();
         let start = at(MONDAY, 10, 0) * 60;
         state.start_timer(0, &s, start);
         state.start_timer(1, &s, start + 30);
-        assert_eq!(state.next(&s, start), Some((Kind::Timer(1), start + 30 + 120)));
+        assert_eq!(
+            state.next(&s, start),
+            Some((Kind::Timer(1), start + 30 + 120))
+        );
         let rings: Vec<_> = (start..start + 600)
             .filter_map(|now| state.due(&mut s, now, false).map(|k| (now - start, k)))
             .collect();
@@ -164,16 +236,32 @@ mod tests {
         let mut s = Settings::default();
         let mut state = State::default();
         state.snooze(at(MONDAY, 7, 0) * 60);
-        let rang = first_ring(&mut s, &mut state, at(MONDAY, 7, 0), at(MONDAY, 8, 0), |_| false);
+        let rang = first_ring(
+            &mut s,
+            &mut state,
+            at(MONDAY, 7, 0),
+            at(MONDAY, 8, 0),
+            |_| false,
+        );
         assert_eq!(rang, Some((at(MONDAY, 7, 0) + SNOOZE / 60, Kind::Snooze)));
     }
 
     #[test]
     fn next_picks_the_soonest() {
-        let s = Settings { at: [true, false], at_time: [6 * 60, 0], ..smart() };
+        let s = Settings {
+            at: [true, false],
+            at_time: [6 * 60, 0],
+            ..smart()
+        };
         let state = State::default();
-        assert_eq!(state.next(&s, at(MONDAY, 1, 0) * 60), Some((Kind::At(0), at(MONDAY, 6, 0) * 60)));
-        assert_eq!(state.next(&s, at(MONDAY, 6, 30) * 60), Some((Kind::Smart, at(MONDAY, 7, 0) * 60)));
+        assert_eq!(
+            state.next(&s, at(MONDAY, 1, 0) * 60),
+            Some((Kind::At(0), at(MONDAY, 6, 0) * 60))
+        );
+        assert_eq!(
+            state.next(&s, at(MONDAY, 6, 30) * 60),
+            Some((Kind::Smart, at(MONDAY, 7, 0) * 60))
+        );
     }
 
     #[test]
