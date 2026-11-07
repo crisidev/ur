@@ -33,6 +33,12 @@ impl Pattern {
         steps: &[400, 600],
         repeat: true,
     };
+    /// Alarms: two quick pulses and a pause, so it's not mistaken for a
+    /// call; until stopped.
+    pub const ALARM: Self = Self {
+        steps: &[200, 120, 200, 800],
+        repeat: true,
+    };
 }
 
 static REQUEST: Signal<CriticalSectionRawMutex, Pattern> = Signal::new();

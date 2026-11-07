@@ -41,6 +41,8 @@ pub mod key {
     // 19: retired (sunrise/sunset from weather, before we computed them).
     /// The last location from the phone; see [`crate::geo::Location`].
     pub const LOCATION: u8 = 20;
+    /// Alarm settings; see [`crate::alarm::Settings`].
+    pub const ALARMS: u8 = 21;
 }
 
 /// Big enough for the largest item (a 43-byte bond) plus its key, rounded up

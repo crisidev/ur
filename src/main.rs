@@ -9,6 +9,7 @@
 //! - [`ui`]: screens, navigation, and screen power.
 //! - [`touch`], the button task here: input, delivered through [`INPUT`].
 //! - [`motor`]: vibration patterns.
+//! - [`alarm`]: when alarms (smart wake, at a time, timer) ring.
 //! - [`battery`]: battery voltage and charge state.
 //! - [`activity`] / [`sleep`]: steps, movement, and sleep, from the
 //!   accelerometer.
@@ -30,6 +31,7 @@
 #![no_main]
 
 mod activity;
+mod alarm;
 mod battery;
 mod ble;
 mod canvas;
@@ -157,6 +159,14 @@ async fn button_task(mut enable: Output<'static>, mut button: Input<'static>) {
         enable.set_low();
         Timer::after_millis(20).await;
     }
+}
+
+/// Local minutes since 1970 (UTC plus the phone's UTC offset), once the
+/// phone has set the clock; what [`alarm`] works in.
+fn local_minute() -> Option<i64> {
+    let utc = clock::now_utc_seconds()?;
+    let offset = i64::from(clock::utc_offset_minutes()?);
+    Some(utc.div_euclid(60) + offset)
 }
 
 /// The three active-low backlight transistors (low/mid/high), which sum.
@@ -440,7 +450,11 @@ async fn main(spawner: Spawner) {
         light: load_u8(storage::key::THEME_LIGHT).await,
         dark: load_u8(storage::key::THEME_DARK).await,
     };
-    let mut app = App::new(Instant::now(), themes);
+    let alarms = storage::load(storage::key::ALARMS)
+        .await
+        .map(alarm::Settings::from_bytes)
+        .unwrap_or_default();
+    let mut app = App::new(Instant::now(), themes, alarms);
     if let Some(location) = storage::load(storage::key::LOCATION).await {
         geo::set_location(geo::Location::from_bytes(location));
     }
@@ -503,6 +517,7 @@ async fn main(spawner: Spawner) {
                 sun: geo::sun(),
                 steps: activity::steps_today(),
                 sleep: activity::last_sleep(),
+                local_minute: local_minute(),
                 heart_rate: heart::current(now),
                 battery: &battery,
             };
@@ -556,9 +571,13 @@ async fn main(spawner: Spawner) {
                 core::future::pending::<()>().await;
             }
         };
+        let alarms_before = app.alarms;
         match select3(ticker.next(), INPUT.receive(), frame).await {
             Either3::Third(()) => {}
             Either3::First(()) => {
+                // A stir after stillness: what a smart alarm waits for.
+                let stirring = activity::movement() >= sleep::STILL_LIMIT;
+                app.check_alarms(Instant::now(), local_minute(), stirring);
                 // Pairing and updates need the user to watch the screen.
                 let watching = ble::PASSKEY.lock(Cell::get).is_some()
                     || dfu::PROGRESS.lock(Cell::get).is_some();
@@ -583,6 +602,10 @@ async fn main(spawner: Spawner) {
                     storage::save(storage::key::THEME_DARK, &[app.themes.dark]).await;
                 }
             }
+        }
+        // Edited, switched, or (a one-off alarm) rung and switched off.
+        if app.alarms != alarms_before {
+            storage::save(storage::key::ALARMS, &app.alarms.to_bytes()).await;
         }
     }
 }

@@ -228,3 +228,7 @@ pub const PAUSE: [u8; 5] = [0b11011, 0b11011, 0b11011, 0b11011, 0b11011];
 /// 4×7 footprint: toes, sole, and heel.
 pub const FOOT_W: u32 = 4;
 pub const FOOT: [u8; 7] = [0b0110, 0b1111, 0b1110, 0b1110, 0b0000, 0b0110, 0b0110];
+
+/// 5×7 bell, for alarms.
+pub const BELL_W: u32 = 5;
+pub const BELL: [u8; 7] = [0b00100, 0b01110, 0b01110, 0b01110, 0b11111, 0b00000, 0b00100];

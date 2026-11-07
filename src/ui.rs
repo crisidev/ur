@@ -7,8 +7,8 @@
 //!
 //! Navigation:
 //!
-//! - Swipe left/right: cycle between screens (clock, music while the phone
-//!   has media, info).
+//! - Swipe left/right: cycle between screens (clock, alarms, music while
+//!   the phone has media, info).
 //! - Long press: next colour theme within the current group (dark themes
 //!   after sunset, light ones after sunrise; each group remembers its own).
 //! - Button: return to the clock; on the clock, turn the screen off. While a
@@ -16,6 +16,15 @@
 //! - Any button press or touch while the screen is off: wake to the clock.
 //!   (That touch is *only* a wake-up; it isn't also acted on.)
 //! - No input for [`SCREEN_TIMEOUT`]: turn the screen off.
+//!
+//! Alarms (see [`crate::alarm`] for when they ring):
+//!
+//! - On the alarms screen, tap a row (smart wake, alarm, timer) to edit it;
+//!   long-press to switch it on or off (or start/stop the timer).
+//! - In the editor: swipe up/down on the left half for hours, the right
+//!   half for minutes; tap the bottom left to switch it on/off, the bottom
+//!   right for the next page or done. The button also means done.
+//! - Ringing takes over the screen: tap to snooze, button to stop.
 //!
 //! From the phone:
 //!
@@ -32,6 +41,7 @@ use embassy_time::{Duration, Instant};
 use heapless::String;
 
 use crate::InputEvent;
+use crate::alarm;
 use crate::battery::Battery;
 use crate::ble;
 use crate::canvas::{Canvas, Color, Sweep, marquee_cycle};
@@ -69,6 +79,9 @@ pub struct Status<'a> {
     pub heart_rate: Option<u8>,
     /// The most recent sleep within the last day.
     pub sleep: Option<crate::activity::Sleep>,
+    /// Local minutes since 1970 (see [`crate::alarm`]), once the time is
+    /// known.
+    pub local_minute: Option<i64>,
     pub battery: &'a Battery,
 }
 
@@ -114,9 +127,33 @@ impl defmt::Format for PhoneEvent {
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
 enum Screen {
     Clock,
+    Alarms,
     Music,
     Info,
 }
+
+/// An alarm ringing.
+struct Ringing {
+    kind: alarm::Kind,
+    since: Instant,
+}
+
+/// Which setting the editor is changing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Editing {
+    SmartWeekday,
+    SmartWeekend,
+    At,
+    Timer,
+}
+
+/// What the alarms screen's rows are, top to bottom; also what a tap on
+/// each edits.
+const ALARM_ROWS: [Editing; 3] = [Editing::SmartWeekday, Editing::At, Editing::Timer];
+const ALARM_ROW_TOP: i32 = 11;
+const ALARM_ROW_HEIGHT: i32 = 23;
+/// Where the editor's buttons start.
+const EDITOR_BUTTONS_Y: i32 = 60;
 
 struct Banner {
     app: String<24>,
@@ -172,6 +209,14 @@ pub struct App {
     call: Option<Call>,
     /// What the phone is playing, since it last told us.
     music: Option<Music>,
+    /// Alarm settings, as stored (`main` saves them when they change).
+    pub alarms: alarm::Settings,
+    alarm_state: alarm::State,
+    ringing: Option<Ringing>,
+    /// The alarm editor, while open.
+    editing: Option<Editing>,
+    /// The local minute, as of the last tick (for edits that need "now").
+    local_minute: Option<i64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -183,7 +228,7 @@ pub struct ThemeChoice {
 impl App {
     /// `themes` is typically as saved from a previous run; out-of-range
     /// indices (a theme since removed) wrap around.
-    pub fn new(now: Instant, themes: ThemeChoice) -> Self {
+    pub fn new(now: Instant, themes: ThemeChoice, alarms: alarm::Settings) -> Self {
         Self {
             screen: Screen::Clock,
             awake: true,
@@ -196,6 +241,11 @@ impl App {
             brief_wake: false,
             call: None,
             music: None,
+            alarms,
+            alarm_state: alarm::State::default(),
+            ringing: None,
+            editing: None,
+            local_minute: None,
         }
     }
 
@@ -203,7 +253,11 @@ impl App {
     /// not just showing a notification or a call. That's when a fresh heart
     /// rate is worth measuring for.
     pub fn showing_clock(&self) -> bool {
-        self.awake && self.screen == Screen::Clock && !self.brief_wake && self.call.is_none()
+        self.awake
+            && self.screen == Screen::Clock
+            && !self.brief_wake
+            && self.call.is_none()
+            && self.ringing.is_none()
     }
 
     pub fn set_daytime(&mut self, daytime: bool) {
@@ -248,9 +302,10 @@ impl App {
 
     /// Screens in swipe order (wrapping around). The music screen only
     /// exists while the phone has told us about media.
-    fn screens(&self) -> heapless::Vec<Screen, 3> {
+    fn screens(&self) -> heapless::Vec<Screen, 4> {
         let mut screens = heapless::Vec::new();
         let _ = screens.push(Screen::Clock);
+        let _ = screens.push(Screen::Alarms);
         if self.music.is_some() {
             let _ = screens.push(Screen::Music);
         }
@@ -311,6 +366,25 @@ impl App {
             return;
         }
 
+        if self.ringing.is_some() {
+            match event {
+                InputEvent::Button => self.stop_ringing(),
+                InputEvent::Touch(touch) if touch.gesture == Gesture::Tap => {
+                    if let Some(minute) = self.local_minute {
+                        self.alarm_state.snooze(minute);
+                    }
+                    self.stop_ringing();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        if let Some(editing) = self.editing {
+            self.on_editor_input(editing, event);
+            return;
+        }
+
         match event {
             InputEvent::Phone(_) => unreachable!("handled above"),
             // Only ever a reason to wake up, handled above.
@@ -341,6 +415,18 @@ impl App {
                         music.playing = !music.playing;
                     }
                 }
+                (Gesture::Tap, Screen::Alarms) => {
+                    if let Some(&row) = alarm_row(touch.y) {
+                        self.editing = Some(row);
+                    }
+                }
+                // A quick switch, without opening the editor.
+                (Gesture::LongPress, Screen::Alarms) => {
+                    if let Some(&row) = alarm_row(touch.y) {
+                        self.toggle(row);
+                        motor::buzz(Pattern::NOTIFY);
+                    }
+                }
                 // TODO: remove once something real uses the motor; for now
                 // this is how we check it works.
                 (Gesture::Tap, Screen::Info) => motor::buzz(Pattern::NOTIFY),
@@ -348,6 +434,81 @@ impl App {
                 _ => {}
             },
         }
+    }
+
+    /// Switches a row's alarm on or off; for the timer, starts or stops it.
+    fn toggle(&mut self, row: Editing) {
+        match row {
+            Editing::SmartWeekday | Editing::SmartWeekend => self.alarms.smart = !self.alarms.smart,
+            Editing::At => {
+                self.alarms.at = !self.alarms.at;
+                if let Some(minute) = self.local_minute {
+                    self.alarm_state.arm_at(&self.alarms, minute);
+                }
+            }
+            Editing::Timer => match (self.alarm_state.timer_at, self.local_minute) {
+                (Some(_), _) => self.alarm_state.timer_at = None,
+                (None, Some(minute)) => self.alarm_state.start_timer(&self.alarms, minute),
+                // Without the time there's nothing to count from.
+                (None, None) => {}
+            },
+        }
+    }
+
+    fn on_editor_input(&mut self, editing: Editing, event: InputEvent) {
+        let done = |app: &mut Self| {
+            app.editing = None;
+            // A changed time for an armed alarm moves it.
+            if let Some(minute) = app.local_minute {
+                app.alarm_state.arm_at(&app.alarms, minute);
+            }
+        };
+        let InputEvent::Touch(touch) = event else {
+            if let InputEvent::Button = event {
+                done(self);
+            }
+            return;
+        };
+        let up = match touch.gesture {
+            Gesture::SwipeUp => 1,
+            Gesture::SwipeDown => -1,
+            Gesture::Tap if touch.y >= EDITOR_BUTTONS_Y => {
+                if touch.x < 40 {
+                    self.toggle(editing);
+                } else if editing == Editing::SmartWeekday {
+                    self.editing = Some(Editing::SmartWeekend);
+                } else {
+                    done(self);
+                }
+                return;
+            }
+            _ => return,
+        };
+        // Left half: hours; right half: minutes (5 at a time, but 1 for the
+        // timer, where short durations are common).
+        let step = match (touch.x < 40, editing) {
+            (true, _) => 60,
+            (false, Editing::Timer) => 1,
+            (false, _) => 5,
+        };
+        let value = match editing {
+            Editing::SmartWeekday => &mut self.alarms.smart_weekday,
+            Editing::SmartWeekend => &mut self.alarms.smart_weekend,
+            Editing::At => &mut self.alarms.at_time,
+            Editing::Timer => &mut self.alarms.timer,
+        };
+        let changed = i32::from(*value) + up * step;
+        *value = if editing == Editing::Timer {
+            // 1 minute to 16 hours.
+            changed.clamp(1, 16 * 60) as u16
+        } else {
+            changed.rem_euclid(24 * 60) as u16
+        };
+    }
+
+    fn stop_ringing(&mut self) {
+        self.ringing = None;
+        motor::buzz(Pattern::STOP);
     }
 
     fn on_phone(&mut self, event: PhoneEvent, now: Instant) {
@@ -409,6 +570,33 @@ impl App {
         }
     }
 
+    /// Once a second: rings any alarm that's due. `local_minute` is the
+    /// time, if known; `stirring` whether the wearer just moved (for smart
+    /// wake).
+    pub fn check_alarms(&mut self, now: Instant, local_minute: Option<i64>, stirring: bool) {
+        self.local_minute = local_minute;
+        let Some(minute) = local_minute else {
+            return;
+        };
+        if let Some(ringing) = &self.ringing
+            && now - ringing.since >= Duration::from_secs(alarm::RING_FOR as u64 * 60)
+        {
+            defmt::info!("alarm: rang out ({})", ringing.kind);
+            self.stop_ringing();
+        }
+        if self.ringing.is_none()
+            && let Some(kind) = self.alarm_state.due(&mut self.alarms, minute, stirring)
+        {
+            defmt::info!("alarm: ringing ({})", kind);
+            self.ringing = Some(Ringing { kind, since: now });
+            self.editing = None;
+            motor::buzz(Pattern::ALARM);
+            self.awake = true;
+            self.brief_wake = false;
+            self.last_input = now;
+        }
+    }
+
     /// `keep_awake` holds the screen on regardless of input, e.g. while a
     /// pairing passkey is showing and the user is typing it on the phone.
     pub fn on_tick(&mut self, now: Instant, keep_awake: bool) {
@@ -423,7 +611,7 @@ impl App {
             self.call = None;
             motor::buzz(Pattern::STOP);
         }
-        if keep_awake || self.call.is_some() || self.brief_wake {
+        if keep_awake || self.call.is_some() || self.ringing.is_some() || self.brief_wake {
             self.last_input = now;
         }
         if self.awake && now - self.last_input >= SCREEN_TIMEOUT {
@@ -468,11 +656,23 @@ impl App {
             render_call(canvas, call, now);
             return;
         }
+        if let Some(ringing) = &self.ringing {
+            render_ringing(canvas, ringing, status);
+            return;
+        }
+        if let Some(editing) = self.editing {
+            render_editor(canvas, editing, &self.alarms, &self.alarm_state);
+            return;
+        }
+        let next_alarm = status
+            .local_minute
+            .and_then(|minute| self.alarm_state.next(&self.alarms, minute));
         match self.screen {
-            Screen::Clock => render_clock(canvas, status),
+            Screen::Clock => render_clock(canvas, status, next_alarm),
+            Screen::Alarms => render_alarms(canvas, &self.alarms, &self.alarm_state, status),
             Screen::Music => match &self.music {
                 Some(music) => render_music(canvas, music, now),
-                None => render_clock(canvas, status),
+                None => render_clock(canvas, status, next_alarm),
             },
             Screen::Info => render_info(canvas, status, self.theme()),
         }
@@ -503,7 +703,7 @@ fn send(message: Outgoing) {
 
 const BACKGROUND: Color = Color::BACKGROUND;
 
-fn render_clock(canvas: &mut Canvas, status: &Status) {
+fn render_clock(canvas: &mut Canvas, status: &Status, next_alarm: Option<(alarm::Kind, i64)>) {
     canvas.clear(BACKGROUND);
     render_battery(canvas, status.battery);
 
@@ -527,8 +727,8 @@ fn render_clock(canvas: &mut Canvas, status: &Status) {
     // 3 px column. That's 71 px, leaving 4 px either side (+1 for shadow).
     const TIME_Y: i32 = 13;
     const TIME_SCALE: i32 = 3;
-    let hhmm = [hours / 10, hours % 10, minutes / 10, minutes % 10];
-    for (&digit, x) in hhmm.iter().zip([4, 21, 43, 60]) {
+    let digits = [hours / 10, hours % 10, minutes / 10, minutes % 10];
+    for (&digit, x) in digits.iter().zip([4, 21, 43, 60]) {
         draw_digit(canvas, x, TIME_Y, digit, TIME_SCALE, Color::TEXT);
     }
     // The colon blinks: a heartbeat that shows the watch is alive even when
@@ -590,6 +790,146 @@ fn render_clock(canvas: &mut Canvas, status: &Status) {
         write!(text, "{steps}").expect("u32 fits in 8 digits... almost always");
         canvas.text(9, 68, &text, Color::TEXT);
     }
+
+    // The next alarm within a day, right-aligned: bell, then when it rings
+    // (a smart alarm at its latest).
+    if let (Some((_, at)), Some(now)) = (next_alarm, status.local_minute)
+        && at - now <= 24 * 60
+    {
+        let time = hhmm(at.rem_euclid(24 * 60));
+        let x = 77 - font::small_text_width(&time);
+        canvas.text(x, 68, &time, Color::TEXT);
+        canvas.sprite(x - font::BELL_W as i32 - 2, 67, font::BELL_W, &font::BELL, 1, Color::ACCENT);
+    }
+}
+
+/// `minutes` (after midnight, or a duration) as HH:MM.
+fn hhmm(minutes: i64) -> heapless::String<6> {
+    let mut text = heapless::String::new();
+    write!(text, "{:02}:{:02}", minutes / 60, minutes % 60).expect("fits in 6");
+    text
+}
+
+// ==============================================================================
+// Alarms
+// ==============================================================================
+
+fn alarm_row(y: i32) -> Option<&'static Editing> {
+    ALARM_ROWS.get(usize::try_from((y - ALARM_ROW_TOP) / ALARM_ROW_HEIGHT).ok()?)
+}
+
+/// Three rows (smart wake, alarm, timer), each a label with its state on
+/// the right, and its time(s) below.
+fn render_alarms(
+    canvas: &mut Canvas,
+    settings: &alarm::Settings,
+    state: &alarm::State,
+    status: &Status,
+) {
+    canvas.clear(BACKGROUND);
+    canvas.text(4, 3, "ALARMS", Color::ACCENT);
+    let switch = |on: bool| if on { ("ON", Color::GOOD) } else { ("OFF", Color::TEXT_FAINT) };
+    for (i, row) in ALARM_ROWS.iter().enumerate() {
+        let y = ALARM_ROW_TOP + 2 + ALARM_ROW_HEIGHT * i as i32;
+        let (label, (state_text, state_color), value) = match row {
+            Editing::SmartWeekday | Editing::SmartWeekend => {
+                let mut value = heapless::String::<20>::new();
+                write!(
+                    value,
+                    "{} / {}",
+                    hhmm(settings.smart_weekday.into()),
+                    hhmm(settings.smart_weekend.into())
+                )
+                .expect("fits in 20");
+                ("SMART WAKE", switch(settings.smart), value)
+            }
+            Editing::At => {
+                let mut value = heapless::String::<20>::new();
+                value.push_str(&hhmm(settings.at_time.into())).expect("fits in 20");
+                ("ALARM", switch(settings.at), value)
+            }
+            Editing::Timer => {
+                let mut value = heapless::String::<20>::new();
+                // While running: time left; otherwise the duration.
+                let left = state.timer_at.zip(status.local_minute).map(|(at, now)| at - now);
+                value
+                    .push_str(&hhmm(left.unwrap_or(settings.timer.into()).max(0)))
+                    .expect("fits in 20");
+                let running = if left.is_some() { ("RUNNING", Color::GOOD) } else { ("", Color::TEXT_FAINT) };
+                ("TIMER", running, value)
+            }
+        };
+        canvas.text(4, y, label, Color::TEXT_DIM);
+        canvas.text_right(77, y, state_text, state_color);
+        canvas.text(4, y + 8, &value, Color::TEXT);
+    }
+}
+
+/// One setting, big, with how to change it.
+fn render_editor(
+    canvas: &mut Canvas,
+    editing: Editing,
+    settings: &alarm::Settings,
+    state: &alarm::State,
+) {
+    canvas.clear(BACKGROUND);
+    let (title, value, on) = match editing {
+        Editing::SmartWeekday => ("SMART: WEEKDAYS", settings.smart_weekday, settings.smart),
+        Editing::SmartWeekend => ("SMART: WEEKENDS", settings.smart_weekend, settings.smart),
+        Editing::At => ("ALARM", settings.at_time, settings.at),
+        Editing::Timer => ("TIMER", settings.timer, state.timer_at.is_some()),
+    };
+    canvas.text_centered(40, 4, title, Color::ACCENT);
+
+    // HH:MM in the clock's 2× digits (10 px cells, 2 px gaps), the colon
+    // between; hours on the left half, minutes on the right, matching
+    // where to swipe.
+    let digits = [value / 600, value / 60 % 10, value % 60 / 10, value % 10];
+    for (&digit, x) in digits.iter().zip([12, 24, 44, 56]) {
+        draw_digit(canvas, x, 22, u64::from(digit), 2, Color::TEXT);
+    }
+    for y in [26, 32] {
+        canvas.fill_rect(39, y, 2, 2, Color::ACCENT);
+    }
+    canvas.text_centered(20, 44, "HOURS", Color::TEXT_FAINT);
+    canvas.text_centered(60, 44, "MINUTES", Color::TEXT_FAINT);
+    canvas.text_centered(40, 51, "SWIPE UP/DOWN", Color::TEXT_FAINT);
+
+    let (left, left_color) = match (editing, on) {
+        (Editing::Timer, true) => ("STOP", Color::BAD),
+        (Editing::Timer, false) => ("START", Color::GOOD),
+        (_, true) => ("ON", Color::GOOD),
+        (_, false) => ("OFF", Color::TEXT_FAINT),
+    };
+    let right = if editing == Editing::SmartWeekday { "NEXT" } else { "DONE" };
+    canvas.fill_rect(2, EDITOR_BUTTONS_Y, 36, 18, left_color);
+    canvas.text_centered(20, EDITOR_BUTTONS_Y + 7, left, BACKGROUND);
+    canvas.fill_rect(42, EDITOR_BUTTONS_Y, 36, 18, Color::ACCENT);
+    canvas.text_centered(60, EDITOR_BUTTONS_Y + 7, right, BACKGROUND);
+}
+
+/// The time, big, and how to stop it.
+fn render_ringing(canvas: &mut Canvas, ringing: &Ringing, status: &Status) {
+    canvas.clear(BACKGROUND);
+    let title = match ringing.kind {
+        alarm::Kind::Smart => "GOOD MORNING",
+        alarm::Kind::At | alarm::Kind::Snooze => "ALARM",
+        alarm::Kind::Timer => "TIME'S UP",
+    };
+    canvas.text_centered(40, 6, title, Color::ACCENT);
+    canvas.sprite(37, 15, font::BELL_W, &font::BELL, 1, Color::ACCENT);
+    if let Some(minute) = status.local_minute {
+        let time = minute.rem_euclid(24 * 60);
+        let digits = [time / 600, time / 60 % 10, time % 60 / 10, time % 10];
+        for (&digit, x) in digits.iter().zip([12, 24, 44, 56]) {
+            draw_digit(canvas, x, 28, digit as u64, 2, Color::TEXT);
+        }
+        for y in [32, 38] {
+            canvas.fill_rect(39, y, 2, 2, Color::ACCENT);
+        }
+    }
+    canvas.text_centered(40, 56, "TAP: SNOOZE", Color::TEXT_DIM);
+    canvas.text_centered(40, 66, "BUTTON: STOP", Color::TEXT_DIM);
 }
 
 /// One big 5×7 digit at `scale`, with a 1 px drop shadow down and right.
