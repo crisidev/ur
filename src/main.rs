@@ -561,6 +561,9 @@ async fn main(spawner: Spawner) {
                 _ => canvas.flush(&mut display).await,
             }
             first_frame = false;
+            if !panel_awake {
+                display.steady().await;
+            }
             // Dim for a glance (white on black reads fine), and back up if
             // it turns into a proper wake.
             if app.dim() {

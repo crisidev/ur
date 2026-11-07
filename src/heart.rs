@@ -20,7 +20,7 @@
 use core::cell::Cell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use defmt::{debug, info, warn};
+use defmt::{debug, info, trace, warn};
 use embassy_futures::select::select;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -490,6 +490,11 @@ async fn measure(
     let mut movement = heapless::HistoryBuf::<u16, MOTION_HISTORY>::new();
     // This second's signal, for the level check.
     let (mut peak, mut sum, mut count) = (0u32, 0u32, 0u32);
+    // And the samples themselves, for the field log at `trace`: replaying
+    // real wrists through `ppg` (host-tests/ppg) is how its limits get
+    // tuned. About 60 bytes a second while measuring. (Room for a few more
+    // than `LEVEL_CHECK_SAMPLES`, as one poll can complete several.)
+    let mut second = heapless::Vec::<u16, 40>::new();
 
     let mut ticker = Ticker::every(POLL);
     loop {
@@ -509,6 +514,9 @@ async fn measure(
             peak = peak.max(sample);
             sum += sample;
             count += 1;
+            // Full only if conversions stalled and then caught up, which
+            // the replay can live without.
+            let _ = second.push(sample as u16);
             if let Some(v) = ppg.push(sample) {
                 verdict = Some(v);
             }
@@ -527,6 +535,8 @@ async fn measure(
                 ambient,
                 conversions.period_us()
             );
+            trace!("heart: samples {=[?]} movement {}", second.as_slice(), activity::movement());
+            second.clear();
             let before = *level;
             if peak >= SATURATED {
                 if *level == 0 {

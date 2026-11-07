@@ -106,6 +106,17 @@ impl Display {
         Timer::at(self.last_sleep_change + SLEEP_SETTLE).await;
     }
 
+    /// Waits until the panel shows its frame memory steadily after a
+    /// [`Display::wake`], before the backlight comes on. Pixels written
+    /// sooner land fine, but the panel's drive is still powering up: lit
+    /// within ~20 ms of SLPOUT (a glance redrawing only a few digits over the
+    /// previous white-on-black frame), part of the screen flashed bright.
+    /// A full repaint takes longer than this anyway, so it costs nothing
+    /// there.
+    pub async fn steady(&self) {
+        self.settle().await;
+    }
+
     /// Starts writing pixels into the given rectangle, left to right, top to
     /// bottom. Follow with [`Display::pixels`] calls totalling exactly the
     /// rectangle's size in bytes (2 per pixel), then [`Display::end_pixels`].
