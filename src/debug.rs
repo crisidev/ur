@@ -59,8 +59,15 @@ pub async fn input_task() {
             9 => {
                 let mut app = heapless::String::new();
                 let mut who = heapless::String::new();
-                let _ = app.push_str("Signal");
-                let _ = who.push_str("Åse Kristiansen");
+                // `x` picks the sender, to check how each length lays out.
+                let (from, sender) = match x {
+                    1 => ("Pocket Casts", "Into the Mists: Talia Rossi"),
+                    // As long as a sender gets (`ui::PhoneEvent`'s 40).
+                    2 => ("Calendar", "Quarterly planning: platform team, 4B"),
+                    _ => ("Signal", "Åse Kristiansen"),
+                };
+                let _ = app.push_str(from);
+                let _ = who.push_str(sender);
                 let notification = crate::ui::PhoneEvent::Notification { app, who };
                 INPUT.send(InputEvent::Phone(notification)).await;
                 continue;

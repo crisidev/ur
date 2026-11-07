@@ -573,11 +573,12 @@ impl App {
         match event {
             PhoneEvent::Notification { app, who } => {
                 // Long enough to read, and for long lines to scroll through
-                // once. With the screen off, the sender shows at 2×,
-                // wrapped (it only scrolls if even three lines won't do).
+                // once. With the screen off, the sender is wrapped over the
+                // whole screen (see `quiet_layout`), and only scrolls if
+                // even that won't do.
                 let who_overflow = if self.awake {
                     font::small_text_width(&who)
-                } else if wrap(&who, BANNER_TEXT_WIDTH, 2).is_some() {
+                } else if quiet_layout(&who).is_some() {
                     0
                 } else {
                     font::small_text_width(&who) * 2
@@ -707,7 +708,7 @@ impl App {
         let quiet = self.quiet_notification();
         let banner = self.banner.as_ref().is_some_and(|b| {
             let who = if quiet {
-                wrap(&b.who, BANNER_TEXT_WIDTH, 2).is_none()
+                quiet_layout(&b.who).is_none()
             } else {
                 overflows(&b.who, 1, BANNER_TEXT_WIDTH)
             };
@@ -1409,20 +1410,42 @@ fn render_banner(canvas: &mut Canvas, banner: &Banner, now: Instant) {
     );
 }
 
-/// How many lines a quiet notification's sender may wrap onto.
-const QUIET_LINES: usize = 3;
-/// Line pitch of 2× text (5 px glyphs, 2 accent rows, a gap), doubled.
-const QUIET_LINE_HEIGHT: i32 = 18;
+/// Where a quiet notification's sender goes: everything below the app
+/// name, which sits at the very top.
+const QUIET_TOP: i32 = 12;
+/// Line pitch of 1× text: 5 px glyphs, 2 accent rows, 2 rows' gap.
+const QUIET_PITCH: i32 = 9;
+/// The most lines a quiet notification's sender may wrap onto at 2× (as
+/// many as fit below the app name: 4 × 18 px, less the last gap, is
+/// exactly the 68 px there), and at 1× (seven 9 px lines), which it falls
+/// back to when 2× won't do. "INTO THE / MISTS: / TALIA / ROSSI" is four
+/// lines at 2×: a podcast's name and its episode's, say.
+const QUIET_LINES_2X: usize = 4;
+const QUIET_LINES: usize = 7;
 
-/// One wrapped line: the longest sender line at 2× is 9 characters, plus
+/// One wrapped line: the longest sender line at 1× is 18 characters, plus
 /// a hyphen; room for multi-byte letters.
 type Line = heapless::String<48>;
 
+/// How a quiet notification's sender fits on the screen: wrapped lines,
+/// and the scale to draw them at. Big (2×) if it fits, else normal size
+/// (1×); `None` if it's too long even for that, and has to scroll.
+fn quiet_layout(who: &str) -> Option<(heapless::Vec<Line, QUIET_LINES>, i32)> {
+    wrap(who, BANNER_TEXT_WIDTH, 2, QUIET_LINES_2X)
+        .map(|lines| (lines, 2))
+        .or_else(|| wrap(who, BANNER_TEXT_WIDTH, 1, QUIET_LINES).map(|lines| (lines, 1)))
+}
+
 /// `text` broken at spaces into lines of at most `width` pixels at
-/// `scale`, if it fits in [`QUIET_LINES`]. A word too long for a line of
-/// its own is hyphenated, keeping at least three letters for the next
-/// line ("KRISTIAN-" / "SEN").
-fn wrap(text: &str, width: i32, scale: i32) -> Option<heapless::Vec<Line, QUIET_LINES>> {
+/// `scale`, if it fits in `max_lines` (at most [`QUIET_LINES`]). A word
+/// too long for a line of its own is hyphenated, keeping at least three
+/// letters for the next line ("KRISTIAN-" / "SEN").
+fn wrap(
+    text: &str,
+    width: i32,
+    scale: i32,
+    max_lines: usize,
+) -> Option<heapless::Vec<Line, QUIET_LINES>> {
     let fits = |s: &str| font::small_text_width(s) * scale <= width;
     let mut lines = heapless::Vec::new();
     let mut rest = text.trim();
@@ -1475,35 +1498,42 @@ fn wrap(text: &str, width: i32, scale: i32) -> Option<heapless::Vec<Line, QUIET_
             line.push('-').ok()?;
             rest = &rest[cut..];
         }
+        if lines.len() == max_lines {
+            return None;
+        }
         lines.push(line).ok()?;
     }
     Some(lines)
 }
 
 /// A notification that arrived with the screen off: the whole screen,
-/// white on black like a glance, the app small at the top and the sender
-/// big (2×), wrapped onto up to three lines and centred (scrolling only if
-/// it's longer still).
+/// white on black like a glance, the app small at the very top and the
+/// sender wrapped and centred below it, as big as fits (see
+/// [`quiet_layout`]; scrolling only if it's longer still).
 fn render_quiet_notification(canvas: &mut Canvas, banner: &Banner, now: Instant) {
     let elapsed = now - banner.since;
     canvas.clear(BACKGROUND);
     canvas.marquee(
         3..3 + BANNER_TEXT_WIDTH,
-        12,
+        3,
         &banner.app,
         Color::TEXT_DIM,
         1,
         elapsed,
     );
-    match wrap(&banner.who, BANNER_TEXT_WIDTH, 2) {
-        Some(lines) => {
-            // Centred in the space below the app name (y 22..80).
-            let block = QUIET_LINE_HEIGHT * lines.len() as i32;
-            let top = 22 + (58 - block) / 2 + 4;
+    match quiet_layout(&banner.who) {
+        Some((lines, scale)) => {
+            // Centred below the app name: from the first line's accents
+            // to the last line's baseline.
+            let pitch = QUIET_PITCH * scale;
+            let block =
+                pitch * (lines.len() as i32 - 1) + (font::ACCENT_ROWS + 5) * scale;
+            let accents = QUIET_TOP + (80 - QUIET_TOP - block) / 2;
+            let top = accents + font::ACCENT_ROWS * scale;
             for (i, line) in lines.iter().enumerate() {
-                let y = top + QUIET_LINE_HEIGHT * i as i32;
-                let x = 40 - font::small_text_width(line);
-                canvas.text_scaled(x, y, line, Color::TEXT, 2);
+                let y = top + pitch * i as i32;
+                let x = 40 - font::small_text_width(line) * scale / 2;
+                canvas.text_scaled(x, y, line, Color::TEXT, scale);
             }
         }
         None => canvas.marquee(
