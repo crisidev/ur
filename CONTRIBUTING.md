@@ -16,7 +16,7 @@ sealed watch, and how releases are made.
   includes the firmware's source file with `#[path]` and tests it on the
   host. Some also replay real data (see [Field logs](#field-logs)).
 - `scripts/`: packaging (`package.py`, `release.sh`), flashing and
-  screenshots over SWD (`run.sh`, `screenshot.py`), and Bluetooth tools
+  screenshots over SWD (`run-esprobe.sh`, `screenshot.py`), and Bluetooth tools
   (`dfu.py`, `fetch-log.py`).
 - `.cargo/config.toml`: the target, the linker scripts, and the runner
   for `cargo run`; see [Iterating](#iterating).
@@ -134,7 +134,7 @@ Only the scripts that talk to the probe need changing; see below.
 cargo run --release
 ```
 
-`.cargo/config.toml` sets `scripts/run.sh` as the runner, which packages
+`.cargo/config.toml` sets `scripts/run-esprobe.sh` as the runner, which packages
 the build, flashes it into the bootloader's slot, and streams its defmt
 logs (for `RTT_SECS` seconds, 25 by default). The bootloader must be at
 0x0, as it ships; `memory.x` describes the layout. Flashing this way skips
@@ -155,12 +155,23 @@ the script's documentation. The README's screenshots are made this way,
 from a `scripts/release.sh` build (so the Info screen shows a real
 version).
 
-**With a different probe**, change the `esprobe` commands in these two
-scripts; nothing else knows about the probe:
+**With a different probe**, nothing in the repository needs to change.
+Write your own runner, doing what `scripts/run-esprobe.sh` does, and
+point cargo at it for yourself: the environment variable overrides the
+`runner` in `.cargo/config.toml` (in your shell's profile, or a `.envrc`):
 
-- `scripts/run.sh` flashes `<elf>-slot.elf` (the packaged image, at the
-  bootloader's slot), waits for the firmware's RTT control block, then
-  pipes RTT into [`defmt-print`][defmt-print]. With probe-rs, that's
+```sh
+export CARGO_TARGET_THUMBV7EM_NONE_EABIHF_RUNNER=~/bin/ur-run-jlink.sh
+```
+
+Two scripts talk to the probe, so these are what a runner (or a port of
+the screenshot script) has to replace:
+
+- `scripts/run-esprobe.sh` gets the ELF's path from cargo, packages it
+  (`scripts/package.py`, which writes `<elf>-slot.elf` next to it: the
+  image at the bootloader's slot), flashes that, waits for the
+  firmware's RTT control block, then pipes RTT into
+  [`defmt-print`][defmt-print]. With probe-rs, that's
   roughly `probe-rs download --chip nRF52832_xxAA "$ELF-slot.elf"`, a
   reset, and `probe-rs attach --chip nRF52832_xxAA "$ELF"`. Note that the
   nRF52 aliases its RAM at 0x00800000, so tools that scan RAM for the RTT
@@ -169,7 +180,8 @@ scripts; nothing else knows about the probe:
 - `scripts/screenshot.py` reads and writes words of RAM (`core read`,
   `core write`), in `read_words` and `write_word`.
 
-Or point `runner` in `.cargo/config.toml` at a script of your own.
+A runner for another probe, tested on one, would be a welcome
+contribution (as `scripts/run-<probe>.sh`).
 
 ## Field logs
 

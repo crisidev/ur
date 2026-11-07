@@ -3,7 +3,11 @@
 target = "thumbv7em-none-eabihf"
 
 [target.thumbv7em-none-eabihf]
-runner = "scripts/run.sh"
+# Flashes over SWD with an esprobe, the probe ur was developed with (see
+# CONTRIBUTING.md). For another probe, set
+# CARGO_TARGET_THUMBV7EM_NONE_EABIHF_RUNNER to your own runner, which
+# overrides this without changing the repository.
+runner = "scripts/run-esprobe.sh"
 rustflags = [
   # `link.x` comes from cortex-m-rt (and includes our `memory.x`); `defmt.x`
   # places the defmt string table where `defmt-print` expects to find it.

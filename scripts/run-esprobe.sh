@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Cargo runner: package the ELF for the bootloader, flash it into the
-# bootloader's primary slot over SWD, then stream its defmt logs.
+# Cargo runner for an esprobe (https://github.com/perara/esprobe-rs):
+# package the ELF for the bootloader, flash it into the bootloader's
+# primary slot over SWD, then stream its defmt logs.
+#
+# A runner for another probe does the same three things; see
+# CONTRIBUTING.md ("With a different probe").
 #
 # This needs the PineTime bootloader at 0x0 (see memory.x): the firmware is
 # linked to start at 0x8100 and can't boot on its own.

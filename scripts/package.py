@@ -6,7 +6,7 @@ Takes the linked ELF and produces, next to it:
 - `<name>.img`: the MCUBoot image (header + firmware + hash), as it sits in
   the primary slot at 0x8000.
 - `<name>-slot.elf`: the same image wrapped in a minimal ELF, because
-  `esprobe flash` only takes ELFs. `scripts/run.sh` flashes this over SWD.
+  `esprobe flash` only takes ELFs. `scripts/run-esprobe.sh` flashes this over SWD.
 - `<name>-dfu.zip`: a Nordic legacy-DFU package of the image, for updating
   over Bluetooth (InfiniTime's DFU, or ours, with nRF Connect / the nRF
   Device Firmware Update app / `scripts/dfu.py`).
