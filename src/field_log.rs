@@ -380,7 +380,7 @@ impl Breadcrumb {
 
 const BREADCRUMB_MAGIC: u32 = u32::from_le_bytes(*b"urP1");
 /// Must match the `RETAINED` region in `memory.x`.
-const BREADCRUMB_ADDRESS: usize = 0x2000_E040;
+const BREADCRUMB_ADDRESS: usize = 0x2000_D440;
 const _: () = assert!(size_of::<Breadcrumb>() <= 32);
 
 fn breadcrumb() -> *mut Breadcrumb {

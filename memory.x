@@ -30,21 +30,27 @@ MEMORY
   FLASH    : ORIGIN = 0x00008100, LENGTH = 0x7C000 - 0x8100 - 0x1B0 - 0x28
   STORAGE  : ORIGIN = 0x0007D000, LENGTH = 12K
   /* Our statics. The stack doesn't live here; see `_stack_start`. */
-  RAM      : ORIGIN = 0x20000000, LENGTH = 56K
+  RAM      : ORIGIN = 0x20000000, LENGTH = 0xD400
   /* State that survives resets, at fixed addresses so it survives resets
    * into *different* firmware (reflashing, updates), whose RAM layout may
    * differ: today's steps (src/activity.rs) at +0, the wall-clock checkpoint
    * (src/clock.rs) at +0x20, where the last panic happened
    * (src/field_log.rs) at +0x40.
    *
-   * Every reset runs the bootloader first, which uses the bottom 26 KiB of
-   * RAM for its statics and the top for its stack, so the retained block
-   * sits between them, well clear of both. */
-  RETAINED : ORIGIN = 0x2000E000, LENGTH = 128
+   * Every reset runs the bootloader first, and it uses far more RAM than
+   * its symbols suggest. Painting RAM over SWD, then running the bootloader
+   * to our entry point (with an earlier update in the secondary slot, the
+   * usual state) showed it writing everything up to 0x2000CB80 (statics and
+   * heap) and down to 0x2000DD60 (stack). The retained block sits in the
+   * middle of that gap. Other paths (a swap, a rollback) may reach further;
+   * then the magic numbers reject what's left, and the state is lost, not
+   * misread. */
+  RETAINED : ORIGIN = 0x2000D400, LENGTH = 128
 }
 
-/* The stack takes the top 8 KiB, above the retained block, growing down
- * towards it. Measured (by painting it over SWD and reading it back after a
- * few minutes of use): under 4 KiB, since embassy tasks keep their state in
- * statics, not on the stack. */
+/* The stack takes the 11 KiB above the retained block, growing down towards
+ * it. Measured (by painting it over SWD and reading it back after a few
+ * minutes of use): under 4 KiB, since embassy tasks keep their state in
+ * statics, not on the stack. Our statics have only 53 KiB (`RAM`), so the
+ * retained block stays clear of the bootloader. */
 _stack_start = 0x20010000;
