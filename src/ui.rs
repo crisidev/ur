@@ -80,7 +80,7 @@ const DOUBLE_TAP: Duration = Duration::from_millis(500);
 fn deliberate(touch: &Touch) -> bool {
     let inside = |v: i32| (TAP_MARGIN..80 - TAP_MARGIN).contains(&v);
     touch.gesture == Gesture::Tap
-        && touch.held >= DELIBERATE_TAP
+        && u64::from(touch.held_ms) >= DELIBERATE_TAP.as_millis()
         && inside(touch.x)
         && inside(touch.y)
 }
