@@ -29,6 +29,7 @@ const SLPIN: u8 = 0x10;
 const SLPOUT: u8 = 0x11;
 const NORON: u8 = 0x13;
 const INVON: u8 = 0x21;
+const DISPOFF: u8 = 0x28;
 const DISPON: u8 = 0x29;
 const CASET: u8 = 0x2A;
 const RASET: u8 = 0x2B;
@@ -39,6 +40,10 @@ const COLMOD: u8 = 0x3A;
 /// The controller requires this long between entering and leaving sleep
 /// (either direction) before the next sleep command.
 const SLEEP_SETTLE: Duration = Duration::from_millis(120);
+/// One panel refresh at the controller's default 60 Hz frame rate, with
+/// margin: how long after a change in frame memory (or DISPON) until every
+/// row shows it. The panel scans top to bottom, so the bottom lags.
+pub const REFRESH: Duration = Duration::from_millis(20);
 
 pub struct Display {
     /// The bus, while we're using it (see the module docs).
@@ -87,13 +92,23 @@ impl Display {
 
     /// Low-power sleep. The controller keeps its frame memory, so what was
     /// on screen is still there after [`Display::wake`].
+    ///
+    /// The output is blanked first (DISPOFF) and stays blank until
+    /// [`Display::show`]. Without that, the panel picked up where it left
+    /// off on waking: the backlight came on for a glance while the lower
+    /// rows still showed the frame from before sleep (the light theme's
+    /// background, or the clock face's weekday and heart rate), until the
+    /// panel's first scan reached them.
     pub async fn sleep(&mut self) {
         self.settle().await;
+        self.command(DISPOFF, &[]).await;
         self.command(SLPIN, &[]).await;
         self.last_sleep_change = Instant::now();
         Timer::after_millis(5).await;
     }
 
+    /// Leaves sleep, with the output still blank: draw the new frame, then
+    /// [`Display::show`] it.
     pub async fn wake(&mut self) {
         self.settle().await;
         self.command(SLPOUT, &[]).await;
@@ -106,15 +121,14 @@ impl Display {
         Timer::at(self.last_sleep_change + SLEEP_SETTLE).await;
     }
 
-    /// Waits until the panel shows its frame memory steadily after a
-    /// [`Display::wake`], before the backlight comes on. Pixels written
-    /// sooner land fine, but the panel's drive is still powering up: lit
-    /// within ~20 ms of SLPOUT (a glance redrawing only a few digits over the
-    /// previous white-on-black frame), part of the screen flashed bright.
-    /// A full repaint takes longer than this anyway, so it costs nothing
-    /// there.
-    pub async fn steady(&self) {
+    /// Unblanks the output after [`Display::wake`], once the panel's drive
+    /// has powered up (the same 120 ms the controller asks between sleep
+    /// changes), and returns once a whole refresh has shown the frame
+    /// memory, so the backlight can come on over a finished frame.
+    pub async fn show(&mut self) {
         self.settle().await;
+        self.command(DISPON, &[]).await;
+        Timer::after(REFRESH).await;
     }
 
     /// Starts writing pixels into the given rectangle, left to right, top to

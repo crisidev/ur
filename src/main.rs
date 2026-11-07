@@ -547,7 +547,8 @@ async fn main(spawner: Spawner) {
             // notification) with the panel lit: go dark for the redraw.
             // Otherwise the old frame (often a light theme, at full
             // backlight) flashes up while the new one is drawn over it.
-            if panel_awake && app.dim() != was_dim {
+            let relighting = panel_awake && app.dim() != was_dim;
+            if relighting {
                 backlight.off();
             }
             was_dim = app.dim();
@@ -561,8 +562,13 @@ async fn main(spawner: Spawner) {
                 _ => canvas.flush(&mut display).await,
             }
             first_frame = false;
+            // Light only a finished frame: after waking, the output is blank
+            // until shown (see `Display::sleep`); after a redraw in the dark,
+            // the panel's scan needs a refresh to reach the bottom rows.
             if !panel_awake {
-                display.steady().await;
+                display.show().await;
+            } else if relighting {
+                Timer::after(display::REFRESH).await;
             }
             // Dim for a glance (white on black reads fine), and back up if
             // it turns into a proper wake.
