@@ -9,9 +9,10 @@
 # target, built from Cargo.lock, with nothing downstream depending on it.
 #
 # The toolchain is the one rust-toolchain.toml pins, for releases to be
-# reproducible; `rustup toolchain install` installs it. Beta, for early
-# warning of new lints and breakage, is installed alongside and selected
-# with `cargo +beta`, which overrides the pin.
+# reproducible; `rustup toolchain install` (with no arguments) installs it,
+# so the pin lives in that one file. Beta, for early warning of new lints
+# and breakage, is installed alongside and selected with `cargo +beta`,
+# which overrides the pin.
 permissions:
   contents: read
 # Restricting the push trigger to main means a PR from a branch of this repo
@@ -59,11 +60,7 @@ jobs:
         run: rustup toolchain install
       - name: Install beta
         if: matrix.toolchain == 'beta'
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # branch=master
-        with:
-          toolchain: beta
-          targets: thumbv7em-none-eabihf
-          components: clippy
+        run: rustup toolchain install beta --profile minimal --target thumbv7em-none-eabihf --component clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
         with:
           key: ${{ matrix.toolchain }}
