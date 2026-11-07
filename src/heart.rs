@@ -484,6 +484,8 @@ async fn measure(
                     LEVELS[*level],
                     conversions.period_us()
                 );
+            } else {
+                debug!("heart: {} BPM", bpm);
             }
             publish(bpm);
             measured = true;

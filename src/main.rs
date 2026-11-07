@@ -421,6 +421,7 @@ async fn main(spawner: Spawner) {
         ble::BATTERY.lock(|cell| cell.set(report));
         // For battery-life analysis from the field log.
         if now >= next_battery_log {
+            clock::log_now();
             info!(
                 "battery: {} mV, {}%, charging: {}",
                 report.millivolts, report.percent, report.charging

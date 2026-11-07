@@ -65,22 +65,27 @@ pub static FLASH: Mutex<CriticalSectionRawMutex, Option<SpiFlash>> = Mutex::new(
 
 pub struct SpiFlash {
     cs: Output<'static>,
+    /// Whether the chip is out of deep power-down. In deep power-down it
+    /// ignores everything but the wake-up command, *silently*: a program
+    /// sent to a sleeping chip is lost, and its status reads as idle. Since
+    /// several users share the chip and each sleeps it when done, every
+    /// operation wakes it first if needed.
+    awake: bool,
 }
 
 impl SpiFlash {
     /// Takes the chip-select (P0.05) and puts the chip to sleep. The
     /// bootloader may have left it awake.
     pub async fn new(cs: Output<'static>) -> Self {
-        let mut flash = Self { cs };
-        flash.command(&[DEEP_POWER_DOWN], &mut []).await;
+        let mut flash = Self { cs, awake: true };
+        flash.sleep().await;
         flash
     }
 
     /// Wakes the chip from deep power-down and checks it's the one we know.
     pub async fn wake(&mut self) -> Result<(), Error> {
-        self.command(&[RELEASE_POWER_DOWN], &mut []).await;
-        // tRES1: at most 20 µs before it accepts commands again.
-        Timer::after_micros(30).await;
+        self.awake = false;
+        self.ensure_awake().await;
         let mut id = [0; 3];
         self.command(&[READ_JEDEC_ID], &mut id).await;
         // Any manufacturer (0x00/0xFF: nothing answered), SPI NOR (0x40),
@@ -93,9 +98,20 @@ impl SpiFlash {
 
     pub async fn sleep(&mut self) {
         self.command(&[DEEP_POWER_DOWN], &mut []).await;
+        self.awake = false;
+    }
+
+    async fn ensure_awake(&mut self) {
+        if !self.awake {
+            self.command(&[RELEASE_POWER_DOWN], &mut []).await;
+            // tRES1: at most 20 µs before it accepts commands again.
+            Timer::after_micros(30).await;
+            self.awake = true;
+        }
     }
 
     pub async fn read(&mut self, address: u32, data: &mut [u8]) {
+        self.ensure_awake().await;
         let [_, a2, a1, a0] = address.to_be_bytes();
         self.command(&[READ_DATA, a2, a1, a0], data).await;
     }
@@ -108,6 +124,7 @@ impl SpiFlash {
             range.start.is_multiple_of(SECTOR) && range.end.is_multiple_of(SECTOR),
             "erase ranges are sector-aligned"
         );
+        self.ensure_awake().await;
         let mut address = range.start;
         while address < range.end {
             let [_, a2, a1, a0] = address.to_be_bytes();
@@ -135,6 +152,7 @@ impl SpiFlash {
             !data.is_empty() && address % PAGE + data.len() as u32 <= PAGE,
             "a program stays within one page"
         );
+        self.ensure_awake().await;
         let [_, a2, a1, a0] = address.to_be_bytes();
         let header = [PAGE_PROGRAM, a2, a1, a0];
         self.command(&[WRITE_ENABLE], &mut []).await;

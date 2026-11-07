@@ -89,6 +89,25 @@ pub fn set(utc_seconds: i64, offset_minutes: i16) {
         offset_minutes,
     };
     SYNC.lock(|cell| cell.set(Some(sync)));
+    log_now();
+}
+
+/// Logs the wall-clock time, so logs (whose timestamps count from boot)
+/// can be lined up with other records, such as another watch's. Called on
+/// every sync and periodically.
+pub fn log_now() {
+    if let (Some(utc), Some(local)) = (now_utc_seconds(), now()) {
+        defmt::info!(
+            "clock: {=i64} UTC = {}-{=u8:02}-{=u8:02} {=u8:02}:{=u8:02}:{=u8:02} local",
+            utc,
+            local.year,
+            local.month,
+            local.day,
+            local.hour,
+            local.minute,
+            local.second
+        );
+    }
 }
 
 /// Seconds since 1970-01-01T00:00Z, if the phone has told us the time.
