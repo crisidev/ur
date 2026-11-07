@@ -21,11 +21,11 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use defmt::{debug, info, warn};
 use embassy_futures::join::join3;
-use embassy_futures::select::{Either3, select3};
+use embassy_futures::select::{Either4, select, select4};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
 use embassy_sync::channel::Channel;
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use heapless::Vec;
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 use trouble_host::prelude::*;
@@ -203,6 +203,8 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
         }
     };
     let gps = RefCell::new(GpsPolicy::default());
+    // When the phone last left, for `advertising_interval`.
+    let last_disconnect: Cell<Option<Instant>> = Cell::new(None);
     // Each slot advertises until something connects, serves it until it
     // disconnects, and repeats. While one slot serves, the other advertises,
     // so a second client can always find us.
@@ -210,8 +212,16 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
         loop {
             let conn = {
                 let mut peripheral = peripheral.lock().await;
-                match advertise(&mut peripheral, &server).await {
-                    Ok(conn) => conn,
+                match advertise(
+                    &mut peripheral,
+                    &server,
+                    advertising_interval(last_disconnect.get()),
+                )
+                .await
+                {
+                    Ok(Some(conn)) => conn,
+                    // Time to review the interval (see `ADVERTISING_REVIEW`).
+                    Ok(None) => continue,
                     Err(e) => {
                         warn!("ble: advertising failed: {}", defmt::Debug2Format(&e));
                         Timer::after_secs(5).await;
@@ -226,26 +236,65 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
             // Whether this is the phone; see `serve`. The status reporter
             // waits for that, and never finishes on its own.
             let phone = Cell::new(false);
-            embassy_futures::select::select(
+            let since = Instant::now();
+            select(
                 serve(&stack, &server, &conn, &gps, &phone),
                 report_status(&phone),
             )
             .await;
+            crate::power::add(crate::power::Meter::Connected, since);
+            crate::power::count(crate::power::Count::Disconnects);
             if phone.get() {
                 CONNECTED.store(false, Ordering::Relaxed);
                 gps.borrow_mut().on_disconnect(Instant::now());
+                last_disconnect.set(Some(Instant::now()));
             }
-            show_passkey(None);
+            // Only if a pairing was cut short: a plain disconnect has nothing
+            // to show, and waking the screen for it costs ~15 s of panel,
+            // backlight, and heart-rate LED.
+            if PASSKEY.lock(Cell::get).is_some() {
+                show_passkey(None);
+            }
         }
     };
     join3(host, slot(), slot()).await;
 }
 
-/// Advertises until the phone connects.
+/// How long one advertising run lasts before its interval is reconsidered
+/// (the phone may have connected or left on the other slot meanwhile).
+const ADVERTISING_REVIEW: Duration = Duration::from_secs(30);
+
+/// How often to advertise, given when the phone last disconnected.
+///
+/// Each advertising event costs about as much as several connection events
+/// (three channels, each transmit followed by a listen), so this is most of
+/// what Bluetooth costs while the phone is away:
+///
+/// - Right after the phone leaves, it usually comes straight back (a brief
+///   dropout), so advertise quickly for a minute.
+/// - While the phone is connected, the other slot only serves an updater or
+///   a log fetcher, whose active scans find even a slow advertiser in a few
+///   seconds.
+/// - Otherwise the phone is away (out of range, Bluetooth off), possibly for
+///   days: advertise slowly. Android's background reconnect scan still
+///   catches a ~1 s advertiser within tens of seconds.
+fn advertising_interval(last_disconnect: Option<Instant>) -> Duration {
+    if CONNECTED.load(Ordering::Relaxed) {
+        Duration::from_millis(2000)
+    } else if last_disconnect.is_some_and(|at| at.elapsed() < Duration::from_secs(60)) {
+        Duration::from_micros(152_500)
+    } else {
+        Duration::from_micros(1_022_500)
+    }
+}
+
+/// Advertises at `interval` until something connects, or until
+/// [`ADVERTISING_REVIEW`] passes (`None`).
 async fn advertise<'values, 'server, C: trouble_host::Controller>(
     peripheral: &mut Peripheral<'values, C, DefaultPacketPool>,
     server: &'server Server<'values>,
-) -> Result<GattConnection<'values, 'server, DefaultPacketPool>, BleHostError<C::Error>> {
+    interval: Duration,
+) -> Result<Option<GattConnection<'values, 'server, DefaultPacketPool>>, BleHostError<C::Error>> {
     let mut data = [0; 31];
     let len = AdStructure::encode_slice(
         &[
@@ -255,11 +304,8 @@ async fn advertise<'values, 'server, C: trouble_host::Controller>(
         &mut data,
     )?;
     let parameters = AdvertisementParameters {
-        // Slower than the 160 ms default, to save power while the phone is
-        // away. A reconnecting phone still finds us within a second or two.
-        // TODO: advertise quickly for a while after disconnect, then back off.
-        interval_min: Duration::from_millis(500),
-        interval_max: Duration::from_millis(500),
+        interval_min: interval,
+        interval_max: interval,
         ..Default::default()
     };
     let advertiser = peripheral
@@ -271,7 +317,11 @@ async fn advertise<'values, 'server, C: trouble_host::Controller>(
             },
         )
         .await?;
-    Ok(advertiser.accept().await?.with_attribute_server(server)?)
+    // Dropping the advertiser (on timeout) stops advertising.
+    match with_timeout(ADVERTISING_REVIEW, advertiser.accept()).await {
+        Ok(conn) => Ok(Some(conn?.with_attribute_server(server)?)),
+        Err(_) => Ok(None),
+    }
 }
 
 /// Sends one field log sector; see [`LogService`].
@@ -358,6 +408,36 @@ async fn speed_up(
     }
 }
 
+/// After this long without traffic, ask the phone to [`slow_down`].
+const IDLE_AFTER: Duration = Duration::from_secs(30);
+
+/// Asks for connection parameters for a phone that's just keeping in
+/// touch: 100–125 ms, and we may skip two events in three when we have
+/// nothing to send. These are AOSP's defaults for its own
+/// `CONNECTION_PRIORITY_LOW_POWER`, so Android should accept them (the
+/// `ConnectionParamsUpdated` log line says whether it did). Gadgetbridge asks
+/// for "balanced" (30–50 ms, no skipping) at connect, i.e. ~25 connection
+/// events a second; this is ~3. Anything from the phone waits at most
+/// ~375 ms longer.
+async fn slow_down(
+    stack: &Stack<'_, Controller, DefaultPacketPool>,
+    conn: &GattConnection<'_, '_, DefaultPacketPool>,
+) {
+    let params = RequestedConnParams {
+        min_connection_interval: Duration::from_millis(100),
+        max_connection_interval: Duration::from_millis(125),
+        max_latency: 2,
+        supervision_timeout: Duration::from_secs(6),
+        ..Default::default()
+    };
+    if let Err(e) = conn.raw().update_connection_params(stack, &params).await {
+        warn!(
+            "ble: asking for a slower connection failed: {}",
+            defmt::Debug2Format(&e)
+        );
+    }
+}
+
 /// What a received line asks us to do; collected while parsing (which
 /// happens inside a non-async callback) and acted on afterwards.
 enum Action {
@@ -400,7 +480,19 @@ async fn serve(
         let _ = OUTBOX.try_send(Outgoing::GpsPower(true));
     };
 
+    // When the link last carried anything, and whether we've since asked for
+    // the idle parameters (see `slow_down`).
+    let mut last_traffic = Instant::now();
+    let mut slowed = false;
+
     let reason = loop {
+        let idle = async {
+            if phone.get() && !slowed && !update.active() {
+                Timer::at(last_traffic + IDLE_AFTER).await
+            } else {
+                core::future::pending().await
+            }
+        };
         let gps_timeout = async {
             match gps_deadline {
                 Some(deadline) => Timer::at(deadline).await,
@@ -414,13 +506,18 @@ async fn serve(
                 core::future::pending().await
             }
         };
-        let event = match select3(conn.next(), outgoing, gps_timeout).await {
-            Either3::First(event) => event,
-            Either3::Second(message) => {
+        let event = match select4(conn.next(), outgoing, gps_timeout, idle).await {
+            Either4::First(event) => event,
+            Either4::Second(message) => {
                 send(server, conn, message).await;
                 continue;
             }
-            Either3::Third(()) => {
+            Either4::Fourth(()) => {
+                slow_down(stack, conn).await;
+                slowed = true;
+                continue;
+            }
+            Either4::Third(()) => {
                 warn!("ble: no location from the phone; is GPS forwarding enabled?");
                 gps_deadline = None;
                 send(server, conn, Outgoing::GpsPower(false)).await;
@@ -430,6 +527,7 @@ async fn serve(
         match event {
             GattConnectionEvent::Disconnected { reason } => break reason,
             GattConnectionEvent::Gatt { event } => {
+                last_traffic = Instant::now();
                 let mut actions: Vec<Action, 4> = Vec::new();
                 // DFU writes are acted on after replying (flash work is
                 // async; this callback isn't), so keep a copy.
@@ -466,6 +564,7 @@ async fn serve(
                     // A fetch is hundreds of requests; make them quick.
                     if index == 0 {
                         speed_up(stack, conn).await;
+                        slowed = false;
                     }
                     send_log_sector(server, conn, index).await;
                 }
@@ -486,6 +585,7 @@ async fn serve(
                     }
                     if update.active() && !was_updating {
                         speed_up(stack, conn).await;
+                        slowed = false;
                     }
                 }
                 for action in actions {
@@ -517,7 +617,14 @@ async fn serve(
                             send(server, conn, Outgoing::GpsPower(gps_deadline.is_some())).await
                         }
                         Action::ActivityFetch { since_ms } => {
-                            send_activity(server, conn, since_ms).await
+                            // Hundreds of samples: a few per connection
+                            // event, so not at the idle interval.
+                            if slowed {
+                                speed_up(stack, conn).await;
+                                slowed = false;
+                            }
+                            send_activity(server, conn, since_ms).await;
+                            last_traffic = Instant::now();
                         }
                     }
                 }
@@ -551,6 +658,20 @@ async fn serve(
             }
             GattConnectionEvent::Encrypted { security_level, .. } => {
                 info!("ble: link encrypted ({})", security_level);
+            }
+            // What the phone actually gave us: the single biggest factor in
+            // what the connection costs (see `docs/power-plan.md`).
+            GattConnectionEvent::ConnectionParamsUpdated {
+                conn_interval,
+                peripheral_latency,
+                supervision_timeout,
+            } => {
+                info!(
+                    "ble: connection interval {} µs, latency {}, timeout {} ms",
+                    conn_interval.as_micros(),
+                    peripheral_latency,
+                    supervision_timeout.as_millis()
+                );
             }
             _ => {}
         }

@@ -332,9 +332,13 @@ pub async fn heart_task(i2c: Device) {
     }
     info!("heart: sensor ready");
 
-    // Remembered across sessions: the wrist (and the sensor's oscillator)
-    // don't change much in ten minutes.
-    let mut level = 0;
+    // The level the last *successful* session ended at: the wrist (and the
+    // sensor's oscillator) don't change much in ten minutes. A failed
+    // session (off the wrist, typically) climbs to the top level, 40 mA, and
+    // starting every later session there would triple the LED's cost.
+    let mut good_level = 0;
+    // Consecutive background sessions without a reading, for backing off.
+    let mut failures = 0u32;
     let mut conversions = Conversions::new();
     // Measure right away, so the clock face has a number soon after boot.
     let mut next_due = Instant::now();
@@ -352,7 +356,12 @@ pub async fn heart_task(i2c: Device) {
         }
 
         let started = Instant::now();
+        let mut level = good_level;
+        crate::power::count(crate::power::Count::HeartSessions);
         let outcome = measure(&mut hrs, &mut level, &mut conversions).await;
+        if matches!(outcome, Ok(Ended::Measured)) {
+            good_level = level;
+        }
         if hrs.off().await.is_err() {
             // TODO: retry, or the LED stays lit until the next session.
             warn!("heart: couldn't turn the sensor off");
@@ -378,9 +387,20 @@ pub async fn heart_task(i2c: Device) {
         // A reading resets the background schedule; so does a failed
         // background session (retrying right away would most likely fail
         // the same way: the watch is off the wrist, or the wrist is busy).
-        // TODO: retry a failed background session sooner than `INTERVAL`.
-        if matches!(outcome, Ok(Ended::Measured)) || Instant::now() >= next_due {
+        //
+        // Repeated failures mean the watch is most likely off the wrist (on
+        // a nightstand, in a drawer), where each session burns up to
+        // `SESSION_LIMIT` at the top LED level; back off to at most four
+        // times the interval. Being looked at (`WATCH_STARTED`) still starts
+        // a session right away.
+        // TODO: also end the back-off as soon as the accelerometer sees
+        // movement again.
+        if matches!(outcome, Ok(Ended::Measured)) {
+            failures = 0;
             next_due = Instant::now() + INTERVAL;
+        } else if Instant::now() >= next_due {
+            failures = (failures + 1).min(2);
+            next_due = Instant::now() + INTERVAL * (1 << failures);
         }
 
         // A session only ends while someone's watching if there's no
@@ -388,6 +408,42 @@ pub async fn heart_task(i2c: Device) {
         while watching() {
             Timer::after_secs(1).await;
         }
+    }
+}
+
+/// Accounts the LED's on-time to its drive current, for [`crate::power`].
+struct LedMeter {
+    drive: u8,
+    since: Instant,
+}
+
+impl LedMeter {
+    fn new(drive: u8) -> Self {
+        Self {
+            drive,
+            since: Instant::now(),
+        }
+    }
+
+    fn switch(&mut self, drive: u8) {
+        crate::power::add(Self::meter(self.drive), self.since);
+        *self = Self::new(drive);
+    }
+
+    fn meter(drive: u8) -> crate::power::Meter {
+        use crate::power::Meter;
+        [
+            Meter::HeartLed0,
+            Meter::HeartLed1,
+            Meter::HeartLed2,
+            Meter::HeartLed3,
+        ][usize::from(drive & 3)]
+    }
+}
+
+impl Drop for LedMeter {
+    fn drop(&mut self) {
+        crate::power::add(Self::meter(self.drive), self.since);
     }
 }
 
@@ -411,6 +467,8 @@ async fn measure(
     conversions: &mut Conversions,
 ) -> Result<Ended, ()> {
     hrs.on(LEVELS[*level]).await?;
+    // Ends the LED's on-time when the session returns, however it returns.
+    let mut led = LedMeter::new(LEVELS[*level].drive);
     conversions.restart();
     let mut ppg = Ppg::new();
     let mut consensus = Consensus::new();
@@ -473,6 +531,7 @@ async fn measure(
             if *level != before {
                 debug!("heart: switching to level {}", LEVELS[*level]);
                 hrs.on(LEVELS[*level]).await?;
+                led.switch(LEVELS[*level].drive);
                 conversions.restart();
                 ppg.reset();
                 continue;

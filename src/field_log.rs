@@ -93,6 +93,16 @@ fn rtt() -> &'static RttChannel {
 }
 
 #[cfg(feature = "field-log")]
+/// How many bytes are waiting in the RTT buffer.
+fn waiting() -> usize {
+    let channel = rtt();
+    let size = channel.size as usize;
+    let write = channel.write.load(Ordering::Acquire) as usize;
+    let read = channel.read.load(Ordering::Relaxed) as usize;
+    (write + size - read) % size
+}
+
+#[cfg(feature = "field-log")]
 /// Copies whatever whole frames are waiting in the RTT buffer to `out`, and
 /// marks them read. Returns how many bytes were copied.
 fn drain(out: &mut [u8]) -> usize {
@@ -218,8 +228,21 @@ pub async fn task() {
     info!("field log: writing sector {} (#{})", sector, sequence);
 
     let mut buffer = [0u8; 512];
+    let mut last_flush = embassy_time::Instant::now();
     loop {
         Timer::after_secs(1).await;
+        // Each flush wakes the SPI flash and programs a (partial) page, which
+        // costs about the same for 10 bytes as for 256. At debug level the
+        // log grows ~10 bytes a second, so flushing every second was ~10×
+        // the energy of flushing full pages. Wait for a page's worth, or 30 s
+        // (so a reset loses little), whichever comes first; the 1 KiB RTT
+        // buffer holds far more than either.
+        if waiting() < spi_flash::PAGE as usize
+            && last_flush.elapsed() < embassy_time::Duration::from_secs(30)
+        {
+            continue;
+        }
+        last_flush = embassy_time::Instant::now();
         let n = drain(&mut buffer);
         if n == 0 {
             continue;

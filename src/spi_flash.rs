@@ -71,13 +71,19 @@ pub struct SpiFlash {
     /// several users share the chip and each sleeps it when done, every
     /// operation wakes it first if needed.
     awake: bool,
+    /// Since when it's been awake, for [`crate::power`].
+    awake_since: Instant,
 }
 
 impl SpiFlash {
     /// Takes the chip-select (P0.05) and puts the chip to sleep. The
     /// bootloader may have left it awake.
     pub async fn new(cs: Output<'static>) -> Self {
-        let mut flash = Self { cs, awake: true };
+        let mut flash = Self {
+            cs,
+            awake: true,
+            awake_since: Instant::now(),
+        };
         flash.sleep().await;
         flash
     }
@@ -98,6 +104,9 @@ impl SpiFlash {
 
     pub async fn sleep(&mut self) {
         self.command(&[DEEP_POWER_DOWN], &mut []).await;
+        if self.awake {
+            crate::power::add(crate::power::Meter::SpiFlash, self.awake_since);
+        }
         self.awake = false;
     }
 
@@ -107,6 +116,7 @@ impl SpiFlash {
             // tRES1: at most 20 µs before it accepts commands again.
             Timer::after_micros(30).await;
             self.awake = true;
+            self.awake_since = Instant::now();
         }
     }
 

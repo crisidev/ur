@@ -44,6 +44,7 @@ mod geo;
 mod heart;
 mod i2c;
 mod motor;
+mod power;
 mod ppg;
 mod sleep;
 mod spi;
@@ -122,11 +123,30 @@ pub static INPUT: Channel<CriticalSectionRawMutex, InputEvent, 8> = Channel::new
 /// stops feeding the watchdog: see [`firmware`].
 static BUTTON_HELD: AtomicBool = AtomicBool::new(false);
 
+/// How often to look at the button. A press lasts 100 ms or more, so this
+/// can't miss one, and it's at most this much slower to respond.
+const BUTTON_POLL: Duration = Duration::from_millis(50);
+
 /// Watches the side button and reports each (debounced) press.
+///
+/// The button only works while P0.15 (`enable`) is driven high, and powering
+/// it costs ~34 µA continuously (measured by aykevl for the PINE64 wiki),
+/// more than the nRF52 and the accelerometer's step counter together. So it
+/// is powered only for a moment every [`BUTTON_POLL`] to read it, and
+/// continuously only while it's held. The polls cost about a µA in all.
 #[embassy_executor::task]
-async fn button_task(mut button: Input<'static>) {
+async fn button_task(mut enable: Output<'static>, mut button: Input<'static>) {
     loop {
-        button.wait_for_rising_edge().await;
+        enable.set_high();
+        // The line settles within a few µs of being powered (it's a switch
+        // and a pull-down); ~5 µs at 64 MHz.
+        cortex_m::asm::delay(320);
+        let pressed = button.is_high();
+        if !pressed {
+            enable.set_low();
+            Timer::after(BUTTON_POLL).await;
+            continue;
+        }
         BUTTON_HELD.store(true, Ordering::Relaxed);
         INPUT.send(InputEvent::Button).await;
         // The button is mechanical, so ignore bounces on both the press and
@@ -134,6 +154,7 @@ async fn button_task(mut button: Input<'static>) {
         Timer::after_millis(20).await;
         button.wait_for_low().await;
         BUTTON_HELD.store(false, Ordering::Relaxed);
+        enable.set_low();
         Timer::after_millis(20).await;
     }
 }
@@ -161,7 +182,26 @@ impl Backlight {
     }
 }
 
-#[embassy_executor::main]
+/// The thread-mode executor, by hand rather than `#[embassy_executor::main]`,
+/// so that the sleep between polls can work around the FPU erratum and be
+/// timed (see [`power::sleep`]).
+#[cortex_m_rt::entry]
+fn entry() -> ! {
+    static EXECUTOR: StaticCell<embassy_executor::raw::Executor> = StaticCell::new();
+    // `usize::MAX` is the context embassy's own thread-mode executor uses, so
+    // its `__pender` (a SEV) is what wakes this loop when a task is woken.
+    let executor: &'static _ =
+        EXECUTOR.init(embassy_executor::raw::Executor::new(usize::MAX as *mut ()));
+    let spawner = executor.spawner();
+    spawner.spawn(main(spawner).expect("spawned once"));
+    loop {
+        // SAFETY: Only ever polled from here, in thread mode.
+        unsafe { executor.poll() };
+        power::sleep();
+    }
+}
+
+#[embassy_executor::task]
 async fn main(spawner: Spawner) {
     firmware::clean_up_after_bootloader();
     let mut config = embassy_nrf::config::Config::default();
@@ -231,10 +271,12 @@ async fn main(spawner: Spawner) {
         high: Output::new(p.P0_23, Level::High, OutputDrive::Standard),
     };
 
-    // The button is only powered while P0.15 is driven high, presumably so
-    // firmware can cut its (small) bias current. It reads high when pressed.
-    let _button_enable = Output::new(p.P0_15, Level::High, OutputDrive::Standard);
-    spawner.spawn(button_task(Input::new(p.P0_13, Pull::None)).expect("spawned once"));
+    // The button is only powered while P0.15 is driven high, and that costs
+    // ~34 µA, so `button_task` powers it only to read it. It reads high when
+    // pressed.
+    let button_enable = Output::new(p.P0_15, Level::Low, OutputDrive::Standard);
+    spawner
+        .spawn(button_task(button_enable, Input::new(p.P0_13, Pull::None)).expect("spawned once"));
 
     // Vibration motor, active low: start off.
     let motor = Output::new(p.P0_16, Level::High, OutputDrive::Standard);
@@ -413,6 +455,9 @@ async fn main(spawner: Spawner) {
     let mut ticker = Ticker::every(Duration::from_secs(1));
     // The first reading is still settling (it's smoothed); log after a minute.
     let mut next_battery_log = Instant::now() + Duration::from_secs(60);
+    let mut last_power_report = Instant::now();
+    // Since when the panel (and backlight) have been on, for `power`.
+    let mut panel_since = Instant::now();
     loop {
         let now = Instant::now();
         let mut samples = [0i16; 1];
@@ -427,6 +472,15 @@ async fn main(spawner: Spawner) {
         // For battery-life analysis from the field log.
         if now >= next_battery_log {
             clock::log_now();
+            if now - last_power_report >= Duration::from_secs(60 * 60) {
+                if panel_awake {
+                    power::add(power::Meter::Panel, panel_since);
+                    power::add(power::Meter::Backlight, panel_since);
+                    panel_since = now;
+                }
+                power::report(now - last_power_report);
+                last_power_report = now;
+            }
             info!(
                 "battery: {} mV, {}%, charging: {}",
                 report.millivolts, report.percent, report.charging
@@ -467,15 +521,22 @@ async fn main(spawner: Spawner) {
             if !panel_awake {
                 backlight.on();
                 panel_awake = true;
+                panel_since = Instant::now();
             }
         } else if panel_awake {
             backlight.off();
+            power::add(power::Meter::Panel, panel_since);
+            power::add(power::Meter::Backlight, panel_since);
             // In sleep the ST7789 keeps its frame memory, so the canvas's
             // idea of what's on the panel stays valid across sleep/wake.
             display.sleep().await;
             panel_awake = false;
         }
-        heart::set_watching(app.showing_clock());
+        // Someone looking at the clock face gets a fresh heart rate, but one
+        // is enough: the LED (3–8 mA) needn't stay on for the rest of the
+        // glance once there's a reading from the last few minutes.
+        let fresh = heart::latest().is_some_and(|(_, at)| now - at < Duration::from_secs(5 * 60));
+        heart::set_watching(app.showing_clock() && !fresh);
         // Holding the button long enough to starve the watchdog is the
         // user's way back into the bootloader (and to rollback), even when
         // this firmware is otherwise wedged in a way that still runs this loop.
@@ -505,6 +566,14 @@ async fn main(spawner: Spawner) {
             }
             Either3::Second(event) => {
                 info!("input: {}", event);
+                if !app.awake {
+                    power::count(match event {
+                        InputEvent::Button => power::Count::WakeButton,
+                        InputEvent::Touch(_) => power::Count::WakeTouch,
+                        InputEvent::Phone(_) => power::Count::WakePhone,
+                        InputEvent::Attention => power::Count::WakeAttention,
+                    });
+                }
                 let before = app.themes;
                 app.on_input(event, Instant::now());
                 if app.themes.light != before.light {

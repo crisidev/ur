@@ -1,0 +1,133 @@
+//! Where the battery goes: the executor's sleep loop (with the nRF52832's
+//! FPU erratum worked around), and on-time counters for everything that
+//! draws real current, logged once an hour.
+//!
+//! The counters don't measure current; they measure *time* in each
+//! power-hungry state. Multiplied by each state's current (the table in
+//! `docs/power-plan.md`), they give an energy budget per hour that can be
+//! checked against the battery voltage's slope, and they show which knob
+//! to turn next.
+
+use core::sync::atomic::{AtomicU32, Ordering};
+
+use defmt::info;
+use embassy_time::Instant;
+
+// ==============================================================================
+// Sleeping
+// ==============================================================================
+
+/// RTC ticks (32768 Hz) spent in WFE since the last report. ISRs that run
+/// while we're "asleep" (the radio's, mostly) count as asleep; this is the
+/// thread-mode duty cycle.
+static ASLEEP_TICKS: AtomicU32 = AtomicU32::new(0);
+/// How often WFE returned since the last report. Thousands per hour is
+/// normal (timers, radio events); millions means something keeps waking the
+/// CPU, e.g. a pending interrupt nobody services.
+static WAKEUPS: AtomicU32 = AtomicU32::new(0);
+
+/// Sleeps until the next event. Call only from the thread-mode executor
+/// loop, after polling.
+pub fn sleep() {
+    // Nordic anomaly 87: once the FPU has raised an exception flag (and
+    // "inexact" is raised by almost any arithmetic), its interrupt stays
+    // pending and can wake the CPU from WFE straight away. There's no
+    // interrupt enable at the peripheral, so clear the flags and the pending
+    // bit before every sleep, as the erratum's workaround does.
+    //
+    // SAFETY: Only the cumulative exception flags (IOC, DZC, OFC, UFC, IXC,
+    // IDC) are cleared; rounding mode and the other control bits are kept.
+    unsafe {
+        let mut fpscr: u32;
+        core::arch::asm!("vmrs {}, fpscr", out(reg) fpscr, options(nomem, nostack));
+        fpscr &= !0x9F;
+        core::arch::asm!("vmsr fpscr, {}", in(reg) fpscr, options(nomem, nostack));
+    }
+    cortex_m::peripheral::NVIC::unpend(embassy_nrf::pac::Interrupt::FPU);
+
+    let before = Instant::now().as_ticks();
+    cortex_m::asm::wfe();
+    let slept = Instant::now().as_ticks().wrapping_sub(before);
+    ASLEEP_TICKS.fetch_add(slept as u32, Ordering::Relaxed);
+    WAKEUPS.fetch_add(1, Ordering::Relaxed);
+}
+
+// ==============================================================================
+// On-time counters
+// ==============================================================================
+
+/// Each power-hungry state we track, in milliseconds per report.
+#[derive(Clone, Copy, defmt::Format)]
+pub enum Meter {
+    /// Panel out of sleep (ST7789 ~5.6 mA).
+    Panel,
+    /// Backlight on at the mid level (~5.5 mA).
+    Backlight,
+    /// HRS3300 measuring, by LED drive: 12.5, 20, 30, 40 mA settings.
+    HeartLed0,
+    HeartLed1,
+    HeartLed2,
+    HeartLed3,
+    /// A phone (or other client) connected; see the logged connection
+    /// interval for what that costs.
+    Connected,
+    /// SPI flash out of deep power-down.
+    SpiFlash,
+}
+
+const METERS: usize = 8;
+static MILLIS: [AtomicU32; METERS] = [const { AtomicU32::new(0) }; METERS];
+
+/// Adds time spent in `meter`'s state.
+pub fn add(meter: Meter, since: Instant) {
+    let ms = since.elapsed().as_millis() as u32;
+    MILLIS[meter as usize].fetch_add(ms, Ordering::Relaxed);
+}
+
+/// Event counts per report.
+#[derive(Clone, Copy, defmt::Format)]
+pub enum Count {
+    WakeButton,
+    WakeTouch,
+    WakePhone,
+    WakeAttention,
+    HeartSessions,
+    Disconnects,
+}
+
+const COUNTS: usize = 6;
+static EVENTS: [AtomicU32; COUNTS] = [const { AtomicU32::new(0) }; COUNTS];
+
+pub fn count(event: Count) {
+    EVENTS[event as usize].fetch_add(1, Ordering::Relaxed);
+}
+
+/// Logs and resets everything. Call about once an hour (from the UI loop),
+/// right before the battery line, so the two can be lined up.
+pub fn report(period: embassy_time::Duration) {
+    let asleep = ASLEEP_TICKS.swap(0, Ordering::Relaxed) as u64;
+    let total = period.as_ticks().max(1);
+    let take = |a: &AtomicU32| a.swap(0, Ordering::Relaxed);
+    info!(
+        "power: awake {=u64}‰, {=u32} wakeups; ms: panel {=u32}, backlight {=u32}, \
+         led {=u32}/{=u32}/{=u32}/{=u32}, connected {=u32}, flash {=u32}; \
+         wakes: button {=u32}, touch {=u32}, phone {=u32}, attention {=u32}; \
+         hr sessions {=u32}, disconnects {=u32}",
+        1000 - asleep.min(total) * 1000 / total,
+        WAKEUPS.swap(0, Ordering::Relaxed),
+        take(&MILLIS[Meter::Panel as usize]),
+        take(&MILLIS[Meter::Backlight as usize]),
+        take(&MILLIS[Meter::HeartLed0 as usize]),
+        take(&MILLIS[Meter::HeartLed1 as usize]),
+        take(&MILLIS[Meter::HeartLed2 as usize]),
+        take(&MILLIS[Meter::HeartLed3 as usize]),
+        take(&MILLIS[Meter::Connected as usize]),
+        take(&MILLIS[Meter::SpiFlash as usize]),
+        take(&EVENTS[Count::WakeButton as usize]),
+        take(&EVENTS[Count::WakeTouch as usize]),
+        take(&EVENTS[Count::WakePhone as usize]),
+        take(&EVENTS[Count::WakeAttention as usize]),
+        take(&EVENTS[Count::HeartSessions as usize]),
+        take(&EVENTS[Count::Disconnects as usize]),
+    );
+}
