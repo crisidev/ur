@@ -29,8 +29,8 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::{Duration, Timer, with_timeout};
 use embedded_hal_async::i2c::I2c;
 
-use crate::{clock, sleep};
 use crate::i2c::Device;
+use crate::{clock, sleep};
 
 // ==============================================================================
 // The BMA421

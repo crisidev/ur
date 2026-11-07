@@ -91,7 +91,13 @@ impl Settings {
         let word = |i: usize| u16::from_le_bytes([bytes[i], bytes[i + 1]]);
         let default = Self::default();
         let time = |t: u16, fallback: u16| if t < DAY as u16 { t } else { fallback };
-        let timer = |t: u16, fallback: u16| if (1..=MAX_TIMER).contains(&t) { t } else { fallback };
+        let timer = |t: u16, fallback: u16| {
+            if (1..=MAX_TIMER).contains(&t) {
+                t
+            } else {
+                fallback
+            }
+        };
         Self {
             smart: bytes[0] & 1 != 0,
             smart_weekday: time(word(1), default.smart_weekday),
@@ -175,8 +181,8 @@ pub struct State {
 impl State {
     /// Call when a one-off alarm is switched on (or its time changes).
     pub fn arm_at(&mut self, alarm: usize, settings: &Settings, now: i64) {
-        self.at_armed[alarm] = settings.at[alarm]
-            .then(|| next_daily(settings.at_time[alarm], now.div_euclid(60)));
+        self.at_armed[alarm] =
+            settings.at[alarm].then(|| next_daily(settings.at_time[alarm], now.div_euclid(60)));
     }
 
     pub fn start_timer(&mut self, timer: usize, settings: &Settings, now: i64) {

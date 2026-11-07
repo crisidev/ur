@@ -715,7 +715,13 @@ impl App {
             return;
         }
         if let Some(editing) = self.editing {
-            render_editor(canvas, editing, &self.alarms, &self.alarm_state, status.local_second);
+            render_editor(
+                canvas,
+                editing,
+                &self.alarms,
+                &self.alarm_state,
+                status.local_second,
+            );
             return;
         }
         let next_alarm = status
@@ -855,7 +861,8 @@ fn render_clock(canvas: &mut Canvas, status: &Status, next_alarm: Option<(alarm:
             alarm::Kind::Timer(_) => countdown(at - now),
             _ => {
                 let mut time = heapless::String::new();
-                time.push_str(&hhmm(at.div_euclid(60).rem_euclid(24 * 60))).expect("fits");
+                time.push_str(&hhmm(at.div_euclid(60).rem_euclid(24 * 60)))
+                    .expect("fits");
                 time
             }
         };
@@ -936,7 +943,13 @@ fn render_alarms(
 ) {
     canvas.clear(BACKGROUND);
     canvas.text(4, 3, "ALARMS", Color::ACCENT);
-    let switch = |on: bool| if on { ("ON", Color::GOOD) } else { ("OFF", Color::TEXT_FAINT) };
+    let switch = |on: bool| {
+        if on {
+            ("ON", Color::GOOD)
+        } else {
+            ("OFF", Color::TEXT_FAINT)
+        }
+    };
 
     let (text, color) = switch(settings.smart);
     canvas.text(4, SMART_TOP + 1, "SMART WAKE", Color::TEXT_DIM);
@@ -955,7 +968,12 @@ fn render_alarms(
     for y in [ALARMS_TOP - 2, TIMERS_TOP - 2] {
         canvas.fill_rect(4, y, 72, 1, Color::TEXT_FAINT);
     }
-    let cell = |canvas: &mut Canvas, column: usize, top: i32, label: &str, value: &str, status: (&str, Color)| {
+    let cell = |canvas: &mut Canvas,
+                column: usize,
+                top: i32,
+                label: &str,
+                value: &str,
+                status: (&str, Color)| {
         let x = 4 + 40 * column as i32;
         canvas.text(x, top + 1, label, Color::TEXT_DIM);
         canvas.text(x, top + 8, value, Color::TEXT);
@@ -963,7 +981,14 @@ fn render_alarms(
     };
     for i in 0..alarm::ALARMS {
         let time = hhmm(settings.at_time[i].into());
-        cell(canvas, i, ALARMS_TOP, ["ALARM 1", "ALARM 2"][i], &time, switch(settings.at[i]));
+        cell(
+            canvas,
+            i,
+            ALARMS_TOP,
+            ["ALARM 1", "ALARM 2"][i],
+            &time,
+            switch(settings.at[i]),
+        );
     }
     for t in 0..alarm::TIMERS {
         // While running: time left, ticking; otherwise the duration.
@@ -972,7 +997,14 @@ fn render_alarms(
             Some(left) => (countdown(left), ("RUNNING", Color::GOOD)),
             None => (duration(settings.timers[t]), ("", Color::TEXT_FAINT)),
         };
-        cell(canvas, t, TIMERS_TOP, ["TIMER 1", "TIMER 2"][t], &value, running);
+        cell(
+            canvas,
+            t,
+            TIMERS_TOP,
+            ["TIMER 1", "TIMER 2"][t],
+            &value,
+            running,
+        );
     }
 }
 
@@ -1024,7 +1056,11 @@ fn render_editor(
     // the right, matching where to swipe.
     let (pair, labels, color) = match left {
         Some(left) if left < 60 * 60 => ((left / 60, left % 60), ("MIN", "SEC"), Color::ACCENT),
-        Some(left) => ((left / 3600, left / 60 % 60), ("HOURS", "MINUTES"), Color::ACCENT),
+        Some(left) => (
+            (left / 3600, left / 60 % 60),
+            ("HOURS", "MINUTES"),
+            Color::ACCENT,
+        ),
         None => (
             (i64::from(value / 60), i64::from(value % 60)),
             ("HOURS", "MINUTES"),
@@ -1040,7 +1076,11 @@ fn render_editor(
     }
     canvas.text_centered(20, 44, labels.0, Color::TEXT_FAINT);
     canvas.text_centered(60, 44, labels.1, Color::TEXT_FAINT);
-    let hint = if left.is_some() { "LEFT" } else { "SWIPE UP/DOWN" };
+    let hint = if left.is_some() {
+        "LEFT"
+    } else {
+        "SWIPE UP/DOWN"
+    };
     canvas.text_centered(40, 51, hint, Color::TEXT_FAINT);
 
     let (left, left_color) = match (editing, on) {
@@ -1049,7 +1089,11 @@ fn render_editor(
         (_, true) => ("ON", Color::GOOD),
         (_, false) => ("OFF", Color::TEXT_FAINT),
     };
-    let right = if editing == Editing::SmartWeekday { "NEXT" } else { "DONE" };
+    let right = if editing == Editing::SmartWeekday {
+        "NEXT"
+    } else {
+        "DONE"
+    };
     canvas.fill_rect(2, EDITOR_BUTTONS_Y, 36, 18, left_color);
     canvas.text_centered(20, EDITOR_BUTTONS_Y + 7, left, BACKGROUND);
     canvas.fill_rect(42, EDITOR_BUTTONS_Y, 36, 18, Color::ACCENT);
