@@ -1422,7 +1422,7 @@ const QUIET_PITCH: i32 = 9;
 /// The most lines a quiet notification's sender may wrap onto at 2× (as
 /// many as fit below the app name: 4 × 18 px, less the last gap, is
 /// exactly the 68 px there), and at 1× (seven 9 px lines), which it falls
-/// back to when 2× won't do. "INTO THE / MISTS: / TALIA / ROSSI" is four
+/// back to when 2× won't do. "NIGHT / SIGNALS: / IDA / MOREAU" is four
 /// lines at 2×: a podcast's name and its episode's, say.
 const QUIET_LINES_2X: usize = 4;
 const QUIET_LINES: usize = 7;

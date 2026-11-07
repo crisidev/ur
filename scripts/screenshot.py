@@ -7,7 +7,7 @@ and the current theme's palette from RAM with `esprobe core read`, and
 writes a PNG at the panel's 3× scale.
 
 Usage:
-    screenshot.py <elf> <out.png> [--input STEP ...] [--wait SECONDS]
+    screenshot.py <elf> <out.png> [--input STEP ...] [--wait SECONDS] [--theme NAME]
 
 Each STEP is applied in order, with --wait seconds after each (default 1.5,
 enough for a transition): `button`, `tap:X,Y`, `long:X,Y`, or `up`, `down`,
@@ -15,6 +15,9 @@ enough for a transition): `button`, `tap:X,Y`, `long:X,Y`, or `up`, `down`,
 `glance` (as if the wrist turned) and `notify` (a test notification;
 `notify:1,0` has a four-line sender, `notify:2,0` a much longer one,
 `notify:3,0` a two-line one).
+
+`--theme` renders the frame in another theme's colours (e.g. HANDHELD, for
+the day look at night): the canvas holds colour roles, not colours.
 """
 
 import argparse
@@ -96,7 +99,18 @@ def png(path: Path, pixels: list[tuple[int, int, int]], width: int, height: int)
     )
 
 
-def screenshot(elf: Path, out: Path) -> None:
+def theme_symbol(elf: Path, name: str) -> int:
+    # `theme::NAME`, whatever the crate's mangling hash.
+    out = subprocess.run(["llvm-nm", str(elf)], capture_output=True, text=True, check=True)
+    suffix = f"5theme{len(name)}{name}"
+    for line in out.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[2].endswith(suffix):
+            return int(parts[0], 16)
+    sys.exit(f"no theme {name} in {elf}")
+
+
+def screenshot(elf: Path, out: Path, theme_name: str | None = None) -> None:
     (canvas,) = read_words(symbol(elf, "UR_CANVAS"), 1)
     if canvas == 0:
         sys.exit("the firmware hasn't registered its canvas yet")
@@ -104,6 +118,8 @@ def screenshot(elf: Path, out: Path) -> None:
     # next 4-byte boundary) the theme pointer.
     front = b"".join(struct.pack("<I", w) for w in read_words(canvas + BYTES, BYTES // 4))
     (theme,) = read_words(canvas + 2 * BYTES + 4, 1)
+    if theme_name is not None:
+        theme = theme_symbol(elf, theme_name.upper())
     # `Theme` is repr(C): name (&str: pointer, length), then 13 big-endian
     # RGB565 colours.
     palette_bytes = b"".join(struct.pack("<I", w) for w in read_words(theme + 8, 7))[:26]
@@ -127,11 +143,12 @@ def main() -> None:
     parser.add_argument("out", type=Path)
     parser.add_argument("--input", nargs="*", default=[])
     parser.add_argument("--wait", type=float, default=1.5)
+    parser.add_argument("--theme")
     args = parser.parse_args()
     for step in args.input:
         inject(args.elf, step)
         time.sleep(args.wait)
-    screenshot(args.elf, args.out)
+    screenshot(args.elf, args.out, args.theme)
 
 
 if __name__ == "__main__":

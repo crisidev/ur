@@ -61,10 +61,10 @@ pub async fn input_task() {
                 let mut who = heapless::String::new();
                 // `x` picks the sender, to check how each length lays out.
                 let (from, sender) = match x {
-                    1 => ("Pocket Casts", "Into the Mists: Talia Rossi"),
+                    1 => ("Podcasts", "Night Signals: Ida Moreau"),
                     // As long as a sender gets (`ui::PhoneEvent`'s 40).
                     2 => ("Calendar", "Quarterly planning: platform team, 4B"),
-                    3 => ("Signal", "Matteo Bigoi"),
+                    3 => ("Signal", "Nora Lindqvist"),
                     _ => ("Signal", "Åse Kristiansen"),
                 };
                 let _ = app.push_str(from);
