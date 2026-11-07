@@ -801,7 +801,7 @@ const BACKGROUND: Color = Color::BACKGROUND;
 
 fn render_clock(canvas: &mut Canvas, status: &Status, next_alarm: Option<(alarm::Kind, i64)>) {
     canvas.clear(BACKGROUND);
-    render_battery(canvas, status.battery);
+    render_battery(canvas, status.battery, status.uptime_secs);
 
     // Status bar, left: Bluetooth when connected; a note if we don't know
     // the time (in which case the clock shows time since boot).
@@ -1167,7 +1167,12 @@ fn draw_digit(canvas: &mut Canvas, x: i32, y: i32, digit: u64, scale: i32, color
     canvas.sprite(x, y, font::DIGIT_W, glyph, scale, color);
 }
 
-fn render_battery(canvas: &mut Canvas, battery: &Battery) {
+/// The battery: an icon filled to the charge, and the percentage. While
+/// charging, a bolt goes before the percentage and the fill creeps up a
+/// pixel a second from the charge to full (an old handheld's charging
+/// animation), since the "good" colour alone barely differs from text in
+/// some themes.
+fn render_battery(canvas: &mut Canvas, battery: &Battery, uptime_secs: u64) {
     let percent = battery.percent();
     let color = if battery.charging {
         Color::GOOD
@@ -1184,12 +1189,21 @@ fn render_battery(canvas: &mut Canvas, battery: &Battery) {
     canvas.fill_rect(X + 10, Y + 1, 1, 3, color);
     canvas.fill_rect(X + 1, Y + 1, 8, 3, BACKGROUND);
     // Round up, so any charge at all shows at least one pixel.
-    let fill = (percent * 8).div_ceil(100) as i32;
-    canvas.fill_rect(X + 1, Y + 1, fill, 3, color);
+    let mut fill = (percent * 8).div_ceil(100) as i32;
+    if battery.charging {
+        let steps = 8 - fill + 1;
+        fill += (uptime_secs % steps.max(1) as u64) as i32;
+    }
+    canvas.fill_rect(X + 1, Y + 1, fill.min(8), 3, color);
 
     let mut text = heapless::String::<8>::new();
     write!(text, "{percent}%").expect("at most 4 chars fit in 8");
-    canvas.text_right(X - 2, Y, &text, color);
+    let text_x = X - 2 - font::small_text_width(&text);
+    canvas.text(text_x, Y, &text, color);
+    if battery.charging {
+        let x = text_x - 2 - font::BOLT_W as i32;
+        canvas.sprite(x, Y, font::BOLT_W, &font::BOLT, 1, Color::HEART);
+    }
 }
 
 // ==============================================================================
