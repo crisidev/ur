@@ -75,9 +75,32 @@ jobs:
             echo "pre=snap.$(git rev-list --count HEAD)" >>"$GITHUB_OUTPUT"
           fi
       - name: build and package
-        run: scripts/release.sh --pre "${{ steps.version.outputs.pre }}" dist
+        id: build
+        run: |
+          scripts/release.sh --pre "${{ steps.version.outputs.pre }}" dist
+          # `ur-<digit>…` is the plain variant; `ur-logging-…` the other.
+          plain=(dist/ur-[0-9]*-dfu.zip)
+          logging=(dist/ur-logging-*-dfu.zip)
+          echo "ur=${plain[0]}" >>"$GITHUB_OUTPUT"
+          echo "logging=${logging[0]}" >>"$GITHUB_OUTPUT"
+      # Everything, as one (zipped) artifact: images, ELFs for decoding logs,
+      # checksums.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # tag=v7.0.2
         with:
           name: ur-${{ steps.version.outputs.pre }}
           path: dist/
+          if-no-files-found: error
+      # And the two packages people actually send to a watch, each on its
+      # own and unzipped (`archive: false`, one file per artifact, named
+      # after the file), so a phone can hand the download straight to the
+      # nRF Device Firmware Update app rather than unpacking a zip in a zip.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # tag=v7.0.2
+        with:
+          path: ${{ steps.build.outputs.ur }}
+          archive: false
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # tag=v7.0.2
+        with:
+          path: ${{ steps.build.outputs.logging }}
+          archive: false
           if-no-files-found: error

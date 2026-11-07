@@ -248,8 +248,11 @@ gh release download v0.9.0 --pattern sha256.sum --dir published
 - `check.yml`: rustfmt, clippy (both variants, with the pinned toolchain
   and on beta), [shellcheck], and that the Python scripts parse.
 - `test.yml`: the host tests (pinned and beta), and a packaged build of
-  every PR and every commit on main, uploaded as an artifact to try on a
-  watch: `0.9.0-pr.<number>+<commit>`, or `0.9.0-snap.<commits>+<commit>`.
+  every PR and every commit on main, to try on a watch:
+  `0.9.0-pr.<number>+<commit>`, or `0.9.0-snap.<commits>+<commit>`. The
+  run's artifacts include each variant's `-dfu.zip` on its own, unzipped,
+  ready to send to a watch, and everything (with the ELFs that decode
+  logs) as one zip.
 - `release.yml`: on a version tag; see [Releasing](#releasing).
 
 Dependabot proposes updates to the actions, Cargo.lock, and the pinned
