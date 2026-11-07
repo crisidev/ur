@@ -109,6 +109,15 @@ pub static PARCHMENT: Theme = theme("PARCHMENT", [
     0xa02820, 0xe8dcb8, 0xa02820, 0xe07060, 0x4a6a2a, 0xa02820,
 ]);
 
+/// The glance (see `ui`): just the time, white on black, whatever the
+/// theme. Black pixels are the cheapest on this panel only in that the
+/// backlight is dimmed for it; mostly, it's what reads best at a glance.
+#[rustfmt::skip]
+pub static GLANCE: Theme = theme("GLANCE", [
+    0x000000, 0x202020, 0xffffff, 0xa0a0a0, 0x505050, 0x202020, 0xffffff,
+    0x000000, 0x000000, 0xffffff, 0xffffff, 0xffffff, 0xffffff,
+]);
+
 /// Themes for after sunset. Long press cycles within this list at night.
 pub static DARK: [&Theme; 2] = [&ARCADE, &TERMINAL];
 

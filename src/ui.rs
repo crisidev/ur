@@ -16,6 +16,10 @@
 //! - Any button press or touch while the screen is off: wake to the clock.
 //!   (That touch is *only* a wake-up; it isn't also acted on.)
 //! - No input for [`SCREEN_TIMEOUT`]: turn the screen off.
+//! - Turning the wrist to look (the accelerometer's gesture) while the
+//!   screen is off: a glance, just the time in white on black at a low
+//!   backlight, for [`GLANCE_TIME`]. Touching or pressing during it wakes
+//!   the screen properly.
 //!
 //! Alarms (see [`crate::alarm`] for when they ring):
 //!
@@ -54,6 +58,8 @@ use crate::theme::{self, Theme};
 use crate::touch::Gesture;
 
 const SCREEN_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a glance shows the time.
+const GLANCE_TIME: Duration = Duration::from_secs(4);
 /// How long a notification banner shows.
 const BANNER_TIME: Duration = Duration::from_secs(4);
 /// Stop ringing after this long, in case the phone never says the call is
@@ -217,6 +223,8 @@ pub struct App {
     editing: Option<Editing>,
     /// The local minute, as of the last tick (for edits that need "now").
     local_minute: Option<i64>,
+    /// While glancing: until when.
+    glance_until: Option<Instant>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -246,7 +254,13 @@ impl App {
             ringing: None,
             editing: None,
             local_minute: None,
+            glance_until: None,
         }
+    }
+
+    /// Whether the screen is only showing a glance (dim, time only).
+    pub fn glancing(&self) -> bool {
+        self.glance_until.is_some()
     }
 
     /// Whether the clock face is on screen for someone to read: awake, and
@@ -255,6 +269,7 @@ impl App {
     pub fn showing_clock(&self) -> bool {
         self.awake
             && self.screen == Screen::Clock
+            && !self.glancing()
             && !self.brief_wake
             && self.call.is_none()
             && self.ringing.is_none()
@@ -277,6 +292,9 @@ impl App {
     }
 
     pub fn theme(&self) -> &'static Theme {
+        if self.glancing() {
+            return &theme::GLANCE;
+        }
         let (group, choice): (&[&Theme], u8) = if self.daytime {
             (&theme::LIGHT, self.themes.light)
         } else {
@@ -331,8 +349,25 @@ impl App {
     pub fn on_input(&mut self, event: InputEvent, now: Instant) {
         let event = match event {
             InputEvent::Phone(event) => return self.on_phone(event, now),
+            // Only while the screen is off; it's not a user input as such
+            // (an arm swing can look the same), so it doesn't hold the
+            // screen on.
+            InputEvent::Glance => {
+                if !self.awake {
+                    self.awake = true;
+                    self.screen = Screen::Clock;
+                    self.glance_until = Some(now + GLANCE_TIME);
+                }
+                return;
+            }
             other => other,
         };
+        // Touching or pressing during a glance: wake properly (and, as
+        // with any wake-up, don't also act on it).
+        if self.glance_until.take().is_some() {
+            self.last_input = now;
+            return;
+        }
         // A user input (or a request for attention) from here on.
         self.last_input = now;
         self.brief_wake = false;
@@ -386,7 +421,7 @@ impl App {
         }
 
         match event {
-            InputEvent::Phone(_) => unreachable!("handled above"),
+            InputEvent::Phone(_) | InputEvent::Glance => unreachable!("handled above"),
             // Only ever a reason to wake up, handled above.
             InputEvent::Attention => {}
             InputEvent::Button => {
@@ -512,6 +547,10 @@ impl App {
     }
 
     fn on_phone(&mut self, event: PhoneEvent, now: Instant) {
+        // Anything from the phone gets the full screen.
+        if self.glance_until.take().is_some() {
+            self.last_input = now;
+        }
         match event {
             PhoneEvent::Notification { app, who } => {
                 // Long enough to read, and for long lines to scroll through
@@ -600,6 +639,11 @@ impl App {
     /// `keep_awake` holds the screen on regardless of input, e.g. while a
     /// pairing passkey is showing and the user is typing it on the phone.
     pub fn on_tick(&mut self, now: Instant, keep_awake: bool) {
+        if self.glance_until.is_some_and(|until| now >= until) {
+            self.glance_until = None;
+            self.awake = false;
+            return;
+        }
         if self.banner.as_ref().is_some_and(|b| now >= b.until) {
             self.banner = None;
             if self.brief_wake {
@@ -658,6 +702,10 @@ impl App {
         }
         if let Some(ringing) = &self.ringing {
             render_ringing(canvas, ringing, status);
+            return;
+        }
+        if self.glancing() {
+            render_glance(canvas, status);
             return;
         }
         if let Some(editing) = self.editing {
@@ -800,6 +848,21 @@ fn render_clock(canvas: &mut Canvas, status: &Status, next_alarm: Option<(alarm:
         let x = 77 - font::small_text_width(&time);
         canvas.text(x, 68, &time, Color::TEXT);
         canvas.sprite(x - font::BELL_W as i32 - 2, 67, font::BELL_W, &font::BELL, 1, Color::ACCENT);
+    }
+}
+
+/// The glance: HH:MM and nothing else, in the middle.
+fn render_glance(canvas: &mut Canvas, status: &Status) {
+    canvas.clear(BACKGROUND);
+    let Some(t) = &status.local_time else {
+        return;
+    };
+    let digits = [t.hour / 10, t.hour % 10, t.minute / 10, t.minute % 10];
+    for (&digit, x) in digits.iter().zip([4, 21, 43, 60]) {
+        draw_digit(canvas, x, 29, u64::from(digit), 3, Color::TEXT);
+    }
+    for row in [2, 4] {
+        canvas.fill_rect(38, 29 + row * 3, 3, 3, Color::TEXT);
     }
 }
 

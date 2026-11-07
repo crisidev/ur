@@ -91,11 +91,12 @@ pub enum Count {
     WakeTouch,
     WakePhone,
     WakeAttention,
+    WakeGlance,
     HeartSessions,
     Disconnects,
 }
 
-const COUNTS: usize = 6;
+const COUNTS: usize = 7;
 static EVENTS: [AtomicU32; COUNTS] = [const { AtomicU32::new(0) }; COUNTS];
 
 pub fn count(event: Count) {
@@ -111,7 +112,7 @@ pub fn report(period: embassy_time::Duration) {
     info!(
         "power: awake {=u64}‰, {=u32} wakeups; ms: panel {=u32}, backlight {=u32}, \
          led {=u32}/{=u32}/{=u32}/{=u32}, connected {=u32}, flash {=u32}; \
-         wakes: button {=u32}, touch {=u32}, phone {=u32}, attention {=u32}; \
+         wakes: button {=u32}, touch {=u32}, phone {=u32}, attention {=u32}, glance {=u32}; \
          hr sessions {=u32}, disconnects {=u32}",
         1000 - asleep.min(total) * 1000 / total,
         WAKEUPS.swap(0, Ordering::Relaxed),
@@ -127,6 +128,7 @@ pub fn report(period: embassy_time::Duration) {
         take(&EVENTS[Count::WakeTouch as usize]),
         take(&EVENTS[Count::WakePhone as usize]),
         take(&EVENTS[Count::WakeAttention as usize]),
+        take(&EVENTS[Count::WakeGlance as usize]),
         take(&EVENTS[Count::HeartSessions as usize]),
         take(&EVENTS[Count::Disconnects as usize]),
     );

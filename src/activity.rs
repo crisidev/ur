@@ -41,6 +41,9 @@ use crate::i2c::Device;
 
 const ADDRESS: u8 = 0x18;
 const REG_CHIP_ID: u8 = 0x00;
+const REG_INT1_IO_CTRL: u8 = 0x53;
+const REG_INT_LATCH: u8 = 0x55;
+const REG_INT1_MAP: u8 = 0x56;
 const REG_STEP_COUNT: u8 = 0x1E;
 const REG_FIFO_LENGTH: u8 = 0x24;
 const REG_FIFO_DATA: u8 = 0x26;
@@ -69,6 +72,10 @@ const FEATURES_LEN: usize = 70;
 /// Within it: the step counter's settings (offset 0x3A) high byte, whose
 /// bit 4 enables counting.
 const STEP_COUNTER_ENABLE: (usize, u8) = (0x3A + 1, 0x10);
+/// And the wrist-wear gesture's settings (offset 0x40) low byte, whose bit 0
+/// enables it: the feature engine recognises the wrist being turned to look
+/// at the watch, and pulses INT1 (see `glance_task` in `main`).
+const WRIST_WEAR_ENABLE: (usize, u8) = (0x40, 0x01);
 
 /// Upload granularity: the config goes over I2C in pieces this size, each
 /// preceded by its position (in 16-bit words). Even, and small enough to
@@ -177,7 +184,18 @@ impl Bma421 {
         self.read(REG_FEATURES, &mut features[1..]).await?;
         features[0] = REG_FEATURES;
         features[1 + STEP_COUNTER_ENABLE.0] |= STEP_COUNTER_ENABLE.1;
+        features[1 + WRIST_WEAR_ENABLE.0] |= WRIST_WEAR_ENABLE.1;
         self.write_bytes(&features).await?;
+        // The wrist-wear gesture to INT1 (P0.08), as a pulse (not latched,
+        // so nothing has to read a status register to re-arm it): output
+        // enabled, push-pull, active high.
+        //
+        // TODO: the gesture assumes Bosch's default axis orientation; if it
+        // misfires (or never fires) on the wrist, the feature engine's axis
+        // remap (feature offset 0x44) needs the PineTime's mounting.
+        self.write(REG_INT1_IO_CTRL, 0x0A).await?;
+        self.write(REG_INT_LATCH, 0x00).await?;
+        self.write(REG_INT1_MAP, 0x08).await?;
 
         // Accelerometer: 100 Hz (what the step counter wants), ±2 g,
         // averaging 4 samples, low-power averaging mode, as InfiniTime does.

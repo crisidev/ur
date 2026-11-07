@@ -116,6 +116,8 @@ pub enum InputEvent {
     Attention,
     /// A notification, call, or media update from the phone.
     Phone(ui::PhoneEvent),
+    /// The wrist turned to look at the watch (the accelerometer's gesture).
+    Glance,
 }
 
 /// Every user input, in order, for the UI loop.
@@ -169,6 +171,19 @@ fn local_minute() -> Option<i64> {
     Some(utc.div_euclid(60) + offset)
 }
 
+/// Watches the accelerometer's wrist-turn gesture (its INT1, on P0.08).
+#[embassy_executor::task]
+async fn glance_task(mut interrupt: Input<'static>) {
+    loop {
+        interrupt.wait_for_rising_edge().await;
+        // Not awaited-for space: if the queue is full, the UI is busy and
+        // awake anyway.
+        let _ = INPUT.try_send(InputEvent::Glance);
+        // One glance per gesture, however it pulses.
+        Timer::after_secs(1).await;
+    }
+}
+
 /// The three active-low backlight transistors (low/mid/high), which sum.
 struct Backlight {
     low: Output<'static>,
@@ -182,6 +197,13 @@ impl Backlight {
     fn on(&mut self) {
         self.low.set_high();
         self.mid.set_low();
+        self.high.set_high();
+    }
+
+    /// Low alone: enough to read the glance's white on black.
+    fn dim(&mut self) {
+        self.low.set_low();
+        self.mid.set_high();
         self.high.set_high();
     }
 
@@ -336,6 +358,7 @@ async fn main(spawner: Spawner) {
             .expect("spawned once"),
     );
     spawner.spawn(activity::activity_task(I2cDevice::new(i2c_bus)).expect("spawned once"));
+    spawner.spawn(glance_task(Input::new(p.P0_08, Pull::None)).expect("spawned once"));
     spawner.spawn(heart::heart_task(I2cDevice::new(i2c_bus)).expect("spawned once"));
 
     // ==========================================================================
@@ -533,8 +556,14 @@ async fn main(spawner: Spawner) {
                 _ => canvas.flush(&mut display).await,
             }
             first_frame = false;
-            if !panel_awake {
+            // Dim for a glance (white on black reads fine), and back up if
+            // it turns into a proper wake.
+            if app.glancing() {
+                backlight.dim();
+            } else {
                 backlight.on();
+            }
+            if !panel_awake {
                 panel_awake = true;
                 panel_since = Instant::now();
             }
@@ -591,6 +620,7 @@ async fn main(spawner: Spawner) {
                         InputEvent::Touch(_) => power::Count::WakeTouch,
                         InputEvent::Phone(_) => power::Count::WakePhone,
                         InputEvent::Attention => power::Count::WakeAttention,
+                        InputEvent::Glance => power::Count::WakeGlance,
                     });
                 }
                 let before = app.themes;
