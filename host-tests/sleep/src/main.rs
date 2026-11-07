@@ -2,7 +2,8 @@
 //! nights.
 //!
 //! `cargo run` prints each scenario's timeline (one character per minute);
-//! `cargo test` asserts on them.
+//! `cargo test` asserts on them. `cargo run -- <decoded field log>` replays
+//! a real day from a field log instead (see `replay`).
 //!
 //! The movement levels are guesses in the firmware's units (~25 on a desk,
 //! hundreds awake), like the classifier's thresholds. These tests check the
@@ -165,7 +166,89 @@ fn asleep_minutes(kinds: &[Kind]) -> usize {
 // Report
 // ==============================================================================
 
+/// Replays a decoded field log (`defmt-print` output): rebuilds each
+/// minute's movement, steps, and worn verdict from the accelerometer and
+/// heart rate lines, and classifies them, to tune the thresholds on real
+/// nights. Uptimes become wall-clock time via the `clock:` lines.
+fn replay(path: &str) {
+    let text = std::fs::read_to_string(path).expect("a readable log");
+    // (uptime seconds, UTC seconds) anchors, from `clock: <utc> UTC = ...`.
+    let mut anchor: Option<(f64, i64)> = None;
+    let mut minutes: std::collections::BTreeMap<i64, (u64, u64, u16, Option<bool>)> =
+        Default::default();
+    let mut worn: Option<bool> = None;
+    for line in text.lines() {
+        let Some((uptime, rest)) = line.split_once(' ') else { continue };
+        let Ok(uptime) = uptime.parse::<f64>() else { continue };
+        let message = rest.trim_start_matches(|c: char| c.is_ascii_uppercase() || c == ' ');
+        if message.contains("booting") {
+            anchor = None; // uptime restarts
+        }
+        if let Some(rest) = message.strip_prefix("clock: ") {
+            if let Some(utc) = rest.split(' ').next().and_then(|u| u.parse::<i64>().ok()) {
+                anchor = Some((uptime, utc));
+            }
+            continue;
+        }
+        if message.starts_with("heart: ") {
+            if message.contains(" BPM") && !message.contains("window") {
+                worn = Some(true);
+            } else if message.contains("not on a wrist") || message.contains("too much light") {
+                worn = Some(false);
+            } else if message.contains("no reading") {
+                worn = None;
+            }
+            continue;
+        }
+        // "activity: 36 samples, movement 1653, 0 new steps (counter 0)"
+        let Some(rest) = message.strip_prefix("activity: ") else { continue };
+        let numbers: Vec<u64> = rest
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        let [samples, movement, steps, ..] = numbers[..] else { continue };
+        let Some((at, utc)) = anchor else { continue };
+        let minute = (utc + (uptime - at) as i64).div_euclid(60);
+        let entry = minutes.entry(minute).or_insert((0, 0, 0, None));
+        entry.0 += movement * samples;
+        entry.1 += samples;
+        entry.2 = entry.2.saturating_add(steps as u16);
+        entry.3 = worn;
+    }
+    let (Some(&first), Some(&last)) = (minutes.keys().next(), minutes.keys().last()) else {
+        println!("no activity lines with wall-clock anchors in {path}");
+        return;
+    };
+    let evidence: Vec<Minute> = (first..=last)
+        .map(|m| match minutes.get(&m) {
+            Some(&(weighted, samples, steps, worn)) => Minute {
+                seen: true,
+                movement: (weighted / samples.max(1)).min(u64::from(u16::MAX)) as u16,
+                steps,
+                worn,
+            },
+            None => Minute::default(),
+        })
+        .collect();
+    let kinds = incremental(&evidence);
+    println!("{} minutes; asleep {}; last sleep {:?}", kinds.len(), asleep_minutes(&kinds), sleep::last_sleep(&kinds));
+    // One row per hour, labelled in UTC.
+    for (hour, row) in timeline(&kinds).as_bytes().chunks(60).enumerate() {
+        let start = (first + hour as i64 * 60) * 60;
+        println!(
+            "  {:02}:{:02}Z {}",
+            start.rem_euclid(86_400) / 3600,
+            start.rem_euclid(3600) / 60,
+            std::str::from_utf8(row).unwrap()
+        );
+    }
+}
+
 fn main() {
+    if let Some(path) = std::env::args().nth(1) {
+        return replay(&path);
+    }
     for seed in 0..3 {
         let mut rng = Rng::new(seed);
         let (truth, minutes) = a_night(&mut rng);
