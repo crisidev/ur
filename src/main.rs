@@ -627,17 +627,21 @@ async fn main(spawner: Spawner) {
             }
             Either3::Second(event) => {
                 info!("input: {}", event);
-                if !app.awake {
-                    power::count(match event {
-                        InputEvent::Button => power::Count::WakeButton,
-                        InputEvent::Touch(_) => power::Count::WakeTouch,
-                        InputEvent::Phone(_) => power::Count::WakePhone,
-                        InputEvent::Attention => power::Count::WakeAttention,
-                        InputEvent::Glance => power::Count::WakeGlance,
-                    });
-                }
+                // What woke the screen, if this does: not every input does
+                // (a single tap, say; see `ui::DOUBLE_TAP`).
+                let wake = match event {
+                    InputEvent::Button => power::Count::WakeButton,
+                    InputEvent::Touch(_) => power::Count::WakeTouch,
+                    InputEvent::Phone(_) => power::Count::WakePhone,
+                    InputEvent::Attention => power::Count::WakeAttention,
+                    InputEvent::Glance => power::Count::WakeGlance,
+                };
+                let was_awake = app.awake;
                 let before = app.themes;
                 app.on_input(event, Instant::now());
+                if !was_awake && app.awake {
+                    power::count(wake);
+                }
                 if app.themes.light != before.light {
                     storage::save(storage::key::THEME_LIGHT, &[app.themes.light]).await;
                 }

@@ -146,12 +146,13 @@ first, so UI changes can be checked without looking at the watch:
 
 ```sh
 python3 scripts/screenshot.py target/thumbv7em-none-eabihf/release/ur clock.png
-python3 scripts/screenshot.py target/thumbv7em-none-eabihf/release/ur alarms.png --input tap left
+python3 scripts/screenshot.py target/thumbv7em-none-eabihf/release/ur alarms.png --input left
 python3 scripts/screenshot.py target/thumbv7em-none-eabihf/release/ur day.png --theme HANDHELD
 ```
 
 Inputs are taps, swipes, the button, a glance, and test notifications; see
-the script's documentation. The README's screenshots are made this way,
+the script's documentation. They act as on the watch, so with the screen
+off, start with `button` to wake it. The README's screenshots are made this way,
 from a `scripts/release.sh` build (so the Info screen shows a real
 version).
 

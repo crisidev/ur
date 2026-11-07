@@ -13,13 +13,15 @@
 //!   after sunset, light ones after sunrise; each group remembers its own).
 //! - Button: return to the clock; on the clock, turn the screen off. While a
 //!   call rings: silence it.
-//! - Any button press or touch while the screen is off: wake to the clock.
-//!   (That touch is *only* a wake-up; it isn't also acted on.)
+//! - While the screen is off, a button press, or a double tap (two taps
+//!   within [`DOUBLE_TAP`]): wake to the clock. A single touch doesn't
+//!   wake it, so a brush of a sleeve doesn't light the screen. (The waking
+//!   input is *only* a wake-up; it isn't also acted on.)
 //! - No input for [`SCREEN_TIMEOUT`]: turn the screen off.
-//! - Turning the wrist to look (the accelerometer's gesture) while the
-//!   screen is off: a glance, just the time in white on black at a low
-//!   backlight, for [`GLANCE_TIME`]. Touching or pressing during it wakes
-//!   the screen properly.
+//! - Turning the wrist to look (see [`crate::glance`]) while the screen is
+//!   off: a glance, just the time in white on black at a low backlight,
+//!   for [`GLANCE_TIME`]. A tap or press during it (one is enough: the
+//!   wearer is looking) wakes the screen properly.
 //!
 //! Alarms (see [`crate::alarm`] for when they ring):
 //!
@@ -60,6 +62,11 @@ use crate::touch::Gesture;
 const SCREEN_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long a glance shows the time.
 const GLANCE_TIME: Duration = Duration::from_secs(5);
+/// With the screen off, a touch only wakes it as the second of two taps
+/// this close together. Any touch used to wake it, and brushes against a
+/// sleeve or a blanket did. Waking deliberately is still one action away:
+/// the button, or turning the wrist (a glance, where one tap wakes).
+const DOUBLE_TAP: Duration = Duration::from_millis(500);
 /// How long a notification banner shows.
 const BANNER_TIME: Duration = Duration::from_secs(4);
 /// Stop ringing after this long, in case the phone never says the call is
@@ -226,6 +233,9 @@ pub struct App {
     local_second: Option<i64>,
     /// While glancing: until when.
     glance_until: Option<Instant>,
+    /// With the screen off: when the last tap was, as the possible first
+    /// of a double tap (see [`DOUBLE_TAP`]).
+    wake_tap: Option<Instant>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -256,6 +266,7 @@ impl App {
             editing: None,
             local_second: None,
             glance_until: None,
+            wake_tap: None,
         }
     }
 
@@ -380,6 +391,19 @@ impl App {
         if self.glance_until.take().is_some() {
             self.last_input = now;
             return;
+        }
+        // With the screen off, a touch only counts as the second tap of a
+        // double tap: a first tap, a swipe or a long press is most likely a
+        // brush, and is ignored (bar remembering a tap).
+        if !self.awake
+            && let InputEvent::Touch(touch) = event
+        {
+            let second = self.wake_tap.is_some_and(|tap| now - tap <= DOUBLE_TAP);
+            if !(touch.gesture == Gesture::Tap && second) {
+                self.wake_tap = (touch.gesture == Gesture::Tap).then_some(now);
+                return;
+            }
+            self.wake_tap = None;
         }
         // A user input (or a request for attention) from here on.
         self.last_input = now;

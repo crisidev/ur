@@ -2,7 +2,8 @@
 
 Firmware for the [PineTime] smartwatch: a pixel-art watch face that keeps
 out of your way, with alarms, sleep and heart-rate tracking, and phone
-integration through [Gadgetbridge].
+integration through [Gadgetbridge]. ("Ur" is an older Norwegian word for a
+timepiece.)
 
 <p align="center">
   <img src="docs/screenshots/clock-arcade.png" width="180" alt="The clock face in the Arcade theme, for night: time, seconds, weekday, heart rate, date, battery and steps, white and red on black">
@@ -50,7 +51,12 @@ hardware by a human.
 
 ## Using it
 
-- **Button:** wakes the screen. Silences a call, and stops a ringing alarm.
+- **Waking the screen:** press the button, or double-tap the screen. (A
+  single touch doesn't wake it, so brushing against something doesn't
+  either.) Turning your wrist to look shows the time on its own; tap then
+  to wake the screen fully.
+- **Button:** with the screen on, back to the clock, or off from the
+  clock. Also silences a call, and stops a ringing alarm.
 - **Swipe left and right:** between the clock, alarms, music (while
   something is playing), and info screens.
 - **Long-press:** the next theme. On the alarms screen, long-pressing an
