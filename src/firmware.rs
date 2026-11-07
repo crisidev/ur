@@ -83,6 +83,15 @@ pub fn clean_up_after_bootloader() {
         .write_value(embassy_nrf::pac::ppi::regs::Chen(u32::MAX));
 }
 
+/// The running image's version, from its MCUBoot header (`ih_ver`: major,
+/// minor, revision), as `scripts/package.py --version` set it.
+pub fn version() -> (u8, u8, u16) {
+    // SAFETY: Internal flash is memory-mapped and always readable; the
+    // header's version starts 20 bytes into the slot.
+    let [major, minor, low, high] = unsafe { (0x8014 as *const [u8; 4]).read_volatile() };
+    (major, minor, u16::from_le_bytes([low, high]))
+}
+
 // ==============================================================================
 // Confirming the image
 // ==============================================================================

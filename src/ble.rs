@@ -33,7 +33,7 @@ use trouble_host::prelude::*;
 use crate::gb::{self, Incoming, LineBuffer, Outgoing};
 use crate::geo::{self, GpsPolicy, Location};
 use crate::ui::PhoneEvent;
-use crate::{activity, clock, storage};
+use crate::{activity, clock, dfu, storage};
 
 /// The advertised and GAP device name. Gadgetbridge's Bangle.js support
 /// recognises `Bangle.js.*` (among a few other Espruino names).
@@ -79,6 +79,7 @@ pub type Controller = nrf_sdc::SoftdeviceController<'static>;
 #[gatt_server]
 struct Server {
     uart: UartService,
+    dfu: DfuService,
 }
 
 /// The Nordic UART service: a byte pipe each way. "RX" and "TX" are from the
@@ -95,6 +96,33 @@ struct UartService {
     /// Watch to phone, as notifications.
     #[characteristic(uuid = "6e400003-b5a3-f393-e0a9-e50e24dcca9e", notify)]
     tx: Vec<u8, 244>,
+}
+
+/// Nordic's legacy DFU service, for firmware updates; see [`dfu`]. Only for
+/// clients that paired with the passkey (`authenticated`), since it can
+/// replace the firmware.
+#[gatt_service(uuid = "00001530-1212-efde-1523-785feabcd123")]
+struct DfuService {
+    /// Requests in, responses out (as notifications).
+    #[characteristic(
+        uuid = "00001531-1212-efde-1523-785feabcd123",
+        write,
+        notify,
+        permissions(authenticated)
+    )]
+    control_point: Vec<u8, 20>,
+    /// Image data, and the start and init parameters.
+    #[characteristic(
+        uuid = "00001532-1212-efde-1523-785feabcd123",
+        write_without_response,
+        permissions(authenticated)
+    )]
+    packet: Vec<u8, 244>,
+    /// DFU protocol revision 0.8, as InfiniTime reports: tells clients to
+    /// go ahead with the update right away rather than first asking us to
+    /// restart into a separate bootloader.
+    #[characteristic(uuid = "00001534-1212-efde-1523-785feabcd123", read, value = 0x0008)]
+    revision: u16,
 }
 
 // ==============================================================================
@@ -211,6 +239,27 @@ async fn advertise<'values, 'server, C: trouble_host::Controller>(
     Ok(advertiser.accept().await?.with_attribute_server(server)?)
 }
 
+/// Asks the client for the shortest connection interval, for an update:
+/// throughput is a few packets per connection event, so the interval is the
+/// limit. Phones and BlueZ default to 30–50 ms; 7.5 ms is the minimum. The
+/// client may refuse, and the phone's usual parameters return with the next
+/// connection (an update ends in a reset), so nothing to undo.
+async fn speed_up(
+    stack: &Stack<'_, Controller, DefaultPacketPool>,
+    conn: &GattConnection<'_, '_, DefaultPacketPool>,
+) {
+    let params = RequestedConnParams {
+        min_connection_interval: Duration::from_micros(7_500),
+        max_connection_interval: Duration::from_millis(15),
+        max_latency: 0,
+        supervision_timeout: Duration::from_secs(4),
+        ..Default::default()
+    };
+    if let Err(e) = conn.raw().update_connection_params(stack, &params).await {
+        warn!("dfu: asking for a faster connection failed: {}", defmt::Debug2Format(&e));
+    }
+}
+
 /// What a received line asks us to do; collected while parsing (which
 /// happens inside a non-async callback) and acted on afterwards.
 enum Action {
@@ -227,14 +276,17 @@ enum Action {
 
 /// Handles the phone's GATT traffic, pairing, and our outgoing messages
 /// until it disconnects.
-async fn serve<C: trouble_host::Controller>(
-    stack: &Stack<'_, C, DefaultPacketPool>,
+async fn serve(
+    stack: &Stack<'_, Controller, DefaultPacketPool>,
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
     gps: &mut GpsPolicy,
 ) {
     let rx = server.uart.rx.handle;
+    let dfu_control = server.dfu.control_point.handle;
+    let dfu_packet = server.dfu.packet.handle;
     let mut lines = LineBuffer::new();
+    let mut update = dfu::Session::new();
     // While we've asked the phone for GPS: when to give up waiting.
     let mut gps_deadline: Option<Instant> = None;
     let request_gps = |deadline: &mut Option<Instant>| {
@@ -270,17 +322,45 @@ async fn serve<C: trouble_host::Controller>(
             GattConnectionEvent::Disconnected { reason } => break reason,
             GattConnectionEvent::Gatt { event } => {
                 let mut actions: Vec<Action, 4> = Vec::new();
-                if let GattEvent::Write(write) = &event
-                    && write.handle() == rx
-                {
-                    write.with_data(|_offset, data| {
-                        lines.push(data, |line| interpret(line, &mut actions))
-                    });
+                // DFU writes are acted on after replying (flash work is
+                // async; this callback isn't), so keep a copy.
+                let mut dfu_write: Option<(u16, Vec<u8, 244>)> = None;
+                if let GattEvent::Write(write) = &event {
+                    let handle = write.handle();
+                    if handle == rx {
+                        write.with_data(|_offset, data| {
+                            lines.push(data, |line| interpret(line, &mut actions))
+                        });
+                    } else if handle == dfu_control || handle == dfu_packet {
+                        write.with_data(|_offset, data| {
+                            dfu_write = Vec::from_slice(data).ok().map(|data| (handle, data));
+                        });
+                    }
                 }
-                // The attribute table stores writes and answers reads.
+                // The attribute table stores writes and answers reads, and
+                // refuses what the attribute's permissions don't allow.
                 match event.accept() {
                     Ok(reply) => reply.send().await,
                     Err(e) => warn!("ble: failed to reply: {}", defmt::Debug2Format(&e)),
+                }
+                if let Some((handle, data)) = dfu_write {
+                    let was_updating = update.active();
+                    let notification = if handle == dfu_control {
+                        update.on_control(&data).await
+                    } else {
+                        update.on_packet(&data).await
+                    };
+                    let value = notification.map(|n| {
+                        Vec::<u8, 20>::from_slice(&n).expect("notifications are at most 8 bytes")
+                    });
+                    if let Some(value) = value
+                        && let Err(e) = server.dfu.control_point.notify(conn, &value, false).await
+                    {
+                        warn!("dfu: notifying failed: {}", defmt::Debug2Format(&e));
+                    }
+                    if update.active() && !was_updating {
+                        speed_up(stack, conn).await;
+                    }
                 }
                 for action in actions {
                     match action {
@@ -349,6 +429,7 @@ async fn serve<C: trouble_host::Controller>(
             _ => {}
         }
     };
+    update.abandon().await;
     info!("ble: disconnected: {}", defmt::Debug2Format(&reason));
 }
 

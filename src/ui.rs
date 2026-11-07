@@ -59,6 +59,8 @@ pub struct Status<'a> {
     pub connected: bool,
     /// While pairing: the passkey to type on the phone.
     pub passkey: Option<u32>,
+    /// While a firmware update is arriving: how far along it is, in percent.
+    pub update_progress: Option<u8>,
     /// Today's sunrise/sunset, for the info screen (once the time is known).
     pub sun: Option<Sun>,
     /// Today's steps (once the time is known).
@@ -441,7 +443,12 @@ impl App {
     }
 
     pub fn render(&self, canvas: &mut Canvas, status: &Status, now: Instant) {
-        // Pairing, then calls, take over the screen until they're done.
+        // Updates, pairing, then calls take over the screen until they're
+        // done.
+        if let Some(percent) = status.update_progress {
+            render_update(canvas, percent, now);
+            return;
+        }
         if let Some(passkey) = status.passkey {
             render_pairing(canvas, passkey);
             return;
@@ -695,6 +702,65 @@ fn render_pairing(canvas: &mut Canvas, passkey: u32) {
     for (i, &digit) in digits.iter().enumerate() {
         draw_digit(canvas, 5 + 12 * i as i32, 36, digit, 2, Color::TEXT);
     }
+}
+
+// ==============================================================================
+// Firmware update
+// ==============================================================================
+
+/// A chunky segmented progress bar, as on an old console's loading screen:
+/// 16 cells in a frame, filled cells lit with a highlight, and the cell being
+/// filled flickering in the transition's dither pattern.
+fn render_update(canvas: &mut Canvas, percent: u8, now: Instant) {
+    const CELLS: i32 = 16;
+    const CELL: i32 = 4;
+    const LEFT: i32 = 40 - (CELLS * CELL) / 2;
+    const TOP: i32 = 38;
+
+    canvas.clear(BACKGROUND);
+    canvas.text_centered(40, 14, "UPDATING", Color::ACCENT);
+    canvas.text_centered(40, 24, "KEEP CLOSE", Color::TEXT_DIM);
+
+    // Frame, with a drop shadow like the digits'.
+    let (width, height) = (CELLS * CELL + 3, CELL + 5);
+    canvas.fill_rect(LEFT - 1, TOP - 1, width, height, Color::SHADOW);
+    canvas.fill_rect(LEFT - 2, TOP - 2, width, height, Color::TEXT_DIM);
+    canvas.fill_rect(LEFT - 1, TOP - 1, width - 2, height - 2, BACKGROUND);
+
+    let filled = i32::from(percent) * CELLS / 100;
+    for cell in 0..CELLS {
+        let x = LEFT + cell * CELL;
+        if cell < filled {
+            canvas.fill_rect(x, TOP, CELL - 1, CELL, Color::ACCENT);
+            canvas.fill_rect(x, TOP, CELL - 1, 1, Color::HEART_SHINE);
+        } else if cell == filled {
+            // Flip the checkerboard's phase every frame (one a second).
+            let phase = (now.as_secs() % 2) as i32;
+            for dy in 0..CELL {
+                for dx in 0..CELL - 1 {
+                    let color = if (dx + dy + phase) % 2 == 0 {
+                        Color::DITHER_A
+                    } else {
+                        Color::DITHER_B
+                    };
+                    canvas.pixel(x + dx, TOP + dy, color);
+                }
+            }
+        }
+    }
+
+    // The percentage in the clock's 2× digits, right-aligned under the bar.
+    let mut x = 40 + 17;
+    let mut rest = u64::from(percent);
+    loop {
+        x -= 12;
+        draw_digit(canvas, x, 52, rest % 10, 2, Color::TEXT);
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    canvas.text(40 + 19, 59, "%", Color::TEXT_DIM);
 }
 
 // ==============================================================================

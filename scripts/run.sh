@@ -23,8 +23,14 @@ esprobe --target nRF52832_xxAA flash "${ELF}-slot.elf" ||
 # control block twice and gives up. Point esprobe at the real one.
 control_block="0x$(llvm-nm "$ELF" | awk '$3 == "_SEGGER_RTT" { print $1 }')"
 
-# The bootloader shows its logo for 5 s (watching for a held button) before
-# starting us, and there's no RTT control block to attach to until then.
-sleep 6
+# The bootloader shows its logo for 5 s (watching for a held button) and
+# checks the image's hash before starting us, and there's no RTT control
+# block to attach to until then: wait for its "SEGGER RTT" magic.
+for _ in $(seq 20); do
+  if esprobe --target nRF52832_xxAA core read "$control_block" 2>/dev/null | grep -q 0x47474553; then
+    break
+  fi
+  sleep 1
+done
 timeout "${RTT_SECS:-25}" esprobe --target nRF52832_xxAA rtt --control-block "$control_block" |
   defmt-print -e "$ELF"

@@ -1,0 +1,173 @@
+//! The PineTime's external 4 MiB SPI NOR flash.
+//!
+//! PINE64 has fitted different chips over time (XTX XT25F32B per the wiki;
+//! the dev kit has a Boya BY25Q32, JEDEC ID `68 40 16`), all with the same
+//! standard command set, so any 32 Mbit chip is accepted.
+//!
+//! Its layout is the bootloader's (see `memory.x` for the internal side):
+//!
+//!   0x000000  the boot logo and a recovery firmware (InfiniTime's), 256 KiB
+//!   0x040000  MCUBoot's secondary slot: where updates land, and where the
+//!             previous image goes after a swap (464 KiB)
+//!   0x0B4000  free (InfiniTime keeps its file system here)
+//!
+//! Only [`crate::dfu`] uses it, to write updates into the secondary slot.
+//!
+//! The flash shares SPIM2 with the LCD (see [`crate::spi`]). Every operation
+//! here locks the bus only for the length of one command, so the screen keeps
+//! updating between them; erases (up to seconds) are polled with the bus
+//! released.
+//!
+//! Between uses the chip sits in deep power-down, where it draws ~1 µA
+//! instead of ~25 µA in standby.
+
+use embassy_nrf::gpio::Output;
+use embassy_time::{Duration, Instant, Timer};
+
+use crate::spi;
+
+// The standard SPI NOR commands (e.g. XT25F32B datasheet section 8).
+const WRITE_ENABLE: u8 = 0x06;
+const READ_STATUS: u8 = 0x05;
+const READ_DATA: u8 = 0x03;
+const PAGE_PROGRAM: u8 = 0x02;
+const SECTOR_ERASE: u8 = 0x20;
+const BLOCK_ERASE: u8 = 0xD8;
+const READ_JEDEC_ID: u8 = 0x9F;
+const DEEP_POWER_DOWN: u8 = 0xB9;
+const RELEASE_POWER_DOWN: u8 = 0xAB;
+
+/// Status register bit 0: an erase or program is still running.
+const WRITE_IN_PROGRESS: u8 = 0x01;
+
+pub const PAGE: u32 = 256;
+pub const SECTOR: u32 = 4096;
+pub const BLOCK: u32 = 64 * 1024;
+
+#[derive(Debug, defmt::Format)]
+pub enum Error {
+    /// The chip didn't finish an erase or program within its datasheet
+    /// maximum (with margin).
+    Timeout,
+    /// The JEDEC ID wasn't a 32 Mbit SPI NOR (or nothing answered); nothing
+    /// is written to an unknown chip.
+    UnknownChip([u8; 3]),
+}
+
+pub struct SpiFlash {
+    cs: Output<'static>,
+}
+
+impl SpiFlash {
+    /// Takes the chip-select (P0.05) and puts the chip to sleep. The
+    /// bootloader may have left it awake.
+    pub async fn new(cs: Output<'static>) -> Self {
+        let mut flash = Self { cs };
+        flash.command(&[DEEP_POWER_DOWN], &mut []).await;
+        flash
+    }
+
+    /// Wakes the chip from deep power-down and checks it's the one we know.
+    pub async fn wake(&mut self) -> Result<(), Error> {
+        self.command(&[RELEASE_POWER_DOWN], &mut []).await;
+        // tRES1: at most 20 µs before it accepts commands again.
+        Timer::after_micros(30).await;
+        let mut id = [0; 3];
+        self.command(&[READ_JEDEC_ID], &mut id).await;
+        // Any manufacturer (0x00/0xFF: nothing answered), SPI NOR (0x40),
+        // 32 Mbit (2^0x16 bytes).
+        if matches!(id[0], 0x00 | 0xFF) || id[1..] != [0x40, 0x16] {
+            return Err(Error::UnknownChip(id));
+        }
+        Ok(())
+    }
+
+    pub async fn sleep(&mut self) {
+        self.command(&[DEEP_POWER_DOWN], &mut []).await;
+    }
+
+    pub async fn read(&mut self, address: u32, data: &mut [u8]) {
+        let [_, a2, a1, a0] = address.to_be_bytes();
+        self.command(&[READ_DATA, a2, a1, a0], data).await;
+    }
+
+    /// Erases `range`, which must be sector-aligned: whole 64 KiB blocks
+    /// where it covers them (one block erase is ~5× faster than its 16
+    /// sector erases), single 4 KiB sectors at the edges.
+    pub async fn erase(&mut self, range: core::ops::Range<u32>) -> Result<(), Error> {
+        assert!(
+            range.start.is_multiple_of(SECTOR) && range.end.is_multiple_of(SECTOR),
+            "erase ranges are sector-aligned"
+        );
+        let mut address = range.start;
+        while address < range.end {
+            let [_, a2, a1, a0] = address.to_be_bytes();
+            if address.is_multiple_of(BLOCK) && address + BLOCK <= range.end {
+                self.command(&[WRITE_ENABLE], &mut []).await;
+                self.command(&[BLOCK_ERASE, a2, a1, a0], &mut []).await;
+                // Datasheet maximum: 1.2 s.
+                self.wait_idle(Duration::from_millis(2000)).await?;
+                address += BLOCK;
+            } else {
+                self.command(&[WRITE_ENABLE], &mut []).await;
+                self.command(&[SECTOR_ERASE, a2, a1, a0], &mut []).await;
+                // Datasheet maximum: 300 ms.
+                self.wait_idle(Duration::from_millis(500)).await?;
+                address += SECTOR;
+            }
+        }
+        Ok(())
+    }
+
+    /// Programs `data` at `address`; the range must lie within one 256-byte
+    /// page (the chip wraps around within the page otherwise), and be erased.
+    pub async fn program(&mut self, address: u32, data: &[u8]) -> Result<(), Error> {
+        assert!(
+            !data.is_empty() && address % PAGE + data.len() as u32 <= PAGE,
+            "a program stays within one page"
+        );
+        let [_, a2, a1, a0] = address.to_be_bytes();
+        let header = [PAGE_PROGRAM, a2, a1, a0];
+        self.command(&[WRITE_ENABLE], &mut []).await;
+        {
+            // Header and data in one chip-select cycle, but two DMA writes,
+            // to avoid copying the data into a combined buffer.
+            let mut bus = spi::BUS.get().await.lock().await;
+            self.cs.set_low();
+            bus.write(&header).await.expect(spi::WRITE_CANNOT_FAIL);
+            bus.write(data).await.expect(spi::WRITE_CANNOT_FAIL);
+            self.cs.set_high();
+        }
+        // Datasheet maximum: 2.4 ms.
+        self.wait_idle(Duration::from_millis(10)).await
+    }
+
+    /// Polls the status register until an erase/program finishes. The bus is
+    /// free between polls.
+    async fn wait_idle(&mut self, timeout: Duration) -> Result<(), Error> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let mut status = [0];
+            self.command(&[READ_STATUS], &mut status).await;
+            if status[0] & WRITE_IN_PROGRESS == 0 {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err(Error::Timeout);
+            }
+            Timer::after_millis(1).await;
+        }
+    }
+
+    /// One command: `command` out, then `response.len()` bytes in, within a
+    /// single chip-select cycle.
+    async fn command(&mut self, command: &[u8], response: &mut [u8]) {
+        let mut bus = spi::BUS.get().await.lock().await;
+        self.cs.set_low();
+        bus.write(command).await.expect(spi::WRITE_CANNOT_FAIL);
+        if !response.is_empty() {
+            bus.read(response).await.expect(spi::WRITE_CANNOT_FAIL);
+        }
+        self.cs.set_high();
+    }
+}

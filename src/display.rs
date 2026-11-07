@@ -10,12 +10,18 @@
 //!
 //! Only what the UI needs is implemented: init, sleep/wake, and writing a
 //! rectangle of pixels.
+//!
+//! The SPI bus is shared with the SPI flash (see [`crate::spi`]), so the
+//! driver locks it per command, and for the whole of each rectangle of pixels
+//! (from [`Display::start_pixels`] to [`Display::end_pixels`]). Flash
+//! operations interleave between rectangles.
 
 use core::ops::Range;
 
 use embassy_nrf::gpio::Output;
-use embassy_nrf::spim::Spim;
 use embassy_time::{Duration, Instant, Timer};
+
+use crate::spi;
 
 // ST7789 commands (datasheet section 9.1).
 const SWRESET: u8 = 0x01;
@@ -35,7 +41,8 @@ const COLMOD: u8 = 0x3A;
 const SLEEP_SETTLE: Duration = Duration::from_millis(120);
 
 pub struct Display {
-    spi: Spim<'static>,
+    /// The bus, while we're using it (see the module docs).
+    held: Option<spi::Guard>,
     cs: Output<'static>,
     /// Low for command bytes, high for parameters and pixel data.
     dc: Output<'static>,
@@ -44,12 +51,7 @@ pub struct Display {
 }
 
 impl Display {
-    pub async fn new(
-        spi: Spim<'static>,
-        cs: Output<'static>,
-        dc: Output<'static>,
-        mut reset: Output<'static>,
-    ) -> Self {
+    pub async fn new(cs: Output<'static>, dc: Output<'static>, mut reset: Output<'static>) -> Self {
         // Hardware reset: ≥10 µs low, then up to 120 ms before it accepts
         // commands.
         reset.set_low();
@@ -61,7 +63,7 @@ impl Display {
         core::mem::forget(reset);
 
         let mut display = Self {
-            spi,
+            held: None,
             cs,
             dc,
             last_sleep_change: Instant::now(),
@@ -113,6 +115,7 @@ impl Display {
             let [e0, e1] = (r.end - 1).to_be_bytes();
             [s0, s1, e0, e1]
         };
+        self.held = Some(spi::BUS.get().await.lock().await);
         self.command(CASET, &range(columns)).await;
         self.command(RASET, &range(rows)).await;
         // Leave CS asserted and DC in data mode for the pixel stream.
@@ -129,6 +132,7 @@ impl Display {
 
     pub fn end_pixels(&mut self) {
         self.cs.set_high();
+        self.held = None;
     }
 
     /// Sends a command and its parameters.
@@ -138,6 +142,12 @@ impl Display {
     /// wake-up, and the canvas sends three commands per rectangle (hundreds
     /// per transition).
     async fn command(&mut self, command: u8, parameters: &[u8]) {
+        // Inside a rectangle the bus is already ours; otherwise hold it for
+        // just this command.
+        let lock_here = self.held.is_none();
+        if lock_here {
+            self.held = Some(spi::BUS.get().await.lock().await);
+        }
         self.cs.set_low();
         self.dc.set_low();
         self.write_blocking(&[command]);
@@ -146,20 +156,24 @@ impl Display {
             self.write_blocking(parameters);
         }
         self.cs.set_high();
+        if lock_here {
+            self.held = None;
+        }
     }
 
     fn write_blocking(&mut self, data: &[u8]) {
-        self.spi
-            .blocking_write(data)
-            .expect("SPIM writes only fail on non-RAM buffers, which embassy copies");
+        let bus = self
+            .held
+            .as_mut()
+            .expect("the bus is locked around every transfer");
+        bus.blocking_write(data).expect(spi::WRITE_CANNOT_FAIL);
     }
 
     async fn write(&mut self, data: &[u8]) {
-        // The only possible error is a buffer outside RAM, which embassy-nrf
-        // handles by copying it first.
-        self.spi
-            .write(data)
-            .await
-            .expect("SPIM writes only fail on non-RAM buffers, which embassy copies");
+        let bus = self
+            .held
+            .as_mut()
+            .expect("the bus is locked around every transfer");
+        bus.write(data).await.expect(spi::WRITE_CANNOT_FAIL);
     }
 }

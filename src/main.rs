@@ -5,6 +5,7 @@
 //! - [`canvas`] / [`font`] / [`theme`]: the 80×80 pixel-art canvas, its
 //!   glyphs, and colour themes.
 //! - [`display`]: the async LCD driver the canvas pushes pixels through.
+//! - [`spi`] / [`spi_flash`]: the bus the LCD shares with the external flash.
 //! - [`ui`]: screens, navigation, and screen power.
 //! - [`touch`], the button task here: input, delivered through [`INPUT`].
 //! - [`motor`]: vibration patterns.
@@ -15,7 +16,8 @@
 //! - [`clock`] / [`geo`]: wall-clock time and location, both from the phone,
 //!   and the sunrise/sunset derived from them.
 //! - [`storage`]: settings and Bluetooth bonds in flash.
-//! - [`firmware`]: cooperating with the bootloader (updates, rollback).
+//! - [`firmware`] / [`dfu`]: cooperating with the bootloader, and receiving
+//!   updates over Bluetooth.
 //!
 //! Tasks talk to the UI loop only through [`INPUT`]; the UI loop owns the
 //! display and everything shown on it.
@@ -28,6 +30,7 @@ mod battery;
 mod ble;
 mod canvas;
 mod clock;
+mod dfu;
 mod display;
 mod firmware;
 mod font;
@@ -35,6 +38,8 @@ mod gb;
 mod geo;
 mod i2c;
 mod motor;
+mod spi;
+mod spi_flash;
 mod storage;
 mod theme;
 mod touch;
@@ -160,7 +165,8 @@ async fn main(spawner: Spawner) {
     config.gpiote_interrupt_priority = APP_PRIORITY;
     config.time_interrupt_priority = APP_PRIORITY;
     let mut p = embassy_nrf::init(config);
-    info!("ur booting");
+    let (major, minor, revision) = firmware::version();
+    info!("ur {}.{}.{} booting", major, minor, revision);
     clock::restore();
 
     // ==========================================================================
@@ -202,11 +208,9 @@ async fn main(spawner: Spawner) {
     // Pin assignments are from the PineTime schematic:
     // https://wiki.pine64.org/wiki/PineTime#Pinout
 
-    // The SPI-NOR flash shares the SPI bus with the LCD. It never gets used
-    // here, but its chip-select must be held high so it doesn't drive MISO or
-    // interpret LCD traffic as commands.
-    // TODO: put it in deep power-down; it idles at a few µA otherwise.
-    let _flash_cs = Output::new(p.P0_05, Level::High, OutputDrive::Standard);
+    // The SPI flash shares the SPI bus with the LCD (set up below); its
+    // chip-select must be high from the start, so it ignores LCD traffic.
+    let flash_cs = Output::new(p.P0_05, Level::High, OutputDrive::Standard);
 
     let mut backlight = Backlight {
         low: Output::new(p.P0_14, Level::High, OutputDrive::Standard),
@@ -346,15 +350,17 @@ async fn main(spawner: Spawner) {
     let mut spi_config = spim::Config::default();
     spi_config.frequency = spim::Frequency::M8;
     spi_config.mode = spim::MODE_3;
-    // MISO is wired (for the flash), but the LCD is write-only, so leave it
-    // unconnected rather than claiming a pin we never read.
-    let spi = spim::Spim::new_txonly(p.SPI2, Irqs, p.P0_02, p.P0_03, spi_config);
+    // The SPI flash (mode 0 or 3, up to 120 MHz) is happy with the same.
+    let spi = spim::Spim::new(p.SPI2, Irqs, p.P0_02, p.P0_04, p.P0_03, spi_config);
     interrupt::SPI2.set_priority(APP_PRIORITY);
+    static SPI_BUS: StaticCell<spi::Bus> = StaticCell::new();
+    let _ = spi::BUS.init(SPI_BUS.init(Mutex::new(spi)));
     let lcd_cs = Output::new(p.P0_25, Level::High, OutputDrive::Standard);
     let lcd_dc = Output::new(p.P0_18, Level::Low, OutputDrive::Standard);
     let lcd_reset = Output::new(p.P0_26, Level::High, OutputDrive::Standard);
-    let mut display = Display::new(spi, lcd_cs, lcd_dc, lcd_reset).await;
+    let mut display = Display::new(lcd_cs, lcd_dc, lcd_reset).await;
     info!("display initialised");
+    *dfu::FLASH.lock().await = Some(spi_flash::SpiFlash::new(flash_cs).await);
 
     // ==========================================================================
     // UI loop
@@ -408,6 +414,7 @@ async fn main(spawner: Spawner) {
                 local_time: clock::now(),
                 connected: ble::CONNECTED.load(Ordering::Relaxed),
                 passkey: ble::PASSKEY.lock(Cell::get),
+                update_progress: dfu::PROGRESS.lock(Cell::get),
                 sun: geo::sun(),
                 steps: activity::steps_today(),
                 battery: &battery,
@@ -457,7 +464,10 @@ async fn main(spawner: Spawner) {
         match select3(ticker.next(), INPUT.receive(), frame).await {
             Either3::Third(()) => {}
             Either3::First(()) => {
-                app.on_tick(Instant::now(), ble::PASSKEY.lock(Cell::get).is_some())
+                // Pairing and updates need the user to watch the screen.
+                let watching = ble::PASSKEY.lock(Cell::get).is_some()
+                    || dfu::PROGRESS.lock(Cell::get).is_some();
+                app.on_tick(Instant::now(), watching)
             }
             Either3::Second(event) => {
                 info!("input: {}", event);
