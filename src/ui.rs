@@ -53,7 +53,6 @@ use crate::canvas::{Canvas, Color, Sweep, marquee_cycle};
 use crate::clock::DateTime;
 use crate::font;
 use crate::gb::{CallAction, MusicCommand, Outgoing};
-use crate::geo::Sun;
 use crate::motor::{self, Pattern};
 use crate::theme::{self, Theme};
 use crate::touch::Gesture;
@@ -78,8 +77,6 @@ pub struct Status<'a> {
     pub passkey: Option<u32>,
     /// While a firmware update is arriving: how far along it is, in percent.
     pub update_progress: Option<u8>,
-    /// Today's sunrise/sunset, for the info screen (once the time is known).
-    pub sun: Option<Sun>,
     /// Today's steps (once the time is known).
     pub steps: Option<u32>,
     /// The latest heart rate, unless there's none recent enough to show.
@@ -1211,16 +1208,15 @@ fn render_battery(canvas: &mut Canvas, battery: &Battery, uptime_secs: u64) {
 // Info screen
 // ==============================================================================
 
-/// First value row, and the spacing between rows: nine rows, below the
-/// title, with a pixel to spare at the bottom.
-const INFO_TOP: i32 = 10;
+/// First value row, and the spacing between rows.
+const INFO_TOP: i32 = 12;
 const INFO_LINE: i32 = 8;
 
 fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
     canvas.clear(BACKGROUND);
     // The version without its build metadata (`0.9.0-pr.12`); the commit
     // goes at the bottom (see `build.rs`).
-    canvas.text(4, 2, concat!("UR ", env!("UR_RELEASE")), Color::ACCENT);
+    canvas.text(4, 3, concat!("UR ", env!("UR_RELEASE")), Color::ACCENT);
 
     let battery = status.battery;
     let mv = battery.millivolts();
@@ -1248,22 +1244,6 @@ fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
     let y = INFO_TOP + INFO_LINE * labels.len() as i32;
     canvas.text(4, y, "THEME", Color::TEXT_DIM);
     canvas.text_right(77, y, theme.name, Color::TEXT);
-    let y = y + INFO_LINE;
-    canvas.text(4, y, "SUN", Color::TEXT_DIM);
-    let mut daylight = heapless::String::<12>::new();
-    match status.sun {
-        Some(Sun { sunrise, sunset }) => write!(
-            daylight,
-            "{:02}:{:02}-{:02}:{:02}",
-            sunrise / 60,
-            sunrise % 60,
-            sunset / 60,
-            sunset % 60
-        )
-        .expect("11 chars"),
-        None => daylight.push_str("--:-----:--").expect("11 chars"),
-    }
-    canvas.text_right(77, y, &daylight, Color::TEXT);
     let y = y + INFO_LINE;
     canvas.text(4, y, "PHONE", Color::TEXT_DIM);
     let phone = if status.connected {
