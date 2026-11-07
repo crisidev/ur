@@ -30,7 +30,7 @@ use embedded_hal_async::i2c::I2c;
 
 use crate::activity;
 use crate::i2c::Device;
-use crate::ppg::{self, Consensus, Conversions, Ppg};
+use crate::ppg::{Consensus, Conversions, Ppg};
 
 // ==============================================================================
 // Scheduling
@@ -53,19 +53,18 @@ const STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 /// trusted: moving the sensor against the skin changes the light far more
 /// than the pulse does.
 ///
-/// Measured on the dev kit: ~25 lying untouched, 300–700 with a fingertip
-/// resting on the sensor (which still gave a clean, steady 57 BPM), and
-/// thousands when handled. 300, the first guess, vetoed that clean signal;
-/// 1000 (~0.12 g average change between samples) still rejects handling.
+/// With the accelerometer read correctly (0.8.0 on): ~30 lying still,
+/// 2000–7000 when handled. Earlier field logs, on a corrupted movement
+/// measure, vetoed 98% of on-wrist time, including every window that
+/// passed the signal checks, though those matched a Garmin worn alongside
+/// to a median +0.4 BPM.
 ///
-/// TODO: tune on the wrist, from field logs.
-const MOTION_LIMIT: u16 = 1000;
+/// TODO: tune from a 0.8.x field log with walking in it.
+const MOTION_LIMIT: u16 = 1500;
 
-/// How long after movement windows stay vetoed: one analysis window, plus
-/// the accelerometer's poll interval (it reports movement a few seconds
-/// late).
-const MOTION_HOLD: Duration =
-    Duration::from_millis((ppg::WINDOW as u64 * ppg::NOMINAL_PERIOD_US as u64) / 1000 + 3000);
+/// Seconds of movement readings kept (one per level check, i.e. a second),
+/// to judge a whole window: an analysis window is ~8 s.
+const MOTION_HISTORY: usize = 8;
 
 /// Whether the clock face is showing; set by the UI loop.
 static WATCHING: AtomicBool = AtomicBool::new(false);
@@ -202,7 +201,17 @@ const SATURATED: u32 = FULL_SCALE * 9 / 10;
 /// A second's average below this, and the pulse is down to a few counts:
 /// step up. A step at most doubles the signal, so this can't bounce
 /// straight back into `SATURATED`.
-const WEAK: u32 = FULL_SCALE / 8;
+///
+/// On the wrist, 12.5 mA ×2 reads 2000–3500, and every window that passed
+/// the signal checks in a day's field log was at that level. At
+/// `FULL_SCALE / 8` (2047), contact wobble kept bumping sessions to ×4,
+/// which restarts the analysis and never yielded a window.
+const WEAK: u32 = FULL_SCALE / 16;
+/// At the lowest current (×1), a mean below this is no skin: off the wrist
+/// read 73–223, on it 1076–1631. Scaled by the gain at higher gains.
+///
+/// TODO: check in daylight; these were indoors and on a charger.
+const NO_SKIN: u32 = FULL_SCALE / 32;
 /// Below this even at the top level, almost no light is coming back: the
 /// watch isn't being worn.
 ///
@@ -336,7 +345,9 @@ pub async fn heart_task(i2c: Device) {
     // sensor's oscillator) don't change much in ten minutes. A failed
     // session (off the wrist, typically) climbs to the top level, 40 mA, and
     // starting every later session there would triple the LED's cost.
-    let mut good_level = 0;
+    // Starting at ×2 (12.5 mA): where on-wrist readings settled anyway, so
+    // the first second isn't spent climbing to it.
+    let mut good_level = 1;
     // Consecutive background sessions without a reading, for backing off.
     let mut failures = 0u32;
     let mut conversions = Conversions::new();
@@ -474,7 +485,9 @@ async fn measure(
     let mut consensus = Consensus::new();
     let started = Instant::now();
     let mut measured = false;
-    let mut moved_at: Option<Instant> = None;
+    // This window's movement, a reading a second (the accelerometer
+    // reports every 3 s, so about three distinct values).
+    let mut movement = heapless::HistoryBuf::<u16, MOTION_HISTORY>::new();
     // This second's signal, for the level check.
     let (mut peak, mut sum, mut count) = (0u32, 0u32, 0u32);
 
@@ -488,9 +501,6 @@ async fn measure(
             } else {
                 Ended::TimedOut
             });
-        }
-        if activity::movement() > MOTION_LIMIT {
-            moved_at = Some(now);
         }
 
         let (raw, ambient) = hrs.sample().await?;
@@ -507,6 +517,7 @@ async fn measure(
         // Once a second: is the signal within range? If not, change level
         // and start over (samples at different levels aren't comparable).
         if count >= LEVEL_CHECK_SAMPLES {
+            movement.write(activity::movement());
             let mean = sum / count;
             debug!(
                 "heart: level {}, mean {}, peak {}, ambient {}, period {} µs",
@@ -522,6 +533,10 @@ async fn measure(
                     return Ok(Ended::TooBright);
                 }
                 *level -= 1;
+            } else if LEVELS[*level].drive == 0 && mean < NO_SKIN << LEVELS[*level].gain {
+                // Off the wrist: little light comes back at the lowest
+                // current; skin reflects several times more.
+                return Ok(Ended::NoContact);
             } else if mean < WEAK && *level + 1 < LEVELS.len() {
                 *level += 1;
             } else if mean < NO_CONTACT {
@@ -549,8 +564,16 @@ async fn measure(
             }
         };
         let bpm = estimate.bpm_at(conversions.period_us());
-        if moved_at.is_some_and(|at| now - at < MOTION_HOLD) {
-            debug!("heart: window rejected: wrist moving ({} BPM)", bpm);
+        // Only sustained movement vetoes a window: most of its readings
+        // high, not one 3-second spike (which used to veto the next 11 s).
+        let moving = movement.iter().filter(|&&m| m > MOTION_LIMIT).count();
+        if moving * 2 > movement.len() {
+            debug!(
+                "heart: window rejected: wrist moving ({} BPM, {}/{})",
+                bpm,
+                moving,
+                movement.len()
+            );
             continue;
         }
         debug!("heart: window {} BPM (quality {})", bpm, estimate.quality);

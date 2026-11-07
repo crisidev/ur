@@ -183,16 +183,22 @@ impl Estimate {
     }
 }
 
-/// Why a window didn't yield a heart rate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Why a window didn't yield a heart rate, with the numbers behind the
+/// verdict (logged, to tune the thresholds from field data).
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(target_os = "none", derive(defmt::Format))]
 pub enum Rejection {
     /// No signal at all.
     Flat,
-    /// The amplitude jumps around: most likely movement.
-    Unsteady,
+    /// The amplitude jumps around: most likely movement. `ratio` is the
+    /// loudest quarter's amplitude over the quietest's (the limit is
+    /// [`MAX_AMPLITUDE_RATIO`]).
+    Unsteady { ratio: f32 },
     /// Not periodic enough within 40–200 BPM: noise, or a weak pulse.
-    Aperiodic,
+    /// `quality` is the best correlation found (the limit is
+    /// [`MIN_CORRELATION`]), and `bpm` its rate (NaN if there was no peak
+    /// at all).
+    Aperiodic { quality: f32, bpm: f32 },
 }
 
 /// Filters raw samples and estimates the heart rate from them every
@@ -295,7 +301,8 @@ impl Ppg {
         }
         // Energies, so the amplitude ratio is squared.
         if loudest > quietest * MAX_AMPLITUDE_RATIO * MAX_AMPLITUDE_RATIO {
-            return Err(Rejection::Unsteady);
+            let ratio = libm::sqrtf(loudest / quietest.max(f32::MIN_POSITIVE));
+            return Err(Rejection::Unsteady { ratio });
         }
 
         // The normalised autocorrelation at each lag of interest: the
@@ -343,14 +350,17 @@ impl Ppg {
             .filter_map(peak)
             .find(|&(_, height)| height >= best * OCTAVE_TOLERANCE)
         else {
-            return Err(Rejection::Aperiodic);
+            return Err(Rejection::Aperiodic {
+                quality: best,
+                bpm: f32::NAN,
+            });
         };
-        if quality < MIN_CORRELATION {
-            return Err(Rejection::Aperiodic);
-        }
         let estimate = Estimate { period, quality };
-        if !(MIN_BPM..=MAX_BPM).contains(&estimate.bpm()) {
-            return Err(Rejection::Aperiodic);
+        if quality < MIN_CORRELATION || !(MIN_BPM..=MAX_BPM).contains(&estimate.bpm()) {
+            return Err(Rejection::Aperiodic {
+                quality,
+                bpm: estimate.bpm(),
+            });
         }
         Ok(estimate)
     }

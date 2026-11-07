@@ -582,8 +582,7 @@ impl App {
                 } else {
                     font::small_text_width(&who) * 2
                 };
-                let overflow =
-                    font::small_text_width(&app).max(who_overflow) - BANNER_TEXT_WIDTH;
+                let overflow = font::small_text_width(&app).max(who_overflow) - BANNER_TEXT_WIDTH;
                 let shown_for = BANNER_TIME.max(marquee_cycle(overflow));
                 self.banner = Some(Banner {
                     app,
@@ -1474,7 +1473,14 @@ fn wrap(text: &str, width: i32, scale: i32) -> Option<heapless::Vec<Line, QUIET_
 fn render_quiet_notification(canvas: &mut Canvas, banner: &Banner, now: Instant) {
     let elapsed = now - banner.since;
     canvas.clear(BACKGROUND);
-    canvas.marquee(3..3 + BANNER_TEXT_WIDTH, 12, &banner.app, Color::TEXT_DIM, 1, elapsed);
+    canvas.marquee(
+        3..3 + BANNER_TEXT_WIDTH,
+        12,
+        &banner.app,
+        Color::TEXT_DIM,
+        1,
+        elapsed,
+    );
     match wrap(&banner.who, BANNER_TEXT_WIDTH, 2) {
         Some(lines) => {
             // Centred in the space below the app name (y 22..80).
