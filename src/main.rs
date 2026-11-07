@@ -15,6 +15,7 @@
 //! - [`clock`] / [`geo`]: wall-clock time and location, both from the phone,
 //!   and the sunrise/sunset derived from them.
 //! - [`storage`]: settings and Bluetooth bonds in flash.
+//! - [`firmware`]: cooperating with the bootloader (updates, rollback).
 //!
 //! Tasks talk to the UI loop only through [`INPUT`]; the UI loop owns the
 //! display and everything shown on it.
@@ -28,6 +29,7 @@ mod ble;
 mod canvas;
 mod clock;
 mod display;
+mod firmware;
 mod font;
 mod gb;
 mod geo;
@@ -39,7 +41,7 @@ mod touch;
 mod ui;
 
 use core::cell::Cell;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use defmt::{info, warn};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
@@ -102,16 +104,22 @@ pub enum InputEvent {
 /// Every user input, in order, for the UI loop.
 pub static INPUT: Channel<CriticalSectionRawMutex, InputEvent, 8> = Channel::new();
 
+/// Whether the side button is down right now. While it is, the UI loop
+/// stops feeding the watchdog: see [`firmware`].
+static BUTTON_HELD: AtomicBool = AtomicBool::new(false);
+
 /// Watches the side button and reports each (debounced) press.
 #[embassy_executor::task]
 async fn button_task(mut button: Input<'static>) {
     loop {
         button.wait_for_rising_edge().await;
+        BUTTON_HELD.store(true, Ordering::Relaxed);
         INPUT.send(InputEvent::Button).await;
         // The button is mechanical, so ignore bounces on both the press and
         // the release before arming for the next press.
         Timer::after_millis(20).await;
         button.wait_for_low().await;
+        BUTTON_HELD.store(false, Ordering::Relaxed);
         Timer::after_millis(20).await;
     }
 }
@@ -143,6 +151,7 @@ impl Backlight {
 async fn main(spawner: Spawner) {
     // TODO: enable the DC/DC regulator (the PineTime has the inductor for it)
     // to roughly halve current draw; the LDO default is just the safe choice.
+    firmware::clean_up_after_bootloader();
     let mut config = embassy_nrf::config::Config::default();
     // The PineTime has a 32.768 kHz crystal. embassy defaults to the internal
     // RC oscillator, which is far less accurate, and the wall clock is kept by
@@ -158,10 +167,11 @@ async fn main(spawner: Spawner) {
     // Watchdog
     // ==========================================================================
 
-    // The WDT survives soft resets, and the dev kit's stock InfiniTime firmware
-    // starts it. If it's already running (e.g. we were just flashed over
-    // InfiniTime), we must adopt its exact configuration or keep getting
-    // reset. Otherwise we start our own so a hung UI loop recovers.
+    // The WDT survives soft resets, and the bootloader starts it (7 s) before
+    // handing over, so normally it's already running and we must adopt its
+    // exact configuration or keep getting reset. Otherwise (only when
+    // something boots us without the bootloader) we start our own so a hung
+    // UI loop recovers.
     let wdt_config = wdt::Config::try_new(&p.WDT).unwrap_or_else(|| {
         let mut config = wdt::Config::default();
         config.timeout_ticks = 5 * 32768; // 5 s
@@ -425,7 +435,12 @@ async fn main(spawner: Spawner) {
             display.sleep().await;
             panel_awake = false;
         }
-        if let Some(watchdog) = &mut watchdog {
+        // Holding the button long enough to starve the watchdog is the
+        // user's way back into the bootloader (and to rollback), even when
+        // this firmware is otherwise wedged in a way that still runs this loop.
+        if let Some(watchdog) = &mut watchdog
+            && !BUTTON_HELD.load(Ordering::Relaxed)
+        {
             watchdog.pet();
         }
         clock::checkpoint();

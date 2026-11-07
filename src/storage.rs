@@ -1,4 +1,4 @@
-//! Persistent storage: a small key-value map in the last 16 KB of flash.
+//! Persistent storage: a small key-value map in the last 12 KB of flash.
 //!
 //! Holds anything that should survive a reboot: Bluetooth bonds (so the phone
 //! doesn't have to pair again) and settings (the theme; alarms later).
@@ -10,11 +10,12 @@
 //!   its timing; MPSL schedules erases and writes into gaps between radio
 //!   events instead.
 //! - `sequential-storage` appends new values and only erases a page when it
-//!   runs out of space, spreading wear across the four pages.
+//!   runs out of space, spreading wear across the three pages.
 //!
-//! The region is reserved in `memory.x`, so firmware can never grow into it,
-//! and flashing new firmware only erases the pages the image occupies, so
-//! stored data survives reflashing.
+//! The region is reserved in `memory.x`, so firmware can never grow into it.
+//! Neither updates nor the bootloader touch it (MCUBoot's swap scratch is the
+//! page just below), and flashing over SWD only erases the pages the image
+//! occupies, so stored data survives both.
 
 use core::ops::Range;
 
@@ -26,7 +27,7 @@ use sequential_storage::cache::{Cache, Uncached};
 use sequential_storage::map::{MapConfig, MapStorage};
 
 /// Must match the `STORAGE` region in `memory.x`.
-const RANGE: Range<u32> = 0x7C000..0x80000;
+const RANGE: Range<u32> = 0x7D000..0x80000;
 
 /// Every stored item's key. Never reuse a retired number: old data under it
 /// may still be in flash.
@@ -102,6 +103,28 @@ pub async fn remove(key: u8) -> bool {
     let result = store.remove_item(&mut buffer, &key).await;
     if let Err(e) = &result {
         warn!("storage: removing key {} failed: {}", key, e);
+    }
+    result.is_ok()
+}
+
+/// Writes one word of flash *outside* the storage region, through the same
+/// MPSL flash driver (which the map owns, hence living here). Only for
+/// [`crate::firmware::confirm`], which flips a bootloader flag. Returns
+/// whether that worked (failures are logged).
+pub async fn write_word_elsewhere(address: u32, word: u32) -> bool {
+    assert!(
+        !RANGE.contains(&address) && address.is_multiple_of(4),
+        "a word-aligned address outside the map"
+    );
+    let mut store = STORE.lock().await;
+    // `MapStorage` doesn't lend out its flash, so take the map apart and
+    // rebuild it. It's uncached, so nothing is lost by doing so.
+    let Store(map) = store.take().expect("storage::init runs at boot");
+    let (mut flash, cache) = map.destroy();
+    let result = flash.write(address, &word.to_le_bytes()).await;
+    *store = Some(Store(MapStorage::new(flash, MapConfig::new(RANGE), cache)));
+    if let Err(e) = &result {
+        warn!("storage: writing {:#x} failed: {}", address, e);
     }
     result.is_ok()
 }

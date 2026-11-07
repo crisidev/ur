@@ -1,2 +1,4 @@
 /target
 tmp/
+.claude/
+__pycache__/

@@ -114,7 +114,7 @@ pub fn utc_offset_minutes() -> Option<i16> {
 // Surviving resets
 // ==============================================================================
 
-/// The last known time, in the last 32 bytes of RAM, which `memory.x` keeps
+/// The last known time, in the second half of the RAM block `memory.x` keeps
 /// out of the linker's hands. Nothing initialises it at startup, so it
 /// survives any reset that keeps power on, and its fixed address means even a
 /// different firmware build (after reflashing) finds it.
@@ -139,7 +139,7 @@ impl Retained {
 const RETAINED_MAGIC: u32 = 0x7572_4332; // "urC2"
 
 /// Must match the `RETAINED` region in `memory.x`.
-const RETAINED_ADDRESS: usize = 0x2000_FFE0;
+const RETAINED_ADDRESS: usize = 0x2000_C020;
 const _: () = assert!(size_of::<Retained>() <= 32);
 
 fn retained() -> *mut Retained {

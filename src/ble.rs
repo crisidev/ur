@@ -290,6 +290,9 @@ async fn serve<C: trouble_host::Controller>(
                         } => {
                             clock::set(utc_seconds, offset_minutes);
                             info!("ble: time set (UTC offset {} min)", offset_minutes);
+                            // Proof that this image can talk to the phone,
+                            // and so receive the next update.
+                            crate::firmware::confirm().await;
                             gps.on_time_sync(offset_minutes);
                             if gps.take_request() && gps_deadline.is_none() {
                                 request_gps(&mut gps_deadline);

@@ -441,7 +441,7 @@ fn add_steps_today(steps: u32) {
 //
 // The step counter restarts whenever we reset the chip (every boot), so
 // today's total is kept in reset-surviving RAM, like the clock (see
-// `clock`): the 32 bytes below the clock's, reserved in `memory.x`.
+// `clock`): the first 32 bytes of the retained RAM in `memory.x`.
 
 #[repr(C)]
 struct Retained {
@@ -453,7 +453,7 @@ struct Retained {
 
 const RETAINED_MAGIC: u32 = 0x7572_5331; // "urS1"
 /// Must match the `RETAINED` region in `memory.x`.
-const RETAINED_ADDRESS: usize = 0x2000_FFC0;
+const RETAINED_ADDRESS: usize = 0x2000_C000;
 const _: () = assert!(size_of::<Retained>() <= 32);
 
 fn check(today: &Today) -> i64 {
