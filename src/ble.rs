@@ -203,8 +203,9 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
         }
     };
     let gps = RefCell::new(GpsPolicy::default());
-    // When the phone last left, for `advertising_interval`.
-    let last_disconnect: Cell<Option<Instant>> = Cell::new(None);
+    // When the phone last left, for `advertising_interval`. Booting counts:
+    // the phone is waiting to reconnect then too.
+    let last_disconnect: Cell<Option<Instant>> = Cell::new(Some(Instant::now()));
     // Each slot advertises until something connects, serves it until it
     // disconnects, and repeats. While one slot serves, the other advertises,
     // so a second client can always find us.
@@ -270,21 +271,23 @@ const ADVERTISING_REVIEW: Duration = Duration::from_secs(30);
 /// (three channels, each transmit followed by a listen), so this is most of
 /// what Bluetooth costs while the phone is away:
 ///
-/// - Right after the phone leaves, it usually comes straight back (a brief
-///   dropout), so advertise quickly for a minute.
 /// - While the phone is connected, the other slot only serves an updater or
 ///   a log fetcher, whose active scans find even a slow advertiser in a few
 ///   seconds.
-/// - Otherwise the phone is away (out of range, Bluetooth off), possibly for
-///   days: advertise slowly. Android's background reconnect scan still
-///   catches a ~1 s advertiser within tens of seconds.
+/// - For five minutes after the phone leaves (or after boot), advertise
+///   quickly: it's usually trying to come straight back.
+/// - Otherwise, at a moderate pace. Android reconnects with a background
+///   scan that only listens in short bursts, so a slow advertiser is found
+///   late: at 1022.5 ms it took the phone *four minutes* to reconnect,
+///   where the old fixed 500 ms always took seconds. 417.5 ms is one of
+///   Apple's recommended intervals, and about the old pace.
 fn advertising_interval(last_disconnect: Option<Instant>) -> Duration {
     if CONNECTED.load(Ordering::Relaxed) {
         Duration::from_millis(2000)
-    } else if last_disconnect.is_some_and(|at| at.elapsed() < Duration::from_secs(60)) {
+    } else if last_disconnect.is_some_and(|at| at.elapsed() < Duration::from_secs(5 * 60)) {
         Duration::from_micros(152_500)
     } else {
-        Duration::from_micros(1_022_500)
+        Duration::from_micros(417_500)
     }
 }
 
