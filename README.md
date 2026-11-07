@@ -5,17 +5,21 @@ out of your way, with alarms, sleep and heart-rate tracking, and phone
 integration through [Gadgetbridge].
 
 <p align="center">
-  <img src="docs/screenshots/clock-night.png" width="200" alt="The clock face at night: time, seconds, weekday, heart rate, date, battery and steps, white and red on black">
-  <img src="docs/screenshots/clock-day.png" width="200" alt="The same clock face by day, in dark green on pale green like an old handheld">
-  <img src="docs/screenshots/alarms.png" width="200" alt="The alarms screen: smart wake, two alarms, two timers">
+  <img src="docs/screenshots/clock-arcade.png" width="180" alt="The clock face in the Arcade theme, for night: time, seconds, weekday, heart rate, date, battery and steps, white and red on black">
+  <img src="docs/screenshots/clock-terminal.png" width="180" alt="The clock face in the Terminal theme, for night: green on black">
+  <img src="docs/screenshots/clock-handheld.png" width="180" alt="The clock face in the Handheld theme, for day: dark green on pale green, like an old handheld">
+  <img src="docs/screenshots/clock-parchment.png" width="180" alt="The clock face in the Parchment theme, for day: brown on cream">
   <br>
-  <img src="docs/screenshots/notification.png" width="200" alt="A notification that arrived with the screen off: the app at the top, the sender large in the middle, white on black">
-  <img src="docs/screenshots/glance.png" width="200" alt="A glance: just the time, white on black">
-  <img src="docs/screenshots/info.png" width="200" alt="The info screen: version, battery, uptime, theme, phone, last night's sleep, and build">
+  <img src="docs/screenshots/alarms.png" width="180" alt="The alarms screen: smart wake, two alarms, two timers">
+  <img src="docs/screenshots/notification.png" width="180" alt="A notification that arrived with the screen off: the app at the top, the sender large in the middle, white on black">
+  <img src="docs/screenshots/glance.png" width="180" alt="A glance: just the time, white on black">
+  <img src="docs/screenshots/info.png" width="180" alt="The info screen: version, battery, uptime, theme, phone, last night's sleep, and build">
 </p>
 
-- **Clock face:** time with seconds, date, battery, steps, and heart rate.
-  Dark after sunset and light by day, worked out from your location.
+- **Clock face:** time with seconds, date, battery, steps, and heart rate,
+  in four themes: two dark for after sunset (Arcade and Terminal), and two
+  light for the day (Handheld and Parchment), switching by themselves at
+  your location's sunset and sunrise.
 - **Glance:** turn your wrist to look, and the time shows dimly for a few
   seconds, without lighting the whole screen. Not while you're asleep.
 - **Alarms:** smart wake (rings in the half hour before your time, as soon
@@ -168,7 +172,29 @@ fetching logs from a sealed watch, and making releases. To report a
 problem with a watch, it also explains the `ur-logging` build, whose log
 helps.
 
-## Third-party code
+## License
 
-`src/bma423_config.bin` is Bosch's BMA423 feature-engine configuration,
-under the BSD-3-Clause licence in `src/bma423_config.LICENSE`.
+Licensed under either of
+
+ * Apache License, Version 2.0
+   ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+ * MIT license
+   ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+
+at your option.
+
+The firmware images also contain third-party code under its own terms:
+
+- Nordic Semiconductor's Bluetooth controller and protocol scheduler
+  (through the `nrf-sdc` and `nrf-mpsl` crates), provided in binary form
+  under the Nordic 5-Clause licence, which only permits their use with
+  Nordic chips, such as the PineTime's nRF52832.
+- `src/bma423_config.bin`, Bosch's BMA423 feature-engine configuration,
+  under the BSD-3-Clause licence in `src/bma423_config.LICENSE`.
+
+## Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in the work by you, as defined in the Apache-2.0
+license, shall be dual licensed as above, without any additional terms or
+conditions.

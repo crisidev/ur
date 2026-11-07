@@ -2,6 +2,10 @@
 name = "ur"
 version = "0.9.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/jonhoo/ur"
+# Firmware, not a library: nothing to publish to crates.io.
+publish = false
 
 [dependencies]
 cortex-m = { version = "0.7.10", features = ["inline-asm"] }
