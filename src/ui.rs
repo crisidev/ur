@@ -13,10 +13,11 @@
 //!   after sunset, light ones after sunrise; each group remembers its own).
 //! - Button: return to the clock; on the clock, turn the screen off. While a
 //!   call rings: silence it.
-//! - While the screen is off, a button press, or a double tap (two taps
-//!   within [`DOUBLE_TAP`]): wake to the clock. A single touch doesn't
-//!   wake it, so a brush of a sleeve doesn't light the screen. (The waking
-//!   input is *only* a wake-up; it isn't also acted on.)
+//! - While the screen is off, a button press, a deliberate tap (see
+//!   [`deliberate`]), or a double tap (two taps within [`DOUBLE_TAP`]):
+//!   wake to the clock. Other touches don't, so a brush of a sleeve
+//!   doesn't light the screen. (The waking input is *only* a wake-up; it
+//!   isn't also acted on.)
 //! - No input for [`SCREEN_TIMEOUT`]: turn the screen off.
 //! - Turning the wrist to look (see [`crate::glance`]) while the screen is
 //!   off: a glance, just the time in white on black at a low backlight,
@@ -57,16 +58,35 @@ use crate::font;
 use crate::gb::{CallAction, MusicCommand, Outgoing};
 use crate::motor::{self, Pattern};
 use crate::theme::{self, Theme};
-use crate::touch::Gesture;
+use crate::touch::{Gesture, Touch};
 
 const SCREEN_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long a glance shows the time.
 const GLANCE_TIME: Duration = Duration::from_secs(5);
-/// With the screen off, a touch only wakes it as the second of two taps
-/// this close together. Any touch used to wake it, and brushes against a
-/// sleeve or a blanket did. Waking deliberately is still one action away:
-/// the button, or turning the wrist (a glance, where one tap wakes).
+/// With the screen off, a tap that isn't [`deliberate`] still wakes it as
+/// the second of two taps this close together.
 const DOUBLE_TAP: Duration = Duration::from_millis(500);
+
+/// Whether a touch looks meant, rather than a brush: what, with the screen
+/// off, a single tap needs to be to wake it. Any touch used to wake it, and
+/// brushes against a sleeve or a blanket did.
+///
+/// From the sealed watch's field logs: brushes were short (8–37 ms), and
+/// all started at the screen's edge, within ~20 panel pixels (one, at
+/// 146 ms, too). Deliberate taps lasted 41–135 ms, and the ones that
+/// woke the screen landed well inside. So: a tap of at least
+/// [`DELIBERATE_TAP`] that starts outside the outer tenth of the screen
+/// ([`TAP_MARGIN`]).
+fn deliberate(touch: &Touch) -> bool {
+    let inside = |v: i32| (TAP_MARGIN..80 - TAP_MARGIN).contains(&v);
+    touch.gesture == Gesture::Tap
+        && touch.held >= DELIBERATE_TAP
+        && inside(touch.x)
+        && inside(touch.y)
+}
+const DELIBERATE_TAP: Duration = Duration::from_millis(40);
+/// Canvas pixels (24 panel pixels).
+const TAP_MARGIN: i32 = 8;
 /// How long a notification banner shows.
 const BANNER_TIME: Duration = Duration::from_secs(4);
 /// Stop ringing after this long, in case the phone never says the call is
@@ -392,14 +412,15 @@ impl App {
             self.last_input = now;
             return;
         }
-        // With the screen off, a touch only counts as the second tap of a
-        // double tap: a first tap, a swipe or a long press is most likely a
-        // brush, and is ignored (bar remembering a tap).
+        // With the screen off, a touch only wakes it if it's a deliberate
+        // tap, or the second of a double tap. Anything else (a swipe, a
+        // long press, a short tap or one at the edge) is most likely a
+        // brush, and is ignored, bar remembering a tap.
         if !self.awake
             && let InputEvent::Touch(touch) = event
         {
             let second = self.wake_tap.is_some_and(|tap| now - tap <= DOUBLE_TAP);
-            if !(touch.gesture == Gesture::Tap && second) {
+            if !(deliberate(&touch) || touch.gesture == Gesture::Tap && second) {
                 self.wake_tap = (touch.gesture == Gesture::Tap).then_some(now);
                 return;
             }

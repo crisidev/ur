@@ -51,10 +51,11 @@ hardware by a human.
 
 ## Using it
 
-- **Waking the screen:** press the button, or double-tap the screen. (A
-  single touch doesn't wake it, so brushing against something doesn't
-  either.) Turning your wrist to look shows the time on its own; tap then
-  to wake the screen fully.
+- **Waking the screen:** press the button, or tap the middle of the
+  screen firmly (or twice). Brief touches and touches at the edge don't
+  wake it, so brushing against something doesn't either. Turning your
+  wrist to look shows the time on its own; tap then to wake the screen
+  fully.
 - **Button:** with the screen on, back to the clock, or off from the
   clock. Also silences a call, and stops a ringing alarm.
 - **Swipe left and right:** between the clock, alarms, music (while

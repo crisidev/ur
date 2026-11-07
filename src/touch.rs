@@ -62,6 +62,8 @@ pub struct Touch {
     /// Where the touch started, in canvas pixels.
     pub x: i32,
     pub y: i32,
+    /// How long the finger was down.
+    pub held: Duration,
 }
 
 /// The touch in progress: where and when it started, and the latest position.
@@ -93,6 +95,7 @@ impl Tracking {
             gesture,
             x: self.start.0 / scale,
             y: self.start.1 / scale,
+            held: self.since.elapsed(),
         }
     }
 }

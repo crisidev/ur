@@ -10,7 +10,7 @@
 
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
-use embassy_time::Timer;
+use embassy_time::{Duration, Timer};
 
 use crate::canvas::Canvas;
 use crate::touch::{Gesture, Touch};
@@ -87,6 +87,12 @@ pub async fn input_task() {
             gesture,
             x: i32::from(x),
             y: i32::from(y),
+            // A finger's typical tap (and a long press's, for that).
+            held: Duration::from_millis(if gesture == Gesture::LongPress {
+                800
+            } else {
+                80
+            }),
         };
         INPUT.send(InputEvent::Touch(touch)).await;
     }
