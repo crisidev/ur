@@ -1,7 +1,8 @@
 # Runs whenever a PR is opened or updated, or a commit is pushed to main:
 # - fmt: rustfmt, for the firmware, each host-test crate, and the simulator
 # - clippy: lints, for the firmware as released (both variants; see
-#   scripts/release.sh), with the pinned toolchain and on beta, and for the
+#   scripts/release.sh) and as compared with the simulator (`compare`),
+#   with the pinned toolchain and on beta, and for the
 #   simulator (sim/), with and without its window
 # - scripts: shellcheck, and that the Python scripts at least parse
 #
@@ -49,12 +50,15 @@ jobs:
       fail-fast: false
       matrix:
         toolchain: [pinned, beta]
-        variant: [ur, ur-logging]
+        variant: [ur, ur-logging, compare]
         include:
           - variant: ur
             features: ""
           - variant: ur-logging
             features: field-log
+          # Not released: for checking the simulator against a dev kit.
+          - variant: compare
+            features: compare
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
       - name: Install the pinned toolchain

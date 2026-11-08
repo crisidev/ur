@@ -9,6 +9,7 @@ use crate::watch::Watch;
 
 const USAGE: &str = "\
 Usage: ur-sim [--window] [--out DIR] [--speed N] [--zoom N] [SCRIPT ...]
+       ur-sim --devkit ELF [--out DIR] SCRIPT ...
 
 Runs the ur firmware's UI on this computer. With scripts, runs them (each
 line a command; `-` reads commands from stdin) and exits; without, or with
@@ -21,6 +22,10 @@ after running any scripts, and takes commands typed into the terminal.
   --zoom N     in the window (and `shot … --watch`), draw a canvas pixel N
                pixels wide (default: 4, a 320-pixel screen; 3 is the
                panel's own size)
+  --devkit ELF follow a dev kit running ELF (a `--features compare` build):
+               run the scripts' inputs on it, replay what its UI did, and
+               check each `compare NAME` frame against it, pixel for pixel
+               (see README.md)
   --help       this, and the commands
 ";
 
@@ -30,6 +35,7 @@ pub struct Options {
     pub output: Output,
     pub speed: f64,
     pub zoom: usize,
+    pub devkit: Option<PathBuf>,
 }
 
 pub fn main() -> ExitCode {
@@ -44,6 +50,15 @@ pub fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if let Some(elf) = &options.devkit {
+        return match crate::devkit::run(elf, &options.scripts, &options.output.dir) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("ur-sim: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let mut watch = Watch::boot();
     for path in &options.scripts {
         let result = if path.as_os_str() == "-" {
@@ -103,6 +118,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
         },
         speed: 1.0,
         zoom: 4,
+        devkit: None,
     };
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -116,6 +132,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
                 };
                 options.output.zoom = options.zoom;
             }
+            "--devkit" => options.devkit = Some(args.next().ok_or("--devkit needs an ELF")?.into()),
             "--out" => options.output.dir = args.next().ok_or("--out needs a DIR")?.into(),
             "--speed" => {
                 let speed = args.next().ok_or("--speed needs N")?;
@@ -127,6 +144,9 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
             flag if flag.starts_with("--") => return Err(format!("unknown option {flag}")),
             path => options.scripts.push(path.into()),
         }
+    }
+    if options.devkit.is_some() && (options.window || options.scripts.is_empty()) {
+        return Err("--devkit runs scripts, without the window".into());
     }
     options.window |= options.scripts.is_empty();
     Ok(Some(options))

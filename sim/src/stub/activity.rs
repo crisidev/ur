@@ -32,6 +32,8 @@ struct State {
     last_sleep: Option<Sleep>,
     asleep: bool,
     movement: u16,
+    /// A dev kit's day, which `today` shows instead (see `devkit`).
+    today_from_devkit: Option<Option<crate::day::Day>>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -40,6 +42,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     last_sleep: None,
     asleep: false,
     movement: 0,
+    today_from_devkit: None,
 });
 
 fn state() -> std::sync::MutexGuard<'static, State> {
@@ -72,6 +75,9 @@ pub fn steps_today() -> Option<u32> {
 
 /// As `activity::today`: the history since local midnight, hour by hour.
 pub fn today() -> Option<crate::day::Day> {
+    if let Some(day) = state().today_from_devkit {
+        return day;
+    }
     let utc_minute = clock::now_utc_seconds()?.div_euclid(60);
     let offset = i64::from(clock::utc_offset_minutes()?);
     let midnight = utc_minute - (utc_minute + offset).rem_euclid(24 * 60);
@@ -129,6 +135,11 @@ pub fn record_steps_at(utc_minute: i64, steps: u16) {
     let mut state = state();
     let sample = state.history.entry(utc_minute).or_default();
     sample.0 = sample.0.saturating_add(steps);
+}
+
+/// Shows a dev kit's day from now on, instead of the history here.
+pub fn show_devkit_day(day: Option<crate::day::Day>) {
+    state().today_from_devkit = Some(day);
 }
 
 pub fn set_last_sleep(sleep: Option<Sleep>) {

@@ -29,7 +29,9 @@
 //! - [`firmware`] / [`dfu`]: cooperating with the bootloader, and receiving
 //!   updates over Bluetooth.
 //! - [`field_log`]: logs kept in flash on watches without a debug probe.
-//! - [`debug`]: screenshots and injected input over the debug probe.
+//! - [`debug`]: screenshots and injected input over the debug probe; and
+//!   with the `compare` feature, `compare`: what the UI does and renders
+//!   with, for checking the simulator against a dev kit.
 //!
 //! Tasks talk to the UI loop only through [`INPUT`]; the UI loop owns the
 //! display and everything shown on it.
@@ -45,6 +47,8 @@ mod ble;
 mod brightness;
 mod canvas;
 mod clock;
+#[cfg(feature = "compare")]
+mod compare;
 mod day;
 mod debug;
 mod decimal;
@@ -491,7 +495,8 @@ async fn main(spawner: Spawner) {
         .await
         .map(alarm::Settings::from_bytes)
         .unwrap_or_default();
-    let mut app = App::new(Instant::now(), themes, alarms);
+    let booted = Instant::now();
+    let mut app = App::new(booted, themes, alarms);
     if let Some(phone_alarms) = storage::load(storage::key::PHONE_ALARMS).await {
         app.phone_alarms = alarm::Phone::from_bytes(phone_alarms);
     }
@@ -499,6 +504,8 @@ async fn main(spawner: Spawner) {
     if let Some(location) = storage::load(storage::key::LOCATION).await {
         geo::set_location(geo::Location::from_bytes(location));
     }
+    #[cfg(feature = "compare")]
+    compare::boot(booted, &app);
     // Start "asleep" so the first pass goes through the wake path: render the
     // first frame, then turn the backlight on. (Waking an already-awake
     // ST7789 is harmless.)
@@ -608,7 +615,8 @@ async fn main(spawner: Spawner) {
                 temperature,
                 battery: &battery,
             };
-            app.set_daytime(geo::is_daytime());
+            let daytime = geo::is_daytime();
+            app.set_daytime(daytime);
             // Into or out of the dim white-on-black look (a glance, a quiet
             // notification) with the panel lit: go dark for the redraw.
             // Otherwise the old frame (often a light theme, at full
@@ -627,6 +635,10 @@ async fn main(spawner: Spawner) {
                 display.set_idle(false).await;
             }
             canvas.set_theme(app.theme());
+            // Nothing between this and the render may await: see
+            // `compare::rendering`.
+            #[cfg(feature = "compare")]
+            compare::rendering(now, &status, daytime, activity::today());
             app.render(canvas, &status, now);
             match app.take_transition() {
                 // Waking straight into a transition would animate over a
@@ -636,6 +648,8 @@ async fn main(spawner: Spawner) {
                 _ => canvas.flush(&mut display).await,
             }
             first_frame = false;
+            #[cfg(feature = "compare")]
+            compare::rendered();
             // Light only a finished frame: after waking, the output is blank
             // until shown (see `Display::sleep`); after a redraw in the dark,
             // the panel's scan needs a refresh to reach the bottom rows.
@@ -702,11 +716,15 @@ async fn main(spawner: Spawner) {
             Either3::First(()) => {
                 // A stir after stillness: what a smart alarm waits for.
                 let stirring = activity::movement() >= sleep::STILL_LIMIT;
-                app.check_alarms(Instant::now(), local_second(), stirring, activity::asleep());
+                let (at, second, asleep) = (Instant::now(), local_second(), activity::asleep());
+                app.check_alarms(at, second, stirring, asleep);
                 // Pairing and updates need the user to watch the screen.
                 let watching = ble::PASSKEY.lock(Cell::get).is_some()
                     || dfu::PROGRESS.lock(Cell::get).is_some();
-                app.on_tick(Instant::now(), watching)
+                let ticked = Instant::now();
+                #[cfg(feature = "compare")]
+                compare::tick(at, second, stirring, asleep, ticked, watching);
+                app.on_tick(ticked, watching)
             }
             Either3::Second(event) => {
                 info!("input: {}", event);
@@ -722,7 +740,10 @@ async fn main(spawner: Spawner) {
                 let was_awake = app.awake;
                 let before = app.themes;
                 let brightness_before = app.brightness;
-                app.on_input(event, Instant::now());
+                let at = Instant::now();
+                #[cfg(feature = "compare")]
+                compare::input(&event, at);
+                app.on_input(event, at);
                 if !was_awake && app.awake {
                     power::count(wake);
                 }

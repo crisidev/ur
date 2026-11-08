@@ -494,7 +494,7 @@ pub fn run_file(watch: &mut Watch, path: &Path, output: &Output) -> Result<Next,
 
 /// Splits a line into words: whitespace between them, double quotes around
 /// words with spaces in, and a `#` outside quotes starts a comment.
-fn split(line: &str) -> Result<Vec<String>, String> {
+pub fn split(line: &str) -> Result<Vec<String>, String> {
     let mut words = Vec::new();
     let mut word: Option<String> = None;
     let mut quoted = false;
@@ -537,7 +537,7 @@ fn on_off(s: &str, on: &str, off: &str) -> Result<bool, String> {
 }
 
 /// `X,Y` in canvas pixels.
-fn point(s: &str) -> Result<(i32, i32), String> {
+pub fn point(s: &str) -> Result<(i32, i32), String> {
     let (x, y) = s.split_once(',').ok_or_else(|| format!("{s:?}: X,Y?"))?;
     let coordinate = |v: &str| match v.trim().parse::<i32>() {
         Ok(v) if (0..80).contains(&v) => Ok(v),
@@ -615,7 +615,7 @@ fn parse_time(date: &str, time: &str, offset: Option<&str>) -> Result<(i64, i32)
 
 /// Copies `s` into a fixed-size string, cutting it short (at a character
 /// boundary) if need be, as the phone's messages are.
-fn truncated<const N: usize>(s: &str) -> heapless::String<N> {
+pub fn truncated<const N: usize>(s: &str) -> heapless::String<N> {
     let mut out = heapless::String::new();
     for c in s.chars() {
         if out.push(c).is_err() {
@@ -626,7 +626,7 @@ fn truncated<const N: usize>(s: &str) -> heapless::String<N> {
 }
 
 /// The dev kit's test notifications (`src/debug.rs`, input 9).
-fn test_notification(n: u8) -> (&'static str, &'static str) {
+pub fn test_notification(n: u8) -> (&'static str, &'static str) {
     match n {
         1 => ("Podcasts", "Night Signals: Ida Moreau"),
         2 => ("Calendar", "Quarterly planning: platform team, 4B"),

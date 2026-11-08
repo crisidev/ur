@@ -8,8 +8,8 @@
 //! steps and sleep ([`activity`]) are whatever the simulator is told, and
 //! Bluetooth ([`ble`]) is a queue the simulator prints. [`watch`] then plays
 //! the part of `main.rs`'s UI loop: ticks, inputs, rendering, and screen
-//! power, against a clock it controls ([`embassy_time`]'s mock driver), so
-//! scripts are deterministic and can skip hours ahead.
+//! power, against a clock it controls ([`time`], ticking at the watch's
+//! rate), so scripts are deterministic and can skip hours ahead.
 //!
 //! See README.md here for how to use it, and what it can't simulate.
 
@@ -38,6 +38,9 @@ mod canvas;
 #[path = "../../src/clock.rs"]
 #[allow(dead_code)]
 mod clock;
+#[path = "../../src/compare.rs"]
+#[allow(dead_code)]
+mod compare;
 #[path = "../../src/day.rs"]
 #[allow(dead_code)]
 mod day;
@@ -198,8 +201,10 @@ defmt::timestamp!("{=u64:us}", embassy_time::Instant::now().as_micros());
 
 mod case;
 mod cli;
+mod devkit;
 mod script;
 mod shot;
+mod time;
 mod watch;
 #[cfg(feature = "window")]
 mod window;

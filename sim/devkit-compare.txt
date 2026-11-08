@@ -1,0 +1,114 @@
+# The simulator against a dev kit: every screen and input a dev kit can be
+# made to show without a phone, frame by frame. With a `compare` build
+# flashed (see README.md):
+#
+#     cargo run --release -- --devkit ../target/thumbv7em-none-eabihf/release/ur \
+#         --out ../tmp/compare devkit-compare.txt
+#
+# What it changes on the dev kit (the theme, an alarm, the battery
+# reading) it changes back. (No `steps`: they'd go into the dev kit's
+# activity, which a paired phone syncs to Gadgetbridge.) With
+# a phone connected to the dev kit, it can't run: the phone's own messages
+# can't be followed.
+
+# The first frame after the reset, then the clock a moment later.
+wait 1.5s
+compare 01-clock
+battery 3700
+wait 4s
+compare 02-clock-battery
+
+# Left of the clock: today, last night. (Once the screen's gone off, 10 s
+# after booting, the button wakes it.)
+wait 10s
+expect not screen-on
+button
+wait 1s
+right
+wait 1s
+compare 03-today
+right
+wait 1s
+compare 04-last-night
+button
+wait 1s
+compare 05-clock-again
+
+# Right: the alarms; a held finger switches one on, then off again.
+left
+wait 1s
+compare 06-alarms
+press 20,40
+wait 1s
+lift
+wait 500ms
+compare 07-alarm-on
+long 20,40
+wait 500ms
+compare 08-alarm-off
+button
+wait 500ms
+
+# Below: the info screen; its THEME row, tapped twice, goes round.
+up
+wait 1s
+compare 09-info
+tap 40,58
+wait 1s
+compare 10-info-next-theme
+tap 40,58
+wait 1s
+compare 11-info-theme-back
+long 40,40
+wait 1s
+compare 12-storage-prompt
+button
+wait 1s
+compare 13-storage-cancelled
+
+# A notification: a banner, the clock's mark, the history above. (Over
+# and back first: the screen stays on for 10 s after an input, and a
+# notification isn't one.)
+right
+button
+wait 500ms
+notify 3
+wait 1s
+compare 14-banner
+wait 4s
+compare 15-clock-unseen
+down
+wait 1s
+compare 16-history
+notify 2 3
+wait 1s
+compare 17-history-newer
+button
+wait 1s
+
+# A finger held still on the clock, through the dev kit's touch task.
+# (Not a swipe: each move takes the probe longer than a long press does.)
+press 40,40
+wait 1s
+lift
+wait 500ms
+compare 18-finger-held
+
+# With the screen off: a glance, and a notification with the screen to
+# itself.
+button
+wait 1s
+glance
+wait 1s
+compare 19-glance
+wait 6s
+notify 5
+wait 1s
+compare 20-notification-dark
+wait 6s
+button
+wait 1s
+compare 21-woken
+
+battery 0
+wait 1s

@@ -85,6 +85,19 @@ impl Battery {
         self.power_present = power_present;
     }
 
+    /// A battery as a dev kit measured it, smoothing and all: for the
+    /// simulator (`sim/`), which draws frames with a dev kit's readings to
+    /// compare them (see `crate::compare`).
+    #[cfg(not(target_os = "none"))]
+    pub const fn measured(millivolts: u32, charging: bool, power_present: bool) -> Self {
+        Self {
+            millivolts: Some(millivolts),
+            charging,
+            power_present,
+            low_since: 0,
+        }
+    }
+
     pub fn millivolts(&self) -> u32 {
         self.millivolts.unwrap_or(0)
     }

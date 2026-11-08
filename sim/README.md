@@ -92,6 +92,35 @@ two match pixel for pixel. `readme-screenshots.txt` makes the README's;
 `tour.txt` goes round most screens, checking itself as it goes; `cargo
 test` runs it, and `gadgetbridge.txt`.
 
+## Against a dev kit
+
+The simulator draws what the watch would, and this checks it, frame for
+frame. With a dev kit running a build with the `compare` feature, it
+follows the dev kit: it runs a script's inputs on it, replays what its UI
+got and when (every tick and input, at the instants it got them), and
+for each `compare NAME` draws the frame the dev kit last finished, with
+the readings it had (the time, the battery, the sensors, today's
+activity, the settings in its flash). Every pixel must match:
+
+```sh
+cargo run --release --features compare            # at the top: flash a dev kit
+cd sim
+cargo run --release -- --devkit ../target/thumbv7em-none-eabihf/release/ur \
+    --out ../tmp/compare devkit-compare.txt
+```
+
+It resets the dev kit first, so both start from boot. Each `compare`
+writes `NAME.png`: the simulator's frame, the dev kit's, and where they
+differ (magenta), side by side; the run fails if any differ. The script
+can only do what a dev kit can be made to do (`scripts/screenshot.py`'s
+inputs: `button`, `glance`, gestures, `press`/`lift`, `notify N [HOURS]`,
+`media`, `steps`, `battery`), plus `wait`, `compare`, and `expect` (of
+`screen-on`, `dim`, `quiet-night`). With the screen
+off, the dev kit's panel keeps an old frame, and `compare` skips it. A
+phone connected to the dev kit would send messages the simulator can't
+know, and stops the run. `devkit-compare.txt` goes round every screen it
+can reach (and puts back what it changes).
+
 ## How it works
 
 `src/main.rs` includes the firmware's hardware-free modules with
@@ -106,8 +135,8 @@ paths expect each other. Stand-ins replace the rest:
 - `motor` is the real one; the simulator plays its requests on the bezel.
 
 `watch.rs` is `main.rs`'s UI loop again (ticks, inputs, frames, screen
-power), on embassy's mock clock, which only moves when told: scripts are
-deterministic, and skip hours at no cost. **It mirrors `main.rs` by hand**:
+power), on a clock of its own (at the watch's 32 768 Hz), which only moves
+when told: scripts are deterministic, and skip hours at no cost. **It mirrors `main.rs` by hand**:
 a change to the UI loop there may need one here.
 
 ## What it can't simulate

@@ -4,7 +4,7 @@
 //! and every [`MARQUEE_FRAME`] while text scrolls; each pass renders a
 //! frame (if the screen is on) and pushes what changed to the panel. Here
 //! the same happens, in the same order, but time only moves when
-//! [`Watch::advance`] moves it (embassy's mock time driver): a script's
+//! [`Watch::advance`] moves it (see [`crate::time`]): a script's
 //! hour passes in milliseconds, and the same script gives the same frames
 //! every time.
 //!
@@ -17,7 +17,7 @@ use std::future::Future;
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
-use embassy_time::{Duration, Instant, MockDriver};
+use embassy_time::{Duration, Instant};
 
 use crate::activity;
 use crate::battery::Battery;
@@ -547,22 +547,22 @@ pub fn local_second() -> Option<i64> {
     Some(utc + offset * 60)
 }
 
-/// Moves the mock clock to `at` (never backwards).
+/// Moves the clock to `at` (never backwards).
 fn set_time(at: Instant) {
     let now = Instant::now();
     if at > now {
-        MockDriver::get().advance(at - now);
+        crate::time::advance(at - now);
     }
 }
 
 /// Runs a canvas push to completion. Its awaits are the panel's (instant
 /// here) and a transition's frame timer, which this lets through by moving
 /// the clock a millisecond at a time, calling `on_frame` after each.
-fn run<F: Future<Output = ()>>(future: F, on_frame: &mut Option<Box<dyn FnMut()>>) {
+pub fn run<F: Future<Output = ()>>(future: F, on_frame: &mut Option<Box<dyn FnMut()>>) {
     let mut future = pin!(future);
     let mut context = Context::from_waker(Waker::noop());
     while future.as_mut().poll(&mut context) == Poll::Pending {
-        MockDriver::get().advance(Duration::from_millis(1));
+        crate::time::advance(Duration::from_millis(1));
         if let Some(on_frame) = on_frame {
             on_frame();
         }

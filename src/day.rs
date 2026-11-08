@@ -21,9 +21,10 @@ pub struct Hour {
     /// The lowest and highest heart rate measured; 0 if none was.
     pub heart_min: u8,
     pub heart_max: u8,
-    /// For the hour's average: at most 60 readings of at most 255.
-    heart_sum: u16,
-    heart_count: u8,
+    /// For the hour's average: at most 60 readings of at most 255. (Public
+    /// for `compare`, which copies days out for the simulator.)
+    pub heart_sum: u16,
+    pub heart_count: u8,
 }
 
 impl Hour {

@@ -91,8 +91,9 @@ where the rest goes. Some things cost far more than they look:
 
 ## The simulator
 
-`sim/` runs the firmware's UI on the computer, in a window (the mouse is
-the finger) or from a script, against a clock it controls:
+`sim/` runs the firmware's UI on the computer, in a window (the watch drawn
+to scale, the mouse as the finger) or from a script, against a clock it
+controls:
 
 ```sh
 cd sim && cargo run --release
@@ -100,13 +101,17 @@ cargo run --release -- tour.txt --out ../tmp/tour
 ```
 
 It renders exactly what the panel would, so most UI work can be checked
-there before a dev kit, and its screenshots match `screenshot.py`'s pixel
-for pixel; `sim/readme-screenshots.txt` makes the README's. It takes the
-dev kit's inputs, every message from the phone (also as Gadgetbridge's
-own lines), and sensor readings, and skips ahead in time, for alarms and
-the quiet night. CI runs its tour and uploads screenshots of every PR's
-UI. See [sim/README.md] for its
-commands, and what it can't simulate (sensors, Bluetooth, flash).
+there before a dev kit; `sim/readme-screenshots.txt` makes the README's
+screenshots. It takes the dev kit's inputs, every message from the phone
+(also as Gadgetbridge's own lines), and sensor readings, and skips ahead
+in time, for alarms and the quiet night. CI runs its tour and uploads
+screenshots of every PR's UI.
+
+With a dev kit, it checks itself against the watch: flash a build with
+the `compare` feature (`cargo run --release --features compare`), and
+`ur-sim --devkit <elf> devkit-compare.txt` follows it frame for frame,
+failing if any pixel differs. See [sim/README.md] for its commands, and
+what it can't simulate (sensors, Bluetooth, flash).
 
 ## A dev kit
 
