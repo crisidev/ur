@@ -11,6 +11,8 @@
 //!   alarms once it has sent some, music while the phone has media, info).
 //! - Long press: next colour theme within the current group (dark themes
 //!   after sunset, light ones after sunrise; each group remembers its own).
+//!   On the info screen: offer storage mode (see [`crate::system_off`]);
+//!   a tap then confirms, anything else cancels.
 //! - On the info screen, tap the brightness ("LIGHT") row: switch between
 //!   auto and soft (see [`crate::brightness`]).
 //! - Button: return to the clock; on the clock, turn the screen off. While a
@@ -236,6 +238,9 @@ enum Screen {
     PhoneAlarms,
     Music,
     Info,
+    /// Asking whether to switch to storage mode: not in the swipe order,
+    /// only reached by a long press on the info screen.
+    Storage,
 }
 
 /// An alarm ringing.
@@ -343,6 +348,8 @@ pub struct App {
     /// Whether it's between local midnight and the wearer getting up (see
     /// [`brightness::small_hours`]).
     small_hours: bool,
+    /// The user confirmed storage mode; `main` switches the watch off.
+    pub storage_mode: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -379,6 +386,7 @@ impl App {
             night: sleep::Night::default(),
             brightness: brightness::Setting::default(),
             small_hours: false,
+            storage_mode: false,
         }
     }
 
@@ -630,6 +638,14 @@ impl App {
                 }
             }
             InputEvent::Touch(touch) => match (touch.gesture, self.screen) {
+                // Storage mode needs a long press, then a tap: hard to do by
+                // accident, while anything else backs out.
+                (Gesture::Tap, Screen::Storage) => self.storage_mode = true,
+                (_, Screen::Storage) => self.go_to(Screen::Info, Sweep::LeftToRight),
+                (Gesture::LongPress, Screen::Info) => {
+                    self.go_to(Screen::Storage, Sweep::RightToLeft);
+                    motor::buzz(Pattern::NOTIFY);
+                }
                 (Gesture::SwipeLeft, _) => self.go_to(self.neighbour(1), Sweep::RightToLeft),
                 (Gesture::SwipeRight, _) => self.go_to(self.neighbour(-1), Sweep::LeftToRight),
                 (Gesture::Tap, Screen::Music) if touch.y >= MUSIC_CONTROLS_Y => {
@@ -1052,6 +1068,7 @@ impl App {
                 None => render_clock(canvas, status, next_alarm),
             },
             Screen::Info => render_info(canvas, status, self.chosen_theme(), self.brightness),
+            Screen::Storage => render_storage_prompt(canvas),
         }
         if let Some(banner) = &self.banner {
             render_banner(canvas, banner, now);
@@ -1657,6 +1674,48 @@ fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme, light: brigh
         build => build,
     };
     canvas.text_right(77, y, build, Color::TEXT);
+}
+
+// ==============================================================================
+// Switching off
+// ==============================================================================
+
+/// Lines of a message about switching off, centred, from `y` down.
+fn render_lines(canvas: &mut Canvas, y: i32, lines: &[&str], color: Color) {
+    for (i, line) in lines.iter().enumerate() {
+        canvas.text_centered(40, y + INFO_LINE * i as i32, line, color);
+    }
+}
+
+/// Asks whether to switch to storage mode (see [`crate::system_off`]).
+fn render_storage_prompt(canvas: &mut Canvas) {
+    canvas.clear(BACKGROUND);
+    canvas.text_centered(40, 6, "STORAGE MODE", Color::ACCENT);
+    let explanation = ["OFF UNTIL THE", "BUTTON OR THE", "CHARGER WAKES IT"];
+    render_lines(canvas, 20, &explanation, Color::TEXT);
+    render_lines(
+        canvas,
+        54,
+        &["TAP: OFF NOW", "ELSE: CANCEL"],
+        Color::TEXT_DIM,
+    );
+}
+
+/// What shows for the few seconds before the watch switches itself off.
+pub fn render_off(canvas: &mut Canvas, reason: crate::system_off::Reason) {
+    use crate::system_off::Reason;
+    canvas.clear(BACKGROUND);
+    let (title, color, wake): (_, _, &[&str]) = match reason {
+        Reason::BatteryEmpty => ("BATTERY EMPTY", Color::BAD, &["CHARGE TO", "WAKE IT"]),
+        Reason::Storage => (
+            "STORAGE MODE",
+            Color::ACCENT,
+            &["BUTTON OR", "CHARGER", "WAKES IT"],
+        ),
+    };
+    canvas.text_centered(40, 14, title, color);
+    render_lines(canvas, 30, &["SWITCHING OFF"], Color::TEXT_DIM);
+    render_lines(canvas, 46, wake, Color::TEXT);
 }
 
 // ==============================================================================

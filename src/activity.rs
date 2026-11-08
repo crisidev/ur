@@ -422,6 +422,22 @@ impl Bma421 {
     }
 }
 
+/// Stops the accelerometer for System OFF (see [`crate::system_off`]),
+/// through the bus `system_off` holds: no sampling, no step counting, in
+/// its lowest-power state. (Running, it draws ~50 µA, the most of anything
+/// left powered.) Setup at the next boot starts it afresh.
+pub async fn suspend(twim: &mut embassy_nrf::twim::Twim<'static>) {
+    // Accelerometer off, then advanced power save on.
+    for write in [[REG_POWER_CTRL, 0x00], [REG_POWER_CONF, 0x03]] {
+        if !matches!(
+            with_timeout(I2C_TIMEOUT, twim.write(ADDRESS, &write)).await,
+            Ok(Ok(()))
+        ) {
+            warn!("activity: suspending the accelerometer failed");
+        }
+    }
+}
+
 // ==============================================================================
 // Shared state
 // ==============================================================================
@@ -476,6 +492,23 @@ impl Sample {
 
     fn set_sleep(&mut self, kind: sleep::Kind) {
         self.flags = (self.flags & 0xF0) | kind as u8;
+    }
+
+    /// As kept in a [`crate::snapshot`] record: the fields in order, little
+    /// endian.
+    pub fn to_bytes(self) -> [u8; 6] {
+        let [s0, s1] = self.steps.to_le_bytes();
+        let [m0, m1] = self.movement.to_le_bytes();
+        [s0, s1, m0, m1, self.heart_rate, self.flags]
+    }
+
+    pub fn from_bytes([s0, s1, m0, m1, heart_rate, flags]: [u8; 6]) -> Self {
+        Self {
+            steps: u16::from_le_bytes([s0, s1]),
+            movement: u16::from_le_bytes([m0, m1]),
+            heart_rate,
+            flags,
+        }
     }
 
     fn evidence(&self) -> sleep::Minute {
@@ -537,6 +570,25 @@ impl History {
         (oldest..=newest)
             .map(|m| (m, self.samples[Self::slot(m)]))
             .filter(|(_, s)| s.seen() || s.heart_rate > 0)
+    }
+
+    /// Puts back a sample saved before System OFF (see
+    /// [`crate::system_off`]), without overwriting anything recorded since
+    /// boot: normally nothing has been, as the clock is unknown until the
+    /// phone syncs, but after a reset that kept the clock, the activity task
+    /// may already have recorded the minutes since.
+    fn restore(&mut self, minute: i64, sample: Sample) {
+        match self.newest {
+            Some(newest) if minute <= newest => {
+                if newest - minute < HISTORY_MINUTES as i64 {
+                    let slot = &mut self.samples[Self::slot(minute)];
+                    if !slot.seen() && slot.heart_rate == 0 {
+                        *slot = sample;
+                    }
+                }
+            }
+            _ => *self.at(minute) = sample,
+        }
     }
 
     /// Re-classifies the recent past's sleep (see [`sleep`]): the last
@@ -851,6 +903,11 @@ const POLL_SECONDS: u64 = 2;
 #[embassy_executor::task]
 pub async fn activity_task(i2c: Device) {
     restore_today();
+    // What was saved before the watch last switched itself off, if
+    // anything: here, before any minute is recorded, and because saving
+    // and restoring the history in this task's future costs no static RAM
+    // (see `system_off`).
+    crate::system_off::restore().await;
     // Let the touch controller be configured first: it only listens for a
     // moment after its reset, and our config upload holds the shared bus
     // for about a third of a second.
@@ -866,7 +923,11 @@ pub async fn activity_task(i2c: Device) {
         attempt += 1;
         if attempt == 5 {
             warn!("activity: accelerometer setup failed; no steps or movement");
-            return;
+            // Still there for what `system_off` needs done.
+            loop {
+                Timer::after_secs(POLL_SECONDS).await;
+                crate::system_off::serve().await;
+            }
         }
         warn!("activity: accelerometer setup failed; retrying");
         Timer::after_millis(100).await;
@@ -882,6 +943,7 @@ pub async fn activity_task(i2c: Device) {
 
     loop {
         Timer::after_secs(POLL_SECONDS).await;
+        crate::system_off::serve().await;
 
         let mut moved = 0u64;
         let mut samples = 0u32;
@@ -1020,6 +1082,87 @@ fn add_steps_today(steps: u32) {
         }
         if let Some(t) = &*today {
             save_today(t);
+        }
+    });
+}
+
+// ==============================================================================
+// Surviving System OFF
+// ==============================================================================
+//
+// What `system_off` saves to the SPI flash before switching the watch off,
+// and puts back at the next boot: the history the phone hasn't fetched,
+// and today's steps.
+
+/// The minutes worth saving: (first, how many), from the first minute with
+/// data at or after `from` to the newest. `None` if there's nothing.
+pub fn span_from(from: i64) -> Option<(i64, usize)> {
+    HISTORY.lock(|history| {
+        let history = history.borrow();
+        let newest = history.newest?;
+        let (first, _) = history.since(from).next()?;
+        Some((first, (newest - first + 1) as usize))
+    })
+}
+
+/// The newest minute with a sample, if any.
+pub fn newest_minute() -> Option<i64> {
+    HISTORY.lock(|history| history.borrow().newest)
+}
+
+/// Copies the samples from `first` on into `out`, as bytes (see
+/// [`Sample::to_bytes`]), as many whole ones as fit. A minute that has
+/// since dropped out of the history (the save takes a moment, and a new
+/// minute may have begun) is copied as empty, rather than as the newer
+/// minute now in its slot.
+pub fn copy_samples(first: i64, out: &mut [u8]) {
+    HISTORY.lock(|history| {
+        let history = history.borrow();
+        let newest = history.newest.unwrap_or(i64::MIN);
+        for (i, bytes) in out.as_chunks_mut::<6>().0.iter_mut().enumerate() {
+            let minute = first + i as i64;
+            let sample = if minute <= newest && newest - minute < HISTORY_MINUTES as i64 {
+                history.samples[History::slot(minute)]
+            } else {
+                Sample::default()
+            };
+            *bytes = sample.to_bytes();
+        }
+    });
+}
+
+/// Puts back saved samples from `first` on (see [`History::restore`]).
+pub fn restore_samples(first: i64, bytes: &[u8]) {
+    HISTORY.lock(|history| {
+        let mut history = history.borrow_mut();
+        for (i, &sample) in bytes.as_chunks::<6>().0.iter().enumerate() {
+            let sample = Sample::from_bytes(sample);
+            history.restore(first + i as i64, sample);
+        }
+    });
+}
+
+/// Today's (local days since 1970, or `None` if the date wasn't known when
+/// they were counted) steps, for saving.
+pub fn steps_for_saving() -> (Option<i64>, u32) {
+    TODAY.lock(|today| match &*today.borrow() {
+        Some(t) => ((t.day != UNKNOWN_DAY).then_some(t.day), t.steps),
+        None => (None, 0),
+    })
+}
+
+/// Puts back today's saved steps, unless steps were already restored from
+/// RAM (after a reset that kept it) or counted since boot.
+pub fn restore_steps(day: Option<i64>, steps: u32) {
+    TODAY.lock(|today| {
+        let mut today = today.borrow_mut();
+        if today.is_none() {
+            let restored = Today {
+                day: day.unwrap_or(UNKNOWN_DAY),
+                steps,
+            };
+            save_today(&restored);
+            *today = Some(restored);
         }
     });
 }

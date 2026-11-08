@@ -79,7 +79,8 @@ hardware by a human.
   Gadgetbridge has sent some), music (while something is playing), and
   info screens.
 - **Long-press:** the next theme. On the alarms screen, long-pressing an
-  alarm or timer switches it on or off instead.
+  alarm or timer switches it on or off instead; on the info screen, it
+  offers storage mode.
 - **Brightness:** brightest while the sun is up, dim from midnight until
   you get up, and in between, medium. For less (and a longer battery),
   tap LIGHT on the info screen to switch from AUTO to SOFT: medium while
@@ -96,6 +97,16 @@ hardware by a human.
   one-off alarm switches itself off on the watch once it has rung, but
   Gadgetbridge doesn't hear of it: to set it again, switch it off and on
   there.
+- **Storage mode,** for putting the watch away: long-press the info
+  screen, then tap. The watch saves the activity the phone hasn't
+  fetched and switches off. Press the button or plug in the charger to
+  wake it. Off, it uses roughly 40% of a full charge in six weeks.
+- **An empty battery:** before it runs flat (at about 3.4 V), the watch
+  saves the activity the phone hasn't fetched, shows "BATTERY EMPTY", and
+  switches off. Plug in the charger to wake it.
+- **After switching off,** the watch doesn't know the time (or show
+  steps, or ring alarms) until the phone reconnects. The phone then gets
+  the saved activity with its next sync.
 - **Connecting a phone:** in Gadgetbridge, add the watch "Bangle.js ur" and
   type the passkey the watch shows when Android asks to pair. The watch only
   talks to a phone that paired this way: if it shows "NOT PAIRED" or

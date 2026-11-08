@@ -730,7 +730,7 @@ async fn serve(
                             update_location(location).await;
                         }
                         Action::ReportGps => {
-                            send(server, conn, Outgoing::GpsPower(gps_deadline.is_some())).await
+                            send(server, conn, Outgoing::GpsPower(gps_deadline.is_some())).await;
                         }
                         Action::ActivityFetch { since_ms } => {
                             // Hundreds of samples: a few per connection
@@ -1004,6 +1004,9 @@ async fn send_activity(
     // fact), and Gadgetbridge overwrites samples it already has.
     let mut next = since_ms.div_euclid(60_000) - crate::sleep::WINDOW as i64;
     let mut sent = 0;
+    // Whether every sample went out (as far as we can tell: notifications
+    // aren't acknowledged).
+    let mut complete = true;
     loop {
         let batch: Vec<(i64, activity::Sample), 4> =
             activity::HISTORY.lock(|history| history.borrow().since(next).take(4).collect());
@@ -1018,13 +1021,18 @@ async fn send_activity(
                 heart_rate: sample.heart_rate,
                 kind: sample.sleep().gadgetbridge_name(),
             };
-            send(server, conn, message).await;
+            complete &= send(server, conn, message).await;
             sent += 1;
         }
         next = last + 1;
     }
-    send(server, conn, Outgoing::ActivityFetch { done: true }).await;
+    complete &= send(server, conn, Outgoing::ActivityFetch { done: true }).await;
     info!("ble: sent {} minutes of activity", sent);
+    if complete {
+        // The phone now has everything up to the newest minute sent, if any
+        // was, and up to what it asked from otherwise.
+        crate::system_off::on_synced((next - 1).max(since_ms.div_euclid(60_000)));
+    }
 }
 
 /// Who's connected right now, so pairing never evicts their bonds.
@@ -1064,11 +1072,12 @@ fn make_room_for_bond(
 }
 
 /// Sends one message, split into notifications that fit the MTU.
+/// Returns whether it went out (failures are logged).
 async fn send(
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
     message: Outgoing,
-) {
+) -> bool {
     let line = message.to_line();
     let chunk = usize::from(conn.raw().att_mtu().saturating_sub(3)).clamp(20, 244);
     // `notify_raw` sends the bytes as they are, where `notify` would want
@@ -1077,9 +1086,10 @@ async fn send(
     for piece in line.as_bytes().chunks(chunk) {
         if let Err(e) = server.uart.tx.notify_raw(conn, piece, false).await {
             warn!("ble: send failed: {}", defmt::Debug2Format(&e));
-            return;
+            return false;
         }
     }
+    true
 }
 
 /// Reports the battery to the phone at connect and whenever its percentage

@@ -24,7 +24,7 @@ use embassy_futures::select::{Either3, select3};
 use embassy_nrf::gpio::{Input, Output};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use embedded_hal_async::i2c::I2c;
 
 use crate::canvas;
@@ -125,6 +125,30 @@ impl Tracking {
             y: self.start.1 / scale,
             held_ms: self.since.elapsed().as_millis().min(u64::from(u16::MAX)) as u16,
         }
+    }
+}
+
+/// Puts the controller in deep sleep for System OFF (see
+/// [`crate::system_off`]), through the bus `system_off` holds. Between
+/// touches it sleeps by itself (6–10 µA), but then ignores I2C, so it's
+/// reset first, as [`touch_task`] does at boot, to catch it listening.
+/// Deep sleep ([`DEEP_SLEEP`], a µA or two) only ends at a reset, which the
+/// next boot's `touch_task` does. (The quiet night's sleep, in
+/// `touch_task`, goes through the task's shared-bus device instead: this
+/// runs after the tasks have stopped, on the bus `system_off` took over.)
+pub async fn deep_sleep(twim: &mut embassy_nrf::twim::Twim<'static>) {
+    // The reset line (P0.10), `touch_task`'s, which won't run again.
+    let p0 = embassy_nrf::pac::P0;
+    p0.outclr().write(|w| w.set_pin(10, true));
+    Timer::after_millis(5).await;
+    p0.outset().write(|w| w.set_pin(10, true));
+    Timer::after_millis(50).await;
+    let sleep = twim.write(ADDRESS, &[REG_POWER, DEEP_SLEEP]);
+    if !matches!(
+        with_timeout(Duration::from_millis(50), sleep).await,
+        Ok(Ok(()))
+    ) {
+        warn!("touch: deep sleep failed");
     }
 }
 

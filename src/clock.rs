@@ -12,7 +12,8 @@
 //! panics): [`checkpoint`] saves it once a second in RAM that startup doesn't
 //! clear, and [`restore`] picks it up at boot, off by at most about a second
 //! (plus however long a debugger halted the core) until the phone next syncs.
-//! A drained battery still loses it.
+//! A drained battery still loses it, and so does System OFF (see
+//! [`forget`]).
 //!
 //! TODO: daylight-saving changes between syncs keep the old offset until the
 //! phone next connects (which it normally does within minutes).
@@ -173,6 +174,16 @@ pub fn checkpoint() {
     // at boot before any task runs (restore); never concurrently. Volatile so
     // the write isn't optimised away as dead.
     unsafe { retained().write_volatile(value) };
+}
+
+/// Drops the checkpoint, so the next boot doesn't resume from it: before
+/// System OFF (see [`crate::system_off`]), during which no clock runs, so
+/// the time is unknown afterwards, however long the watch was off. A stale
+/// time would be worse than none: alarms would ring at the wrong time, and
+/// activity would be recorded (and synced) under the wrong minutes.
+pub fn forget() {
+    // SAFETY: As in `checkpoint`, from the same (UI loop) task.
+    unsafe { core::ptr::addr_of_mut!((*retained()).magic).write_volatile(0) };
 }
 
 /// Resumes the clock from the last [`checkpoint`] before a reset, if there

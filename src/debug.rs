@@ -8,7 +8,7 @@
 //! script finds in the ELF. They're inert without a probe; the cost is
 //! [`input_task`]'s poll, ten wake-ups of a few µs a second.
 
-use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU16, AtomicU32, Ordering};
 
 use embassy_time::Timer;
 
@@ -24,10 +24,25 @@ static UR_CANVAS: AtomicPtr<Canvas> = AtomicPtr::new(core::ptr::null_mut());
 /// button, 2 tap, 3 long press, 4–7 swipe up, down, left, right, 8 a
 /// glance, 9 a test notification, 10 hang (spin forever, to test what the
 /// watchdog records), 11 a `defmt::panic!`, 12 a `core::panic!` as from a
-/// SoftDevice Controller fault (to test what a panic records)) and the next
-/// two the canvas x and y. Cleared once taken.
+/// SoftDevice Controller fault (to test what a panic records), 13 a battery
+/// voltage, `x` + 256 × `y` millivolts, from now on instead of the measured
+/// one (0 for the measured one again; to test what a critically low battery
+/// does, see [`crate::system_off`])) and the next two the canvas x and y.
+/// Cleared once taken.
 #[unsafe(no_mangle)]
 static UR_INPUT: AtomicU32 = AtomicU32::new(0);
+
+/// The battery voltage injected by input 13, in millivolts, or 0.
+static BATTERY_MV: AtomicU16 = AtomicU16::new(0);
+
+/// The battery voltage to use instead of the measured one, if one was
+/// injected, as a raw SAADC sample (see [`crate::battery::Battery::update`]).
+pub fn battery_sample() -> Option<i16> {
+    match BATTERY_MV.load(Ordering::Relaxed) {
+        0 => None,
+        mv => Some((u32::from(mv) * 4096 / (3600 * 2)) as i16),
+    }
+}
 
 pub fn register_canvas(canvas: &mut Canvas) {
     UR_CANVAS.store(canvas, Ordering::Relaxed);
@@ -67,6 +82,12 @@ pub async fn input_task() {
                 };
                 // SAFETY: A NUL-terminated string, as the handler needs.
                 unsafe { crate::field_log::sdc_fault(file.as_ptr(), u32::from(y)) };
+                continue;
+            }
+            13 => {
+                let mv = u16::from_le_bytes([x, y]);
+                defmt::warn!("debug: battery at {} mV from now on (0: measured)", mv);
+                BATTERY_MV.store(mv, Ordering::Relaxed);
                 continue;
             }
             10 => {

@@ -18,7 +18,10 @@ enough for a transition): `button`, `tap:X,Y`, `long:X,Y`, or `up`, `down`,
 hyphenated word). `hang`, `panic` (a `defmt::panic!`) and `fault` (a
 `core::panic!` as from a SoftDevice Controller fault, at "line" Y;
 `fault:1,Y` with a message too long to keep whole) crash the watch on
-purpose, to test the crash reports.
+purpose, to test the crash reports. `battery:MV` makes the watch read its
+battery as MV millivolts from then on (`battery:0` for the real reading
+again), e.g. `battery:3300` to test what a critically low battery does: a
+minute later the watch saves its activity and switches itself off.
 
 `--theme` renders the frame in another theme's colours (e.g. HANDHELD, for
 the day look at night): the canvas holds colour roles, not colours.
@@ -49,6 +52,7 @@ KINDS = {
     "hang": 10,
     "panic": 11,
     "fault": 12,
+    "battery": 13,
 }
 
 
@@ -87,7 +91,12 @@ def inject(elf: Path, step: str) -> None:
     name, _, where = step.partition(":")
     if name not in KINDS:
         sys.exit(f"unknown input {step!r}")
-    x, y = (int(v) for v in where.split(",")) if where else (40, 40)
+    if name == "battery":
+        # Millivolts, little endian, in the two coordinate bytes.
+        mv = int(where)
+        x, y = mv & 0xFF, mv >> 8
+    else:
+        x, y = (int(v) for v in where.split(",")) if where else (40, 40)
     write_word(symbol(elf, "UR_INPUT"), KINDS[name] | x << 8 | y << 16)
 
 

@@ -207,23 +207,6 @@ async fn open(flash: &mut SpiFlash, index: u32, sequence: u32) -> Result<(), spi
 }
 
 #[cfg(feature = "field-log")]
-/// Programs `data` at `address`, across page boundaries as needed.
-async fn program(
-    flash: &mut SpiFlash,
-    mut address: u32,
-    mut data: &[u8],
-) -> Result<(), spi_flash::Error> {
-    while !data.is_empty() {
-        let room = (spi_flash::PAGE - address % spi_flash::PAGE) as usize;
-        let (now, later) = data.split_at(room.min(data.len()));
-        flash.program(address, now).await?;
-        address += now.len() as u32;
-        data = later;
-    }
-    Ok(())
-}
-
-#[cfg(feature = "field-log")]
 /// Drains the RTT buffer into the flash, forever. Spawn once, in field
 /// builds only.
 #[embassy_executor::task]
@@ -263,8 +246,11 @@ pub async fn task() {
         // log grows ~10 bytes a second, so flushing every second was ~10×
         // the energy of flushing full pages. Wait for a page's worth, or 30 s
         // (so a reset loses little), whichever comes first; the 1 KiB RTT
-        // buffer holds far more than either.
-        if waiting() < spi_flash::PAGE as usize
+        // buffer holds far more than either. Unless [`flush`] asks for it
+        // now.
+        let urgent = FLUSH_NOW.swap(false, Ordering::Relaxed);
+        if !urgent
+            && waiting() < spi_flash::PAGE as usize
             && last_flush.elapsed() < embassy_time::Duration::from_secs(30)
         {
             continue;
@@ -273,7 +259,7 @@ pub async fn task() {
         // which hold up its Bluetooth traffic, shouldn't wait behind ours
         // (an erase can take 300 ms). What's logged meanwhile is dropped
         // once the RTT buffer fills.
-        if crate::dfu::PROGRESS.lock(Cell::get).is_some() {
+        if !urgent && crate::dfu::PROGRESS.lock(Cell::get).is_some() {
             continue;
         }
         last_flush = embassy_time::Instant::now();
@@ -304,9 +290,9 @@ pub async fn task() {
             }
             let address = sector_address(sector) + used;
             let n = first.len() + second.len();
-            let programmed = match program(flash, address, first).await {
+            let programmed = match flash.write(address, first).await {
                 Ok(()) if !second.is_empty() => {
-                    program(flash, address + first.len() as u32, second).await
+                    flash.write(address + first.len() as u32, second).await
                 }
                 result => result,
             };
@@ -317,6 +303,32 @@ pub async fn task() {
         }
         flash.sleep().await;
         CURSOR.lock(|c| c.set(Some((sector, used))));
+    }
+}
+
+#[cfg(feature = "field-log")]
+/// Set by [`flush`]; the writer clears it as it starts flushing.
+static FLUSH_NOW: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Writes out everything logged so far, now, rather than within the next
+/// 30 s: for [`crate::system_off`], before the watch switches off. Returns
+/// once it's in flash (or after a few seconds, if the writer is stuck).
+/// Without the field log, there's nothing to do: a probe reads the log.
+pub async fn flush() {
+    #[cfg(feature = "field-log")]
+    {
+        FLUSH_NOW.store(true, Ordering::Relaxed);
+        // The writer checks once a second. Once it has taken the flag, it
+        // has drained the RTT buffer and holds the flash (no await comes
+        // between), so the flash's lock is free again once it's written.
+        for _ in 0..30 {
+            Timer::after_millis(100).await;
+            if !FLUSH_NOW.load(Ordering::Relaxed) {
+                drop(FLASH.lock().await);
+                return;
+            }
+        }
+        warn!("field log: flushing timed out");
     }
 }
 

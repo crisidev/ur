@@ -10,10 +10,12 @@
 //!   0x040000  MCUBoot's secondary slot: where updates land, and where the
 //!             previous image goes after a swap (464 KiB)
 //!   0x0B4000  free (InfiniTime keeps its file system here)
+//!   0x1FD000  what's saved before System OFF (12 KiB)
 //!   0x200000  our field log (2 MiB)
 //!
-//! [`crate::dfu`] writes updates into the secondary slot, and
-//! [`crate::field_log`] keeps logs in the top 2 MiB.
+//! [`crate::dfu`] writes updates into the secondary slot,
+//! [`crate::system_off`] saves unsynced activity before switching the watch
+//! off, and [`crate::field_log`] keeps logs in the top 2 MiB.
 //!
 //! The flash shares SPIM2 with the LCD (see [`crate::spi`]). Every operation
 //! here locks the bus only for the length of one command, so the screen keeps
@@ -177,6 +179,19 @@ impl SpiFlash {
         }
         // Datasheet maximum: 2.4 ms.
         self.wait_idle(Duration::from_millis(10)).await
+    }
+
+    /// Programs `data` at `address`, across page boundaries as needed; the
+    /// range must be erased.
+    pub async fn write(&mut self, mut address: u32, mut data: &[u8]) -> Result<(), Error> {
+        while !data.is_empty() {
+            let room = (PAGE - address % PAGE) as usize;
+            let (now, later) = data.split_at(room.min(data.len()));
+            self.program(address, now).await?;
+            address += now.len() as u32;
+            data = later;
+        }
+        Ok(())
     }
 
     /// Polls the status register until an erase/program finishes. The bus is

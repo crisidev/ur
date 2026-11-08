@@ -13,6 +13,8 @@
 //! - [`alarm`]: when alarms (smart wake, at a time, from the phone, timer)
 //!   ring.
 //! - [`battery`]: battery voltage and charge state.
+//! - [`system_off`] / [`snapshot`]: switching off when the battery is
+//!   critically low, or for storage, saving what the phone hasn't fetched.
 //! - [`activity`] / [`sleep`]: steps, movement, and sleep, from the
 //!   accelerometer.
 //! - [`heart`] / [`ppg`] / [`heart_schedule`]: heart rate from the optical
@@ -57,9 +59,11 @@ mod motor;
 mod power;
 mod ppg;
 mod sleep;
+mod snapshot;
 mod spi;
 mod spi_flash;
 mod storage;
+mod system_off;
 mod temperature;
 mod theme;
 mod touch;
@@ -521,13 +525,35 @@ async fn main(spawner: Spawner) {
         }
         let mut samples = [0i16; 1];
         adc.sample(&mut samples).await;
-        battery.update(samples[0], charging.is_low(), power_present.is_low());
+        let sample = debug::battery_sample().unwrap_or(samples[0]);
+        battery.update(sample, charging.is_low(), power_present.is_low());
         let report = ble::BatteryReport {
             percent: battery.percent() as u8,
             charging: battery.charging,
             millivolts: battery.millivolts(),
         };
         ble::BATTERY.lock(|cell| cell.set(report));
+        // Critically low, or storage mode chosen: save what the phone hasn't
+        // fetched, and switch off until the charger (or the button) wakes
+        // the watch.
+        let off = if battery.critical(now.as_secs() as u32) {
+            Some(system_off::Reason::BatteryEmpty)
+        } else if app.storage_mode {
+            Some(system_off::Reason::Storage)
+        } else {
+            None
+        };
+        if let Some(reason) = off {
+            system_off::shut_down(
+                reason,
+                &mut display,
+                canvas,
+                &mut backlight,
+                panel_awake,
+                &mut watchdog,
+            )
+            .await;
+        }
         // For battery-life analysis from the field log.
         if now >= next_battery_log {
             clock::log_now();

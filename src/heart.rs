@@ -353,6 +353,21 @@ impl Hrs3300 {
 // The task
 // ==============================================================================
 
+/// Switches the sensor off for System OFF (see [`crate::system_off`]),
+/// through the bus `system_off` holds, whatever the heart-rate task was
+/// doing: the sensor keeps its state while the nRF52 is off, so a session
+/// cut short would otherwise leave the LED lit until the battery is flat.
+pub async fn switch_off(twim: &mut embassy_nrf::twim::Twim<'static>) {
+    for write in [[REG_ENABLE, ENABLE_HWT_12_5_MS], [REG_PDRIVER, 0]] {
+        if !matches!(
+            with_timeout(I2C_TIMEOUT, twim.write(ADDRESS, &write)).await,
+            Ok(Ok(()))
+        ) {
+            warn!("heart: switching the sensor off failed");
+        }
+    }
+}
+
 #[embassy_executor::task]
 pub async fn heart_task(i2c: Device) {
     // Stay off the bus while it's busiest: touch configures itself right
