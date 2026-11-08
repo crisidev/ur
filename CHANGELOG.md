@@ -22,6 +22,8 @@ missing below were test builds for the dev kit.
 
 - Redesign the clock face's lower half: the date with small seconds under the time, the heart rate and the next alarm or timer in one row, and the day's steps as ten blocks rather than a number: 1,000 a block (×1K) towards a fixed goal of 10,000, then 10,000 a block (×10K) past it, full at 100,000 (the exact count is on Today, a swipe right) (a02d355, e268ba3)
 - Move THEME and LIGHT from Info to the new Settings screen, leaving Info to the watch's status (e7624ff)
+- Show a notification's sender big (with the screen off, and in the history) only if it fits on one line, or on two of about the same width, as a two-word name often does; anything else goes small, rather than as a big short word over a long one, or a big word broken with a hyphen (6ae6eb4)
+- Leave a column more margin either side of notification text, as for a call's (023438b)
 
 ### Deprecated
 
