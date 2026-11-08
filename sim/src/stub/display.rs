@@ -145,7 +145,8 @@ pub mod cost {
     ///
     /// TODO: find out on the watch (a GPIO toggled round a transfer, on a
     /// logic analyser); if it's a stall, transitions could be twice as
-    /// fast, and this should then shrink to match.
+    /// fast, and this should then shrink to match. No logic analyser is
+    /// at hand yet, so until one is, this stays the fitted figure.
     const TRANSFER: u64 = 1_030_000;
 
     /// Each byte of pixels: 1.12 µs, as fitted. The SPI bus's 1 µs, and
