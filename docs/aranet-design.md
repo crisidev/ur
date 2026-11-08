@@ -87,6 +87,12 @@ changes from the plan below, which was written 2026-11-07 against
     come no more often than before. Energy (estimate): with a pvvx
     thermometer at home, ~70 scans a day of ~2.5 s, ~12 µA, against
     ~5 µA with an Aranet4.
+  - **New sensors beside known ones:** most scans stop within a
+    fraction of a second, once the known Aranet4s are heard, which on
+    the dev kit left a laptop's fake BTHome thermometer (advertising
+    every second) unheard. So every eighth scan (`LOOK_EVERY`; every
+    two hours at the quarter-hour pace) listens to its limit whatever
+    it hears: ~2 s more each, ~1 µA in all.
   - **Not done:** a minimum RSSI, so a neighbour's thermometer through
     a wall isn't taken for the room when nothing nearer is heard;
     BTHome v1; a sensor's 1-byte temperatures (`0x57`, `0x58`).
