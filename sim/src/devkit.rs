@@ -243,8 +243,9 @@ impl DevKit {
             return Ok(palette.clone());
         }
         // `Theme` is `repr(C)`: the name (`&str`: pointer, length), then
-        // 13 big-endian RGB565 colours.
-        let bytes = self.read_bytes(theme + 8, 26)?;
+        // a big-endian RGB565 colour per role. (The dev kit's firmware has
+        // to be this tree's, for the count to match.)
+        let bytes = self.read_bytes(theme + 8, 2 * crate::theme::Color::COUNT)?;
         let palette: Vec<u16> = bytes
             .chunks(2)
             .map(|c| u16::from_be_bytes([c[0], c[1]]))

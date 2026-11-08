@@ -2205,13 +2205,14 @@ fn render_last_night(canvas: &mut Canvas, sleep: Option<crate::activity::Sleep>)
     }
 
     // The stages (see `crate::stages`): their shares of the time asleep as
-    // one bar, and each one's time below its name.
+    // one bar, and each one's time below its name, in that stage's colour
+    // (roles of their own: the general ones collide in some themes).
     let light = sleep
         .asleep_minutes
         .saturating_sub(sleep.deep_minutes + sleep.rem_minutes);
     let stages = [
-        ("DEEP", sleep.deep_minutes, Color::ACCENT),
-        ("REM", sleep.rem_minutes, Color::HEART),
+        ("DEEP", sleep.deep_minutes, Color::DEEP),
+        ("REM", sleep.rem_minutes, Color::REM),
         ("LIGHT", light, Color::TEXT_DIM),
     ];
     const BAR: i32 = 72;

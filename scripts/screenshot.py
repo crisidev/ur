@@ -57,6 +57,8 @@ from pathlib import Path
 TARGET = ["esprobe", "--target", "nRF52832_xxAA"]
 WIDTH = HEIGHT = 80
 BYTES = WIDTH * HEIGHT // 2
+# Colour roles in a theme's palette: `Color::COUNT` in src/theme.rs.
+ROLES = 15
 SCALE = 3
 KINDS = {
     "button": 1,
@@ -163,11 +165,13 @@ def screenshot(elf: Path, out: Path, theme_name: str | None = None) -> None:
     (theme,) = read_words(canvas + 2 * BYTES + 4, 1)
     if theme_name is not None:
         theme = theme_symbol(elf, theme_name.upper())
-    # `Theme` is repr(C): name (&str: pointer, length), then 13 big-endian
-    # RGB565 colours.
-    palette_bytes = b"".join(struct.pack("<I", w) for w in read_words(theme + 8, 7))[:26]
+    # `Theme` is repr(C): name (&str: pointer, length), then a big-endian
+    # RGB565 colour per role.
+    palette_bytes = b"".join(
+        struct.pack("<I", w) for w in read_words(theme + 8, (2 * ROLES + 3) // 4)
+    )[: 2 * ROLES]
     palette = []
-    for i in range(13):
+    for i in range(ROLES):
         (rgb565,) = struct.unpack(">H", palette_bytes[2 * i : 2 * i + 2])
         r, g, b = rgb565 >> 11, (rgb565 >> 5) & 0x3F, rgb565 & 0x1F
         palette.append((r << 3 | r >> 2, g << 2 | g >> 4, b << 3 | b >> 2))

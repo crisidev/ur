@@ -37,9 +37,21 @@ impl Color {
     pub const GOOD: Self = Self(11);
     /// Battery when low.
     pub const BAD: Self = Self(12);
+    /// Deep sleep, on Last night: the heaviest ink (the most contrast with
+    /// the background). REM is the theme's red, where it has one, and light
+    /// sleep is [`Color::TEXT_DIM`]. Roles of their own, since no three of
+    /// the others differ in every theme; `host-tests/theme` checks these do.
+    pub const DEEP: Self = Self(13);
+    /// REM sleep, on Last night: see [`Color::DEEP`].
+    pub const REM: Self = Self(14);
 
-    const COUNT: usize = 13;
+    /// Also `ROLES` in `scripts/screenshot.py`.
+    pub(crate) const COUNT: usize = 15;
 }
+
+// The canvas stores roles in 4 bits, two pixels to a byte, so there's room
+// for one more role; past that, the canvas would have to grow by half.
+const _: () = assert!(Color::COUNT <= 16, "the canvas holds 4-bit roles");
 
 /// `repr(C)`, so `scripts/screenshot.py` can find the palette.
 #[repr(C)]
@@ -85,32 +97,38 @@ const fn theme(name: &'static str, hex: [u32; Color::COUNT]) -> Theme {
 #[rustfmt::skip]
 pub static ARCADE: Theme = theme("ARCADE", [
     0x101010, 0x5a1010, 0xe8e8e8, 0xa8a8a8, 0x606060, 0x303030, 0xd82828,
-    0xd82828, 0x101010, 0xd82828, 0xff9090, 0xffffff, 0xff5050,
+    0xd82828, 0x101010, 0xd82828, 0xff9090, 0xffffff, 0xff5050, 0xffffff,
+    0xd82828,
 ]);
 
 /// A hacker terminal: phosphor green on near-black, everything one hue at
 /// different intensities. The drop shadow is a dim green "glow" rather than
-/// a shadow, and only low battery breaks the monochrome (near-white).
+/// a shadow, and only low battery breaks the monochrome (near-white). Sleep
+/// stages are intensities too: deep the hottest (almost white), REM full
+/// green, light dim.
 #[rustfmt::skip]
 pub static TERMINAL: Theme = theme("TERMINAL", [
     0x020c04, 0x0b3d18, 0x4dff7a, 0x2aa84a, 0x146b2c, 0x0a2a12, 0xb8ffc8,
-    0x2aa84a, 0x020c04, 0x4dff7a, 0xe0ffe8, 0xb8ffc8, 0xf0fff0,
+    0x2aa84a, 0x020c04, 0x4dff7a, 0xe0ffe8, 0xb8ffc8, 0xf0fff0, 0xe0ffe8,
+    0x4dff7a,
 ]);
 
 /// Four shades of olive green, dark on light, like an early handheld LCD,
 /// plus one dash of red, like its power light: for the heart, low battery,
-/// and an update's progress. Nothing else.
+/// an update's progress, and REM sleep. Nothing else.
 #[rustfmt::skip]
 pub static HANDHELD: Theme = theme("HANDHELD", [
     0xc3cf8c, 0x8a9f3a, 0x1e2a14, 0x3c5428, 0x8a9f3a, 0x8a9f3a, 0x3c5428,
-    0x1e2a14, 0x8a9f3a, 0xb8342a, 0xe8836c, 0x3c5428, 0xb8342a,
+    0x1e2a14, 0x8a9f3a, 0xb8342a, 0xe8836c, 0x3c5428, 0xb8342a, 0x1e2a14,
+    0xb8342a,
 ]);
 
 /// Brown ink on cream, muted red: an old printed game manual.
 #[rustfmt::skip]
 pub static PARCHMENT: Theme = theme("PARCHMENT", [
     0xe8dcb8, 0xc0a878, 0x3a2414, 0x6a4a2a, 0xa08860, 0xd0c098, 0xa02820,
-    0xa02820, 0xe8dcb8, 0xa02820, 0xe07060, 0x4a6a2a, 0xa02820,
+    0xa02820, 0xe8dcb8, 0xa02820, 0xe07060, 0x4a6a2a, 0xa02820, 0x3a2414,
+    0xa02820,
 ]);
 
 /// The dim look (see `ui`: a glance, a notification on a dark screen, the
@@ -123,11 +141,17 @@ pub static PARCHMENT: Theme = theme("PARCHMENT", [
 /// red, green, and blue. The greys this had (dim and faint text, shadows)
 /// would have come out white or black anyway (faint text black, i.e.
 /// invisible), so they're spelt out as such: shadows black, all text
-/// white.
+/// white. So are the sleep stages: Last night in a quiet night (say,
+/// just after waking) has one white bar, though each stage's time still
+/// shows below its name.
+/// TODO: idle mode has six more colours (red, green, blue, and their
+/// pairs), which could tell the stages apart here, if the dim look may have
+/// colour at all.
 #[rustfmt::skip]
 pub static GLANCE: Theme = theme("GLANCE", [
     0x000000, 0x000000, 0xffffff, 0xffffff, 0xffffff, 0x000000, 0xffffff,
-    0x000000, 0x000000, 0xffffff, 0xffffff, 0xffffff, 0xffffff,
+    0x000000, 0x000000, 0xffffff, 0xffffff, 0xffffff, 0xffffff, 0xffffff,
+    0xffffff,
 ]);
 
 /// Themes for after sunset. Long press cycles within this list at night.
