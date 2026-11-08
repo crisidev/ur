@@ -15,17 +15,23 @@ missing below were test builds for the dev kit.
 ### Added
 
 - Keep notifications quiet while the wearer sleeps, without buzzing or lighting the screen, until their alarm or until they've been up a while (20b73a8)
+- Sync the alarms set in Gadgetbridge to the watch, shown on a screen of their own (c1e45cb)
+- Save the activity the phone hasn't fetched and switch off before the battery runs flat, keeping it until the phone syncs after charging (9d067b6)
 - Show the temperature on the clock face (7874b05)
 - Warn on screen when a connected phone isn't paired, or has lost its pairing (d7ca4d1)
+- Add a storage mode for putting the watch away, from a long press on the Info screen (which no longer changes the theme there) (9d067b6)
 - Record a backtrace and fault details for crashes, hangs, and stack overflows, reported in the logging build's field log at the next boot (1e5b869)
 - Publish releases with attested packages that can be rebuilt byte for byte from their tag (bca9899)
 - License the firmware as MIT or Apache-2.0, at your option (9c1ec42)
 
 ### Changed
 
+- Set the screen's brightness by the time of day: full while the sun is up, dim from midnight until the wearer gets up, medium otherwise; SOFT on the Info screen turns it down a step (ec80454)
+- Start wake alarms gently, building up their vibration and the screen's brightness over about a minute (c1e45cb)
 - Wake the screen with a double tap, or a deliberate tap away from the edge, rather than any touch (ce53224)
 - Measure the heart rate in the background every 2 to 20 minutes, adapting to movement and sleep, rather than every 10 (4979861)
 - Stack the glance's hours above its minutes, in bigger digits (999279a)
+- Use less battery: lower panel voltages, a low-power mode for the dim look (now pure black and white), and sleeping touch and motion sensors while they aren't needed (ec80454)
 - Show the firmware's version, and the commit it was built from, on the Info screen, in place of the hint to hold for the next theme (63215e2)
 
 ### Deprecated
@@ -38,6 +44,8 @@ missing below were test builds for the dev kit.
 ### Fixed
 
 - Stop the watch crashing while a phone pairs, which made updates from the nRF DFU app fail on a link that wasn't paired (d7ca4d1)
+- Keep a ringing alarm buzzing when a notification arrives, instead of silencing it (c1e45cb)
+- Keep the screen on when an alarm starts ringing during a glance (ec80454)
 - Stop sleep tracking seeing false wakes, and the step count jumping by billions, when the accelerometer's data queue overflowed every half hour (introduced in 0.8.0) (0609657)
 - Keep glances paused when the wearer stirs in their sleep (introduced in 0.8.17) (0609657)
 - Ignore impossible touch positions, which could start phantom swipes (14fb597)
