@@ -1,8 +1,47 @@
 # Design sketch: nearby Aranet4 CO₂ and temperature on the watch
 
-Status: plan only. No `src/` changes. Written 2026-11-07 against `8288e3f`
-plus the uncommitted `src/activity.rs`. Line references to `src/` may
-drift.
+Status: **implemented** (2026-11-08, branch `aranet`), with these
+changes from the plan below, which was written 2026-11-07 against
+`8288e3f` (line references to `src/` may drift):
+
+- **It also scans in the background**, because the clock face's
+  temperature now comes from the nearest Aranet4 when one is near, and
+  calibrates the on-wrist estimate (`src/temperature.rs`). Sparsely
+  (`aranet::Nearby::due`): every 15 min while a sensor was heard within
+  the hour, hourly otherwise, never in the quiet night, off the wrist, or
+  during an update; a look at the clock face with a sensor around scans
+  once the last scan is 10 min old, and opening the Air screen once it's
+  a minute old. A scan lasts at most 3 s, and stops once every sensor
+  heard within the hour has been heard again.
+- **Measured on a dev kit** (2026-11-08, two Aranet4s on firmware
+  v2.0.7 in range, the phone connected): §4.0's questions answered. The
+  readings come in `ADV_IND` (passive scanning is enough), from static
+  random addresses, and each sensor advertised every **~0.57 s**, not
+  ~4 s; the dev kit heard each at most 2.3 s apart (90% within 1.2 s).
+  The first scan heard the nearest in 0.24 s. The busy office around it
+  gave ~80 advertising reports a second, of any device. The vectors are in
+  `host-tests/aranet`.
+- **Energy** (estimate; RX ~5.7 mA with the DC/DC regulator, which is now
+  on): ~3 µA with no Aranet4 around (16 hourly 3 s scans a day), ~5 µA
+  with one at home (~70 scans a day of ~1 s), ~20 µA at worst (a scan
+  every 10 min that always runs the full 3 s, e.g. a sensor heard within
+  the hour that's gone). `power:` logs `scanning` ms and `scans`.
+- **Where:** the Air screen sits in the line below the clock, after
+  Music, and only exists while a sensor was heard within the hour (as
+  Music only exists with media). No pinning, no tap to cycle sensors,
+  no labels (the strongest is shown, with 3 dB hysteresis); no extra
+  theme colours (the band uses GOOD, TEXT and BAD, and the bar's lit
+  third).
+- **Radio:** as planned (multirole SDC, `support_scan`,
+  `central_count(0)`), but the packet pool stays at 16: the RAM was
+  there, and DFU and log fetches keep their buffers.
+- **Cost** (against `main` at e06a0e3): flash +47 KB (77% → 87% of the
+  slot), ~31.5 KB of it the multirole library; static RAM +2.8 KB (the
+  controller's `Mem` 5184 → 6064 B, the library's own ~1.1 KB, the
+  rest ours), leaving 2.7 KB free (2.2 KB in the logging build, 0.3 KB
+  in the `compare` build); stack +104 B at the deepest measured. A DFU
+  ran at the same 5.7 KiB/s into this build as into main's. The packet
+  pool at 8 would win 2 KB of RAM back, untested.
 
 Sources:
 

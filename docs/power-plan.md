@@ -38,6 +38,7 @@ day hour is awake, with the phone connected, the sun up, and AUTO.
 | Bluetooth | ~24 | ~16 | Night: advertising at 417.5 ms, 2.4 events/s × ~10 µC. Day: 120 ms, latency 2 (L, logged) ≈ 2.8 events/s × ~4 µC ≈ 11, plus the second slot advertising every 2 s ≈ 5 (E) |
 | CPU, thread mode | ~11 | ~20 | L: awake 3‰ at night, 5–6‰ by day, × ~3.7 mA (D) |
 | Field log flushes (logging build) | ~2 | ~2 | L: flash awake ~2 s/h; E |
+| Aranet4 scans (added after these logs) | 0 | ~5–8 | E: receiving at ~5.7 mA (5.4 mA RX with DC/DC, plus HFXO), every 15 min (and on looks, at most every 10 min) for ~1 s with an Aranet4 near, hourly for 3 s without; none in the quiet night or off the wrist (`aranet::Nearby::due`). Logged as `scanning` ms and `scans` |
 | **Total** | **~250** | **~490** | |
 
 That's ~410 µA over a 16 h day and 8 h night: **~16 days** on 160 mAh.
