@@ -1320,7 +1320,12 @@ async fn scan(stack: &BleStack) {
     loop {
         SCAN.wait().await;
         let started = Instant::now();
-        if dfu::PROGRESS.lock(Cell::get).is_none() {
+        // The UI loop doesn't ask during an update, but one may have
+        // started since it asked.
+        let updating = dfu::PROGRESS.lock(Cell::get).is_some();
+        if updating {
+            info!("aranet: not scanning during an update");
+        } else {
             HEARD_EVERYONE.reset();
             REPORTS.store(0, Ordering::Relaxed);
             match Scanner::new(&mut central).scan(&config).await {
@@ -1342,6 +1347,7 @@ async fn scan(stack: &BleStack) {
         let ms = started.elapsed().as_millis() as u32;
         let reports = REPORTS.load(Ordering::Relaxed);
         match best {
+            _ if updating => {}
             Some(s) => info!(
                 "aranet: {} ms, {} reports; nearest {=[u8]:x} at {} dBm: {} ppm, {} dC, {}%, {} s old",
                 ms,
