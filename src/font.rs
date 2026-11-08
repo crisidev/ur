@@ -224,6 +224,53 @@ pub fn small_glyph(c: char) -> [u8; 5] {
 }
 
 // ==============================================================================
+// Large text: a short line, or two of about the same width
+// ==============================================================================
+
+/// How a short text reads in large type (see [`large`]): on one line, or
+/// split at a space into two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Large<'a> {
+    One(&'a str),
+    Two(&'a str, &'a str),
+}
+
+/// How unequal two large lines may be: the shorter at least 7/10 of the
+/// longer, in pixels. In this all but monospaced font, a 5- and a 5-letter
+/// word are equal, 4 and 5 make 79%, 5 and 7 just make it at 70%, and 4
+/// and 6 (65%) or 3 and 8 (35%) don't. Below about this, the pair reads
+/// as a long line with a stub hanging off it rather than as a block.
+const BALANCE_TENTHS: i32 = 7;
+
+/// `text` (trimmed) in large type, at `scale`, within `room` pixels: on
+/// one line if it fits, or else on two, split at whichever space makes
+/// them most equal, if both fit and they're about equal (see
+/// [`BALANCE_TENTHS`]): a two-word name, typically. `None` if neither:
+/// such text goes in small type, wrapped. Two lines never hyphenate: a
+/// broken word in large type is harder to read than the same word whole
+/// in small type, and so is a big first line over a one-word second.
+pub fn large(text: &str, room: i32, scale: i32) -> Option<Large<'_>> {
+    let text = text.trim();
+    if small_text_width(text) * scale <= room {
+        return Some(Large::One(text));
+    }
+    // The split whose longer line is shortest is also the most equal one:
+    // the two lines' widths add up to the same, whichever space it's at.
+    // Ties go to the first such split, its top line the shorter.
+    let mut best: Option<(i32, i32, &str, &str)> = None;
+    for (i, _) in text.match_indices(' ') {
+        let (top, bottom) = (text[..i].trim_end(), text[i + 1..].trim_start());
+        let (a, b) = (small_text_width(top), small_text_width(bottom));
+        let (shorter, longer) = (a.min(b), a.max(b));
+        if longer * scale <= room && best.is_none_or(|(_, best, ..)| longer < best) {
+            best = Some((shorter, longer, top, bottom));
+        }
+    }
+    let (shorter, longer, top, bottom) = best?;
+    (shorter * 10 >= longer * BALANCE_TENTHS).then_some(Large::Two(top, bottom))
+}
+
+// ==============================================================================
 // 5×7 digits: the big clock
 // ==============================================================================
 

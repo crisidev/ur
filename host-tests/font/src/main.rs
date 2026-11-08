@@ -11,7 +11,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::font::{Glyph, glyph, small_text_width};
+    use super::font::{Glyph, Large, glyph, large, small_text_width};
 
     /// A glyph's width and pixels, to compare glyphs by.
     fn look(c: char) -> (u32, [u8; 7]) {
@@ -120,5 +120,104 @@ mod tests {
         assert_eq!(small_text_width("A&B"), 3 + 1 + 4 + 1 + 3);
         assert_eq!(small_text_width("@#"), 4 + 1 + 4);
         assert_eq!(small_text_width("I\u{2026}"), 3 + 1 + 5);
+    }
+
+    /// A notification's sender in large type, as the full-screen
+    /// notification lays it out: 2×, in the banner's 74 px.
+    fn sender(text: &str) -> Option<Large<'_>> {
+        large(text, 74, 2)
+    }
+
+    /// Nine 3-wide letters (or spaces) fit on a line at 2×, ten don't.
+    #[test]
+    fn large_on_one_line_if_it_fits() {
+        assert_eq!(sender("Ida"), Some(Large::One("Ida")));
+        assert_eq!(sender("Bo Ek"), Some(Large::One("Bo Ek")));
+        assert_eq!(sender("Nils Holm"), Some(Large::One("Nils Holm")));
+        assert_eq!(sender("Christina"), Some(Large::One("Christina")));
+        assert_eq!(sender("  Ida  "), Some(Large::One("Ida")));
+        assert_ne!(sender("Nils Holme"), Some(Large::One("Nils Holme")));
+    }
+
+    /// Two-word names of about the same length go on two lines, down to
+    /// 5 and 7 letters (70%).
+    #[test]
+    fn large_on_two_lines_if_balanced() {
+        assert_eq!(sender("Maria Olsen"), Some(Large::Two("Maria", "Olsen")));
+        assert_eq!(sender("Jane Smith"), Some(Large::Two("Jane", "Smith")));
+        assert_eq!(sender("Nils Holme"), Some(Large::Two("Nils", "Holme")));
+        assert_eq!(
+            sender("Sofie Lindahl"),
+            Some(Large::Two("Sofie", "Lindahl"))
+        );
+        assert_eq!(
+            sender("Henrik Nordahl"),
+            Some(Large::Two("Henrik", "Nordahl"))
+        );
+        // Extra spaces between the words don't end up on either line.
+        assert_eq!(sender("Maria  Olsen"), Some(Large::Two("Maria", "Olsen")));
+    }
+
+    /// A short word over a long one is small, even if both fit at 2×.
+    #[test]
+    fn small_if_unbalanced() {
+        assert_eq!(sender("Ada Lovelace"), None);
+        assert_eq!(sender("Nora Lindqvist"), None);
+        // 4 and 6 letters: 65%.
+        assert_eq!(sender("Nils Hansen"), None);
+        // 6 and 9 letters: 66%.
+        assert_eq!(sender("Henrik Johansson"), None);
+    }
+
+    /// A word too long for a line is small, never hyphenated.
+    #[test]
+    fn small_if_a_word_is_too_long() {
+        assert_eq!(sender("Bartholomew"), None);
+        assert_eq!(sender("Dr. Bartholomew"), None);
+        assert_eq!(sender("Åse Kristiansen"), None);
+    }
+
+    /// With more words, the split that balances the lines best, which
+    /// needn't be where a greedy wrap would break.
+    #[test]
+    fn several_words_split_where_most_balanced() {
+        assert_eq!(
+            sender("Hi how are you"),
+            Some(Large::Two("Hi how", "are you"))
+        );
+        // Greedy: "ANA BO EK" over "LUND".
+        assert_eq!(
+            sender("Ana Bo Ek Lund"),
+            Some(Large::Two("Ana Bo", "Ek Lund"))
+        );
+        // Three lines' worth.
+        assert_eq!(sender("Hi how are you doing"), None);
+        assert_eq!(sender("Night Signals: Ida Moreau"), None);
+        // Every split leaves one line too long, or the two unequal.
+        assert_eq!(sender("Bo Ek Lovelace"), None);
+    }
+
+    /// Letters beyond ASCII measure as their glyphs do: Æ is wider than
+    /// the rest, Å and Ø as wide.
+    #[test]
+    fn large_with_nordic_letters() {
+        assert_eq!(sender("Åse Ørn"), Some(Large::One("Åse Ørn")));
+        assert_eq!(
+            sender("Bjørn Ødegård"),
+            Some(Large::Two("Bjørn", "Ødegård"))
+        );
+        assert_eq!(sender("Åse Øvrebø"), None);
+        // Æ's two extra columns fill the line exactly; one more letter
+        // and it's two.
+        assert_eq!(sender("Ærle Holm"), Some(Large::One("Ærle Holm")));
+        assert_eq!(sender("Ærle Holme"), Some(Large::Two("Ærle", "Holme")));
+        assert_eq!(sender("Æsa Holmsen"), None);
+    }
+
+    /// Nothing to show fits on one line.
+    #[test]
+    fn large_when_empty() {
+        assert_eq!(sender(""), Some(Large::One("")));
+        assert_eq!(sender("   "), Some(Large::One("")));
     }
 }
