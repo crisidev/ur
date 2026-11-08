@@ -27,7 +27,13 @@ to swipe, all through the firmware's gesture recogniser
 (`src/gesture.rs`). Click the button to press it. The screen dims with
 the backlight and goes black when it's off, and the watch shakes while
 the motor buzzes. `--zoom N` sets its size: N pixels a canvas pixel (4,
-a 320-pixel screen, by default). Keys:
+a 320-pixel screen, by default).
+
+The screen's colours are the real panel's, as near as a model can make
+them (`src/panel.rs`): less saturated than a monitor's, and black
+glowing a little with the backlight. P switches to the colours as sent
+to the panel, as screenshots have them (`--sent-colours` starts there).
+Keys:
 
 | Key | | Key | |
 |---|---|---|---|
@@ -36,7 +42,7 @@ a 320-pixel screen, by default). Keys:
 | C | a call; again to end it | arrows | swipes |
 | T, L | tap, long press | F, H | skip a minute, an hour |
 | S | a screenshot | R | record a GIF; again to stop |
-| Q, Esc | quit | | |
+| P | the panel's colours, or as sent | Q, Esc | quit |
 
 Everything else (the time, the phone, sensors) is a command typed into
 the terminal, as in a script. The watch starts as after a reset: no time,
@@ -103,7 +109,8 @@ tap                               # snooze
 - **Time:** `wait 1.5s`, `until HH:MM`.
 - **Output:** `shot FILE.png [THEME]` (with a theme: in its colours, as
   `screenshot.py --theme`; with `--watch`, the whole watch, as the window
-  draws it), `record FILE.gif` … `stop` (see below), `expect`, and
+  draws it; with `--panel`, as the real panel shows it, as the window
+  does), `record FILE.gif` … `stop` (see below), `expect`, and
   `settings` (what the flash holds, decoded as the firmware does).
 
 `gb` takes a line exactly as Gadgetbridge sends it (less the `\x10`
@@ -123,10 +130,10 @@ gb GB({"t":"notify","id":1,"src":"Signal","title":"\xc5se","body":"Hi"})
 
 Screenshots are the 240×240 the panel would show: the canvas's pixels
 as pushed to the panel, in the same colours `screenshot.py` gives, so the
-two match pixel for pixel. `readme-screenshots.txt` makes the README's;
-`tour.txt` goes round most screens, checking itself as it goes; `cargo
-test` runs it, and `gadgetbridge.txt`, and checks every screenshot they
-take.
+two match pixel for pixel (unless `--panel`). `readme-screenshots.txt`
+makes the README's; `tour.txt` goes round most screens, checking itself
+as it goes; `cargo test` runs it, and `gadgetbridge.txt`, and checks
+every screenshot they take.
 
 ## Approved screenshots
 
@@ -331,3 +338,6 @@ log lines go to it, and files download.
 - The touch controller's quirks (missed lifts, garbage reports), the
   watchdog (the UI loop feeds nothing), resets that keep RAM, panics'
   breadcrumbs, the bootloader, and anything else below the UI.
+- **The panel's colours** (in the window) are a model (see
+  `src/panel.rs`), from a similar panel's datasheet rather than this
+  one's measurements.

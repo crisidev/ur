@@ -428,7 +428,14 @@ fn look_at(case: Option<&Case>, pixels: usize, now: Instant) -> (Seen, Vec<u32>)
         // transparent in the GIF.
         Some(case) => {
             let mut image = vec![0; pixels];
-            case.draw(&mut image, crate::case::light(seen.backlight), seen.shake);
+            // In the colours sent to the panel, as `shot --watch` has them.
+            // TODO: `--panel`, as `shot` has, for the real panel's colours.
+            case.draw(
+                &mut image,
+                crate::case::light(seen.backlight),
+                seen.shake,
+                false,
+            );
             image
         }
         // Off, the panel still holds its last frame, but nobody sees it.

@@ -71,6 +71,10 @@ export async function load(bytes, { print, download, start = true }) {
     advance(ms) {
       ur.ur_advance(ms);
     },
+    // The real panel's colours (true, the default), or those sent to it.
+    mimic(on) {
+      ur.ur_mimic(on);
+    },
     // The watch, drawn: `width` × `height` RGBA pixels. A view into the
     // module's memory, valid until the next call.
     frame() {

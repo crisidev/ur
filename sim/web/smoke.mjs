@@ -143,6 +143,18 @@ async function watch({ start, files }) {
     if (frame[i] !== frame[i + 1] || frame[i + 1] !== frame[i + 2]) colours++;
   }
   if (colours === 0) fail("the frame has no colour: is the panel drawn?");
+  // The real panel's colours, or as sent to it: the panel's pixels
+  // differ, and each is the same every time. (With the screen on: off,
+  // both are the glass.)
+  ur.key("g");
+  ur.advance(500);
+  ur.mimic(false);
+  const sent = ur.frame().slice();
+  ur.mimic(true);
+  const real = ur.frame().slice();
+  if (sent.every((value, i) => value === real[i])) fail("ur.mimic changed nothing");
+  ur.mimic(true);
+  if (!ur.frame().every((value, i) => value === real[i])) fail("ur.mimic(true) drew another frame");
   console.log(`smoke: the page's watch works (${ur.width}×${ur.height}, ${themes.length} themes)`);
 }
 

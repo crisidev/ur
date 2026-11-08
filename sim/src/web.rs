@@ -129,11 +129,14 @@ struct Screen {
     /// many milliseconds of it have run since the last one was kept.
     frames: VecDeque<Vec<u8>>,
     since_frame: u32,
+    /// The real panel's colours, or those sent to it (see `crate::panel`).
+    mimic: bool,
 }
 
 impl Screen {
     fn draw(&mut self) {
-        self.case.draw(&mut self.buffer, self.light, self.shake);
+        self.case
+            .draw(&mut self.buffer, self.light, self.shake, self.mimic);
         for (rgba, pixel) in self
             .rgba
             .as_chunks_mut::<4>()
@@ -233,6 +236,7 @@ pub extern "C" fn ur_boot(start: bool) {
         shake: 0.0,
         frames: VecDeque::new(),
         since_frame: 0,
+        mimic: true,
     }));
     // Flash that starts erased, and is forgotten with the page.
     let mut watch = Watch::boot(crate::flash::Flash::erased());
@@ -283,6 +287,17 @@ pub extern "C" fn ur_script() {
 pub extern "C" fn ur_advance(ms: f64) {
     let micros = (ms.max(0.0) * 1e3) as u64;
     with_watch(|watch| watch.advance(Duration::from_micros(micros)));
+}
+
+/// The page's colours: the real panel's (`true`, the default), or those
+/// sent to it, as the window's P switches.
+#[unsafe(no_mangle)]
+pub extern "C" fn ur_mimic(on: bool) {
+    with_screen(|screen| {
+        screen.mimic = on;
+        // Drawn in the other colours: the page shows the watch as it is.
+        screen.frames.clear();
+    });
 }
 
 /// The pointer (a mouse, a finger, a pen), at (`x`, `y`) in the drawn
@@ -395,9 +410,6 @@ pub extern "C" fn ur_height() -> usize {
 /// transition's frames not yet shown, if there are any; otherwise, the
 /// watch as it is now, lit as the backlight is, and shaken while the
 /// motor runs.
-//
-// TODO: the panel's colour filter, once the window has one, for the page to
-// offer too.
 #[unsafe(no_mangle)]
 pub extern "C" fn ur_frame() -> *const u8 {
     let (light, pulse) = with_watch(|watch| (case::light(watch.backlight), watch.motor_pulse()));

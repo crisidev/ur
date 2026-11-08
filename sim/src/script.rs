@@ -79,6 +79,9 @@ Output:
   shot FILE.png [THEME]      a screenshot (relative to --out); with THEME,
                              in its colours (as screenshot.py --theme)
   shot FILE.png --watch      the whole watch, as the window shows it
+  shot FILE.png --panel      as the real panel shows it (its colours, black
+                             level and backlight; see src/panel.rs); with
+                             --watch too, the whole watch so
   record FILE.gif [--watch] [--still DURATION] | stop
                              an animated GIF (relative to --out) of the
                              screen (or the whole watch) from now until
@@ -450,10 +453,17 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
         }
         "shot" => {
             let path = output.dir.join(need(0, "FILE")?);
-            match arg(1) {
+            let flags = [arg(1), arg(2)];
+            let flag = |name| flags.contains(&Some(name));
+            match (flag("--watch"), flag("--panel")) {
                 // The whole watch, as the window shows it.
-                Some("--watch") => crate::shot::save_watch(&path, watch.backlight, output.zoom)?,
-                theme => watch.screenshot(&path, theme.map(find_theme).transpose()?)?,
+                (true, mimic) => {
+                    crate::shot::save_watch(&path, watch.backlight, output.zoom, mimic)?;
+                }
+                (false, true) => crate::shot::save_mimicked(&path, watch.backlight)?,
+                (false, false) => {
+                    watch.screenshot(&path, arg(1).map(find_theme).transpose()?)?;
+                }
             }
             watch.log(format!("screenshot: {}", path.display()));
         }

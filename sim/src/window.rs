@@ -35,6 +35,7 @@ button.
   G glance   N notification   M music play/pause   C call/hang up
   arrows swipe   T tap   L long press (at the middle)
   F a minute on   H an hour on   S screenshot   R record (again: stop)
+  P the panel's colours: as the real panel shows them, or as sent to it
   Q quit
 The terminal takes commands (`help` lists them).
 ";
@@ -48,12 +49,15 @@ struct Screen {
     /// transition's frames keep them.
     light: f32,
     shake: f32,
+    /// The real panel's colours, or those sent to it (see `crate::panel`).
+    mimic: bool,
     shown: StdInstant,
 }
 
 impl Screen {
     fn draw(&mut self) {
-        self.case.draw(&mut self.buffer, self.light, self.shake);
+        self.case
+            .draw(&mut self.buffer, self.light, self.shake, self.mimic);
     }
 
     fn show(&mut self) -> Result<(), String> {
@@ -77,6 +81,7 @@ pub fn run(mut watch: Watch, options: &Options) -> Result<(), String> {
         case,
         light: 0.0,
         shake: 0.0,
+        mimic: options.mimic,
         shown: StdInstant::now(),
     }));
     eprint!("{KEYS}");
@@ -202,6 +207,16 @@ pub fn run(mut watch: Watch, options: &Options) -> Result<(), String> {
                 Key::R => {
                     let name = crate::record::timestamped();
                     command(&mut watch, &format!("record {name}"), options);
+                }
+                Key::P => {
+                    let mut screen = screen.borrow_mut();
+                    screen.mimic = !screen.mimic;
+                    let colours = if screen.mimic {
+                        "as the real panel shows them"
+                    } else {
+                        "as sent to the panel"
+                    };
+                    eprintln!("colours: {colours}");
                 }
                 Key::Q | Key::Escape => return Ok(()),
                 _ => {}

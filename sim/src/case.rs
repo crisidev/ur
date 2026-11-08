@@ -59,6 +59,9 @@ const BUTTON_COLOR: [f32; 3] = [44.0, 44.0, 47.0];
 const RIM_COLOR: [f32; 3] = [58.0, 58.0, 62.0];
 const CASE_COLOR: [f32; 3] = [24.0, 24.0, 26.0];
 const GLASS_COLOR: [f32; 3] = [7.0, 7.0, 8.0];
+/// The glass's colour, which is what it reflects of the room: over the
+/// panel too, lit or not.
+pub const GLASS_RGB: [u8; 3] = [7, 7, 8];
 
 impl Case {
     /// The watch at `zoom` window pixels a canvas pixel.
@@ -152,8 +155,10 @@ impl Case {
     /// Draws the watch into `buffer` (`width` × `height`, 0xRRGGBB): the
     /// panel lit `light` (0 off, to 1), and the whole watch shifted
     /// `shake` pixels sideways (while it buzzes: see [`Case::shake`]), the
-    /// desk filling in behind.
-    pub fn draw(&self, buffer: &mut [u32], light: f32, shake: f32) {
+    /// desk filling in behind. With `mimic`, the panel's colours are as the
+    /// real panel shows them (see [`crate::panel`]); without, as sent to
+    /// it. (A shake's blur blends what's drawn, either way.)
+    pub fn draw(&self, buffer: &mut [u32], light: f32, shake: f32, mimic: bool) {
         // Whole pixels by moving the watch, the rest by blending each pixel
         // with its left neighbour (below).
         let whole = shake.floor();
@@ -182,10 +187,15 @@ impl Case {
                 for x in 0..side {
                     let pixel = panel.pixels[panel_pixel(y) * SIZE + panel_pixel(x)];
                     let color = rgb888(pixel, panel.idle);
-                    // Off, the panel is as black as the glass round it.
-                    let lit: [f32; 3] =
-                        std::array::from_fn(|i| (f32::from(color[i]) * light).max(GLASS_COLOR[i]));
-                    row[left + x] = pack(lit);
+                    row[left + x] = if mimic {
+                        pack(crate::panel::mimic(color, light, GLASS_RGB).map(f32::from))
+                    } else {
+                        // Off, the panel is as black as the glass round
+                        // it.
+                        pack(std::array::from_fn(|i| {
+                            (f32::from(color[i]) * light).max(GLASS_COLOR[i])
+                        }))
+                    };
                 }
             }
         });

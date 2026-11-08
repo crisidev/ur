@@ -22,12 +22,27 @@ pub fn save(path: &Path) -> Result<(), String> {
     write(path, SIZE, SIZE, &rgb())
 }
 
+/// The panel as the real one shows it (see [`crate::panel`]), lit by
+/// `backlight`, behind the case's glass: not for comparing with a dev
+/// kit's screenshots, which are what it was sent.
+pub fn save_mimicked(path: &Path, backlight: Level) -> Result<(), String> {
+    let light = crate::case::light(backlight);
+    let rgb: Vec<u8> = rgb()
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .flat_map(|&color| crate::panel::mimic(color, light, crate::case::GLASS_RGB))
+        .collect();
+    write(path, SIZE, SIZE, &rgb)
+}
+
 /// The whole watch, as the window draws it (see [`crate::case`]), its
-/// panel lit by `backlight`, at `zoom` pixels a canvas pixel.
-pub fn save_watch(path: &Path, backlight: Level, zoom: usize) -> Result<(), String> {
+/// panel lit by `backlight`, at `zoom` pixels a canvas pixel; with
+/// `mimic`, in the real panel's colours.
+pub fn save_watch(path: &Path, backlight: Level, zoom: usize, mimic: bool) -> Result<(), String> {
     let case = Case::new(zoom);
     let mut buffer = vec![0; case.width * case.height];
-    case.draw(&mut buffer, crate::case::light(backlight), 0.0);
+    case.draw(&mut buffer, crate::case::light(backlight), 0.0, mimic);
     let rgb: Vec<u8> = buffer
         .iter()
         .flat_map(|&pixel| {

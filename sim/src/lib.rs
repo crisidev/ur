@@ -260,6 +260,7 @@ fn _defmt_timestamp(_: defmt::Formatter<'_>) {}
 
 mod case;
 mod flash;
+mod panel;
 mod platform;
 mod record;
 mod script;

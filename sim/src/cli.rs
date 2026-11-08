@@ -10,7 +10,7 @@ use crate::watch::Watch;
 
 const USAGE: &str = "\
 Usage: ur-sim [--window] [--flash FILE] [--out DIR] [--speed N] [--zoom N]
-              [SCRIPT ...]
+              [--sent-colours] [SCRIPT ...]
        ur-sim --devkit ELF [--out DIR] SCRIPT ...
        ur-sim --diff BEFORE AFTER [--out DIR]
 
@@ -28,6 +28,9 @@ after running any scripts, and takes commands typed into the terminal.
   --zoom N     in the window (and `shot … --watch`), draw a canvas pixel N
                pixels wide (default: 4, a 320-pixel screen; 3 is the
                panel's own size)
+  --sent-colours
+               in the window, show the colours as sent to the panel,
+               rather than as the real panel shows them (P toggles)
   --devkit ELF follow a dev kit running ELF (a `--features compare` build):
                run the scripts' inputs on it, replay what its UI did, and
                check each `compare NAME` frame against it, pixel for pixel
@@ -45,6 +48,8 @@ pub struct Options {
     pub output: Output,
     pub speed: f64,
     pub zoom: usize,
+    /// In the window, the real panel's colours (see `panel`).
+    pub mimic: bool,
     pub devkit: Option<PathBuf>,
     /// `--diff BEFORE AFTER`.
     pub diff: Option<(PathBuf, PathBuf)>,
@@ -171,6 +176,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
         },
         speed: 1.0,
         zoom: 4,
+        mimic: true,
         devkit: None,
         diff: None,
         flash: None,
@@ -179,6 +185,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
         match arg.as_str() {
             "--help" | "-h" => return Ok(None),
             "--window" => options.window = true,
+            "--sent-colours" => options.mimic = false,
             "--zoom" => {
                 let zoom = args.next().ok_or("--zoom needs N")?;
                 options.zoom = match zoom.parse::<usize>() {

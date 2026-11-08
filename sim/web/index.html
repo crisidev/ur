@@ -37,6 +37,8 @@
     <button data-key="h">+1 hour</button>
     <button data-key="s">Screenshot</button>
     <button data-key="r">Record / stop</button>
+    <label title="As the real panel shows them (a model; see sim/src/panel.rs), or as sent to it, as screenshots are">
+      <input id="mimic" type="checkbox" checked> The panel's colours</label>
     <label>Theme <select id="theme"><option value="auto">auto (the sun's)</option></select></label>
     <label>Run a script <input id="script" type="file" accept=".txt,text/plain"></label>
   </div>
@@ -49,7 +51,8 @@
     <kbd>Space</kbd> the button, <kbd>G</kbd> a glance, <kbd>N</kbd> a notification,
     <kbd>M</kbd> music, <kbd>C</kbd> a call, arrows swipe, <kbd>T</kbd> tap,
     <kbd>L</kbd> long press, <kbd>F</kbd>/<kbd>H</kbd> a minute/hour on,
-    <kbd>S</kbd> a screenshot, <kbd>R</kbd> record a GIF (again to stop and download it).
+    <kbd>S</kbd> a screenshot, <kbd>R</kbd> record a GIF (again to stop and download it),
+    <kbd>P</kbd> the panel's colours, or as sent to it.
     The firmware's own UI code, compiled to WebAssembly: see
     <a href="https://github.com/jonhoo/ur/tree/main/sim">sim/</a>.
   </div>
@@ -139,11 +142,20 @@ for (const type of ["pointerup", "pointercancel"]) {
   canvas.addEventListener(type, (event) => guard(() => ur.pointer("up", ...at(event))));
 }
 
+// The panel's colours: the real panel's, or as sent to it (P too).
+const mimic = document.getElementById("mimic");
+mimic.addEventListener("change", () => guard(() => ur.mimic(mimic.checked)));
 // Keys go to the watch unless something else on the page wants them.
 document.addEventListener("keydown", (event) => {
   const target = event.target;
   if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement) return;
   if (event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (event.key.toLowerCase() === "p") {
+    mimic.checked = !mimic.checked;
+    guard(() => ur.mimic(mimic.checked));
+    event.preventDefault();
+    return;
+  }
   if (guard(() => ur.key(event.key))) event.preventDefault();
 });
 for (const button of document.querySelectorAll("button[data-key]")) {
