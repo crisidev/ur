@@ -1,0 +1,910 @@
+# The notification review set: twenty notifications, each in every view the
+# watch shows one in, in a dark theme (ARCADE), a light one (HANDHELD), and
+# the dim white-on-black look. For reviewing (and re-reviewing) how
+# notifications look; not an approved-screenshot script.
+#
+#   cargo run --release -- notifications.txt --out ../tmp/notify-review
+#
+# Each is a line as Gadgetbridge sends it (`gb`), through the firmware's
+# parser. Every name, number, and message is invented; the shapes are
+# typical Android ones (see the list below). The watch shows only `src`
+# and the sender (or, without one, the title): subject and body are read
+# for images, never shown. They're here anyway, as the phone sends them.
+#
+# Each notification arrives three times, once per section, as each view
+# needs its own way in:
+#
+#   1. quiet:   with the screen off: the whole screen, dim (always white on
+#               black), the sender big if it's short.
+#   2. banner:  with the clock on screen: the banner over its bottom rows;
+#      history: then swiped down to: the first page of the history.
+#               Both shot in ARCADE (the evening's theme) and HANDHELD
+#               (its colours on the same frame, as `screenshot.py --theme`).
+#   3. dim:     in the quiet night: it waits; the button shows the banner,
+#               dim; swiped down to, the history page, dim.
+#
+# So a change to the set goes in all three sections, in the same order.
+# Shots are named NN-KIND-VIEW-THEME.png.
+#
+#   01 sms-short          Messages: Ida
+#   02 signal             Signal: Ada Lovelace
+#   03 sms-number         SMS Message: +47 912 34 567
+#   04 code-2fa           Messages: UrBank
+#   05 group-whatsapp     WhatsApp: Familien \ud83c\udfe1: Nils Holm
+#   06 group-count        WhatsApp: Familien \ud83c\udfe1 (12 messages): \xc5se Bergersen
+#   07 group-signal       Signal: Team Ur
+#   08 group-emoji        Telegram: \ud83c\udf89\ud83c\udf82 Bursdagsgjengen 2026
+#   09 summary-whatsapp   WhatsApp: WhatsApp
+#   10 email-gmail        Gmail: Nils Holm
+#   11 email-long-sender  FairEmail: Norsk Bibliotekforening Medlemsservice
+#   12 summary-gmail      Gmail: 3 new messages
+#   13 slack-channel      Slack: #firmware-review
+#   14 slack-dm           Slack: Margaret Hamilton
+#   15 calendar           Calendar: Tannlege \u2013 Dr. \xd8stby
+#   16 delivery           Parcelly: Your parcel is ready for pickup
+#   17 url-ntfy           ntfy: https://ci.example.org/ur/runs/4821
+#   18 long-word          Signal: Velferdsteknologiavdelingen
+#   19 accents            Signal: Bj\xf8rn \xd8deg\xe5rd
+#   20 long-name-40       Signal: Sameiet Bj\xf8rnstjerne Bj\xf8rnsons gate 12
+
+# ==============================================================================
+# An evening in Oslo: dark themes, ARCADE
+# ==============================================================================
+
+time 2026-11-09 19:58:00 +01:00
+location 59.91 10.75
+connect
+battery 3900
+temperature 31
+theme arcade
+wait 1s
+button
+wait 12s
+expect not screen-on
+# ==============================================================================
+# 1. Quiet: arriving with the screen off
+# ==============================================================================
+
+# Shot a second in, still in the marquee's first pause; then left to time
+# out (the longest takes ~27 s to scroll through once).
+
+gb GB({"t":"notify","id":1794170001,"src":"Messages","title":"Ida","subject":"","body":"Ok","sender":"","tel":"","reply":true})
+wait 1s
+expect dim
+shot 01-sms-short-quiet-dim.png
+wait 40s
+expect not screen-on
+
+gb GB({"t":"notify","id":1794170002,"src":"Signal","title":"Ada Lovelace","subject":"","body":"Are you still coming tonight? I saved you a seat by the window \ud83d\ude0a","sender":"","tel":"","reply":true})
+wait 1s
+expect dim
+shot 02-signal-quiet-dim.png
+wait 40s
+expect not screen-on
+
+gb GB({"t":"notify","id":1794170003,"src":"SMS Message","title":"New message","subject":"","body":"Hei, det er Nils. Har du tid til en kaffe i morgen?","sender":"+47 912 34 567","tel":"+4791234567","reply":true})
+wait 1s
+expect dim
+shot 03-sms-number-quiet-dim.png
+wait 40s
+expect not screen-on
+
+gb GB({"t":"notify","id":1794170004,"src":"Messages","title":"UrBank","subject":"","body":"482913 is your UrBank verification code. It expires in 5 minutes. Never share it with anyone, not even us.","sender":"","tel":"","reply":true})
+wait 1s
+expect dim
+shot 04-code-2fa-quiet-dim.png
+wait 40s
+expect not screen-on
+
+gb GB({"t":"notify","id":1794170005,"src":"WhatsApp","title":"Familien \ud83c\udfe1: Nils Holm","subject":"","body":"Middag p\xe5 s\xf8ndag kl. 17? Jeg tar med dessert \ud83c\udf70","sender":"","tel":"","reply":true})
+wait 1s
+expect dim
+shot 05-group-whatsapp-quiet-dim.png
+wait 40s
+expect not screen-on
+
+gb GB({"t":"notify","id":1794170006,"src":"WhatsApp","title":"Familien \ud83c\udfe1 (12 messages): \xc5se Bergersen","subject":"","body":"Ja, vi kommer! \ud83d\udc4d","sender":"","tel":"","reply":true})
+wait 1s
+expect dim
+shot 06-group-count-quiet-dim.png
+wait 40s
+expect not screen-on
+
+gb GB({"t":"notify","id":1794170007,"src":"Signal","title":"Team Ur","subject":"","body":"Nils Holm: pushed the new clock face, can someone flash a dev kit?","sender":"","tel":"","reply":true})
+wait 1s
+expect dim
+shot 07-group-signal-quiet-dim.png
+wait 40s
+expect not screen-on
+
+gb GB({"t":"notify","id":1794170008,"src":"Telegram","title":"\ud83c\udf89\ud83c\udf82 Bursdagsgjengen 2026","subject":"","body":"Kari: Hvem tar med kake? \ud83c\udf82\ud83c\udf82","sender":"","tel":"","reply":true})
+wait 1s
+expect dim
+shot 08-group-emoji-quiet-dim.png
+wait 40s
+expect not screen-on
+
+gb GB({"t":"notify","id":1794170009,"src":"WhatsApp","title":"WhatsApp","subject":"","body":"14 messages from 5 chats","sender":"","tel":"","reply":true})
+wait 1s
+expect dim
+shot 09-summary-whatsapp-quiet-dim.png
+wait 40s
+expect not screen-on
+
+gb GB({"t":"notify","id":1794170010,"src":"Gmail","title":"Nils Holm","subject":"","body":"Re: Ferieplaner for juli\nHei! Jeg har sett p\xe5 hyttene vi snakket om. Den ved Femunden er ledig uke 28 og 29.\n\nSkal vi booke?","sender":"","tel":"","reply":true})
+wait 1s
+expect dim
+shot 10-email-gmail-quiet-dim.png
+wait 40s
+expect not screen-on
+
+gb GB({"t":"notify","id":1794170011,"src":"FairEmail","title":"Norsk Bibliotekforening Medlemsservice","subject":"Fornyelse av medlemskapet ditt for 2027","body":"Kj\xe6re medlem,\n\nmedlemskapet ditt utl\xf8per 31. desember. Forny innen 15. desember for \xe5 beholde rabatten.\n\nMed vennlig hilsen\nMedlemsservice","sender":"","tel":"","reply":true})
+wait 1s
+expect dim
+shot 11-email-long-sender-quiet-dim.png
+wait 40s
+expect not screen-on
+
+gb GB({"t":"notify","id":1794170012,"src":"Gmail","title":"3 new messages","subject":"","body":"ada.lovelace@example.com","sender":"","tel":"","reply":true})
+wait 1s
+expect dim
+shot 12-summary-gmail-quiet-dim.png
+wait 40s
+expect not screen-on
+
+gb GB({"t":"notify","id":1794170013,"src":"Slack","title":"#firmware-review","subject":"","body":"Ada Lovelace: LGTM. One nit about the hyphenation, see the thread","sender":"","tel":"","reply":true})
+wait 1s
+expect dim
+shot 13-slack-channel-quiet-dim.png
+wait 40s
+expect not screen-on
+
+gb GB({"t":"notify","id":1794170014,"src":"Slack","title":"Margaret Hamilton","subject":"","body":"Two things before Monday:\n\n1. The release notes still mention the old banner.\n\n2. Can you check the dim look on the dev kit? It looked washed out on mine.\n\nThanks!","sender":"","tel":"","reply":true})
+wait 1s
+expect dim
+shot 14-slack-dm-quiet-dim.png
+wait 40s
+expect not screen-on
+
+gb GB({"t":"notify","id":1794170015,"src":"Calendar","title":"Tannlege \u2013 Dr. \xd8stby","subject":"","body":"10:30 \u2013 11:15 \xb7 Storgata 12","sender":"","tel":"","reply":true})
+wait 1s
+expect dim
+shot 15-calendar-quiet-dim.png
+wait 40s
+expect not screen-on
+
+gb GB({"t":"notify","id":1794170016,"src":"Parcelly","title":"Your parcel is ready for pickup","subject":"","body":"Pickup code 7314 at Kiwi Gr\xfcnerl\xf8kka until 14 Nov. Track it: https://parcel.example/t/AB12CD34","sender":"","tel":"","reply":true})
+wait 1s
+expect dim
+shot 16-delivery-quiet-dim.png
+wait 40s
+expect not screen-on
+
+gb GB({"t":"notify","id":1794170017,"src":"ntfy","title":"https://ci.example.org/ur/runs/4821","subject":"","body":"Build failed: clippy","sender":"","tel":"","reply":true})
+wait 1s
+expect dim
+shot 17-url-ntfy-quiet-dim.png
+wait 40s
+expect not screen-on
+
+gb GB({"t":"notify","id":1794170018,"src":"Signal","title":"Velferdsteknologiavdelingen","subject":"","body":"M\xf8tet flyttes til rom 4B.","sender":"","tel":"","reply":true})
+wait 1s
+expect dim
+shot 18-long-word-quiet-dim.png
+wait 40s
+expect not screen-on
+
+gb GB({"t":"notify","id":1794170019,"src":"Signal","title":"Bj\xf8rn \xd8deg\xe5rd","subject":"","body":"\ud83d\udc4d","sender":"","tel":"","reply":true})
+wait 1s
+expect dim
+shot 19-accents-quiet-dim.png
+wait 40s
+expect not screen-on
+
+gb GB({"t":"notify","id":1794170020,"src":"Signal","title":"Sameiet Bj\xf8rnstjerne Bj\xf8rnsons gate 12","subject":"","body":"Styret: Vannet stenges tirsdag 09\u201312.","sender":"","tel":"","reply":true})
+wait 1s
+expect dim
+shot 20-long-name-40-quiet-dim.png
+wait 40s
+expect not screen-on
+
+# ==============================================================================
+# 2. Banner over the clock, then the history
+# ==============================================================================
+
+# The button wakes the clock; the notification's banner comes up over it;
+# a swipe down opens the history at its page, and the button goes back
+# and then puts the screen out.
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170001,"src":"Messages","title":"Ida","subject":"","body":"Ok","sender":"","tel":"","reply":true})
+wait 1s
+expect not dim
+shot 01-sms-short-banner-arcade.png
+shot 01-sms-short-banner-handheld.png handheld
+down
+wait 1s
+shot 01-sms-short-history-arcade.png
+shot 01-sms-short-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170002,"src":"Signal","title":"Ada Lovelace","subject":"","body":"Are you still coming tonight? I saved you a seat by the window \ud83d\ude0a","sender":"","tel":"","reply":true})
+wait 1s
+expect not dim
+shot 02-signal-banner-arcade.png
+shot 02-signal-banner-handheld.png handheld
+down
+wait 1s
+shot 02-signal-history-arcade.png
+shot 02-signal-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170003,"src":"SMS Message","title":"New message","subject":"","body":"Hei, det er Nils. Har du tid til en kaffe i morgen?","sender":"+47 912 34 567","tel":"+4791234567","reply":true})
+wait 1s
+expect not dim
+shot 03-sms-number-banner-arcade.png
+shot 03-sms-number-banner-handheld.png handheld
+down
+wait 1s
+shot 03-sms-number-history-arcade.png
+shot 03-sms-number-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170004,"src":"Messages","title":"UrBank","subject":"","body":"482913 is your UrBank verification code. It expires in 5 minutes. Never share it with anyone, not even us.","sender":"","tel":"","reply":true})
+wait 1s
+expect not dim
+shot 04-code-2fa-banner-arcade.png
+shot 04-code-2fa-banner-handheld.png handheld
+down
+wait 1s
+shot 04-code-2fa-history-arcade.png
+shot 04-code-2fa-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170005,"src":"WhatsApp","title":"Familien \ud83c\udfe1: Nils Holm","subject":"","body":"Middag p\xe5 s\xf8ndag kl. 17? Jeg tar med dessert \ud83c\udf70","sender":"","tel":"","reply":true})
+wait 1s
+expect not dim
+shot 05-group-whatsapp-banner-arcade.png
+shot 05-group-whatsapp-banner-handheld.png handheld
+down
+wait 1s
+shot 05-group-whatsapp-history-arcade.png
+shot 05-group-whatsapp-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170006,"src":"WhatsApp","title":"Familien \ud83c\udfe1 (12 messages): \xc5se Bergersen","subject":"","body":"Ja, vi kommer! \ud83d\udc4d","sender":"","tel":"","reply":true})
+wait 1s
+expect not dim
+shot 06-group-count-banner-arcade.png
+shot 06-group-count-banner-handheld.png handheld
+down
+wait 1s
+shot 06-group-count-history-arcade.png
+shot 06-group-count-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170007,"src":"Signal","title":"Team Ur","subject":"","body":"Nils Holm: pushed the new clock face, can someone flash a dev kit?","sender":"","tel":"","reply":true})
+wait 1s
+expect not dim
+shot 07-group-signal-banner-arcade.png
+shot 07-group-signal-banner-handheld.png handheld
+down
+wait 1s
+shot 07-group-signal-history-arcade.png
+shot 07-group-signal-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170008,"src":"Telegram","title":"\ud83c\udf89\ud83c\udf82 Bursdagsgjengen 2026","subject":"","body":"Kari: Hvem tar med kake? \ud83c\udf82\ud83c\udf82","sender":"","tel":"","reply":true})
+wait 1s
+expect not dim
+shot 08-group-emoji-banner-arcade.png
+shot 08-group-emoji-banner-handheld.png handheld
+down
+wait 1s
+shot 08-group-emoji-history-arcade.png
+shot 08-group-emoji-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170009,"src":"WhatsApp","title":"WhatsApp","subject":"","body":"14 messages from 5 chats","sender":"","tel":"","reply":true})
+wait 1s
+expect not dim
+shot 09-summary-whatsapp-banner-arcade.png
+shot 09-summary-whatsapp-banner-handheld.png handheld
+down
+wait 1s
+shot 09-summary-whatsapp-history-arcade.png
+shot 09-summary-whatsapp-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170010,"src":"Gmail","title":"Nils Holm","subject":"","body":"Re: Ferieplaner for juli\nHei! Jeg har sett p\xe5 hyttene vi snakket om. Den ved Femunden er ledig uke 28 og 29.\n\nSkal vi booke?","sender":"","tel":"","reply":true})
+wait 1s
+expect not dim
+shot 10-email-gmail-banner-arcade.png
+shot 10-email-gmail-banner-handheld.png handheld
+down
+wait 1s
+shot 10-email-gmail-history-arcade.png
+shot 10-email-gmail-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170011,"src":"FairEmail","title":"Norsk Bibliotekforening Medlemsservice","subject":"Fornyelse av medlemskapet ditt for 2027","body":"Kj\xe6re medlem,\n\nmedlemskapet ditt utl\xf8per 31. desember. Forny innen 15. desember for \xe5 beholde rabatten.\n\nMed vennlig hilsen\nMedlemsservice","sender":"","tel":"","reply":true})
+wait 1s
+expect not dim
+shot 11-email-long-sender-banner-arcade.png
+shot 11-email-long-sender-banner-handheld.png handheld
+down
+wait 1s
+shot 11-email-long-sender-history-arcade.png
+shot 11-email-long-sender-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170012,"src":"Gmail","title":"3 new messages","subject":"","body":"ada.lovelace@example.com","sender":"","tel":"","reply":true})
+wait 1s
+expect not dim
+shot 12-summary-gmail-banner-arcade.png
+shot 12-summary-gmail-banner-handheld.png handheld
+down
+wait 1s
+shot 12-summary-gmail-history-arcade.png
+shot 12-summary-gmail-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170013,"src":"Slack","title":"#firmware-review","subject":"","body":"Ada Lovelace: LGTM. One nit about the hyphenation, see the thread","sender":"","tel":"","reply":true})
+wait 1s
+expect not dim
+shot 13-slack-channel-banner-arcade.png
+shot 13-slack-channel-banner-handheld.png handheld
+down
+wait 1s
+shot 13-slack-channel-history-arcade.png
+shot 13-slack-channel-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170014,"src":"Slack","title":"Margaret Hamilton","subject":"","body":"Two things before Monday:\n\n1. The release notes still mention the old banner.\n\n2. Can you check the dim look on the dev kit? It looked washed out on mine.\n\nThanks!","sender":"","tel":"","reply":true})
+wait 1s
+expect not dim
+shot 14-slack-dm-banner-arcade.png
+shot 14-slack-dm-banner-handheld.png handheld
+down
+wait 1s
+shot 14-slack-dm-history-arcade.png
+shot 14-slack-dm-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170015,"src":"Calendar","title":"Tannlege \u2013 Dr. \xd8stby","subject":"","body":"10:30 \u2013 11:15 \xb7 Storgata 12","sender":"","tel":"","reply":true})
+wait 1s
+expect not dim
+shot 15-calendar-banner-arcade.png
+shot 15-calendar-banner-handheld.png handheld
+down
+wait 1s
+shot 15-calendar-history-arcade.png
+shot 15-calendar-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170016,"src":"Parcelly","title":"Your parcel is ready for pickup","subject":"","body":"Pickup code 7314 at Kiwi Gr\xfcnerl\xf8kka until 14 Nov. Track it: https://parcel.example/t/AB12CD34","sender":"","tel":"","reply":true})
+wait 1s
+expect not dim
+shot 16-delivery-banner-arcade.png
+shot 16-delivery-banner-handheld.png handheld
+down
+wait 1s
+shot 16-delivery-history-arcade.png
+shot 16-delivery-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170017,"src":"ntfy","title":"https://ci.example.org/ur/runs/4821","subject":"","body":"Build failed: clippy","sender":"","tel":"","reply":true})
+wait 1s
+expect not dim
+shot 17-url-ntfy-banner-arcade.png
+shot 17-url-ntfy-banner-handheld.png handheld
+down
+wait 1s
+shot 17-url-ntfy-history-arcade.png
+shot 17-url-ntfy-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170018,"src":"Signal","title":"Velferdsteknologiavdelingen","subject":"","body":"M\xf8tet flyttes til rom 4B.","sender":"","tel":"","reply":true})
+wait 1s
+expect not dim
+shot 18-long-word-banner-arcade.png
+shot 18-long-word-banner-handheld.png handheld
+down
+wait 1s
+shot 18-long-word-history-arcade.png
+shot 18-long-word-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170019,"src":"Signal","title":"Bj\xf8rn \xd8deg\xe5rd","subject":"","body":"\ud83d\udc4d","sender":"","tel":"","reply":true})
+wait 1s
+expect not dim
+shot 19-accents-banner-arcade.png
+shot 19-accents-banner-handheld.png handheld
+down
+wait 1s
+shot 19-accents-history-arcade.png
+shot 19-accents-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+button
+wait 1s
+gb GB({"t":"notify","id":1794170020,"src":"Signal","title":"Sameiet Bj\xf8rnstjerne Bj\xf8rnsons gate 12","subject":"","body":"Styret: Vannet stenges tirsdag 09\u201312.","sender":"","tel":"","reply":true})
+wait 1s
+expect not dim
+shot 20-long-name-40-banner-arcade.png
+shot 20-long-name-40-banner-handheld.png handheld
+down
+wait 1s
+shot 20-long-name-40-history-arcade.png
+shot 20-long-name-40-history-handheld.png handheld
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+
+# ==============================================================================
+# 3. The quiet night: the dim look
+# ==============================================================================
+
+# Asleep, the night goes quiet: a notification waits, and the button shows
+# it as a banner, dim; once on, a swipe works as usual. Presses a second
+# apart, never a double press (which would end the night).
+
+until 23:40
+asleep on
+wait 2m
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170001,"src":"Messages","title":"Ida","subject":"","body":"Ok","sender":"","tel":"","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 01-sms-short-banner-dim.png
+down
+wait 1s
+shot 01-sms-short-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170002,"src":"Signal","title":"Ada Lovelace","subject":"","body":"Are you still coming tonight? I saved you a seat by the window \ud83d\ude0a","sender":"","tel":"","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 02-signal-banner-dim.png
+down
+wait 1s
+shot 02-signal-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170003,"src":"SMS Message","title":"New message","subject":"","body":"Hei, det er Nils. Har du tid til en kaffe i morgen?","sender":"+47 912 34 567","tel":"+4791234567","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 03-sms-number-banner-dim.png
+down
+wait 1s
+shot 03-sms-number-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170004,"src":"Messages","title":"UrBank","subject":"","body":"482913 is your UrBank verification code. It expires in 5 minutes. Never share it with anyone, not even us.","sender":"","tel":"","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 04-code-2fa-banner-dim.png
+down
+wait 1s
+shot 04-code-2fa-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170005,"src":"WhatsApp","title":"Familien \ud83c\udfe1: Nils Holm","subject":"","body":"Middag p\xe5 s\xf8ndag kl. 17? Jeg tar med dessert \ud83c\udf70","sender":"","tel":"","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 05-group-whatsapp-banner-dim.png
+down
+wait 1s
+shot 05-group-whatsapp-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170006,"src":"WhatsApp","title":"Familien \ud83c\udfe1 (12 messages): \xc5se Bergersen","subject":"","body":"Ja, vi kommer! \ud83d\udc4d","sender":"","tel":"","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 06-group-count-banner-dim.png
+down
+wait 1s
+shot 06-group-count-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170007,"src":"Signal","title":"Team Ur","subject":"","body":"Nils Holm: pushed the new clock face, can someone flash a dev kit?","sender":"","tel":"","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 07-group-signal-banner-dim.png
+down
+wait 1s
+shot 07-group-signal-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170008,"src":"Telegram","title":"\ud83c\udf89\ud83c\udf82 Bursdagsgjengen 2026","subject":"","body":"Kari: Hvem tar med kake? \ud83c\udf82\ud83c\udf82","sender":"","tel":"","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 08-group-emoji-banner-dim.png
+down
+wait 1s
+shot 08-group-emoji-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170009,"src":"WhatsApp","title":"WhatsApp","subject":"","body":"14 messages from 5 chats","sender":"","tel":"","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 09-summary-whatsapp-banner-dim.png
+down
+wait 1s
+shot 09-summary-whatsapp-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170010,"src":"Gmail","title":"Nils Holm","subject":"","body":"Re: Ferieplaner for juli\nHei! Jeg har sett p\xe5 hyttene vi snakket om. Den ved Femunden er ledig uke 28 og 29.\n\nSkal vi booke?","sender":"","tel":"","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 10-email-gmail-banner-dim.png
+down
+wait 1s
+shot 10-email-gmail-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170011,"src":"FairEmail","title":"Norsk Bibliotekforening Medlemsservice","subject":"Fornyelse av medlemskapet ditt for 2027","body":"Kj\xe6re medlem,\n\nmedlemskapet ditt utl\xf8per 31. desember. Forny innen 15. desember for \xe5 beholde rabatten.\n\nMed vennlig hilsen\nMedlemsservice","sender":"","tel":"","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 11-email-long-sender-banner-dim.png
+down
+wait 1s
+shot 11-email-long-sender-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170012,"src":"Gmail","title":"3 new messages","subject":"","body":"ada.lovelace@example.com","sender":"","tel":"","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 12-summary-gmail-banner-dim.png
+down
+wait 1s
+shot 12-summary-gmail-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170013,"src":"Slack","title":"#firmware-review","subject":"","body":"Ada Lovelace: LGTM. One nit about the hyphenation, see the thread","sender":"","tel":"","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 13-slack-channel-banner-dim.png
+down
+wait 1s
+shot 13-slack-channel-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170014,"src":"Slack","title":"Margaret Hamilton","subject":"","body":"Two things before Monday:\n\n1. The release notes still mention the old banner.\n\n2. Can you check the dim look on the dev kit? It looked washed out on mine.\n\nThanks!","sender":"","tel":"","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 14-slack-dm-banner-dim.png
+down
+wait 1s
+shot 14-slack-dm-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170015,"src":"Calendar","title":"Tannlege \u2013 Dr. \xd8stby","subject":"","body":"10:30 \u2013 11:15 \xb7 Storgata 12","sender":"","tel":"","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 15-calendar-banner-dim.png
+down
+wait 1s
+shot 15-calendar-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170016,"src":"Parcelly","title":"Your parcel is ready for pickup","subject":"","body":"Pickup code 7314 at Kiwi Gr\xfcnerl\xf8kka until 14 Nov. Track it: https://parcel.example/t/AB12CD34","sender":"","tel":"","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 16-delivery-banner-dim.png
+down
+wait 1s
+shot 16-delivery-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170017,"src":"ntfy","title":"https://ci.example.org/ur/runs/4821","subject":"","body":"Build failed: clippy","sender":"","tel":"","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 17-url-ntfy-banner-dim.png
+down
+wait 1s
+shot 17-url-ntfy-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170018,"src":"Signal","title":"Velferdsteknologiavdelingen","subject":"","body":"M\xf8tet flyttes til rom 4B.","sender":"","tel":"","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 18-long-word-banner-dim.png
+down
+wait 1s
+shot 18-long-word-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170019,"src":"Signal","title":"Bj\xf8rn \xd8deg\xe5rd","subject":"","body":"\ud83d\udc4d","sender":"","tel":"","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 19-accents-banner-dim.png
+down
+wait 1s
+shot 19-accents-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
+
+gb GB({"t":"notify","id":1794170020,"src":"Signal","title":"Sameiet Bj\xf8rnstjerne Bj\xf8rnsons gate 12","subject":"","body":"Styret: Vannet stenges tirsdag 09\u201312.","sender":"","tel":"","reply":true})
+wait 1s
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 20-long-name-40-banner-dim.png
+down
+wait 1s
+shot 20-long-name-40-history-dim.png
+button
+wait 1s
+button
+wait 1s
+expect not screen-on
+expect quiet-night
