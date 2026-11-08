@@ -18,6 +18,7 @@ pub use self::marquee::{MARQUEE_FRAME, marquee_cycle, marquee_offset};
 
 use crate::display::Display;
 use crate::font;
+use crate::qr;
 use crate::theme::{self, Theme};
 
 pub use crate::theme::Color;
@@ -49,6 +50,12 @@ pub struct Canvas {
     front_valid: bool,
     /// Resolves colour roles to pixel bytes when pushing.
     theme: &'static Theme,
+    /// A QR code to show over the canvas this frame (see [`Canvas::qr`]),
+    /// if `qr_wanted`; and whether the panel shows it. Before `batch`, at
+    /// a fixed place for `scripts/screenshot.py`.
+    qr: qr::Matrix,
+    qr_wanted: bool,
+    qr_shown: bool,
     /// Pixel bytes waiting to be sent; see [`stream`].
     batch: [u8; BATCH],
     /// While set, drawing only touches these columns (for [`Canvas::marquee`]).
@@ -62,6 +69,9 @@ impl Canvas {
             front: [0; BYTES],
             front_valid: false,
             theme: &theme::ARCADE,
+            qr: [0; qr::SIZE],
+            qr_wanted: false,
+            qr_shown: false,
             batch: [0; BATCH],
             clip: None,
         }
@@ -80,8 +90,26 @@ impl Canvas {
     // Drawing
     // ==========================================================================
 
+    /// Clears the frame, starting a new one: every screen starts here.
     pub fn clear(&mut self, color: Color) {
         self.back.fill(color.0 | (color.0 << 4));
+        self.qr_wanted = false;
+    }
+
+    /// Shows `matrix` over this frame, at the panel's own resolution
+    /// rather than the canvas's: a QR code drawn on the canvas would have
+    /// modules of 3 or 6 panel pixels, where the panel fits 7, and every
+    /// pixel of a module helps a phone's camera. Dark on white, whatever
+    /// the theme, as scanners expect, with the standard quiet zone of four
+    /// modules: 33 × 7 = 231 pixels, nearly the whole panel.
+    ///
+    /// It's sent after the canvas, once, while the frames that want it
+    /// leave the canvas beneath it unchanged; whatever the canvas does send
+    /// meanwhile (a banner, say) it's drawn again over. The first frame
+    /// without it repaints the panel.
+    pub fn qr(&mut self, matrix: &qr::Matrix) {
+        self.qr = *matrix;
+        self.qr_wanted = true;
     }
 
     /// Sets one pixel. Out-of-bounds coordinates are silently clipped, so
@@ -199,6 +227,10 @@ impl Canvas {
 
     /// Sends every changed region of the canvas to the panel.
     pub async fn flush(&mut self, display: &mut Display) {
+        // Whether anything was sent, which may have covered a QR code, and
+        // whether everything was.
+        let mut sent = false;
+        let whole = !self.front_valid;
         // Consecutive changed rows are merged into one band whose horizontal
         // extent is the union of the rows' changed spans, so a band costs one
         // address-window setup plus its pixels.
@@ -209,14 +241,63 @@ impl Canvas {
                     band = Some((start, cols.start.min(span.start)..cols.end.max(span.end)));
                 }
                 (Some(span), None) => band = Some((row, span)),
-                (None, Some((start, cols))) => self.push(display, start..row, cols).await,
+                (None, Some((start, cols))) => {
+                    self.push(display, start..row, cols).await;
+                    sent = true;
+                }
                 (None, None) => {}
             }
         }
         if let Some((start, cols)) = band {
             self.push(display, start..HEIGHT, cols).await;
+            sent = true;
         }
         self.front_valid = true;
+        self.overlay(display, sent, whole).await;
+    }
+
+    /// Draws the QR code over the panel if this frame wants it and the
+    /// panel doesn't show it whole (`covered`: the canvas was just sent
+    /// over some of it); or, if the frame doesn't want it and the panel
+    /// shows it, repaints the canvas over it (unless it just was, `whole`).
+    async fn overlay(&mut self, display: &mut Display, covered: bool, whole: bool) {
+        const MODULE: usize = 7;
+        const MODULES: usize = qr::SIZE + 2 * 4;
+        const SIDE: usize = MODULES * MODULE;
+        const ORIGIN: usize = (WIDTH * SCALE - SIDE) / 2;
+        match (self.qr_wanted, self.qr_shown) {
+            (true, shown) if !shown || covered => {
+                let span = |at: usize| at as u16..(at + SIDE) as u16;
+                display.start_pixels(span(ORIGIN), span(ORIGIN)).await;
+                let row_bytes = SIDE * 2;
+                let mut used = 0;
+                for y in 0..SIDE {
+                    if used + row_bytes > BATCH {
+                        display.pixels(&self.batch[..used]).await;
+                        used = 0;
+                    }
+                    // Modules from the quiet zone's corner.
+                    let my = (y / MODULE).wrapping_sub(4);
+                    let line = &mut self.batch[used..used + row_bytes];
+                    for (x, px) in line.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+                        let mx = (x / MODULE).wrapping_sub(4);
+                        let dark = my < qr::SIZE && mx < qr::SIZE && self.qr[my] >> mx & 1 != 0;
+                        *px = if dark { [0x00, 0x00] } else { [0xFF, 0xFF] };
+                    }
+                    used += row_bytes;
+                }
+                display.pixels(&self.batch[..used]).await;
+                display.end_pixels();
+                self.qr_shown = true;
+            }
+            (false, true) => {
+                self.qr_shown = false;
+                if !whole {
+                    self.push(display, 0..HEIGHT, 0..WIDTH).await;
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Replaces the panel contents with the canvas using a retro "block
@@ -285,6 +366,8 @@ impl Canvas {
         }
         defmt::debug!("transition took {}ms", started.elapsed().as_millis());
         self.front_valid = true;
+        // Every block was sent.
+        self.overlay(display, true, true).await;
     }
 
     /// The changed columns in `row`, relative to what the panel shows.

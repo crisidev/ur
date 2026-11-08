@@ -60,6 +60,9 @@ BYTES = WIDTH * HEIGHT // 2
 # Colour roles in a theme's palette: `Color::COUNT` in src/theme.rs.
 ROLES = 15
 SCALE = 3
+# `qr::SIZE`, and the panel pixels a module takes (see `Canvas::qr`).
+QR_SIZE = 25
+QR_MODULE = 7
 KINDS = {
     "button": 1,
     "tap": 2,
@@ -160,7 +163,7 @@ def screenshot(elf: Path, out: Path, theme_name: str | None = None) -> None:
     if canvas == 0:
         sys.exit("the firmware hasn't registered its canvas yet")
     # `Canvas` is repr(C): back[3200], front[3200], front_valid, then (at the
-    # next 4-byte boundary) the theme pointer.
+    # next 4-byte boundary) the theme pointer, and a QR code (below).
     front = b"".join(struct.pack("<I", w) for w in read_words(canvas + BYTES, BYTES // 4))
     (theme,) = read_words(canvas + 2 * BYTES + 4, 1)
     if theme_name is not None:
@@ -175,9 +178,21 @@ def screenshot(elf: Path, out: Path, theme_name: str | None = None) -> None:
         (rgb565,) = struct.unpack(">H", palette_bytes[2 * i : 2 * i + 2])
         r, g, b = rgb565 >> 11, (rgb565 >> 5) & 0x3F, rgb565 & 0x1F
         palette.append((r << 3 | r >> 2, g << 2 | g >> 4, b << 3 | b >> 2))
+    # Then (after the theme pointer) a QR code's rows, and whether it's
+    # wanted and shown: drawn over the canvas at the panel's resolution
+    # (see `Canvas::qr`).
+    *qr, flags = read_words(canvas + 2 * BYTES + 8, QR_SIZE + 1)
+    qr_shown = (flags >> 8) & 0xFF != 0
+    side = (QR_SIZE + 8) * QR_MODULE
+    origin = (WIDTH * SCALE - side) // 2
     pixels = []
     for y in range(HEIGHT * SCALE):
         for x in range(WIDTH * SCALE):
+            if qr_shown and origin <= x < origin + side and origin <= y < origin + side:
+                mx, my = (x - origin) // QR_MODULE - 4, (y - origin) // QR_MODULE - 4
+                dark = 0 <= mx < QR_SIZE and 0 <= my < QR_SIZE and qr[my] >> mx & 1
+                pixels.append((0, 0, 0) if dark else (255, 255, 255))
+                continue
             i = (y // SCALE) * WIDTH + x // SCALE
             role = front[i // 2] >> 4 if i % 2 else front[i // 2] & 0x0F
             pixels.append(palette[role] if role < len(palette) else (255, 0, 255))

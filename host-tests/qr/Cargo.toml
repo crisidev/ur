@@ -1,0 +1,12 @@
+[package]
+name = "qr-test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Host-side tests for `src/qr.rs` (included via `#[path]`), against a
+# reference encoder's output. Not part of the firmware workspace: run
+# `cargo test` from this directory.
+[workspace]
+
+[dependencies]

@@ -74,6 +74,7 @@ mod packet_pool;
 mod phone;
 mod power;
 mod ppg;
+mod qr;
 mod route;
 mod sleep;
 mod snapshot;

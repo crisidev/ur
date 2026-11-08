@@ -73,6 +73,9 @@ mod motor;
 mod nav;
 #[path = "../../src/phone.rs"]
 mod phone;
+#[path = "../../src/qr.rs"]
+#[allow(dead_code)]
+mod qr;
 #[path = "../../src/route.rs"]
 #[allow(dead_code)]
 mod route;

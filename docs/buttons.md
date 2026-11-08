@@ -51,11 +51,13 @@ Assistant's BTHome integration picks up through any Bluetooth adapter or
 [ESPHome Bluetooth proxy][proxy] within range: no phone, no pairing.
 Presses are encrypted with a key the watch made for itself.
 
-1. On the watch, **Settings → HA KEY** shows the key (32 characters)
-   and the watch's Bluetooth address.
+1. On the watch, **Settings → HA KEY** shows the key as a QR code;
+   scan it with the phone's camera, and copy the text it reads. A tap
+   shows the key as text instead (32 characters), with the watch's
+   Bluetooth address.
 2. Press any grid button. Home Assistant discovers a BTHome device with
-   that address (Settings → Devices & services); add it, and type the
-   key, without the spaces.
+   that address (Settings → Devices & services); add it, and paste (or
+   type) the key.
 3. Each gesture is a `dimmer` event, turning right by the code:
 
    | Gesture    | Event class | Entity (rename it) |

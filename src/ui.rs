@@ -51,8 +51,9 @@
 //!   sunset, light ones after sunrise; each group remembers its own), the
 //!   brightness ("LIGHT", auto or soft; see [`crate::brightness`]), the
 //!   button grid ("BUTTONS": off, or where its presses go), and, on the
-//!   last row ("HA KEY"), a page with the key Home Assistant needs for
-//!   them (see [`crate::bthome`]), which any touch closes.
+//!   last row ("HA KEY"), the key Home Assistant needs for them (see
+//!   [`crate::bthome`]): a QR code to scan, then, at a tap, as text with
+//!   the watch's address. Another tap, or anything else, closes it.
 //! - On the button grid, taps and holds are the grid's (see [`buttons`]
 //!   for how they become presses). While a press waits to see whether
 //!   more follows, its buttons stay lit; once sent, the last one shows the
@@ -249,8 +250,11 @@ enum Screen {
     /// Asking whether to switch to storage mode: in no line, only reached
     /// by a long press on the info screen.
     Storage,
-    /// Home Assistant's key, for the button grid: in no line, only reached
-    /// by a tap on the settings screen's last row.
+    /// Home Assistant's key, for the button grid, as a QR code to scan:
+    /// in no line, only reached by a tap on the settings screen's last
+    /// row.
+    HaQr,
+    /// The same, as text, with the watch's address: a tap on the QR code.
     HaKey,
 }
 
@@ -692,7 +696,7 @@ impl App {
     fn place(&self) -> Place {
         let screen = match self.screen {
             Screen::Storage => Screen::Info,
-            Screen::HaKey => Screen::Settings,
+            Screen::HaQr | Screen::HaKey => Screen::Settings,
             screen => screen,
         };
         Side::ALL
@@ -1001,7 +1005,10 @@ impl App {
                     self.go_to(Screen::Storage, Sweep::RightToLeft);
                     motor::buzz(Pattern::NOTIFY);
                 }
-                (_, Screen::HaKey) => self.go_to(Screen::Settings, Sweep::LeftToRight),
+                (Gesture::Tap, Screen::HaQr) => self.go_to(Screen::HaKey, Sweep::RightToLeft),
+                (_, Screen::HaQr | Screen::HaKey) => {
+                    self.go_to(Screen::Settings, Sweep::LeftToRight)
+                }
                 (Gesture::Tap | Gesture::LongPress, Screen::Buttons) => self.on_grid(touch, now),
                 (Gesture::SwipeLeft, _) => self.navigate(nav::Swipe::Left),
                 (Gesture::SwipeRight, _) => self.navigate(nav::Swipe::Right),
@@ -1038,7 +1045,7 @@ impl App {
                     Some(Row::Theme) => self.next_theme(),
                     Some(Row::Light) => self.brightness = self.brightness.next(),
                     Some(Row::Buttons) => self.buttons = self.buttons.next(),
-                    Some(Row::HaKey) => self.go_to(Screen::HaKey, Sweep::RightToLeft),
+                    Some(Row::HaKey) => self.go_to(Screen::HaQr, Sweep::RightToLeft),
                     None => {}
                 },
                 // TODO: remove once something real uses the motor; for now
@@ -1760,6 +1767,7 @@ impl App {
             }
             Screen::Info => render_info(canvas, status),
             Screen::Storage => render_storage_prompt(canvas),
+            Screen::HaQr => render_ha_qr(canvas, status.bthome.as_ref()),
             Screen::HaKey => render_ha_key(canvas, status.bthome.as_ref()),
         }
         match self.place() {
@@ -1771,7 +1779,7 @@ impl App {
                 edge_bar(canvas, Side::Above, Color::ACCENT);
             }
             Place::Line { side, index }
-                if !matches!(self.screen, Screen::Storage | Screen::HaKey) =>
+                if !matches!(self.screen, Screen::Storage | Screen::HaQr | Screen::HaKey) =>
             {
                 render_hint(canvas, side, index, self.line(side).len());
             }
@@ -2798,6 +2806,28 @@ fn render_settings(
     }
 }
 
+/// Home Assistant's key as a QR code, filling the screen (see
+/// [`Canvas::qr`]), for a phone's camera: what it reads is the key as
+/// text (32 hex digits, which Home Assistant takes in capitals too), to
+/// paste into its BTHome integration. A tap shows it as text instead.
+fn render_ha_qr(canvas: &mut Canvas, identity: Option<&Identity>) {
+    canvas.clear(BACKGROUND);
+    let Some(identity) = identity else {
+        canvas.text_centered(40, 36, "NO KEY YET", Color::TEXT_DIM);
+        return;
+    };
+    let mut text = [0u8; 32];
+    for (pair, &byte) in text.chunks_mut(2).zip(&identity.key) {
+        pair[0] = HEX[usize::from(byte >> 4)];
+        pair[1] = HEX[usize::from(byte & 15)];
+    }
+    if let Some(matrix) = crate::qr::encode(&text) {
+        canvas.qr(&matrix);
+    }
+}
+
+const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
 /// Home Assistant's key, for typing into its BTHome integration: 32 hex
 /// digits, big, in four rows of two groups of four, and the address it'll
 /// find the watch at, for picking it out among what it discovers.
@@ -2808,7 +2838,6 @@ fn render_ha_key(canvas: &mut Canvas, identity: Option<&Identity>) {
         canvas.text_centered(40, 36, "NO KEY YET", Color::TEXT_DIM);
         return;
     };
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let digit = |byte: u8, high: bool| HEX[usize::from(if high { byte >> 4 } else { byte & 15 })];
     for (row, bytes) in identity.key.chunks(4).enumerate() {
         let mut text = [b' '; 9];
