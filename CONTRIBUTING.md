@@ -18,7 +18,7 @@ needs nothing special; LFS stores it.
 
 - `src/`: the firmware. `main.rs` starts the tasks and runs the UI loop;
   each module's documentation explains its part. The hardware-free ones
-  (`ppg`, `sleep`, `stages`, `alarm`, `glance`, `heart_schedule`,
+  (`ppg`, `sleep`, `stages`, `alarm`, `aranet`, `glance`, `heart_schedule`,
   `brightness`, `temperature`, `battery`, `snapshot`, `nav`, `day`,
   `route`, `arrival`, `decimal`, `gesture`, `wake`, `gb`, `phone`,
   `buttons`, `qr`, and `bthome`'s encoding) are pure logic, tested on the

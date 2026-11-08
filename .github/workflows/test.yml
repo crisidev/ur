@@ -36,7 +36,7 @@ jobs:
       fail-fast: false
       matrix:
         toolchain: [pinned, beta]
-        crate: [alarm, arrival, battery, brightness, bthome, buttons, day, decimal, font, gb, gesture, glance, heart_schedule, nav, ppg, qr, route, sleep, snapshot, temperature, theme, wake]
+        crate: [alarm, aranet, arrival, battery, brightness, bthome, buttons, day, decimal, font, gb, gesture, glance, heart_schedule, nav, ppg, qr, route, sleep, snapshot, temperature, theme, wake]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
       - name: Install the pinned toolchain
