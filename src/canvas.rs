@@ -292,6 +292,15 @@ impl Canvas {
         if !self.front_valid {
             return Some(0..WIDTH);
         }
+        // Most rows don't change from one frame to the next: compare them
+        // whole (a row is whole bytes, as `WIDTH` is even) before looking
+        // for where they differ a pixel at a time. Built for size, the
+        // per-pixel comparison is a function call per pixel, and scanning
+        // every row that way made a flush take a third longer.
+        let bytes = row * WIDTH / 2..(row + 1) * WIDTH / 2;
+        if self.back[bytes.clone()] == self.front[bytes] {
+            return None;
+        }
         let differs =
             |x: &usize| nibble(&self.back, row * WIDTH + x) != nibble(&self.front, row * WIDTH + x);
         let first = (0..WIDTH).find(differs)?;
