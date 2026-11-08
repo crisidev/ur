@@ -26,9 +26,11 @@
 //! 3. **Rejection**: a window only yields a rate if it looks like a pulse.
 //!    Its amplitude must be steady (motion makes bursts), and the
 //!    autocorrelation peak must be high (a periodic signal correlates
-//!    strongly with itself one period later; filtered noise doesn't).
-//!    Finally, [`Consensus`] only reports once several windows, spread over
-//!    more than one window's worth of time, agree.
+//!    strongly with itself one period later; filtered noise doesn't). A
+//!    slow rate must also come from a steady light level: a shifting
+//!    sensor's filtered steps look like a slow pulse (see
+//!    [`MAX_SLOW_DRIFT`]). Finally, [`Consensus`] only reports once several
+//!    windows, spread over more than one window's worth of time, agree.
 //!
 //! Nothing here touches hardware: it takes raw counts and timestamps, and
 //! makes no assumptions about the counts' scale, so it can be exercised on
@@ -107,6 +109,25 @@ const MIN_CORRELATION: f32 = 0.55;
 /// signal is then roughly inverted).
 const OCTAVE_TOLERANCE: f32 = 0.6;
 
+/// Windows slower than this (BPM) must have a steady light level (see
+/// [`MAX_SLOW_DRIFT`]).
+const SLOW_BPM: f32 = 50.0;
+
+/// How far the raw light level may move across a window slower than
+/// [`SLOW_BPM`]: the spread of its quarters' mean levels, as a fraction of
+/// the lowest (see [`Ppg::drift`]).
+///
+/// When the sensor shifts against the skin, the level steps or ramps by
+/// tens of percent, and the highpass turns that into a slow swing just
+/// above its corner, which can correlate with itself well enough to pass
+/// for a pulse of 40–45 BPM. In a field log, a desk-bound wrist read 42
+/// BPM (a Garmin said 67) from three windows of quality 0.57–0.62 while the
+/// level climbed 14–24% across each. Over 140 accepted windows from field
+/// logs, genuine ones under 50 BPM (asleep, down to 45) moved at most 4%;
+/// faster ones, at a desk, up to 15% while still matching the Garmin, which
+/// is why faster windows are left alone.
+const MAX_SLOW_DRIFT: f32 = 0.10;
+
 /// Below this RMS (in raw counts), the window is flat: no light, a
 /// saturated or stuck sensor, or ADC noise alone.
 const MIN_RMS: f32 = 0.5;
@@ -174,6 +195,9 @@ pub struct Estimate {
     pub period: f32,
     /// The autocorrelation at the beat period: how periodic the window was.
     pub quality: f32,
+    /// How far the raw light level moved across the window (see
+    /// [`Ppg::drift`]).
+    pub drift: f32,
 }
 
 impl Estimate {
@@ -204,6 +228,9 @@ pub enum Rejection {
     /// [`MIN_CORRELATION`]), and `bpm` its rate (NaN if there was no peak
     /// at all).
     Aperiodic { quality: f32, bpm: f32 },
+    /// Slow, while the light level shifted: most likely the sensor moving
+    /// on the skin (see [`MAX_SLOW_DRIFT`]).
+    Drifting { drift: f32, bpm: f32 },
 }
 
 /// Filters raw samples and estimates the heart rate from them every
@@ -223,7 +250,17 @@ pub struct Ppg {
     next: usize,
     /// Samples since the last reset, saturating.
     seen: usize,
+    /// The mean raw level of each [`ESTIMATE_EVERY`]-sample block of the
+    /// window, as a ring (`block_next` is the oldest), and the sum of the
+    /// block in progress: the window's four quarters, for [`Ppg::drift`].
+    blocks: [f32; BLOCKS],
+    block_next: usize,
+    block_sum: f32,
 }
+
+/// Blocks of [`ESTIMATE_EVERY`] samples per window.
+const BLOCKS: usize = WINDOW / ESTIMATE_EVERY;
+const _: () = assert!(WINDOW == BLOCKS * ESTIMATE_EVERY);
 
 impl Default for Ppg {
     fn default() -> Self {
@@ -240,6 +277,9 @@ impl Ppg {
             window: [0.0; WINDOW],
             next: 0,
             seen: 0,
+            blocks: [0.0; BLOCKS],
+            block_next: 0,
+            block_sum: 0.0,
         }
     }
 
@@ -268,6 +308,12 @@ impl Ppg {
         self.next = (self.next + 1) % WINDOW;
 
         let stored = self.seen - SETTLE;
+        self.block_sum += raw;
+        if stored.is_multiple_of(ESTIMATE_EVERY) {
+            self.blocks[self.block_next] = self.block_sum / ESTIMATE_EVERY as f32;
+            self.block_next = (self.block_next + 1) % BLOCKS;
+            self.block_sum = 0.0;
+        }
         if stored >= WINDOW && (stored - WINDOW).is_multiple_of(ESTIMATE_EVERY) {
             Some(self.estimate())
         } else {
@@ -360,14 +406,37 @@ impl Ppg {
                 bpm: f32::NAN,
             });
         };
-        let estimate = Estimate { period, quality };
-        if quality < MIN_CORRELATION || !(MIN_BPM..=MAX_BPM).contains(&estimate.bpm()) {
-            return Err(Rejection::Aperiodic {
-                quality,
-                bpm: estimate.bpm(),
+        let estimate = Estimate {
+            period,
+            quality,
+            drift: self.drift(),
+        };
+        let bpm = estimate.bpm();
+        if quality < MIN_CORRELATION || !(MIN_BPM..=MAX_BPM).contains(&bpm) {
+            return Err(Rejection::Aperiodic { quality, bpm });
+        }
+        if bpm < SLOW_BPM && estimate.drift > MAX_SLOW_DRIFT {
+            return Err(Rejection::Drifting {
+                drift: estimate.drift,
+                bpm,
             });
         }
         Ok(estimate)
+    }
+}
+
+impl Ppg {
+    /// How far the raw light level moved across the window: the spread of
+    /// its quarters' mean levels, as a fraction of the lowest. Quarters
+    /// (2 s) rather than samples, so the pulse and noise average out.
+    fn drift(&self) -> f32 {
+        let (low, high) = self
+            .blocks
+            .iter()
+            .fold((f32::INFINITY, 0.0f32), |(low, high), &b| {
+                (low.min(b), high.max(b))
+            });
+        if low > 0.0 { (high - low) / low } else { 0.0 }
     }
 }
 

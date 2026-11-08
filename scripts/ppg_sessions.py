@@ -3,7 +3,10 @@ for host-tests/ppg's replay, with the Garmin's heart rate alongside.
 
 Writes one line per segment (samples at one level, uninterrupted):
 
-    <utc start> <garmin bpm or 0> <conversion period µs> <outcome> <sample> ...
+    <utc start> <garmin bpm or 0> <conversion period µs> <outcome> <sample> ... | <movement> ...
+
+with the wrist's movement (`activity::movement`) as the firmware saw it at
+each second's level check, so the replay can veto windows as it does.
 
 Usage: python -I scripts/ppg_sessions.py HEALTH_CONNECT_DB DECODED_LOG OUT
 
@@ -35,24 +38,38 @@ def garmin(t):
 segments, current, period = [], None, 37500.0
 for line in log:
     up = float(line.split()[0])
+    # A reading is logged before the session's last part-second of samples
+    # (0.9.1 on; earlier logs don't have it), so its segment closes at the
+    # next heart line that isn't samples.
+    if current and current.get("read") and "heart: " in line and "heart: samples" not in line:
+        segments.append(current)
+        current = None
     if m := re.search(r"heart: level .* period ([\d.]+)", line):
         period = float(m[1])
     elif m := re.search(r"heart: samples \[([\d, ]*)\]", line):
         if current is None:
-            current = {"t": BASE + up - 1, "samples": [], "outcome": "-"}
+            current = {"t": BASE + up - 1, "samples": [], "movement": [], "outcome": "-"}
         current["samples"] += [int(v) for v in m[1].split(", ") if v]
+        if mv := re.search(r"movement (\d+)", line):
+            current["movement"].append(mv[1])
         current["period"] = period
-    elif current and ("switching to level" in line or re.search(r"INFO  heart: (no reading|\d+ BPM after|not on)", line)):
-        if m := re.search(r"INFO  heart: (\d+) BPM", line):
-            current["outcome"] = m[1]
-        elif "no reading" in line:
+        if current.get("read"):
+            segments.append(current)
+            current = None
+    elif current and (m := re.search(r"INFO  heart: (\d+) BPM after", line)):
+        current["outcome"] = m[1]
+        current["read"] = True
+    elif current and ("switching to level" in line or re.search(r"INFO  heart: (no reading|not on|gave up)", line)):
+        if "no reading" in line or "gave up" in line:
             current["outcome"] = "none"
         segments.append(current)
         current = None
+if current:
+    segments.append(current)
 
 with open(sys.argv[3], "w") as out:
     for s in segments:
         mid = s["t"] + len(s["samples"]) * s["period"] / 2e6
         out.write(f"{s['t']:.0f} {garmin(mid)} {s['period']:.1f} {s['outcome']} "
-                  + " ".join(map(str, s["samples"])) + "\n")
+                  + " ".join(map(str, s["samples"])) + " | " + " ".join(s["movement"]) + "\n")
 print(f"{len(segments)} segments, {sum(len(s['samples']) for s in segments)} samples")

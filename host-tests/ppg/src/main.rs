@@ -486,48 +486,120 @@ fn tolerance(scenario: &Scenario) -> f64 {
 // Replaying real wrists
 // ==============================================================================
 
-/// Replays sessions extracted from a field log (`scripts/ppg_sessions.py`
-/// writes them: UTC start, a reference rate, the conversion period, the
-/// firmware's outcome, then raw samples) through `Ppg` and `Consensus`, and
+/// What `heart::MOTION_LIMIT` is: movement above which the firmware
+/// doesn't trust a window (when most of its seconds are above it).
+const MOTION_LIMIT: u16 = 1500;
+/// Samples per level check in the firmware (`heart::LEVEL_CHECK_SAMPLES`):
+/// one movement reading each.
+const LEVEL_CHECK_SAMPLES: usize = 27;
+
+/// A session extracted from a field log by `scripts/ppg_sessions.py`, one
+/// per line: UTC start, a reference rate (another watch's, or 0), the
+/// conversion period, the firmware's outcome, then raw samples, and after
+/// a `|`, the movement at each level check (older extracts have none).
+struct Recorded {
+    start: String,
+    reference: f32,
+    period: f32,
+    outcome: String,
+    samples: Vec<u32>,
+    movement: Vec<u16>,
+}
+
+fn parse_sessions(text: &str) -> Vec<Recorded> {
+    let number = |v: &str| -> f32 { v.parse().expect("a number") };
+    text.lines()
+        .map(|line| {
+            let (signal, movement) = line.split_once(" | ").unwrap_or((line, ""));
+            let mut fields = signal.split_whitespace();
+            let mut next = || fields.next().expect("session line has its header");
+            let (start, reference, period, outcome) = (next(), next(), next(), next());
+            Recorded {
+                start: start.into(),
+                reference: number(reference),
+                period: number(period),
+                outcome: outcome.into(),
+                samples: fields.map(|v| v.parse().expect("a number")).collect(),
+                movement: movement
+                    .split_whitespace()
+                    .map(|v| v.parse().expect("a number"))
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
+/// A window's verdict in a replay: the estimator's, or the firmware's
+/// movement veto over an estimate.
+enum Verdict {
+    Window(Result<ppg::Estimate, Rejection>),
+    Moving,
+}
+
+/// Every window of a recorded session, with the sample it ended at, as the
+/// firmware would have judged it.
+fn windows(session: &Recorded) -> Vec<(usize, Verdict)> {
+    let mut ppg = Ppg::new();
+    let mut verdicts = Vec::new();
+    for (i, &sample) in session.samples.iter().enumerate() {
+        let Some(verdict) = ppg.push(sample) else {
+            continue;
+        };
+        let checks = ((i + 1) / LEVEL_CHECK_SAMPLES).min(session.movement.len());
+        let recent = &session.movement[checks.saturating_sub(8)..checks];
+        let moving = recent.iter().filter(|&&m| m > MOTION_LIMIT).count();
+        verdicts.push((
+            i,
+            match verdict {
+                Ok(_) if moving * 2 > recent.len() => Verdict::Moving,
+                verdict => Verdict::Window(verdict),
+            },
+        ));
+    }
+    verdicts
+}
+
+/// Replays sessions extracted from a field log through `Ppg` and
+/// `Consensus`, vetoing windows on movement as the firmware does, and
 /// prints each window's verdict next to the reference.
 fn replay(path: &str) {
     let text = std::fs::read_to_string(path).expect("readable sessions file");
     let (mut sessions, mut read, mut right) = (0, 0, 0);
-    for line in text.lines() {
-        let mut fields = line.split_whitespace();
-        let mut next = || fields.next().expect("session line has its header");
-        let (start, reference, period, outcome) = (next(), next(), next(), next());
-        let reference: f32 = reference.parse().expect("a number");
-        let period: f32 = period.parse().expect("a number");
-        let samples: Vec<u32> = fields.map(|v| v.parse().expect("a number")).collect();
-        let mut ppg = Ppg::new();
+    for session in parse_sessions(&text) {
         let mut consensus = Consensus::new();
-        let mut verdicts = Vec::new();
         let mut reading = None;
-        for (i, &sample) in samples.iter().enumerate() {
-            let Some(verdict) = ppg.push(sample) else {
-                continue;
-            };
+        let mut verdicts = Vec::new();
+        for (i, verdict) in windows(&session) {
             verdicts.push(match verdict {
-                Ok(estimate) => {
-                    let bpm = estimate.bpm_at(period);
+                Verdict::Moving => "moving".into(),
+                Verdict::Window(Ok(estimate)) => {
+                    let bpm = estimate.bpm_at(session.period);
                     if let Some(agreed) = consensus.push(bpm)
                         && reading.is_none()
                     {
-                        reading = Some((agreed, i as f32 * period / 1e6));
+                        reading = Some((agreed, i as f32 * session.period / 1e6));
                     }
-                    format!("{bpm:.0}({:.2})", estimate.quality)
+                    format!(
+                        "{bpm:.0}({:.2},{:.0}%)",
+                        estimate.quality,
+                        estimate.drift * 100.0
+                    )
                 }
-                Err(Rejection::Flat) => "flat".into(),
-                Err(Rejection::Unsteady { ratio }) => format!("U{ratio:.1}"),
-                Err(Rejection::Aperiodic { quality, bpm }) => format!("a{bpm:.0}({quality:.2})"),
+                Verdict::Window(Err(Rejection::Flat)) => "flat".into(),
+                Verdict::Window(Err(Rejection::Unsteady { ratio })) => format!("U{ratio:.1}"),
+                Verdict::Window(Err(Rejection::Aperiodic { quality, bpm })) => {
+                    format!("a{bpm:.0}({quality:.2})")
+                }
+                Verdict::Window(Err(Rejection::Drifting { drift, bpm })) => {
+                    format!("d{bpm:.0}({:.0}%)", drift * 100.0)
+                }
             });
         }
         sessions += 1;
         let verdict = match reading {
             Some((bpm, at)) => {
                 read += 1;
-                if reference > 0.0 && (f32::from(bpm) - reference).abs() <= 8.0 {
+                if session.reference > 0.0 && (f32::from(bpm) - session.reference).abs() <= 8.0 {
                     right += 1;
                 }
                 format!("{bpm} BPM at {at:.0} s")
@@ -535,7 +607,10 @@ fn replay(path: &str) {
             None => "none".into(),
         };
         println!(
-            "{start} ref {reference:3.0} fw {outcome:>4} replay {verdict:16} {}",
+            "{} ref {:3.0} fw {:>4} replay {verdict:16} {}",
+            session.start,
+            session.reference,
+            session.outcome,
             verdicts.join(" ")
         );
     }
@@ -703,6 +778,54 @@ mod tests {
             conversions.poll(value(t), t, |v| emitted.push(v));
         }
         assert_eq!(emitted, [1, 2, 2, 2, 3]);
+    }
+
+    /// The accepted windows' rates in a recorded session.
+    fn accepted(session: &Recorded) -> Vec<f32> {
+        windows(session)
+            .into_iter()
+            .filter_map(|(_, verdict)| match verdict {
+                Verdict::Window(Ok(estimate)) => Some(estimate.bpm_at(session.period)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Desk sessions from a field log in which the sensor shifted on the
+    /// skin, and the shifting passed for a slow pulse: one read 42 BPM
+    /// with a Garmin on the other wrist at 67-69. (Its third window isn't
+    /// in the log, which ends each session at its last whole second.)
+    #[test]
+    fn a_shifting_sensor_is_not_a_slow_pulse() {
+        let text = include_str!("../fixtures/desk-drift.txt");
+        for session in parse_sessions(text) {
+            let slow: Vec<_> = accepted(&session)
+                .into_iter()
+                .filter(|&bpm| bpm < 50.0)
+                .collect();
+            assert!(slow.is_empty(), "{}: accepted {slow:?}", session.start);
+        }
+    }
+
+    /// The same night's sessions with slow genuine pulses (45-50 BPM,
+    /// asleep, the Garmin agreeing): every window the firmware accepted is
+    /// still accepted. (The reference is the Garmin's nearest sample, on
+    /// the other wrist, which can be a few BPM off a 12 s session.)
+    #[test]
+    fn slow_night_pulses_are_still_read() {
+        let text = include_str!("../fixtures/night-slow.txt");
+        for session in parse_sessions(text) {
+            let rates = accepted(&session);
+            assert!(rates.len() >= 2, "{}: only {rates:?}", session.start);
+            for bpm in rates {
+                assert!(
+                    (bpm - session.reference).abs() <= 10.0,
+                    "{}: {bpm:.0} BPM against {}",
+                    session.start,
+                    session.reference
+                );
+            }
+        }
     }
 
     #[test]

@@ -578,6 +578,13 @@ async fn measure(
         ticker.next().await;
         let now = Instant::now();
         if !watching() && (measured.is_some() || now - started >= SESSION_LIMIT) {
+            // The last part-second too, which holds the end of the last
+            // window: without it, a replay is a window short.
+            trace!(
+                "heart: samples {=[?]} movement {}",
+                second.as_slice(),
+                activity::movement()
+            );
             return Ok(match measured {
                 Some(bpm) => Ended::Measured(bpm),
                 None => Ended::TimedOut,
@@ -666,7 +673,10 @@ async fn measure(
             );
             continue;
         }
-        debug!("heart: window {} BPM (quality {})", bpm, estimate.quality);
+        debug!(
+            "heart: window {} BPM (quality {}, drift {})",
+            bpm, estimate.quality, estimate.drift
+        );
         if let Some(bpm) = consensus.push(bpm) {
             if measured.is_none() {
                 info!(
