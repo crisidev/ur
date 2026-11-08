@@ -98,18 +98,35 @@ pub fn has_fix() -> bool {
 // - a long Bluetooth gap: the phone was off or far away.
 //
 // Plus a daily refresh, for same-time-zone trips.
+//
+// What a request does on the phone (Gadgetbridge's Bangle.js driver,
+// `setupGPSUpdateTimer`): with "Use phone GPS data" on, it starts
+// Android's GPS and network location providers, and forwards every fix
+// until we say stop. It never sends the last known location, so with no
+// fix (indoors, with GPS alone) nothing comes. And each fix is dropped
+// unless Gadgetbridge's own "Keep location updated" setting is on, and
+// Android only delivers fixes to it in the background with location
+// allowed "all the time". README FAQ C03 has the steps.
 
 const MAX_FIX_AGE: Duration = Duration::from_secs(24 * 3600);
 const LONG_ABSENCE: Duration = Duration::from_secs(2 * 3600);
 /// Stop asking if no fix arrives within this long (no GPS reception, or
 /// GPS forwarding is off in Gadgetbridge); try again at the next trigger.
 pub const FIX_TIMEOUT: Duration = Duration::from_secs(120);
+/// After asking, don't ask again on reconnecting for this long. Without
+/// it, a phone that never sends a fix (see above) was asked at every
+/// reconnect, each time running its GPS for [`FIX_TIMEOUT`] and showing
+/// Gadgetbridge's "GPS" notification; flaky links reconnect every few
+/// minutes. A changed time zone still asks at once.
+const RETRY_AFTER: Duration = Duration::from_secs(3600);
 
 #[derive(Default)]
 pub struct GpsPolicy {
     last_fix: Option<Instant>,
     last_offset: Option<i16>,
     disconnected_at: Option<Instant>,
+    /// When we last asked (see [`RETRY_AFTER`]).
+    last_request: Option<Instant>,
     /// A trigger fired; ask at the next opportunity.
     wanted: bool,
 }
@@ -124,7 +141,8 @@ impl GpsPolicy {
             .disconnected_at
             .is_some_and(|at| now - at >= LONG_ABSENCE);
         let stale = self.last_fix.is_none_or(|at| now - at >= MAX_FIX_AGE);
-        self.wanted |= long_absence || stale;
+        let asked_lately = self.last_request.is_some_and(|at| now - at < RETRY_AFTER);
+        self.wanted |= (long_absence || stale) && !asked_lately;
     }
 
     pub fn on_time_sync(&mut self, offset_minutes: i16) {
@@ -142,8 +160,12 @@ impl GpsPolicy {
 
     /// Whether to ask the phone for GPS now. Clears the request: if the fix
     /// doesn't come, we wait for the next trigger rather than nagging.
-    pub fn take_request(&mut self) -> bool {
-        core::mem::take(&mut self.wanted)
+    pub fn take_request(&mut self, now: Instant) -> bool {
+        let wanted = core::mem::take(&mut self.wanted);
+        if wanted {
+            self.last_request = Some(now);
+        }
+        wanted
     }
 }
 

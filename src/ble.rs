@@ -457,7 +457,7 @@ fn become_phone(
     let _ = OUTBOX.try_send(Outgoing::Version);
     let mut gps = gps.borrow_mut();
     gps.on_connect(Instant::now());
-    if gps.take_request() {
+    if gps.take_request(Instant::now()) {
         request_gps(gps_deadline);
     }
 }
@@ -625,7 +625,7 @@ async fn serve(
                     }
                 }
                 if gps_deadline.is_some_and(|at| at <= now) {
-                    warn!("ble: no location from the phone; is GPS forwarding enabled?");
+                    warn!("ble: no location from the phone (see FAQ C03)");
                     gps_deadline = None;
                     send(server, conn, Outgoing::GpsPower(false)).await;
                 }
@@ -716,7 +716,9 @@ async fn serve(
                             // and so receive the next update.
                             crate::firmware::confirm().await;
                             gps.borrow_mut().on_time_sync(offset_minutes);
-                            if gps.borrow_mut().take_request() && gps_deadline.is_none() {
+                            if gps.borrow_mut().take_request(Instant::now())
+                                && gps_deadline.is_none()
+                            {
                                 request_gps(&mut gps_deadline);
                             }
                         }

@@ -127,8 +127,8 @@ hardware by a human.
   talks to a phone that paired this way: if it shows "NOT PAIRED" or
   "PAIRING LOST", see FAQ C01 or C02. Gadgetbridge then syncs time,
   location, notifications, activity, sleep, and heart rate on its own. For
-  sun-based themes away from Oslo, turn on "Use phone GPS data" in the
-  watch's Gadgetbridge settings.
+  sun-based themes away from Oslo, the phone has to share its location:
+  see FAQ C03.
 - **Directions:** Gadgetbridge forwards them by default, from Google Maps
   (it reads its navigation notification) and OsmAnd; CoMaps needs turning
   on, under Settings, "Navigation apps". Directions disappear when
@@ -268,6 +268,27 @@ it (it reconnected without the shared key), for instance after the watch
 was removed from Android's Bluetooth settings. Remove the watch from both
 Android's Bluetooth settings and Gadgetbridge, then add it again in
 Gadgetbridge and type the passkey.
+
+### C03: The watch never gets a location from the phone
+
+Without one, the sun-based themes and brightness follow the sun in Oslo.
+The watch asks Gadgetbridge for the phone's location when it connects (at
+most once an hour, and again when the time zone changes), and keeps the
+last one it got. Gadgetbridge only passes on fresh locations, never the
+last known one, and drops them unless all of these are on:
+
+1. In the watch's settings in Gadgetbridge: "Use phone GPS data". Leave
+   "Only use network to determine location" off unless you'd rather spare
+   the GPS; network location works indoors, GPS needs the sky.
+2. In Gadgetbridge's own settings, under Location: "Keep location
+   updated".
+3. In Android's settings for the Gadgetbridge app: location permission
+   "Allow all the time" (Gadgetbridge asks from the background), and
+   location itself on.
+
+Phones without Google Play services may have no network location: then
+nothing comes indoors, until the watch happens to ask while the phone is
+outside.
 
 ### U01: A phone update fails at "Enabling bootloader" or with "GATT CONN TIMEOUT"
 
