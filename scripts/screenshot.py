@@ -33,6 +33,8 @@ until it disconnects, for the music screen and the clock's media icon; it
 only shows while the phone is connected.
 `steps:N` counts N steps as walked now (up to 65535), to test what keeps
 them across resets and updates.
+`bitmaps` sends a notification as Gadgetbridge does with its "Text as
+Bitmaps" setting on (a word as an image), through the watch's parser.
 `press:X,Y` puts a simulated finger down at X,Y (or moves it there, if
 it's down already), and `lift` lifts it: these go through the touch
 task as the touch controller's reports would, so a long press is
@@ -74,6 +76,7 @@ KINDS = {
     "steps": 15,
     "press": 16,
     "lift": 17,
+    "bitmaps": 18,
 }
 
 

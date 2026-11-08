@@ -36,10 +36,21 @@ static UR_CANVAS: AtomicPtr<Canvas> = AtomicPtr::new(core::ptr::null_mut());
 /// and the clock's media icon; gone once the phone disconnects), 15 `x` + 256 × `y`
 /// steps, as if walked now (to test what keeps them across resets and
 /// updates), 16 a simulated finger down at, or moved to, (`x`, `y`), held
-/// there until 17 lifts it (see [`input_task`])) and the next two the
-/// canvas x and y. Cleared once taken.
+/// there until 17 lifts it (see [`input_task`]), 18 [`BITMAPS_LINE`], a
+/// notification as Gadgetbridge sends it with "Text as Bitmaps" on,
+/// through the phone's parser) and the next two the canvas x and y.
+/// Cleared once taken.
 #[unsafe(no_mangle)]
 static UR_INPUT: AtomicU32 = AtomicU32::new(0);
+
+/// Input 18: a notification from "Mamma 妈妈" as Gadgetbridge sends it
+/// with its "Text as Bitmaps" setting on: the second word as an image
+/// (see `gb::Images`; boxed crosses, standing in for the characters), the
+/// whole sender in base64, as Gadgetbridge picks it when that's shorter.
+/// Through [`crate::gb::parse`] and on to the UI as `ble` passes it, to
+/// check on the watch that the image is left out and the UI says how to
+/// turn the setting off (`sim/gadgetbridge.txt` has the same line).
+const BITMAPS_LINE: &[u8] = br#"GB({"t":"notify","id":1762436802,"src":"Signal","title":"","subject":"","body":"Dinner on Sunday?","sender":atob("TWFtbWEgACUVgQAAAAAAAAAAAAAAAAAAAP//H//mABjAAygBRQApIBIkAkiBERAiQhCIQhIJBEEgkDAiBgSBgRAwJBIIgkEhCEQhCRAiIgRJAJEgElACigBTAAxgAZ//4//8AAAAAAAAAAAAAA=="),"tel":"","reply":true})"#;
 
 /// The battery voltage injected by input 13, in millivolts, or 0.
 static BATTERY_MV: AtomicU16 = AtomicU16::new(0);
@@ -126,6 +137,22 @@ pub async fn input_task() {
                 finger = (kind == 16).then(|| (x.min(79) * scale, y.min(79) * scale));
                 defmt::warn!("debug: finger at {}", finger);
                 crate::touch::SIMULATED.signal(finger);
+                continue;
+            }
+            18 => {
+                if let Some(crate::gb::Incoming::Phone {
+                    event,
+                    text_as_bitmaps,
+                }) = crate::gb::parse(BITMAPS_LINE)
+                {
+                    // As `ble::interpret` sends them; not awaiting room
+                    // in the queue, as for input 14.
+                    let _ = INPUT.try_send(InputEvent::Phone(event));
+                    if text_as_bitmaps {
+                        let warning = crate::ui::PhoneEvent::TextAsBitmaps;
+                        let _ = INPUT.try_send(InputEvent::Phone(warning));
+                    }
+                }
                 continue;
             }
             15 => {
