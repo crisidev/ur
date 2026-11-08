@@ -14,6 +14,8 @@ missing below were test builds for the dev kit.
 
 ### Added
 
+- Say "TEXT AS BITMAPS" / "SEE FAQ N02" (once a connection) when Gadgetbridge's "Text as Bitmaps" setting is on, and show each word it sends as a picture as a `?` rather than a run of junk; the README's FAQ N02 says how to switch it off (718ad96)
+
 ### Changed
 
 - Redesign the clock face's lower half: the date with small seconds under the time, the heart rate and the next alarm or timer in one row, and the day's steps as ten blocks rather than a number: 1,000 a block (×1K) towards a fixed goal of 10,000, then 10,000 a block (×10K) past it, full at 100,000 (the exact count is on Today, a swipe right) (a02d355, e268ba3)
