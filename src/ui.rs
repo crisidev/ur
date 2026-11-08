@@ -1662,11 +1662,32 @@ fn render_hint(canvas: &mut Canvas, side: Side, index: usize, count: usize) {
 //    3..7    status bar: Bluetooth or time-sync state, then the watch's
 //            temperature (left); battery % and icon (right)
 //   13..34   HH:MM in 5×7 digits at 3× (15×21 each), with a drop shadow
-//   39..52   SS in the same digits at 2× (centred), heart rate (right)
-//   58..62   date, YYYY-MM-DD
-//   67..73   steps today (left); right half meant for the next alarm
+//   38..44   date, YYYY-MM-DD, under the hours (left); seconds, small and
+//            in the accent colour, under the minutes (right)
+//   56..62   heart rate (left); the next alarm or timer (right)
+//   68..74   a foot, then ten blocks for the day's steps (x 17..75)
+//
+// Everything below the status bar lines up with the time's outer edges
+// (x = 4 and 75). The top half is the time; the bottom half is the
+// readings, packed into two rows, with the steps drawn as a share of the
+// day's goal rather than a number: the exact count is on Today, one
+// swipe right.
 
 const BACKGROUND: Color = Color::BACKGROUND;
+
+/// The day's steps that fill the clock face's ten blocks, 1,000 a block.
+///
+/// Fixed, because there's nowhere to learn the wearer's own: Gadgetbridge
+/// keeps a step goal (its "fitness_goal" setting, 8,000 by default) for its
+/// charts, but never sends it to a Bangle.js. Its driver has no message
+/// for the user's settings (the call that would send them,
+/// `sendSettings`, is commented out in `BangleJSDeviceSupport`), and its
+/// `act` message only switches live heart rate and steps on and off.
+/// 10,000 is the round number most people know.
+///
+/// TODO: a goal set on the watch: a tap-to-cycle row on Info, like THEME
+/// and LIGHT (say 6k, 8k, 10k, 12k), kept with the settings in flash.
+const STEP_GOAL: u32 = 10_000;
 
 /// `media` is an icon for the status bar, beside the Bluetooth rune: its
 /// width, rows, and top.
@@ -1747,35 +1768,13 @@ fn render_clock(
         }
     }
 
-    // The seconds row: smaller, dimmer seconds in the middle (two 10 px
-    // cells, 2 px gap), under the colon like the date below, and the heart
-    // rate on the right, vertically centred on the digits. The left stays
-    // empty: the row reads calmer with just the two.
-    const ROW_Y: i32 = 39;
-    const TEXT_Y: i32 = ROW_Y + 4;
-    for (digit, x) in [seconds / 10, seconds % 10].into_iter().zip([29, 41]) {
-        draw_digit(canvas, x, ROW_Y, digit, 2, Color::TEXT_DIM);
-    }
-
-    // Heart rate, right-aligned as a group: icon, 2 px gap, value.
-    let mut bpm = heapless::String::<3>::new();
-    match status.heart_rate {
-        Some(rate) => write!(bpm, "{rate}").expect("a u8 is at most 3 digits"),
-        None => bpm.push_str("--").expect("2 chars fit in 3"),
-    }
-    let bpm = bpm.as_str();
-    let x = 77 - (font::HEART_W as i32 + 2 + font::small_text_width(bpm));
-    canvas.sprite(x, TEXT_Y - 1, font::HEART_W, &font::HEART, 1, Color::HEART);
-    canvas.sprite(
-        x,
-        TEXT_Y - 1,
-        font::HEART_W,
-        &font::HEART_SHINE,
-        1,
-        Color::HEART_SHINE,
-    );
-    canvas.text(x + font::HEART_W as i32 + 2, TEXT_Y, bpm, Color::TEXT);
-
+    // Under the time, a footnote line, lined up with its outer edges: the
+    // date under the hours, and the seconds under the minutes. The seconds
+    // are rarely what a look at the watch is for (the colon's blink already
+    // says it's alive), so they're small, the time's own 5×7 glyphs at 1×
+    // (without the shadow, which at 1× would only thicken them), and in the
+    // accent colour, so they're still easy to find.
+    const NOTE_Y: i32 = 39;
     let mut date = heapless::String::<10>::new();
     match &status.local_time {
         Some(t) => {
@@ -1783,24 +1782,54 @@ fn render_clock(
         }
         None => date.push_str("----------").expect("exactly 10 chars"),
     }
-    canvas.text_centered(40, 58, &date, Color::TEXT_DIM);
-
-    // Steps today, with a little footprint.
-    if let Some(steps) = status.steps {
-        canvas.sprite(3, 67, font::FOOT_W, &font::FOOT, 1, Color::TEXT_DIM);
-        let mut text = heapless::String::<8>::new();
-        write!(text, "{steps}").expect("u32 fits in 8 digits... almost always");
-        canvas.text(9, 68, &text, Color::TEXT);
+    canvas.text(4, NOTE_Y, &date, Color::TEXT_DIM);
+    for (digit, x) in [seconds / 10, seconds % 10].into_iter().zip([64, 70]) {
+        let glyph = &font::DIGITS[digit as usize];
+        canvas.sprite(x, NOTE_Y - 1, font::DIGIT_W, glyph, 1, Color::ACCENT);
     }
 
-    // The next alarm within a day, right-aligned: bell, then when it rings
-    // (a smart alarm at its latest).
+    // The readings, in one row: the heart rate from the left edge, and the
+    // next alarm within a day up to the right one, each an icon, 2 px, and
+    // its value, the icon a row above the value's capitals.
+    const READING_Y: i32 = 57;
+    let mut bpm = heapless::String::<3>::new();
+    match status.heart_rate {
+        Some(rate) => write!(bpm, "{rate}").expect("a u8 is at most 3 digits"),
+        None => bpm.push_str("--").expect("2 chars fit in 3"),
+    }
+    canvas.sprite(
+        4,
+        READING_Y - 1,
+        font::HEART_W,
+        &font::HEART,
+        1,
+        Color::HEART,
+    );
+    canvas.sprite(
+        4,
+        READING_Y - 1,
+        font::HEART_W,
+        &font::HEART_SHINE,
+        1,
+        Color::HEART_SHINE,
+    );
+    canvas.text(4 + font::HEART_W as i32 + 2, READING_Y, &bpm, Color::TEXT);
+
     if let (Some((kind, at)), Some(now)) = (next_alarm, status.local_second)
         && at - now <= 24 * 60 * 60
     {
-        // A timer counts down; anything else shows when it rings.
+        // A timer counts down; anything else shows when it rings (a smart
+        // alarm at its latest). A timer's "42 MIN" is written "42M" here:
+        // the full form, after the widest heart rate ("188"), would leave
+        // the two groups 3 px apart, reading as one.
+        let left = (at - now).max(0);
         let time = match kind {
-            alarm::Kind::Timer(_) => countdown(at - now),
+            alarm::Kind::Timer(_) if (10 * 60..60 * 60).contains(&left) => {
+                let mut time = heapless::String::new();
+                write!(time, "{}M", (left + 59) / 60).expect("fits in 8");
+                time
+            }
+            alarm::Kind::Timer(_) => countdown(left),
             _ => {
                 let mut time = heapless::String::new();
                 time.push_str(&hhmm(at.div_euclid(60).rem_euclid(24 * 60)))
@@ -1808,13 +1837,43 @@ fn render_clock(
                 time
             }
         };
-        let x = 77 - font::small_text_width(&time);
-        canvas.text(x, 68, &time, Color::TEXT);
+        let x = 76 - font::small_text_width(&time);
+        canvas.text(x, READING_Y, &time, Color::TEXT);
         let (icon, width) = match kind {
             alarm::Kind::Timer(_) => (&font::HOURGLASS, font::HOURGLASS_W),
             _ => (&font::BELL, font::BELL_W),
         };
-        canvas.sprite(x - width as i32 - 2, 67, width, icon, 1, Color::ACCENT);
+        let icon_x = x - width as i32 - 2;
+        canvas.sprite(icon_x, READING_Y - 1, width, icon, 1, Color::ACCENT);
+    }
+
+    // The day's steps, as ten 5×5 blocks of 1,000 each towards
+    // [`STEP_GOAL`], like an old game's health bar: "six of ten" can be
+    // counted at a glance, where a number has to be read. Each block is a
+    // whole thousand (999 steps fill none), and past the goal the bar
+    // stays full. Before the time is known there's no day to count, so
+    // it's an empty track.
+    // TODO: a different look past the goal, so reaching it shows.
+    const STEPS_Y: i32 = 69;
+    const BLOCKS: u32 = 10;
+    canvas.sprite(
+        4,
+        STEPS_Y - 1,
+        font::FOOT_W,
+        &font::FOOT,
+        1,
+        Color::TEXT_DIM,
+    );
+    let full = status.steps.unwrap_or(0).min(STEP_GOAL) / (STEP_GOAL / BLOCKS);
+    for i in 0..BLOCKS {
+        let color = if i < full {
+            Color::ACCENT
+        } else {
+            Color::TRACK
+        };
+        // Right-aligned, 1 px apart: the last ends at x = 75.
+        let x = 76 - 6 * (BLOCKS - i) as i32 + 1;
+        canvas.fill_rect(x, STEPS_Y, 5, 5, color);
     }
 }
 
