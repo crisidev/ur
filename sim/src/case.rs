@@ -1,6 +1,8 @@
 //! The watch as the PineTime is built, for the window and for screenshots
 //! of the whole watch (`shot FILE.png --watch`).
 
+use embassy_time::Instant;
+
 use crate::brightness::{self, BY_CURRENT};
 use crate::display::{PANEL, SIZE, rgb888};
 
@@ -149,9 +151,14 @@ impl Case {
 
     /// Draws the watch into `buffer` (`width` × `height`, 0xRRGGBB): the
     /// panel lit `light` (0 off, to 1), and the whole watch shifted
-    /// `shake` pixels sideways (while it buzzes), the desk filling in
-    /// behind.
-    pub fn draw(&self, buffer: &mut [u32], light: f32, shake: isize) {
+    /// `shake` pixels sideways (while it buzzes: see [`Case::shake`]), the
+    /// desk filling in behind.
+    pub fn draw(&self, buffer: &mut [u32], light: f32, shake: f32) {
+        // Whole pixels by moving the watch, the rest by blending each pixel
+        // with its left neighbour (below).
+        let whole = shake.floor();
+        let fraction = shake - whole;
+        let shake = whole as isize;
         let width = self.width;
         let shift = shake.unsigned_abs().min(width);
         let desk = pack(DESK_COLOR);
@@ -182,7 +189,110 @@ impl Case {
                 }
             }
         });
+        // A fraction of a pixel further right: each pixel takes that much
+        // of the one to its left. A shake of a pixel or two then glides
+        // instead of jumping a whole pixel at a time, which strobes. The
+        // panel's pixels blur with it, by as much as the case's edges: a
+        // canvas pixel is several window pixels, so only its edges soften,
+        // as they would in a blur of motion. Unshaken, nothing is blended,
+        // so the still watch is as sharp as ever.
+        if fraction > 0.0 {
+            let weight = (fraction * 256.0) as u32;
+            for row in buffer.chunks_mut(width) {
+                let mut left = pack(DESK_COLOR);
+                for pixel in row.iter_mut() {
+                    let this = *pixel;
+                    *pixel = mix(this, left, weight);
+                    left = this;
+                }
+            }
+        }
     }
+
+    /// How far to shift the watch sideways, in window pixels, with the
+    /// motor at `pulse` (`None`: still) at `now`: for [`Case::draw`].
+    ///
+    /// The watch hums sideways at [`SHAKE_HZ`], as far as [`SHAKE_REACH`]
+    /// (a window pixel, up to two at large zooms) at full strength. Each
+    /// pulse eases in over [`SPIN_UP_MS`] and out over [`SPIN_DOWN_MS`],
+    /// as the motor spins up and down: a short tap only flicks the watch,
+    /// less than fully, and a long buzz is a steady hum, so an alarm's
+    /// build-up from faint ticks to long buzzes shows in the shake.
+    ///
+    /// A function of the time, not of the frame before, so the window,
+    /// the browser, and recordings, each drawing frames at their own pace,
+    /// all shake the watch alike.
+    pub fn shake(&self, pulse: Option<Pulse>, now: Instant) -> f32 {
+        let Some(Pulse { on_ms, off_ms }) = pulse else {
+            return 0.0;
+        };
+        let strength = smoothstep(on_ms / SPIN_UP_MS)
+            * (1.0 - smoothstep(off_ms.unwrap_or(0.0) / SPIN_DOWN_MS));
+        if strength <= 0.0 {
+            return 0.0;
+        }
+        let zoom = self.panel_side / crate::canvas::WIDTH;
+        let reach = (SHAKE_REACH * zoom as f32).clamp(1.0, 2.0);
+        // The time into the second: a whole number of swings a second
+        // repeats each second, so this loses no precision however long the
+        // simulator has run. `libm`'s sine, as `distance`'s `hypotf`, for
+        // the browser's build to match to the bit.
+        let second = (now.as_micros() % 1_000_000) as f32 / 1e6;
+        let swing = libm::sinf(std::f32::consts::TAU * SHAKE_HZ as f32 * second);
+        reach * strength * swing
+    }
+}
+
+// ==============================================================================
+// The motor's shake
+// ==============================================================================
+
+/// Where the motor is in its pattern, for [`Case::shake`]: how long it
+/// has been on in its current pulse, in milliseconds, or, between pulses
+/// (`off_ms`), how long the last pulse was on, and how long ago it ended.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pulse {
+    pub on_ms: f32,
+    pub off_ms: Option<f32>,
+}
+
+/// How fast the watch hums, in swings a second: whole, for
+/// [`Case::shake`]'s precision. A real motor's 150 Hz or so would be lost
+/// between frames (60 a second in the window, 50 in a recording); at 19,
+/// each frame lands somewhere else in the swing, a restless jitter rather
+/// than a steady sway (as a slower hum would be) or a strobe (as a frame
+/// at each extreme, at 25 or 30, would be).
+const SHAKE_HZ: u32 = 19;
+
+/// How far the watch swings at full strength, in window pixels a canvas
+/// pixel's width (`zoom`): a pixel at the default zoom of 4, kept to
+/// between one and two. Further reads as the watch jumping, not humming;
+/// less than a pixel is lost in the blend.
+const SHAKE_REACH: f32 = 0.25;
+
+/// How long the motor takes to spin up, in milliseconds: "tens of
+/// milliseconds" (`motor.rs`). An alarm's first 30 ms ticks only reach
+/// about four fifths of full strength.
+const SPIN_UP_MS: f32 = 40.0;
+
+/// How long it takes to wind down once off, in milliseconds: a little
+/// longer than it takes to spin up, as it coasts.
+const SPIN_DOWN_MS: f32 = 60.0;
+
+/// 0 at `x` ≤ 0 to 1 at `x` ≥ 1, easing in and out.
+fn smoothstep(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+
+/// `a` with `weight`/256 of `b` (0xRRGGBB each), in whole numbers: the
+/// same, to the bit, in the browser's build.
+fn mix(a: u32, b: u32, weight: u32) -> u32 {
+    let channel = |shift: u32| {
+        let (a, b) = ((a >> shift) & 0xFF, (b >> shift) & 0xFF);
+        ((a * (256 - weight) + b * weight) >> 8) << shift
+    };
+    channel(16) | channel(8) | channel(0)
 }
 
 /// How bright a backlight level looks: off is black, and the dimmest

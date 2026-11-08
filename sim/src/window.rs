@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::{Duration as StdDuration, Instant as StdInstant};
 
-use embassy_time::Duration;
+use embassy_time::{Duration, Instant};
 use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Window, WindowOptions};
 
 use crate::brightness;
@@ -43,12 +43,11 @@ struct Screen {
     window: Window,
     case: Case,
     buffer: Vec<u32>,
-    zoom: usize,
     /// The backlight's brightness, 0 (off) to 1, and how far the motor has
     /// shaken the watch, in window pixels, as of the last whole frame: a
     /// transition's frames keep them.
     light: f32,
-    shake: isize,
+    shake: f32,
     shown: StdInstant,
 }
 
@@ -76,9 +75,8 @@ pub fn run(mut watch: Watch, options: &Options) -> Result<(), String> {
         window,
         buffer: vec![0; case.width * case.height],
         case,
-        zoom: options.zoom,
         light: 0.0,
-        shake: 0,
+        shake: 0.0,
         shown: StdInstant::now(),
     }));
     eprint!("{KEYS}");
@@ -226,15 +224,7 @@ pub fn run(mut watch: Watch, options: &Options) -> Result<(), String> {
         {
             let mut screen = screen.borrow_mut();
             screen.light = crate::case::light(watch.backlight);
-            // Shaken a canvas pixel's width each way, a frame at a time.
-            let zoom = screen.zoom as isize;
-            screen.shake = if !watch.motor_on() {
-                0
-            } else if screen.shake > 0 {
-                -zoom
-            } else {
-                zoom
-            };
+            screen.shake = screen.case.shake(watch.motor_pulse(), Instant::now());
             screen.show()?;
             let now = status(&watch);
             if now != title {

@@ -26,6 +26,7 @@ use crate::ble;
 use crate::brightness;
 use crate::bthome::{self, Identity};
 use crate::canvas::{Canvas, MARQUEE_FRAME, Sweep};
+use crate::case::Pulse;
 use crate::clock;
 use crate::display::{Display, PANEL};
 use crate::geo;
@@ -345,6 +346,9 @@ impl Watch {
         while let Some(pattern) = motor::take_request() {
             self.log(format!("buzz: {}", pattern_name(pattern)));
             self.motor = (pattern != Pattern::STOP).then(|| (pattern, Instant::now()));
+            // For `--watch` recordings to shake the watch, as the window
+            // does: the recorder can't reach the watch.
+            crate::record::motor(self.motor);
         }
         while let Ok(message) = ble::OUTBOX.try_receive() {
             let line = message.to_line();
@@ -387,29 +391,11 @@ impl Watch {
         })
     }
 
-    /// Whether the motor is on right now.
+    /// Where the motor is in its pattern now, to shake the drawn watch by
+    /// (see [`motor_pulse`]).
     #[cfg(any(feature = "window", target_arch = "wasm32"))]
-    pub fn motor_on(&self) -> bool {
-        let Some((pattern, since)) = self.motor else {
-            return false;
-        };
-        let steps = pattern.steps();
-        let mut t = (Instant::now() - since).as_millis();
-        let mut i = 0;
-        loop {
-            let Some(&step) = steps.get(i) else {
-                match pattern.repeat_from() {
-                    Some(from) if from < steps.len() => i = from,
-                    _ => return false,
-                }
-                continue;
-            };
-            if t < u64::from(step) {
-                return i % 2 == 0;
-            }
-            t -= u64::from(step);
-            i += 1;
-        }
+    pub fn motor_pulse(&self) -> Option<Pulse> {
+        motor_pulse(self.motor, Instant::now())
     }
 
     // ==========================================================================
@@ -617,6 +603,60 @@ pub fn local_second() -> Option<i64> {
 }
 
 /// Moves the clock to `at` (never backwards).
+/// Where `motor` (a pattern, and since when) is in its pattern at `now`:
+/// in which pulse, and how far into it, or into the pause after it.
+/// `None` if nothing has played.
+pub fn motor_pulse(motor: Option<(Pattern, Instant)>, now: Instant) -> Option<Pulse> {
+    let (pattern, since) = motor?;
+    let steps = pattern.steps();
+    let ms = |us: u64| us as f32 / 1000.0;
+    // Microseconds, not milliseconds: a pulse eases in over a few tens of
+    // them, and the window's frames come every 16.
+    let mut t = (now - since).as_micros();
+    // The last pulse's length, and how long the motor's been off since.
+    let mut on = None;
+    let mut off = 0;
+    let mut i = 0;
+    loop {
+        let Some(&step) = steps.get(i) else {
+            match pattern.repeat_from() {
+                Some(from) if from < steps.len() => i = from,
+                // Played out: the last pulse winds down, then nothing.
+                _ => {
+                    return on.map(|on| Pulse {
+                        on_ms: ms(on),
+                        off_ms: Some(ms(off + t)),
+                    });
+                }
+            }
+            continue;
+        };
+        let step = u64::from(step) * 1000;
+        let pulse = i % 2 == 0;
+        if t < step {
+            return Some(if pulse {
+                Pulse {
+                    on_ms: ms(t),
+                    off_ms: None,
+                }
+            } else {
+                Pulse {
+                    on_ms: ms(on.unwrap_or(0)),
+                    off_ms: Some(ms(off + t)),
+                }
+            });
+        }
+        if pulse {
+            on = Some(step);
+            off = 0;
+        } else {
+            off += step;
+        }
+        t -= step;
+        i += 1;
+    }
+}
+
 fn set_time(at: Instant) {
     let now = Instant::now();
     if at > now {

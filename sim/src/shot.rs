@@ -27,7 +27,7 @@ pub fn save(path: &Path) -> Result<(), String> {
 pub fn save_watch(path: &Path, backlight: Level, zoom: usize) -> Result<(), String> {
     let case = Case::new(zoom);
     let mut buffer = vec![0; case.width * case.height];
-    case.draw(&mut buffer, crate::case::light(backlight), 0);
+    case.draw(&mut buffer, crate::case::light(backlight), 0.0);
     let rgb: Vec<u8> = buffer
         .iter()
         .flat_map(|&pixel| {

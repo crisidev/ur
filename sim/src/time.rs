@@ -32,11 +32,11 @@ embassy_time_driver::time_driver_impl!(static CLOCK: Clock = Clock);
 /// Moves the clock to `at`, if that's later (to a dev kit's instant).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn set(at: embassy_time::Instant) {
-    crate::record::clock_moving();
+    crate::record::clock_moving(at);
     NOW.fetch_max(at.as_ticks(), Ordering::Relaxed);
 }
 
 pub fn advance(by: Duration) {
-    crate::record::clock_moving();
+    crate::record::clock_moving(embassy_time::Instant::now() + by);
     NOW.fetch_add(by.as_ticks(), Ordering::Relaxed);
 }

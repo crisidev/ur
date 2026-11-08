@@ -22,7 +22,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
-use embassy_time::Duration;
+use embassy_time::{Duration, Instant};
 
 use crate::brightness;
 use crate::case::{self, Case};
@@ -124,7 +124,7 @@ struct Screen {
     /// shaken the watch, as of the last whole frame: a transition's frames
     /// keep them.
     light: f32,
-    shake: isize,
+    shake: f32,
     /// A transition's frames, waiting to be shown, oldest first, and how
     /// many milliseconds of it have run since the last one was kept.
     frames: VecDeque<Vec<u8>>,
@@ -230,7 +230,7 @@ pub extern "C" fn ur_boot(start: bool) {
         buffer: vec![0; pixels],
         rgba: vec![0; pixels * 4],
         light: 0.0,
-        shake: 0,
+        shake: 0.0,
         frames: VecDeque::new(),
         since_frame: 0,
     }));
@@ -399,7 +399,7 @@ pub extern "C" fn ur_height() -> usize {
 // offer too.
 #[unsafe(no_mangle)]
 pub extern "C" fn ur_frame() -> *const u8 {
-    let (light, motor_on) = with_watch(|watch| (case::light(watch.backlight), watch.motor_on()));
+    let (light, pulse) = with_watch(|watch| (case::light(watch.backlight), watch.motor_pulse()));
     with_screen(|screen| {
         if let Some(frame) = screen.frames.pop_front() {
             screen.rgba = frame;
@@ -407,15 +407,7 @@ pub extern "C" fn ur_frame() -> *const u8 {
         }
         screen.since_frame = 0;
         screen.light = light;
-        // Shaken a canvas pixel's width each way, a frame at a time.
-        let zoom = ZOOM as isize;
-        screen.shake = if !motor_on {
-            0
-        } else if screen.shake > 0 {
-            -zoom
-        } else {
-            zoom
-        };
+        screen.shake = screen.case.shake(pulse, Instant::now());
         screen.draw();
         screen.rgba.as_ptr()
     })

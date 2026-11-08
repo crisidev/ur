@@ -17,6 +17,14 @@
 //! panel by the time anyone could look. Through a transition the clock
 //! moves a millisecond at a time, so each of its steps is caught.
 //!
+//! The whole watch (`--watch`) also shakes while the motor buzzes, as the
+//! window draws it ([`Case::shake`]). That moves without the panel
+//! changing, and while the clock jumps a second at a time, so while the
+//! motor plays, the recorder also looks at every [`GRID_CS`] of the
+//! simulator's clock between the instant it leaves and the one it's moving
+//! to (nothing else happens in between): each of the camera's marks
+//! catches the shake as it is then.
+//!
 //! # Timing
 //!
 //! The clock is virtual, so the timing is exact and the same every run.
@@ -53,7 +61,7 @@
 //! the pixels that didn't transparent: a clock's tick is a few digits, a
 //! transition step a band of blocks.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -62,6 +70,7 @@ use embassy_time::{Duration, Instant, TICK_HZ};
 use crate::brightness::Level;
 use crate::case::Case;
 use crate::display::{PANEL, SIZE, rgb888};
+use crate::motor::Pattern;
 
 /// The GIF's frame grid, in centiseconds: the shortest delay browsers
 /// honour (see the module's docs).
@@ -92,6 +101,15 @@ thread_local! {
     /// The recording in progress, if any. Thread-local, as the panel is:
     /// the simulator's clock, panel, and watch all live on one thread.
     static RECORDING: RefCell<Option<Recording>> = const { RefCell::new(None) };
+    /// What the motor is playing, and since when, as the watch last set it
+    /// (see [`motor`]), recording or not: a recording may start mid-buzz.
+    static MOTOR: Cell<Option<(Pattern, Instant)>> = const { Cell::new(None) };
+}
+
+/// The watch's motor now plays `motor` (a pattern, and since when), or
+/// nothing: for `--watch` recordings to shake the watch by.
+pub fn motor(motor: Option<(Pattern, Instant)>) {
+    MOTOR.set(motor);
 }
 
 /// Whether a recording is in progress.
@@ -116,7 +134,7 @@ pub fn start(path: PathBuf, look: Look, still: Duration) -> Result<(), String> {
         Look::Watch { zoom } => Some(Case::new(zoom)),
     };
     let (width, height) = case.as_ref().map_or((SIZE, SIZE), |c| (c.width, c.height));
-    let (seen, image) = look_at(case.as_ref(), width * height);
+    let (seen, image) = look_at(case.as_ref(), width * height, Instant::now());
     RECORDING.set(Some(Recording {
         path,
         case,
@@ -140,7 +158,7 @@ pub fn stop() -> Result<String, String> {
     // Whatever changed since the clock last moved, and the last frame,
     // held until now: at least one mark, so it's seen at all (a GIF that
     // ends the moment something appears would only flash it).
-    recording.look();
+    recording.look(Instant::now());
     let lasted = (Instant::now() - recording.since).as_ticks();
     let delay = recording.timeline.frame(lasted).max(GRID_CS);
     let image = std::mem::take(&mut recording.current);
@@ -148,12 +166,38 @@ pub fn stop() -> Result<String, String> {
     recording.write()
 }
 
-/// Called just before the clock moves: catches what the screen shows as
-/// of this instant, if it changed.
-pub fn clock_moving() {
+/// Called just before the clock moves to `to`: catches what the screen
+/// shows as of this instant, if it changed, and the watch's shake on the
+/// way to `to`.
+pub fn clock_moving(to: Instant) {
     RECORDING.with_borrow_mut(|recording| {
-        if let Some(recording) = recording {
-            recording.look();
+        let Some(recording) = recording else {
+            return;
+        };
+        let now = Instant::now();
+        recording.look(now);
+        let (Some(_), Some((pattern, since))) = (&recording.case, MOTOR.get()) else {
+            return;
+        };
+        // A pattern that plays once has long wound down a second after it
+        // ends: no need to look at every mark through the rest of an
+        // overnight `until`.
+        let until = if pattern.repeat_from().is_some() {
+            to
+        } else {
+            let length: u64 = pattern.steps().iter().map(|&ms| u64::from(ms)).sum();
+            to.min(since + Duration::from_millis(length) + Duration::from_secs(1))
+        };
+        // A whole number of ticks, rounded up: a frame a little longer than
+        // the camera's mark, never one it misses.
+        let grid = (TICK_HZ * GRID_CS).div_ceil(100);
+        let mut at = Instant::from_ticks((now.as_ticks() / grid + 1) * grid);
+        while at < until {
+            // The panel can't change on the way: only the shake can.
+            if shake(recording.case.as_ref(), at) != recording.seen.shake {
+                recording.look(at);
+            }
+            at += Duration::from_ticks(grid);
         }
     });
 }
@@ -165,6 +209,8 @@ struct Seen {
     pixels: Vec<u16>,
     idle: bool,
     backlight: Level,
+    /// How far the motor shook the watch (`--watch`; 0 otherwise).
+    shake: f32,
 }
 
 struct Recording {
@@ -196,20 +242,19 @@ struct Frame {
 }
 
 impl Recording {
-    /// Looks at the screen: if it changed, the frame on screen until now
-    /// ends, and the new one starts.
-    fn look(&mut self) {
+    /// Looks at the screen as of `now`: if it changed, the frame on screen
+    /// until now ends, and the new one starts.
+    fn look(&mut self, now: Instant) {
         let changed = PANEL.with_borrow(|panel| {
             panel.pixels != self.seen.pixels
                 || panel.idle != self.seen.idle
                 || panel.backlight != self.seen.backlight
-        });
+        }) || shake(self.case.as_ref(), now) != self.seen.shake;
         if !changed {
             return;
         }
-        let (seen, image) = look_at(self.case.as_ref(), self.width * self.height);
+        let (seen, image) = look_at(self.case.as_ref(), self.width * self.height, now);
         self.seen = seen;
-        let now = Instant::now();
         let lasted = (now - self.since).as_ticks();
         let delay = self.timeline.frame(lasted);
         let ended = std::mem::replace(&mut self.current, image);
@@ -342,25 +387,32 @@ impl Recording {
     }
 }
 
-/// What the screen shows now: the state to compare, and the image
+/// How far the motor shakes `case` at `now`: 0 without one (the panel
+/// alone doesn't shake).
+fn shake(case: Option<&Case>, now: Instant) -> f32 {
+    case.map_or(0.0, |case| {
+        case.shake(crate::watch::motor_pulse(MOTOR.get(), now), now)
+    })
+}
+
+/// What the screen shows as of `now`: the state to compare, and the image
 /// (0xRRGGBB, `pixels` long).
-fn look_at(case: Option<&Case>, pixels: usize) -> (Seen, Vec<u32>) {
+fn look_at(case: Option<&Case>, pixels: usize, now: Instant) -> (Seen, Vec<u32>) {
     let seen = PANEL.with_borrow(|panel| Seen {
         pixels: panel.pixels.clone(),
         idle: panel.idle,
         backlight: panel.backlight,
+        shake: shake(case, now),
     });
     let image = match case {
         // The whole watch, its panel lit as the window lights it (reading
-        // the panel itself).
-        //
-        // TODO: shake it while the motor buzzes, as the window does. Left
-        // out as it moves every pixel of the watch each frame (a large
-        // GIF), and the motor's on and off times would want frames of
-        // their own, which the panel doesn't prompt.
+        // the panel itself), and shaken as the window shakes it. A shaken
+        // frame changes the edges of everything on the watch, but only
+        // the edges: its flat areas stay the same colour, and so
+        // transparent in the GIF.
         Some(case) => {
             let mut image = vec![0; pixels];
-            case.draw(&mut image, crate::case::light(seen.backlight), 0);
+            case.draw(&mut image, crate::case::light(seen.backlight), seen.shake);
             image
         }
         // Off, the panel still holds its last frame, but nobody sees it.

@@ -1,6 +1,8 @@
 # Whole-watch screenshots (the case drawn round the panel, as the page
 # shows it), and recordings of both looks, for check.sh to compare the
-# browser's against the command line's: the panel lit, dimmed, and off.
+# browser's against the command line's: the panel lit, dimmed, and off,
+# and the watch shaken by a buzz (drawn a fraction of a pixel aside, with
+# a sine: see `Case::shake`).
 time 2026-11-09 07:29:50 +01:00
 connect
 demo-day
@@ -19,3 +21,7 @@ wait 1s
 stop
 wait 1m
 shot off-watch.png --watch
+record buzz-watch.gif --watch
+notify 0
+wait 1s
+stop

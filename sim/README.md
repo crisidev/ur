@@ -173,7 +173,8 @@ writes it; R in the window does both, to `ur-sim-DATE-TIME.gif` in
 `--out`. Its frames are what the panel got, as screenshots are:
 transitions, the dim look, and the screen going dark (black, with the
 backlight off) appear as on the watch. `--watch` records the whole
-watch instead, as `shot --watch` draws it.
+watch instead, as `shot --watch` draws it, shaking while the motor
+buzzes, as in the window.
 
 ```text
 record swipe.gif --still 1s

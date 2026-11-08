@@ -114,6 +114,33 @@ fn the_whole_watch() {
     assert_eq!(frames(&path).len(), 2);
 }
 
+/// A notification's buzz shakes the whole watch, a frame at each of the
+/// camera's marks while the motor runs and winds down, then lets it be:
+/// the same scene recorded panel-only has none of those frames, and both
+/// last as long.
+#[test]
+fn the_whole_watch_shakes() {
+    let scene = |look: &str| {
+        format!(
+            "time 2026-11-09 07:29:50 +01:00\nwait 0.2s\nrecord buzz.gif{look}\n\
+             notify 0\nwait 2s\nstop\n"
+        )
+    };
+    let watch = frames(&run("shake-watch", &scene(" --watch")).join("buzz.gif"));
+    let screen = frames(&run("shake-screen", &scene("")).join("buzz.gif"));
+    let total = |frames: &[(u16, Vec<u8>)]| frames.iter().map(|&(d, _)| d).sum::<u16>();
+    assert_eq!(total(&watch), total(&screen));
+    // The 60 ms buzz and its wind-down: several marks' worth of shaking,
+    // but nothing like a frame a mark for the 2 s.
+    let shaken = watch.len() - screen.len();
+    assert!(
+        (3..=10).contains(&shaken),
+        "{} vs {}",
+        watch.len(),
+        screen.len()
+    );
+}
+
 /// The README's GIFs: the script runs to the end, and each GIF stays
 /// small enough for a README to load without thinking twice.
 #[test]
