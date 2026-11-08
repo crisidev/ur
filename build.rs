@@ -1,5 +1,6 @@
 //! Makes `memory.x` visible to the linker, which `link.x` from cortex-m-rt
-//! includes by name, and gives the firmware its full version.
+//! includes by name, wraps two of Nordic's functions (see below), and gives
+//! the firmware its full version.
 //!
 //! The version is Cargo.toml's, extended by `scripts/release.sh` (through
 //! `UR_VERSION`) with what kind of build it is and the commit it's from:
@@ -16,6 +17,14 @@ fn main() {
     fs::copy("memory.x", out.join("memory.x")).expect("memory.x exists in the crate root");
     println!("cargo:rustc-link-search={}", out.display());
     println!("cargo:rerun-if-changed=memory.x");
+
+    // Route nrf-sdc's and nrf-mpsl's calls to `sdc_init` and `mpsl_init`
+    // through our `__wrap_sdc_init` and `__wrap_mpsl_init`, which register
+    // our fault handlers instead of theirs; see `src/field_log.rs` ("Nordic's
+    // fault handlers"). Without these, the link fails (nothing defines
+    // `__real_sdc_init`) rather than silently keeping their handlers.
+    println!("cargo:rustc-link-arg-bins=--wrap=sdc_init");
+    println!("cargo:rustc-link-arg-bins=--wrap=mpsl_init");
 
     let cargo = env::var("CARGO_PKG_VERSION").expect("cargo always sets CARGO_PKG_VERSION");
     println!("cargo:rerun-if-env-changed=UR_VERSION");

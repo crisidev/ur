@@ -243,6 +243,7 @@ async fn main(spawner: Spawner) {
     info!("ur {=str} booting", env!("UR_VERSION"));
     clock::restore();
     field_log::report_last_reset();
+    field_log::guard_stack();
 
     // ==========================================================================
     // Watchdog

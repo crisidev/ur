@@ -23,8 +23,9 @@ static UR_CANVAS: AtomicPtr<Canvas> = AtomicPtr::new(core::ptr::null_mut());
 /// An input to inject: 0 for none; otherwise the low byte is the kind (1
 /// button, 2 tap, 3 long press, 4–7 swipe up, down, left, right, 8 a
 /// glance, 9 a test notification, 10 hang (spin forever, to test what the
-/// watchdog records)) and the next two the canvas x and y. Cleared once
-/// taken.
+/// watchdog records), 11 a `defmt::panic!`, 12 a `core::panic!` as from a
+/// SoftDevice Controller fault (to test what a panic records)) and the next
+/// two the canvas x and y. Cleared once taken.
 #[unsafe(no_mangle)]
 static UR_INPUT: AtomicU32 = AtomicU32::new(0);
 
@@ -54,6 +55,20 @@ pub async fn input_task() {
             // The way a dependency's `defmt::panic!` or `defmt::unwrap!`
             // fails, for testing the panic breadcrumb's backtrace.
             11 => defmt::panic!("debug: panicking on purpose"),
+            // The way a fault in Nordic's SoftDevice Controller fails: a
+            // `core::panic!` with a formatted message (the assert's file and
+            // line, here `y`), for testing that the breadcrumb keeps it. `x`
+            // 1 makes the message too long to keep whole.
+            12 => {
+                let file = if x == 1 {
+                    c"debug: a file name long enough that the message is cut short"
+                } else {
+                    c"debug"
+                };
+                // SAFETY: A NUL-terminated string, as the handler needs.
+                unsafe { crate::field_log::sdc_fault(file.as_ptr(), u32::from(y)) };
+                continue;
+            }
             10 => {
                 defmt::warn!("debug: hanging on purpose");
                 #[allow(clippy::empty_loop)]

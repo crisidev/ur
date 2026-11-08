@@ -369,18 +369,33 @@ pub fn report_last_reset() {
     if crumb.version != crate::firmware::version_word() {
         return;
     }
-    if crumb.magic == WATCHDOG_MAGIC {
-        // `file` and `file_len` hold the hung code's PC and LR; look them up
-        // with `llvm-addr2line -fe <the ELF>`.
+    // How much stack was left: an overflow runs into the retained block
+    // and the statics below it, and would explain anything.
+    let stack_left = crumb.sp.wrapping_sub(STACK_END) as i32;
+    if crumb.magic == WATCHDOG_MAGIC || crumb.magic == FAULT_MAGIC {
+        // `file` and `file_len` hold the PC and LR of the code that hung or
+        // faulted; look them up with `llvm-addr2line -fe <the ELF>`.
         warn!(
-            "the previous run hung: watchdog at pc {=u32:#010x}, lr {=u32:#010x}",
-            crumb.file as u32, crumb.file_len
+            "the previous run {=str}: pc {=u32:#010x}, lr {=u32:#010x}, {=i32} B of stack left",
+            if crumb.magic == FAULT_MAGIC {
+                "hard-faulted"
+            } else {
+                "hung: watchdog"
+            },
+            crumb.file as u32,
+            crumb.file_len,
+            stack_left
         );
         report_trace(&crumb.trace);
         return;
     }
-    if crumb.magic != BREADCRUMB_MAGIC {
+    if crumb.magic != BREADCRUMB_MAGIC && crumb.magic != PANICKING_MAGIC {
         return;
+    }
+    if crumb.magic == PANICKING_MAGIC {
+        // The handler stopped partway (see `panic`): a fault in it, or a
+        // panic within it, before it could finish.
+        warn!("the previous run's panic handler didn't finish");
     }
     // The file name points into our own flash; same image (checked above),
     // so it's still there.
@@ -397,7 +412,17 @@ pub fn report_last_reset() {
     } else {
         "?"
     };
-    warn!("the previous run panicked at {}:{}", file, crumb.line);
+    // The message as the panic handler formatted and truncated it (on a
+    // character boundary). The breadcrumb's checks above make garbage
+    // unlikely, but RAM is RAM: keep whatever prefix is valid UTF-8.
+    let message = &crumb.message[..(crumb.message_len as usize).min(MESSAGE)];
+    let message = core::str::from_utf8(message).unwrap_or_else(|e| {
+        core::str::from_utf8(&message[..e.valid_up_to()]).expect("valid up to there")
+    });
+    warn!(
+        "the previous run panicked at {}:{}: {} ({=i32} B of stack left)",
+        file, crumb.line, message, stack_left
+    );
     report_trace(&crumb.trace);
 }
 
@@ -433,6 +458,14 @@ struct Breadcrumb {
     file: *const u8,
     file_len: u32,
     line: u32,
+    /// How many bytes of `message` are the panic's message (0 for a
+    /// watchdog bite).
+    message_len: u32,
+    /// The stack pointer when it happened: how close the stack came to its
+    /// end (see [`STACK_END`]).
+    sp: u32,
+    /// The start of the panic's message, formatted (see [`Truncated`]).
+    message: [u8; MESSAGE],
     /// A backtrace, of sorts: see [`scan_stack`].
     trace: [u32; TRACE],
 }
@@ -444,15 +477,26 @@ impl Breadcrumb {
         file: core::ptr::null(),
         file_len: 0,
         line: 0,
+        message_len: 0,
+        sp: 0,
+        message: [0; MESSAGE],
         trace: [0; TRACE],
     };
 }
 
-/// Return addresses kept in a breadcrumb: what fills its 192 bytes. Plenty
-/// are stale (a `defmt::panic!` logs its message first, leaving the logger's
-/// return addresses on the stack), so the real call chain needs room
-/// alongside them.
-const TRACE: usize = 43;
+/// Bytes of a panic's message kept in a breadcrumb. What matters most is
+/// a fault in Nordic's libraries, whose message names the assert that fired
+/// (see [`sdc_fault`]). The blobs have no file names in them, and other
+/// projects' reports show numbers instead (`SoftDevice Controller ASSERT:
+/// 92, 4317`), so that fits; most Rust panic messages do too.
+const MESSAGE: usize = 60;
+
+/// Return addresses kept in a breadcrumb: what's left of its 192 bytes
+/// after the message. Plenty are stale (a `defmt::panic!` logs its message
+/// first, leaving the logger's return addresses on the stack), so the real
+/// call chain needs room alongside them; in the backtraces from real
+/// crashes so far, it's been within the first 25.
+const TRACE: usize = 26;
 
 // ==============================================================================
 // Backtraces
@@ -536,9 +580,22 @@ fn scan_stack(from: *const u32, words: usize, check: bool) -> [u32; TRACE] {
     trace
 }
 
-const BREADCRUMB_MAGIC: u32 = u32::from_le_bytes(*b"urP1");
+/// The number changes with [`Breadcrumb`]'s layout, so that a breadcrumb
+/// left by a build with another layout (but the same version number, as
+/// two dev builds have) isn't misread. 2: with the panic's message; 3:
+/// with the stack pointer.
+const BREADCRUMB_MAGIC: u32 = u32::from_le_bytes(*b"urP3");
+/// A panic whose handler hasn't finished (see [`panic`]): what's recorded so
+/// far is still worth reporting.
+const PANICKING_MAGIC: u32 = u32::from_le_bytes(*b"urQ3");
 /// A watchdog bite, rather than a panic (see [`catch_watchdog`]).
-const WATCHDOG_MAGIC: u32 = u32::from_le_bytes(*b"urW1");
+const WATCHDOG_MAGIC: u32 = u32::from_le_bytes(*b"urW3");
+/// A HardFault (see [`HardFault`]).
+const FAULT_MAGIC: u32 = u32::from_le_bytes(*b"urF3");
+/// The lowest address the stack may use: just above the retained block (see
+/// `memory.x`), which an overflow would otherwise run into first, then our
+/// statics. [`guard_stack`] puts a tripwire at the bottom.
+const STACK_END: u32 = 0x2000_D500;
 /// Must match the `RETAINED` region in `memory.x`.
 const BREADCRUMB_ADDRESS: usize = 0x2000_D440;
 // The retained block from +0x40 to its end (see `memory.x`).
@@ -593,6 +650,9 @@ extern "C" fn watchdog_bite(frame: *const u32) -> ! {
         file: pc as *const u8,
         file_len: lr,
         line: 0,
+        message_len: 0,
+        sp: above as u32,
+        message: [0; MESSAGE],
         trace: scan_stack(above, 48, false),
     };
     // SAFETY: See `report_last_reset`.
@@ -602,32 +662,80 @@ extern "C" fn watchdog_bite(frame: *const u32) -> ! {
     }
 }
 
-/// Our panic handler. Logs the panic (so a probe, or the field log's next
-/// boot, sees it), leaves a breadcrumb for [`report_last_reset`], and resets,
-/// rather than waiting for the watchdog with the watch frozen.
+/// Our panic handler. Leaves a breadcrumb for [`report_last_reset`], logs
+/// the panic (so a probe, or the field log's next boot, sees it), and
+/// resets, rather than waiting for the watchdog with the watch frozen.
 ///
 /// The breadcrumb matters for field builds: the panic's own log message is
-/// in RAM that the reset clears before the field log can save it.
+/// in RAM that the reset clears before the field log can save it. So the
+/// breadcrumb keeps the message's start too. Except from a `defmt::panic!`
+/// (or `defmt::unwrap!`, …): that logs its message, then panics with none
+/// (`explicit panic`, at defmt's own location), so only the backtrace
+/// tells where it came from.
+///
+/// It writes the breadcrumb in place, a piece at a time, cheapest first,
+/// and guards against running twice. A panic that interrupts code in the
+/// middle of logging (the Bluetooth controller's faults come from its
+/// interrupts) makes the `defmt::error!` below panic in turn ("defmt logger
+/// taken reentrantly"); with interrupts masked, every round of that used
+/// more stack, until it overflowed into the breadcrumb and our statics and
+/// the watch hung until the watchdog reset it, with nothing recorded. (Two
+/// phone updates ended exactly so.) Now the second round finds
+/// [`PANICKING_MAGIC`] and resets at once, keeping the first panic's record.
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
+    use core::fmt::Write;
+    use core::ptr::addr_of_mut;
+
     cortex_m::interrupt::disable();
-    // The whole stack, checked: there's no hurry here. It starts in this
-    // handler's own frame, whose return addresses lead to `panic!`'s caller.
-    let sp = cortex_m::register::msp::read() as *const u32;
-    let (file, line) = info
-        .location()
-        .map_or(("?", 0), |location| (location.file(), location.line()));
-    let crumb = Breadcrumb {
-        magic: BREADCRUMB_MAGIC,
-        version: crate::firmware::version_word(),
-        file: file.as_ptr(),
-        file_len: file.len() as u32,
-        line,
-        trace: scan_stack(sp, 4096, true),
-    };
-    // SAFETY: See `report_last_reset`.
-    unsafe { breadcrumb().write_volatile(crumb) };
+    let crumb = breadcrumb();
+    // SAFETY (for all accesses to `crumb` below): see `report_last_reset`;
+    // fields are written through raw pointers, never as a whole on the
+    // stack, which may be nearly gone.
+    unsafe {
+        let magic = addr_of_mut!((*crumb).magic);
+        if magic.read_volatile() == PANICKING_MAGIC {
+            // A panic within this handler: the first one's record stands.
+            magic.write_volatile(BREADCRUMB_MAGIC);
+            cortex_m::peripheral::SCB::sys_reset();
+        }
+        let (file, line) = info
+            .location()
+            .map_or(("?", 0), |location| (location.file(), location.line()));
+        addr_of_mut!((*crumb).version).write_volatile(crate::firmware::version_word());
+        addr_of_mut!((*crumb).file).write_volatile(file.as_ptr());
+        addr_of_mut!((*crumb).file_len).write_volatile(file.len() as u32);
+        addr_of_mut!((*crumb).line).write_volatile(line);
+        addr_of_mut!((*crumb).message_len).write_volatile(0);
+        addr_of_mut!((*crumb).sp).write_volatile(cortex_m::register::msp::read());
+        addr_of_mut!((*crumb).trace).write_volatile([0; TRACE]);
+        magic.write_volatile(PANICKING_MAGIC);
+
+        // The whole stack, checked: there's no hurry here. It starts in
+        // this handler's own frame, whose return addresses lead to
+        // `panic!`'s caller.
+        let sp = cortex_m::register::msp::read() as *const u32;
+        addr_of_mut!((*crumb).trace).write_volatile(scan_stack(sp, 4096, true));
+
+        // Formatting runs the message's `Display` impls, which could panic
+        // in turn; the guard above then resets with what's recorded so far.
+        let mut message = Truncated {
+            buffer: &mut *addr_of_mut!((*crumb).message),
+            len: 0,
+            full: false,
+        };
+        let _ = write!(message, "{}", info.message());
+        addr_of_mut!((*crumb).message_len).write_volatile(message.len as u32);
+        magic.write_volatile(BREADCRUMB_MAGIC);
+    }
+    // Only now, with everything recorded: this is what can panic again (see
+    // above), and then the guard can't tell this panic from a fresh one.
+    // So mark it in progress again for the duration.
+    // SAFETY: As above.
+    unsafe { core::ptr::addr_of_mut!((*crumb).magic).write_volatile(PANICKING_MAGIC) };
     defmt::error!("{}", defmt::Display2Format(info));
+    // SAFETY: As above.
+    unsafe { core::ptr::addr_of_mut!((*crumb).magic).write_volatile(BREADCRUMB_MAGIC) };
     // With a debugger attached, stop where we are so it can look.
     let dhcsr = cortex_m::peripheral::DCB::PTR;
     // SAFETY: Reading DHCSR is side-effect free.
@@ -635,4 +743,179 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         cortex_m::asm::bkpt();
     }
     cortex_m::peripheral::SCB::sys_reset()
+}
+
+/// A HardFault (a bus or memory fault, an invalid instruction, … and any
+/// fault while interrupts are masked, as in the panic handler): records the
+/// faulting PC and LR, like a watchdog bite, and resets. Without this,
+/// cortex-m-rt's default spins until the watchdog resets, and the
+/// watchdog's interrupt can't preempt a HardFault, so nothing would say
+/// what happened.
+#[cortex_m_rt::exception]
+unsafe fn HardFault(frame: &cortex_m_rt::ExceptionFrame) -> ! {
+    let at = core::ptr::from_ref(frame) as *const u32;
+    // SAFETY: The frame is 8 words; the faulting code's stack starts after.
+    let above = unsafe { at.add(8) };
+    let crumb = Breadcrumb {
+        magic: FAULT_MAGIC,
+        version: crate::firmware::version_word(),
+        file: frame.pc() as *const u8,
+        file_len: frame.lr(),
+        line: 0,
+        message_len: 0,
+        sp: above as u32,
+        message: [0; MESSAGE],
+        trace: scan_stack(above, 256, true),
+    };
+    // SAFETY: See `report_last_reset`.
+    unsafe { breadcrumb().write_volatile(crumb) };
+    cortex_m::peripheral::SCB::sys_reset()
+}
+
+/// Makes the stack's last 32 bytes (above [`STACK_END`]) inaccessible
+/// through the MPU, so that an overflow faults instead of silently
+/// overwriting the retained block and our statics. The fault can't be
+/// handled (its exception frame would go on the overflowed stack), so the
+/// core locks up and resets: reset reason 8 (lockup) then means a stack
+/// overflow, nearly always. Costs 32 bytes of the 11 KiB stack.
+pub fn guard_stack() {
+    // Region 0: base STACK_END (32-byte aligned), size 32 bytes
+    // (RASR.SIZE = log2(32) - 1), no access (AP = 0), never executable (XN),
+    // enabled. Everything else keeps the default memory map (PRIVDEFENA).
+    const SIZE_32: u32 = 4 << 1;
+    const XN: u32 = 1 << 28;
+    const ENABLE: u32 = 1;
+    const _: () = assert!(STACK_END.is_multiple_of(32));
+    // SAFETY: Region 0 is ours (nothing else here uses the MPU), and it
+    // covers only the stack's last 32 bytes, which nothing else uses.
+    unsafe {
+        let mpu = &*cortex_m::peripheral::MPU::PTR;
+        mpu.rnr.write(0);
+        mpu.rbar.write(STACK_END);
+        mpu.rasr.write(XN | SIZE_32 | ENABLE);
+        // PRIVDEFENA | ENABLE.
+        mpu.ctrl.write((1 << 2) | 1);
+    }
+    cortex_m::asm::dsb();
+    cortex_m::asm::isb();
+}
+
+/// Formats into a fixed buffer, for the panic handler (which has no heap):
+/// keeps what fits, cut at a character boundary, and drops the rest.
+struct Truncated<'a> {
+    buffer: &'a mut [u8],
+    len: usize,
+    /// Once something didn't fit, nothing more is kept, even if it would
+    /// fit: the message is its start, without holes.
+    full: bool,
+}
+
+impl core::fmt::Write for Truncated<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        if self.full {
+            return Ok(());
+        }
+        let room = self.buffer.len() - self.len;
+        let take = if s.len() <= room {
+            s.len()
+        } else {
+            self.full = true;
+            s.floor_char_boundary(room)
+        };
+        self.buffer[self.len..][..take].copy_from_slice(&s.as_bytes()[..take]);
+        self.len += take;
+        // Never an error, even when full: a `Display` impl that unwraps its
+        // writes would panic again.
+        Ok(())
+    }
+}
+
+// ==============================================================================
+// Nordic's fault handlers
+// ==============================================================================
+//
+// The SoftDevice Controller and the MPSL report an internal error (one of
+// their asserts firing) by calling a handler that the application registers
+// with `sdc_init` and `mpsl_init`. It gets a file and line, which identify the
+// assert to Nordic; the code is a binary blob, so nothing else says what went
+// wrong.
+//
+// nrf-sdc and nrf-mpsl register handlers that panic with the file and line,
+// but through `defmt::panic!` when their `defmt` features are on, as they
+// must be here: trouble-host's `defmt` feature needs `nrf_sdc::Error:
+// defmt::Format`, and nrf-sdc's turns on nrf-mpsl's. A `defmt::panic!` only
+// logs its message, which the reset then loses (see `panic`).
+//
+// The crates have no way to set other handlers, but they only ever pass theirs
+// to `sdc_init` and `mpsl_init`, once each, at startup. So build.rs has the
+// linker wrap those two (`--wrap=sdc_init`): calls to `sdc_init` go to
+// `__wrap_sdc_init`, below, and `__real_sdc_init` names the original. The
+// wrappers pass the originals our handlers instead, which `core::panic!` with
+// the file and line: a message that the breadcrumb keeps.
+
+/// The SoftDevice Controller's fault handler (see above). Worded like
+/// Nordic's own (in the nRF Connect SDK), to search for.
+///
+/// # Safety
+///
+/// `file` is null or a NUL-terminated string, as the controller passes.
+pub unsafe extern "C" fn sdc_fault(file: *const core::ffi::c_char, line: u32) {
+    // SAFETY: Passed on from our caller.
+    let file = unsafe { assert_file(file) };
+    panic!("SoftDevice Controller ASSERT: {}, {}", file, line)
+}
+
+/// The MPSL's assert handler (see above); like [`sdc_fault`].
+///
+/// # Safety
+///
+/// `file` is null or a NUL-terminated string, as the MPSL passes.
+unsafe extern "C" fn mpsl_assert(file: *const core::ffi::c_char, line: u32) {
+    // SAFETY: Passed on from our caller.
+    let file = unsafe { assert_file(file) };
+    panic!("MPSL ASSERT: {}, {}", file, line)
+}
+
+/// The file name a fault handler gets, or `?` if there's none, or it isn't
+/// UTF-8.
+///
+/// # Safety
+///
+/// `file` is null or a NUL-terminated string that outlives `'a`.
+unsafe fn assert_file<'a>(file: *const core::ffi::c_char) -> &'a str {
+    if file.is_null() {
+        return "?";
+    }
+    // SAFETY: Non-null, so NUL-terminated (our caller's promise).
+    unsafe { core::ffi::CStr::from_ptr(file) }
+        .to_str()
+        .unwrap_or("?")
+}
+
+/// What nrf-sdc's `sdc_init` calls reach (see above).
+#[unsafe(no_mangle)]
+unsafe extern "C" fn __wrap_sdc_init(_theirs: nrf_sdc::raw::sdc_fault_handler_t) -> i32 {
+    unsafe extern "C" {
+        fn __real_sdc_init(fault_handler: nrf_sdc::raw::sdc_fault_handler_t) -> i32;
+    }
+    // SAFETY: The call nrf-sdc made, with another handler of the same type.
+    unsafe { __real_sdc_init(Some(sdc_fault)) }
+}
+
+/// What nrf-mpsl's `mpsl_init` calls reach (see above).
+#[unsafe(no_mangle)]
+unsafe extern "C" fn __wrap_mpsl_init(
+    clock: *const nrf_mpsl::raw::mpsl_clock_lfclk_cfg_t,
+    low_prio_irq: nrf_mpsl::raw::IRQn_Type,
+    _theirs: nrf_mpsl::raw::mpsl_assert_handler_t,
+) -> i32 {
+    unsafe extern "C" {
+        fn __real_mpsl_init(
+            clock: *const nrf_mpsl::raw::mpsl_clock_lfclk_cfg_t,
+            low_prio_irq: nrf_mpsl::raw::IRQn_Type,
+            assert_handler: nrf_mpsl::raw::mpsl_assert_handler_t,
+        ) -> i32;
+    }
+    // SAFETY: The call nrf-mpsl made, with another handler of the same type.
+    unsafe { __real_mpsl_init(clock, low_prio_irq, Some(mpsl_assert)) }
 }

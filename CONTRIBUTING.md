@@ -209,8 +209,14 @@ unfolds what was inlined into each):
 llvm-addr2line -fipe ur-logging-0.9.0.elf 0x2b8b2 0x25c0a
 ```
 
-A hang with interrupts masked can't be caught: the watchdog's interrupt
-never runs, so only the reset reason says it happened.
+A panic's report has the start of its message too, including a fault in
+Nordic's SoftDevice Controller or MPSL (`SoftDevice Controller ASSERT:
+<file>, <line>`, which identifies the assert to Nordic). A `defmt::panic!`
+(or `defmt::unwrap!`, as dependencies use) only shows `explicit panic` at
+defmt's own location: its message went to the log, which the reset lost,
+so the backtrace is what says where it was. A hang with interrupts masked
+can't be caught: the watchdog's interrupt never runs, so only the reset
+reason says it happened.
 
 Some host-test crates replay decoded logs, to tune against real wrists:
 

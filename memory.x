@@ -35,7 +35,8 @@ MEMORY
    * into *different* firmware (reflashing, updates), whose RAM layout may
    * differ: today's steps (src/activity.rs) at +0, the wall-clock checkpoint
    * (src/clock.rs) at +0x20, where the last panic (or watchdog bite)
-   * happened, with a backtrace (src/field_log.rs), at +0x40 to the end.
+   * happened, with its message and a backtrace (src/field_log.rs), at +0x40
+   * to the end.
    *
    * Every reset runs the bootloader first, and it uses far more RAM than
    * its symbols suggest. Painting RAM over SWD, then running the bootloader
