@@ -325,18 +325,29 @@ fn encrypted_and_other_versions_are_passed_over() {
 
 #[test]
 fn the_watch_passes_over_its_own_presses() {
-    // A whole advertisement as `bthome::advert` builds one (tap 2 then 3,
-    // battery 82 %, counter 256, bthome.io's example key, address
-    // e5:12:34:56:78:9a), computed with Python's `cryptography`. The
-    // watch can't hear itself, but another watch's presses (or its own,
-    // if it could) are encrypted, so nothing here would take them for a
-    // thermometer.
+    // A whole advertisement as `bthome::advert` builds one (a tap of
+    // code 23: packet id, battery 82 %, the button's press, and three
+    // dimmers, the first turning right by 23; counter 256, bthome.io's
+    // example key, address e5:12:34:56:78:9a), computed with Python's
+    // `cryptography`. The watch can't hear itself, but another watch's
+    // presses (or its own, if it could) are encrypted, so nothing here
+    // would take them for a thermometer.
     let press = [
-        0x02, 0x01, 0x06, 0x19, 0x16, 0xD2, 0xFC, 0x45, 0xB3, 0x46, 0x27, 0xEC, 0xAE, 0x96, 0x6A,
-        0x46, 0xE9, 0x86, 0x65, 0x39, 0x3E, 0x00, 0x01, 0x00, 0x00, 0x4C, 0x73, 0x95, 0xE8,
+        0x02, 0x01, 0x06, 0x1B, 0x16, 0xD2, 0xFC, 0x45, 0xB3, 0x46, 0x27, 0xEC, 0xA8, 0x95, 0x75,
+        0x78, 0xCA, 0xBA, 0x59, 0x39, 0x02, 0x4C, 0xC4, 0x00, 0x01, 0x00, 0x00, 0xA0, 0x7D, 0x23,
+        0xB5,
     ];
     assert_eq!(parse(service(&press)), Err(Skip::Encrypted));
-    // Nor for an Aranet4.
+    // Even unencrypted, its objects walk through (a 2-byte dimmer after
+    // a 1-byte button), and there's no temperature.
+    let plain = [
+        0x40, 0x00, 0x00, 0x01, 0x52, 0x3A, 0x01, 0x3C, 0x02, 0x23, 0x3C, 0x00, 0x00, 0x3C, 0x00,
+        0x00, 0x02, 0xCA, 0x09,
+    ];
+    assert_eq!(parse(&plain[..16]), Err(Skip::NoTemperature));
+    // (With a temperature after them, it would be found: they were
+    // walked by their lengths.)
+    assert_eq!(parse(&plain).map(|r| r.hundredths), Ok(Some(2506)));
     assert_eq!(crate::aranet::manufacturer_payload(&press), None);
 }
 
