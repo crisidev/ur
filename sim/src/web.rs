@@ -18,7 +18,7 @@
 //! by hand. Text goes in through a buffer the page writes into
 //! ([`ur_buffer`]), and comes out through the page's `ur_print`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
@@ -33,9 +33,9 @@ use crate::{InputEvent, theme};
 /// screen. The page scales it to fit.
 const ZOOM: usize = 4;
 
-/// How often a transition's frames are kept for the page to show, in the
-/// milliseconds of the watch's time that the transition runs through.
-const FRAME_MS: u32 = 16;
+/// How often a push's frames are kept for the page to show, in the
+/// watch's time that the push runs through.
+const FRAME: Duration = Duration::from_millis(16);
 
 /// At most this many of a transition's frames wait to be shown: a long
 /// `wait` can run through many transitions, and only the last few are
@@ -110,6 +110,8 @@ thread_local! {
     static HANDS: RefCell<Hands> = RefCell::new(Hands::default());
     /// Text from the page (see [`ur_buffer`]).
     static INPUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// The watch's clock when [`ur_advance`] last let time pass.
+    static ADVANCED: Cell<Instant> = const { Cell::new(Instant::from_ticks(0)) };
 }
 
 /// The drawn watch, as the window's `Screen`.
@@ -123,10 +125,11 @@ struct Screen {
     /// keep them.
     light: f32,
     shake: f32,
-    /// A transition's frames, waiting to be shown, oldest first, and how
-    /// many milliseconds of it have run since the last one was kept.
+    /// A push's frames (a transition's, or a long flush's), waiting to
+    /// be shown, oldest first, and how much of it has run since the last
+    /// one was kept.
     frames: VecDeque<Vec<u8>>,
-    since_frame: u32,
+    since_frame: Duration,
     /// The real panel's colours, or those sent to it (see `crate::panel`).
     mimic: bool,
 }
@@ -147,15 +150,15 @@ impl Screen {
         }
     }
 
-    /// A transition's millisecond has run (see `Watch::on_frame`). The page
-    /// can't be shown anything until the call returns, so its frames are
-    /// kept to be shown one an animation frame after.
-    fn transition_frame(&mut self) {
-        self.since_frame += 1;
-        if self.since_frame < FRAME_MS || self.frames.len() >= QUEUED_FRAMES {
+    /// `step` of a push has run (see `Watch::on_frame`). The page can't
+    /// be shown anything until the call returns, so its frames are kept
+    /// to be shown one an animation frame after.
+    fn push_frame(&mut self, step: Duration) {
+        self.since_frame += step;
+        if self.since_frame < FRAME || self.frames.len() >= QUEUED_FRAMES {
             return;
         }
-        self.since_frame = 0;
+        self.since_frame = Duration::from_ticks(0);
         self.draw();
         self.frames.push_back(self.rgba.clone());
     }
@@ -233,16 +236,17 @@ pub extern "C" fn ur_boot(start: bool) {
         light: 0.0,
         shake: 0.0,
         frames: VecDeque::new(),
-        since_frame: 0,
+        since_frame: Duration::from_ticks(0),
         mimic: true,
     }));
     // Flash that starts erased, and is forgotten with the page.
     let mut watch = Watch::boot(crate::flash::Flash::erased());
-    watch.on_frame = Some(Box::new(|| with_screen(Screen::transition_frame)));
+    watch.on_frame = Some(Box::new(|step| with_screen(|s| s.push_frame(step))));
     if start && let Err(e) = script::run(&mut watch, "web/start.txt", START, &output()) {
         print(Text::Error, &e);
     }
     WATCH.set(Some(watch));
+    ADVANCED.set(Instant::now());
 }
 
 /// Room for `len` bytes of text from the page, which it writes there
@@ -280,11 +284,15 @@ pub extern "C" fn ur_script() {
     }
 }
 
-/// Lets `ms` milliseconds pass, as the window does each frame.
+/// Lets `ms` milliseconds pass, as the window does each frame: less what
+/// the watch's own pushes took since the last time, which the page has
+/// spent showing their frames.
 #[unsafe(no_mangle)]
 pub extern "C" fn ur_advance(ms: f64) {
-    let micros = (ms.max(0.0) * 1e3) as u64;
-    with_watch(|watch| watch.advance(Duration::from_micros(micros)));
+    let due = Duration::from_micros((ms.max(0.0) * 1e3) as u64);
+    let taken = Instant::now().saturating_duration_since(ADVANCED.get());
+    with_watch(|watch| watch.advance(due.checked_sub(taken).unwrap_or_default()));
+    ADVANCED.set(Instant::now());
 }
 
 /// The page's colours: the real panel's (`true`, the default), or those
@@ -416,7 +424,7 @@ pub extern "C" fn ur_frame() -> *const u8 {
             screen.rgba = frame;
             return screen.rgba.as_ptr();
         }
-        screen.since_frame = 0;
+        screen.since_frame = Duration::from_ticks(0);
         screen.light = light;
         screen.shake = screen.case.shake(pulse, Instant::now());
         screen.draw();

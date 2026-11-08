@@ -109,9 +109,10 @@ pub struct Watch {
     /// printed.
     bthome_counter: u32,
 
-    /// Called while a transition animates, after each millisecond of it,
-    /// for the window to show its frames.
-    pub on_frame: Option<Box<dyn FnMut()>>,
+    /// Called while a push takes time (a transition's animation, and the
+    /// panel's transfers), with how much passed, for the window to show
+    /// its frames at their pace.
+    pub on_frame: Option<Box<dyn FnMut(Duration)>>,
     /// Print each tick, not only what happens.
     pub verbose: bool,
 }
@@ -260,7 +261,8 @@ impl Watch {
         // A wait of 0 means "it's that minute now"; go to the next one.
         let wait = if wait == 0 { 86_400 } else { wait };
         self.advance(Duration::from_secs(wait as u64));
-        self.advance(self.next_tick - Instant::now());
+        // (A pass that ran past the tick, pushing pixels, has seen it.)
+        self.advance(self.next_tick.saturating_duration_since(Instant::now()));
         Ok(())
     }
 
@@ -419,7 +421,7 @@ impl Watch {
         &mut App,
         &mut UiLoop,
         &mut Canvas,
-        &mut Option<Box<dyn FnMut()>>,
+        &mut Option<Box<dyn FnMut(Duration)>>,
         Hardware<'_>,
     ) {
         let Self {
@@ -538,12 +540,16 @@ impl Watch {
             app,
             ..
         } = self;
-        canvas.set_theme(palette);
-        run(canvas.flush(display), on_frame);
-        let saved = crate::shot::save(path);
-        canvas.set_theme(app.theme());
-        run(canvas.flush(display), on_frame);
-        saved
+        // The dev kit's script draws these from the canvas, rather than
+        // the watch pushing them: they take none of the watch's time.
+        crate::display::untimed(|| {
+            canvas.set_theme(palette);
+            run(canvas.flush(display), on_frame);
+            let saved = crate::shot::save(path);
+            canvas.set_theme(app.theme());
+            run(canvas.flush(display), on_frame);
+            saved
+        })
     }
 
     /// Sets the theme the UI picks: the group the theme is in (light or
@@ -793,19 +799,24 @@ fn set_time(at: Instant) {
 }
 
 /// Runs a future of the firmware's to completion. Its awaits are the
-/// stand-ins' (instant here) and timers (a transition's frames, the
-/// switching-off screen), which this lets through by moving the clock a
-/// millisecond at a time, calling `on_frame` after each.
-pub fn run<F: Future>(future: F, on_frame: &mut Option<Box<dyn FnMut()>>) -> F::Output {
+/// stand-ins' (the panel's transfers take time; the rest are instant) and
+/// timers (a transition's frames, the switching-off screen), which this
+/// lets through by moving the clock on to the earliest one due, calling
+/// `on_frame` with how far it moved each time.
+pub fn run<F: Future>(future: F, on_frame: &mut Option<Box<dyn FnMut(Duration)>>) -> F::Output {
     let mut future = pin!(future);
     let mut context = Context::from_waker(Waker::noop());
     loop {
         if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
             return output;
         }
-        crate::time::advance(Duration::from_millis(1));
+        // Nothing else wakes the firmware's futures here: whatever is
+        // pending awaits a timer, which asked to be woken.
+        let due = crate::time::take_wake().expect("a pending future awaits a timer");
+        let step = due.saturating_duration_since(Instant::now());
+        crate::time::advance(step);
         if let Some(on_frame) = on_frame {
-            on_frame();
+            on_frame(step);
         }
     }
 }

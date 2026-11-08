@@ -229,6 +229,8 @@ impl Display {
             [s0, s1, e0, e1]
         };
         self.held = Some(spi::BUS.get().await.lock().await);
+        #[cfg(feature = "compare")]
+        crate::compare::window();
         self.command(CASET, &range(columns)).await;
         self.command(RASET, &range(rows)).await;
         // Leave CS asserted and DC in data mode for the pixel stream.
@@ -241,6 +243,8 @@ impl Display {
     /// Big-endian RGB565 pixel data, continuing the current rectangle.
     pub async fn pixels(&mut self, data: &[u8]) {
         self.write(data).await;
+        #[cfg(feature = "compare")]
+        crate::compare::pixels(data.len());
     }
 
     pub fn end_pixels(&mut self) {

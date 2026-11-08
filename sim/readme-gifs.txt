@@ -43,7 +43,10 @@ expect not screen-on
 # ==============================================================================
 #
 # The button wakes the screen; then right to today and last night, back,
-# left to the alarms, back, and down to the notifications.
+# and down to the notifications. (Each sweep takes ~0.5 s, as on the
+# watch, and a GIF's frames: more of them, and swipe.gif outgrows
+# tests/record.rs's budget. The alarms, left of the clock, are left out
+# for that.)
 
 button
 wait 0.5s
@@ -56,10 +59,6 @@ wait 1.5s
 left
 wait 0.6s
 left
-wait 0.6s
-left
-wait 1.5s
-right
 wait 0.6s
 down
 wait 2s

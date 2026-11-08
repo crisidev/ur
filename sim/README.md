@@ -251,6 +251,11 @@ messages the simulator can't know, and they stop the run.
 `devkit-compare.txt` goes round every screen it
 can reach (and puts back what it changes).
 
+Each `compare` also says how long the dev kit took to push its frame
+to the panel (if that pass pushed anything), and how long the
+simulator's panel says that takes (see below), as a check on the
+model.
+
 ## The flash
 
 The watch keeps its settings (themes, brightness, the button grid,
@@ -292,8 +297,9 @@ Stand-ins replace the rest:
 
 - `display`: a fake ST7789 that collects what `Canvas::flush` and
   `Canvas::transition` push, so screenshots, recordings, and the window
-  show what the panel would, transitions included. A recording
-  (`src/record.rs`) looks at it each time the clock is about to move.
+  show what the panel would, transitions included, and takes as long as
+  the real one to. A recording (`src/record.rs`) looks at it each time
+  the clock is about to move.
 - `watch::Hardware`: what `main.rs` drives for the UI loop (the panel's
   power, the backlight, the battery and die temperature readings, the
   button grid's advertisements, which are printed), as told by commands.
@@ -304,6 +310,14 @@ Stand-ins replace the rest:
   Aranet4s a scan heard, the queue of messages for the phone, which are
   printed), and the hourly power report's counters.
 - `motor` is the real one; the simulator plays its requests on the bezel.
+
+Pushing pixels takes the watch's time: each transfer to the panel waits
+on the simulator's clock as long as it takes on a dev kit (fitted to its
+frames, `stub/display.rs`'s `cost`): 1.12 µs a byte (the 8 MHz SPI bus,
+and the CPU building the rows), and 1.03 ms a transfer, whose cause
+isn't known yet. So a transition takes ~0.47 s, as on the watch, and a
+tick's flush a few milliseconds. The clock moves straight to the next
+timer due, rather than a millisecond at a time.
 
 The browser's build is the same library, as a WebAssembly module whose
 exports (`src/web.rs`) the page calls each animation frame and for each
@@ -331,10 +345,14 @@ log lines go to it, and files download.
   [The flash](#the-flash)), but a location from the phone isn't saved,
   and Bluetooth bonds and the SPI flash (the activity record, field logs)
   aren't simulated.
-- **Timing.** Pushing pixels takes no time (on the watch, SPI does), so
-  a transition takes only its frame timer's ~0.1 s, and every frame is
-  whole the moment it's pushed: the panel's sleep, idle mode and refresh
-  are told what the watch tells them, but only idle mode shows.
+- **Timing.** Pushes take the panel's time (see above), within ~16% of
+  a dev kit's; nothing else does. Rendering a frame takes no time (on
+  the watch, a few milliseconds), nor do the panel's waits on waking
+  (120 ms between sleep commands, a refresh before the backlight comes
+  on). The panel's own refresh, which shows frame memory to the glass
+  top to bottom at 60 Hz (~8 Hz in idle mode), isn't modelled: the
+  window shows each pixel the moment it's sent. The backlight's
+  switching off while redrawing into or out of the dim look isn't shown.
 - **Logs.** The firmware's defmt logs go nowhere (decoding them isn't
   wired up). The simulator prints what happens instead.
 - The touch controller's quirks (missed lifts, garbage reports), the

@@ -16,6 +16,9 @@
 //! - [`Pass`]: what the last frame was rendered with (`ui::Status`, and
 //!   today's activity), and a seqlock around it, so a reader can tell a
 //!   frame whose canvas it read whole.
+//! - [`Push`]: what pushing that frame to the panel sent, and how long it
+//!   took, against which the simulator checks its model of the panel's
+//!   timing.
 //! - [`Music`]: the text of the latest music info (artist and track),
 //!   the one message whose content the simulator can't know in advance:
 //!   a phone connected to the dev kit sends its own as it plays.
@@ -87,8 +90,34 @@ pub struct Head {
     /// once that pass's frame is on the panel (in the canvas's `front`).
     pub started: u32,
     pub finished: u32,
+    pub push: Push,
     pub boot: Boot,
     pub pass: Pass,
+}
+
+/// What the last pass sent to the panel (`src/display.rs` counts it), and
+/// when: from its first address window to the frame's being finished.
+///
+/// Only the last pass's. Keeping the last pass that pushed anything (as
+/// the ticks after a transition usually push nothing) took a static flag,
+/// and with it the dev kit rebooted, three runs out of three, right after
+/// `devkit-compare.txt`'s long press saved the alarms to flash; without
+/// it, and on `main`, it didn't. Why isn't known (a layout-sensitive bug
+/// elsewhere, perhaps): TODO find out, then keep the last push.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Push {
+    /// In ticks; 0 if the pass pushed nothing.
+    pub started: u64,
+    pub finished: u64,
+    /// Address windows opened (`Display::start_pixels`).
+    pub windows: u32,
+    /// Pixel transfers (`Display::pixels`), and the EasyDMA chunks of at
+    /// most 255 bytes that the nRF52832 sends them in.
+    pub transfers: u32,
+    pub chunks: u32,
+    /// Pixel bytes.
+    pub bytes: u32,
 }
 
 #[repr(C)]
@@ -309,6 +338,15 @@ const PASS: Pass = Pass {
     today: [[0; 7]; HOURS],
 };
 
+const PUSH: Push = Push {
+    started: 0,
+    finished: 0,
+    windows: 0,
+    transfers: 0,
+    chunks: 0,
+    bytes: 0,
+};
+
 /// Only the UI task writes it, and the debugger reads it.
 #[repr(transparent)]
 pub struct Shared(UnsafeCell<Export>);
@@ -325,6 +363,7 @@ pub static UR_COMPARE: Shared = Shared(UnsafeCell::new(Export {
         written: 0,
         started: 0,
         finished: 0,
+        push: PUSH,
         boot: Boot {
             at: 0,
             theme_light: 0,
@@ -493,6 +532,7 @@ pub fn rendering(now: Instant, status: &Status, daytime: bool, today: Option<Day
     with(|export| {
         let head = &mut export.head;
         head.started = head.started.wrapping_add(1);
+        head.push = PUSH;
         let time = status.local_time;
         let sleep = status.sleep;
         let offset = crate::clock::utc_offset_minutes();
@@ -560,5 +600,34 @@ pub fn rendering(now: Instant, status: &Status, daytime: bool, today: Option<Day
 
 /// The pass's frame is on the panel.
 pub fn rendered() {
-    with(|export| export.head.finished = export.head.started);
+    with(|export| {
+        if export.head.push.windows > 0 {
+            export.head.push.finished = Instant::now().as_ticks();
+        }
+        export.head.finished = export.head.started;
+    });
+}
+
+/// The display opened an address window for pixels.
+pub fn window() {
+    with(|export| {
+        let push = &mut export.head.push;
+        if push.windows == 0 {
+            *push = Push {
+                started: Instant::now().as_ticks(),
+                ..PUSH
+            };
+        }
+        push.windows += 1;
+    });
+}
+
+/// The display sent `bytes` of pixels, in one transfer.
+pub fn pixels(bytes: usize) {
+    with(|export| {
+        let push = &mut export.head.push;
+        push.transfers += 1;
+        push.chunks += bytes.div_ceil(255) as u32;
+        push.bytes += bytes as u32;
+    });
 }

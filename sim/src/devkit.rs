@@ -751,6 +751,7 @@ impl Follower {
                 .collect()
         });
         let differ = sim.iter().zip(&devkit).filter(|(a, b)| a != b).count();
+        report_push(name, &head.push);
         let path = out.join(format!("{name}.png"));
         side_by_side(&path, &sim, &devkit)?;
         let time = if pass.has_time != 0 {
@@ -833,6 +834,33 @@ impl Follower {
     }
 }
 
+/// How long the dev kit took to push its frame to the panel, if it pushed
+/// anything, and how long the simulator's panel says that push takes (see
+/// `display::cost`). The simulator's own push of the frame isn't
+/// comparable: it follows only the frames it compares, so it pushes what
+/// changed since the last of those.
+///
+/// The dev kit's time runs from the first address window to the frame's
+/// being finished, so a transition's includes its frame timer's waits,
+/// which the model's sum of costs doesn't.
+fn report_push(name: &str, push: &compare::Push) {
+    if push.windows == 0 {
+        return;
+    }
+    let took = push.finished.saturating_sub(push.started) as f64 / 32.768;
+    let model = crate::display::cost::push(
+        u64::from(push.windows),
+        u64::from(push.transfers),
+        u64::from(push.bytes),
+    ) as f64
+        / 1e6;
+    eprintln!(
+        "compare {name}: the dev kit pushed {} windows, {} transfers ({} chunks), {} bytes \
+         in {took:.1} ms; the simulator's panel takes {model:.1} ms",
+        push.windows, push.transfers, push.chunks, push.bytes
+    );
+}
+
 fn seconds(at: Instant) -> f64 {
     at.as_ticks() as f64 / 32_768.0
 }
@@ -888,7 +916,7 @@ mod tests {
     /// on a `compare` build gives `UR_COMPARE`'s size.)
     #[test]
     fn the_export_is_laid_out_as_on_the_watch() {
-        assert_eq!(size_of::<Export>(), 0x928);
+        assert_eq!(size_of::<Export>(), 0x948);
         assert_eq!(size_of::<Event>(), 32);
         assert_eq!(size_of::<Music>(), 84);
         let music = std::mem::offset_of!(Export, music);
@@ -896,6 +924,6 @@ mod tests {
             std::mem::offset_of!(Export, events),
             music - compare::EVENTS * size_of::<Event>()
         );
-        assert_eq!(music + size_of::<Music>(), 0x928 - 4, "and padding");
+        assert_eq!(music + size_of::<Music>(), 0x948 - 4, "and padding");
     }
 }

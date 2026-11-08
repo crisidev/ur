@@ -82,8 +82,11 @@ fn a_long_wait_is_cut_short() {
     );
     let frames = frames(&dir.join("still.gif"));
     let delays: Vec<u16> = frames.iter().map(|&(delay, _)| delay).collect();
-    // The screen off: black, for the one second.
-    assert_eq!(delays[0], 100, "{delays:?}");
+    // The screen off: black, for the one second, and then while the
+    // button's frame goes to the panel, before the backlight comes on
+    // (the whole clock face: a fifth of a second, as on the watch).
+    let woken = delays[0];
+    assert!((110..130).contains(&woken), "{delays:?}");
     assert!(frames[0].1.chunks(4).all(|p| p == [0, 0, 0, 255]));
     // Then 1.5 s of clock face (split by a tick), the sweep to Today, its
     // steps each a mark (20 ms) long, and 1 s more. The sweep takes time
@@ -93,7 +96,7 @@ fn a_long_wait_is_cut_short() {
     assert!(sweep >= 3, "{delays:?}");
     assert_eq!(
         delays.iter().sum::<u16>(),
-        100 + 150 + 2 * sweep + 100,
+        woken + 150 + 2 * sweep + 100,
         "{delays:?}"
     );
 }

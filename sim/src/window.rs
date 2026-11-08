@@ -85,13 +85,15 @@ pub fn run(mut watch: Watch, options: &Options) -> Result<(), String> {
     }));
     eprint!("{KEYS}");
 
-    // A transition's frames: shown as they come, at the pace they'd take
-    // on the watch.
+    // A push's frames (a transition's, and a slow flush's): shown as they
+    // come, at the pace they'd take on the watch.
     let speed = options.speed;
     watch.on_frame = Some(Box::new({
         let screen = Rc::clone(&screen);
-        move || {
-            std::thread::sleep(StdDuration::from_secs_f64(0.001 / speed));
+        move |step: Duration| {
+            std::thread::sleep(StdDuration::from_secs_f64(
+                step.as_micros() as f64 / 1e6 / speed,
+            ));
             let mut screen = screen.borrow_mut();
             if screen.shown.elapsed() >= FRAME {
                 // A frame lost now and then is no loss.
@@ -115,6 +117,7 @@ pub fn run(mut watch: Watch, options: &Options) -> Result<(), String> {
     // The mouse is holding the button down.
     let mut button_down = false;
     let mut last = StdInstant::now();
+    let mut virtual_last = Instant::now();
     let mut title = String::new();
     let mut notification = 0;
     let mut shots = 0;
@@ -227,12 +230,15 @@ pub fn run(mut watch: Watch, options: &Options) -> Result<(), String> {
             }
         }
 
-        // Time passes.
+        // Time passes: as much as the wall clock says, less what the
+        // watch's own pushes took since the last frame, which the window
+        // has already waited out (see `on_frame`).
         let elapsed = last.elapsed();
         last = StdInstant::now();
-        watch.advance(Duration::from_micros(
-            (elapsed.as_secs_f64() * options.speed * 1e6) as u64,
-        ));
+        let due = Duration::from_micros((elapsed.as_secs_f64() * options.speed * 1e6) as u64);
+        let taken = Instant::now().saturating_duration_since(virtual_last);
+        watch.advance(due.checked_sub(taken).unwrap_or_default());
+        virtual_last = Instant::now();
 
         // And the watch shows it.
         {
