@@ -21,6 +21,7 @@ missing below were test builds for the dev kit.
 
 ### Changed
 
+- Move Info to the right of the clock, after the alarms, from the end of the screens below it (5f5acf2)
 - Show the room's temperature on the clock face rather than the watch's own: a nearby Aranet4's (after a little house), or else, on the wrist, an estimate from the watch's own that calibrates itself against any Aranet4 it meets (roughly ±2–3 °C once calibrated), or the watch's own off the wrist (e1711da)
 - Redesign the clock face's lower half: the date with small seconds under the time, the heart rate and the next alarm or timer in one row, and the day's steps as ten blocks rather than a number: 1,000 a block (×1K) towards a fixed goal of 10,000, then 10,000 a block (×10K) past it, full at 100,000 (the exact count is on Today, a swipe right) (a02d355, 718c01d)
 - Move THEME and LIGHT from Info to the new Settings screen, leaving Info to the watch's status (3f335fe)
