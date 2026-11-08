@@ -202,37 +202,52 @@ type BleStack = Stack<'static, Controller, Pool>;
 /// constructors build on the stack and then move into place; built inside
 /// `host_task`'s future, those temporaries reserved space in its poll
 /// function's frame (4.4 KB of it), on the stack for every poll, whatever
-/// it was doing. Built here, in a function of its own, they take the stack
+/// it was doing. Built here, in functions of their own, they take the stack
 /// once, at boot, and the statics cost no more RAM than the same values did
 /// inside the task's future.
+///
+/// The server and the host are built one after the other, each in its own
+/// frame (`#[inline(never)]`), rather than together: building the host
+/// also makes its first P-256 key pair (`SecurityManager::new`), ~3.3 KB of
+/// stack, and with the server's temporaries still beneath that, booting
+/// went deeper than anything else the watch does.
 #[inline(never)]
 fn build(
     controller: Controller,
     address: [u8; 6],
 ) -> (&'static BleStack, &'static Server<'static>) {
-    // The host's resources and the server share a cell: each cell costs a
-    // word for its "taken" flag.
-    type Resources = HostResources<Pool, CONNECTIONS, L2CAP_CHANNELS, 1, BONDS>;
-    static PARTS: StaticCell<(Resources, Server<'static>)> = StaticCell::new();
-    static STACK: StaticCell<BleStack> = StaticCell::new();
-    let (resources, server) = PARTS.init((
-        HostResources::new(),
+    let server = build_server();
+    (build_host(controller, address), server)
+}
+
+/// The GATT server, for [`build`].
+#[inline(never)]
+fn build_server() -> &'static Server<'static> {
+    static SERVER: StaticCell<Server<'static>> = StaticCell::new();
+    SERVER.init(
         Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
             name: NAME,
             appearance: &appearance::watch::GENERIC_WATCH,
         }))
         .expect("the attribute table is sized for this server"),
-    ));
-    let stack = STACK.init(
-        trouble_host::new(controller, resources)
+    )
+}
+
+/// The host, for [`build`].
+#[inline(never)]
+fn build_host(controller: Controller, address: [u8; 6]) -> &'static BleStack {
+    type Resources = HostResources<Pool, CONNECTIONS, L2CAP_CHANNELS, 1, BONDS>;
+    static RESOURCES: StaticCell<Resources> = StaticCell::new();
+    static STACK: StaticCell<BleStack> = StaticCell::new();
+    STACK.init(
+        trouble_host::new(controller, RESOURCES.init(HostResources::new()))
             .set_random_address(Address::random(address))
             // We can show a passkey but not enter one: the phone's user
             // types the number shown on the watch, which protects pairing
             // against man-in-the-middle attacks (unlike "just works").
             .set_io_capabilities(IoCapabilities::DisplayOnly)
             .build(),
-    );
-    (stack, &*server)
+    )
 }
 
 /// Runs the BLE host: advertise, serve one phone, repeat.
