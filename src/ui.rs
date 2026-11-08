@@ -1626,7 +1626,7 @@ fn render_clock(
     // Then the watch's own temperature, in whole °C, packed against the
     // left. The widest ("-10°", 15 px; nothing in the sensor's -40 to
     // 85 °C is wider) after the Bluetooth icon and the widest media icon
-    // (5 px) ends at x = 33, clear of the battery's widest (charging at
+    // (the note, 6 px) ends at x = 34, clear of the battery's widest (charging at
     // 100%: the bolt starts at x = 43). "NO TIME" (27 px) and a temperature can't both fit beside
     // that, so until the phone sets the clock (just after a cold boot),
     // the note wins.
