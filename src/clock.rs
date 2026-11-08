@@ -37,16 +37,6 @@ pub struct DateTime {
 }
 
 impl DateTime {
-    /// 0 = Monday … 6 = Sunday.
-    pub fn weekday(&self) -> u8 {
-        // 1970-01-01 was a Thursday (3, with Monday = 0).
-        (self.days_since_epoch() + 3).rem_euclid(7) as u8
-    }
-
-    pub fn weekday_name(&self) -> &'static str {
-        ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"][usize::from(self.weekday())]
-    }
-
     /// Days since 1970-01-01 of this date.
     pub fn days_since_epoch(&self) -> i64 {
         days_from_civil(self.year.into(), self.month.into(), self.day.into())

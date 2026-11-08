@@ -19,6 +19,7 @@
 //! - [`ble`] / [`gb`]: Bluetooth, speaking Gadgetbridge's Bangle.js protocol.
 //! - [`clock`] / [`geo`]: wall-clock time and location, both from the phone,
 //!   and the sunrise/sunset derived from them.
+//! - [`temperature`]: the watch's own temperature, for the clock face.
 //! - [`storage`]: settings and Bluetooth bonds in flash.
 //! - [`firmware`] / [`dfu`]: cooperating with the bootloader, and receiving
 //!   updates over Bluetooth.
@@ -56,6 +57,7 @@ mod sleep;
 mod spi;
 mod spi_flash;
 mod storage;
+mod temperature;
 mod theme;
 mod touch;
 mod ui;
@@ -493,8 +495,24 @@ async fn main(spawner: Spawner) {
     let mut panel_since = Instant::now();
     // Whether the last frame was in the dim look; see below.
     let mut was_dim = false;
+    // The clock face's temperature, once read.
+    let mut temperature = None;
     loop {
         let now = Instant::now();
+        // At the top of each minute of uptime, rather than at a stored
+        // time, to save the RAM. A pass delayed past that second just
+        // waits for the next minute, and an extra pass within it (an input)
+        // reads again, which is harmless.
+        if temperature.is_none() || now.as_secs().is_multiple_of(temperature::SAMPLE_EVERY) {
+            // From thread mode, as MPSL requires: the same priority as its
+            // `mpsl_task`. This blocks for ~50 µs.
+            let quarters = mpsl.get_temperature().raw();
+            let shown = temperature::shown(temperature, quarters);
+            if temperature != Some(shown) {
+                info!("temperature: {} C", shown);
+            }
+            temperature = Some(shown);
+        }
         let mut samples = [0i16; 1];
         adc.sample(&mut samples).await;
         battery.update(samples[0], charging.is_low(), power_present.is_low());
@@ -540,6 +558,7 @@ async fn main(spawner: Spawner) {
                 sleep: activity::last_sleep(),
                 local_second: local_second(),
                 heart_rate: heart::current(now),
+                temperature,
                 battery: &battery,
             };
             app.set_daytime(geo::is_daytime());

@@ -96,6 +96,9 @@ pub fn glyph(c: char) -> Glyph {
         // the second, so it gets its own glyph instead.
         'S' if c == 'ß' => plain([0b010, 0b101, 0b110, 0b101, 0b110]),
         '\u{a0}' => plain(small_glyph(' ')),
+        // A little ring at the top, for the clock face's temperature (and
+        // any notification that mentions one).
+        '°' => plain([0b010, 0b101, 0b010, 0b000, 0b000]),
         _ => plain(small_glyph('?')),
     }
 }

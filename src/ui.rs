@@ -129,6 +129,9 @@ pub struct Status<'a> {
     pub steps: Option<u32>,
     /// The latest heart rate, unless there's none recent enough to show.
     pub heart_rate: Option<u8>,
+    /// The watch's own temperature in °C (see [`crate::temperature`]),
+    /// once it's been read.
+    pub temperature: Option<i8>,
     /// The most recent sleep within the last day.
     pub sleep: Option<crate::activity::Sleep>,
     /// Local seconds since 1970 (see [`crate::alarm`]), once the time is
@@ -976,10 +979,10 @@ fn send(message: Outgoing) {
 //
 // Canvas layout (80×80), y ranges inclusive:
 //
-//    3..7    status bar: time-sync state (left), battery % and icon (right)
+//    3..7    status bar: Bluetooth or time-sync state, then the watch's
+//            temperature (left); battery % and icon (right)
 //   13..34   HH:MM in 5×7 digits at 3× (15×21 each), with a drop shadow
-//   39..52   weekday (left), SS in the same digits at 2× (centred), heart
-//            rate (right)
+//   39..52   SS in the same digits at 2× (centred), heart rate (right)
 //   58..62   date, YYYY-MM-DD
 //   67..73   steps today (left); right half meant for the next alarm
 
@@ -991,10 +994,28 @@ fn render_clock(canvas: &mut Canvas, status: &Status, next_alarm: Option<(alarm:
 
     // Status bar, left: Bluetooth when connected; a note if we don't know
     // the time (in which case the clock shows time since boot).
-    if status.connected {
+    let temperature_x = if status.connected {
         canvas.sprite(3, 2, font::BLUETOOTH_W, &font::BLUETOOTH, 1, Color::ACCENT);
+        Some(3 + font::BLUETOOTH_W as i32 + 3)
     } else if status.local_time.is_none() {
         canvas.text(3, 3, "NO TIME", Color::TEXT_FAINT);
+        None
+    } else {
+        Some(3)
+    };
+
+    // Then the watch's own temperature, in whole °C, packed against the
+    // left. The widest ("-10°", 15 px; nothing in the sensor's -40 to
+    // 85 °C is wider) after the Bluetooth icon ends at x = 25, well clear
+    // of the battery's widest (charging at 100%: the bolt starts at
+    // x = 43). "NO TIME" (27 px) and a temperature can't both fit beside
+    // that, so until the phone sets the clock (just after a cold boot),
+    // the note wins.
+    // TODO: °F, for those who'd want it.
+    if let (Some(degrees), Some(x)) = (status.temperature, temperature_x) {
+        let mut text = heapless::String::<6>::new();
+        write!(text, "{degrees}°").expect("an i8 is at most 4 chars, and ° is 2 bytes");
+        canvas.text(x, 3, &text, Color::TEXT);
     }
 
     let (hours, minutes, seconds) = match &status.local_time {
@@ -1024,18 +1045,14 @@ fn render_clock(canvas: &mut Canvas, status: &Status, next_alarm: Option<(alarm:
     }
 
     // The seconds row: smaller, dimmer seconds in the middle (two 10 px
-    // cells, 2 px gap), flanked by the weekday and heart rate, all
-    // vertically centred on the digits.
+    // cells, 2 px gap), under the colon like the date below, and the heart
+    // rate on the right, vertically centred on the digits. The left stays
+    // empty: the row reads calmer with just the two.
     const ROW_Y: i32 = 39;
     const TEXT_Y: i32 = ROW_Y + 4;
     for (digit, x) in [seconds / 10, seconds % 10].into_iter().zip([29, 41]) {
         draw_digit(canvas, x, ROW_Y, digit, 2, Color::TEXT_DIM);
     }
-    let weekday = status
-        .local_time
-        .as_ref()
-        .map_or("---", DateTime::weekday_name);
-    canvas.text(4, TEXT_Y, weekday, Color::TEXT_DIM);
 
     // Heart rate, right-aligned as a group: icon, 2 px gap, value.
     let mut bpm = heapless::String::<3>::new();

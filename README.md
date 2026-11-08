@@ -6,7 +6,7 @@ integration through [Gadgetbridge]. ("Ur" is an older Norwegian word for a
 timepiece.)
 
 <p align="center">
-  <img src="docs/screenshots/clock-arcade.png" width="180" alt="The clock face in the Arcade theme, for night: time, seconds, weekday, heart rate, date, battery and steps, white and red on black">
+  <img src="docs/screenshots/clock-arcade.png" width="180" alt="The clock face in the Arcade theme, for night: temperature and battery along the top, then time, seconds, heart rate, date and steps, white and red on black">
   <img src="docs/screenshots/clock-terminal.png" width="180" alt="The clock face in the Terminal theme, for night: green on black">
   <img src="docs/screenshots/clock-handheld.png" width="180" alt="The clock face in the Handheld theme, for day: dark green on pale green, like an old handheld">
   <img src="docs/screenshots/clock-parchment.png" width="180" alt="The clock face in the Parchment theme, for day: brown on cream">
@@ -17,10 +17,12 @@ timepiece.)
   <img src="docs/screenshots/info.png" width="180" alt="The info screen: version, battery, uptime, theme, phone, last night's sleep, and build">
 </p>
 
-- **Clock face:** time with seconds, date, battery, steps, and heart rate,
-  in four themes: two dark for after sunset (Arcade and Terminal), and two
-  light for the day (Handheld and Parchment), switching by themselves at
-  your location's sunset and sunrise.
+- **Clock face:** time with seconds, date, battery, steps, heart rate, and
+  temperature, in four themes: two dark for after sunset (Arcade and
+  Terminal), and two light for the day (Handheld and Parchment), switching
+  by themselves at your location's sunset and sunrise. The temperature is
+  the watch's own (it has no other sensor): on the wrist it reads close to
+  your skin's, around 30 °C; off the wrist, it drifts towards the room's.
 - **Glance:** turn your wrist to look, and the time shows dimly for a few
   seconds, without lighting the whole screen. Not while you're asleep.
 - **Alarms:** smart wake (rings in the half hour before your time, as soon
