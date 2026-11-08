@@ -65,7 +65,7 @@ use crate::canvas::Canvas;
 use crate::display::Display;
 use crate::snapshot::{self, HEADER_BYTES, Header, SAMPLE_BYTES};
 use crate::spi_flash::{self, FLASH};
-use crate::{Backlight, activity, clock, field_log, heart, i2c, sleep, spi, touch};
+use crate::{Backlight, activity, clock, field_log, heart, i2c, spi, stages, touch};
 
 /// Why the watch is switching off.
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -125,7 +125,7 @@ async fn save() {
         minute => Some(i64::from(minute)),
     };
     let (first, minutes) = activity::newest_minute()
-        .map(|newest| snapshot::unsynced_from(newest, synced, sleep::WINDOW as i64))
+        .map(|newest| snapshot::unsynced_from(newest, synced, stages::REVISED as i64))
         .and_then(activity::span_from)
         .unwrap_or((0, 0));
     // Every local that lives across an await is static RAM, in the

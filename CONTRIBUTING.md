@@ -10,12 +10,13 @@ sealed watch, and how releases are made.
 
 - `src/`: the firmware. `main.rs` starts the tasks and runs the UI loop;
   each module's documentation explains its part. The hardware-free ones
-  (`ppg`, `sleep`, `alarm`, `glance`, `heart_schedule`, `brightness`,
-  `temperature`, `battery`, `snapshot`) are pure logic, tested on the
-  computer.
-- `host-tests/<module>/`: one crate per hardware-free module, which
-  includes the firmware's source file with `#[path]` and tests it on the
-  host. Some also replay real data (see [Field logs](#field-logs)).
+  (`ppg`, `sleep`, `stages`, `alarm`, `glance`, `heart_schedule`,
+  `brightness`, `temperature`, `battery`, `snapshot`) are pure logic,
+  tested on the computer.
+- `host-tests/<module>/`: one crate per hardware-free module (`sleep`'s
+  covers `stages` too), which includes the firmware's source file with
+  `#[path]` and tests it on the host. Some also replay real data (see
+  [Field logs](#field-logs)).
 - `scripts/`: packaging (`package.py`, `release.sh`), flashing and
   screenshots over SWD (`run-esprobe.sh`, `screenshot.py`), and Bluetooth tools
   (`dfu.py`, `fetch-log.py`).
@@ -222,7 +223,8 @@ reason says it happened.
 Some host-test crates replay decoded logs, to tune against real wrists:
 
 - `host-tests/sleep`: `cargo run --release -- decoded.log` reclassifies
-  the log's sleep, minute by minute.
+  and stages the log's sleep, minute by minute, from its movement and
+  heart rate readings.
 - `host-tests/ppg`: `cargo run --release -- sessions.txt` replays the
   heart rate sensor's raw samples. `scripts/ppg_sessions.py` extracts
   them from a decoded log, alongside another watch's heart rate from an

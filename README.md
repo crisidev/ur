@@ -31,7 +31,10 @@ timepiece.)
   Gadgetbridge. Alarms start with faint taps and build up to full strength
   over a minute; timers buzz in full straight away.
 - **Sleep and heart rate:** measured on the watch, and synced to
-  Gadgetbridge (and from there to [Health Connect], if you like).
+  Gadgetbridge (and from there to [Health Connect], if you like). Sleep
+  comes in light, deep, and REM stages, estimated from your wrist's
+  movement and heart rate: a rough guide, tuned against a Garmin on one
+  watch.
 - **Notifications:** which app, and who from, briefly. With the screen off
   they're full-screen and dim. Calls take over the screen, and you can
   answer or decline.

@@ -1,5 +1,5 @@
-//! Sleep, from wrist movement: which minutes were spent asleep (lightly or
-//! deeply), restless, awake, or with the watch off the wrist.
+//! Sleep, from wrist movement: which minutes were spent asleep, restless,
+//! awake, or with the watch off the wrist.
 //!
 //! This is actigraphy, the method of research sleep watches: during sleep
 //! the wrist is still, apart from brief stirs. The rules, applied to each
@@ -14,19 +14,20 @@
 //! - **Waking** is [`WAKE_RUN`] minutes of movement, or walking (at least
 //!   [`WAKE_STEPS`] steps in a minute). It's dated from the first of them.
 //! - Shorter movement within sleep is a stir: up to [`STIR`] minutes stay
-//!   light sleep, longer is **restless** (Gadgetbridge's "awake during
-//!   sleep").
-//! - **Deep sleep** is the inside of a long, nearly motionless stretch:
-//!   after [`DEEP_SETTLE`] minutes of a run of at least [`DEEP_RUN`]
-//!   minutes below [`DEEP_LIMIT`]. Wrist movement can't truly tell sleep
-//!   stages apart (that takes brain waves); deep stillness is the usual
-//!   stand-in, and good enough to steer a smart alarm away from it.
+//!   sleep, longer is **restless** (Gadgetbridge's "awake during sleep").
 //! - **Not worn** is when the heart rate sensor's last look found no skin.
+//!
+//! Sleep comes out of this as [`Kind::Light`]; [`crate::stages`] then
+//! relabels it light, deep, or REM from the heart rate and the stirs. (This
+//! used to call the inside of long, nearly motionless stretches deep, the
+//! usual stand-in from movement alone; against a Garmin it was right about
+//! a fifth of deep sleep, and saw no REM.)
 //!
 //! Since sleep is recognised only after the fact, classification runs over
 //! a trailing window ([`WINDOW`] minutes, plus [`CONTEXT`] before it) every
 //! minute, revising its recent past. Minutes older than the window are
-//! final.
+//! final, as far as sleep and waking go (their stage can still change for a
+//! while: see [`crate::stages::REVISED`]).
 //!
 //! The thresholds are first guesses in our movement units (Bangle.js'
 //! 8192-per-g; ~25 lying on a desk, hundreds when handled), to be tuned from
@@ -36,7 +37,7 @@
 //! night (no buzzing or lit screen for notifications) starts and ends.
 //!
 //! This module knows nothing about the hardware or the clock, so it can be
-//! tested on a computer (see `tmp/sleep-test`).
+//! tested on a computer (see `host-tests/sleep`).
 
 /// What a minute was spent doing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -52,6 +53,8 @@ pub enum Kind {
     /// Awake for a while within sleep.
     Restless = 4,
     NotWorn = 5,
+    /// Rapid-eye-movement (dreaming) sleep: see [`crate::stages`].
+    Rem = 6,
 }
 
 impl Kind {
@@ -62,12 +65,18 @@ impl Kind {
             3 => Self::Deep,
             4 => Self::Restless,
             5 => Self::NotWorn,
+            6 => Self::Rem,
             _ => Self::Unknown,
         }
     }
 
     pub fn is_sleep(self) -> bool {
-        matches!(self, Self::Light | Self::Deep | Self::Restless)
+        matches!(self, Self::Light | Self::Deep | Self::Rem | Self::Restless)
+    }
+
+    /// Whether this is a stage of actual sleep (not restless).
+    pub fn is_stage(self) -> bool {
+        matches!(self, Self::Light | Self::Deep | Self::Rem)
     }
 
     /// The name Gadgetbridge's `ActivityKind` uses, for activity samples.
@@ -77,6 +86,11 @@ impl Kind {
             Self::Unknown | Self::Awake => None,
             Self::Light => Some("LIGHT_SLEEP"),
             Self::Deep => Some("DEEP_SLEEP"),
+            // Gadgetbridge's Bangle.js support doesn't declare REM, but
+            // takes any `ActivityKind` name: its charts draw REM (only the
+            // legend leaves it out), and its Health Connect export writes
+            // it as REM. See `crate::stages`.
+            Self::Rem => Some("REM_SLEEP"),
             Self::Restless => Some("AWAKE_SLEEP"),
             Self::NotWorn => Some("NOT_WORN"),
         }
@@ -101,9 +115,6 @@ pub struct Minute {
 /// Movement (averaged over three minutes) below which a minute is still.
 /// TODO: tune from field logs.
 pub const STILL_LIMIT: u16 = 120;
-/// Movement (averaged likewise) below which a still minute is nearly
-/// motionless, for deep sleep. TODO: tune from field logs.
-pub const DEEP_LIMIT: u16 = 50;
 /// Minutes of stillness that make sleep. Long enough that sitting still
 /// through a TV episode with the odd fidget doesn't count.
 pub const ONSET: usize = 20;
@@ -120,10 +131,6 @@ pub const WAKE_STEPS: u16 = 10;
 /// because the three-minute smoothing turns one twitchy minute into three
 /// moving ones.
 pub const STIR: usize = 3;
-/// Minimum run of nearly motionless sleep minutes that contains deep sleep.
-pub const DEEP_RUN: usize = 20;
-/// How far into such a run deep sleep starts.
-pub const DEEP_SETTLE: usize = 10;
 /// How many recent minutes are re-classified (and rewritten) every minute.
 /// Must cover the longest look-back of any rule (onset: [`ONSET`]), with
 /// room to spare.
@@ -131,8 +138,7 @@ pub const WINDOW: usize = 90;
 /// How many minutes before the window are classified along with it, as
 /// context, but not rewritten. Without it, the oldest minutes of every pass
 /// (the ones about to become final) would always look like the start of a
-/// stretch: never deep, since deep sleep starts [`DEEP_SETTLE`] minutes
-/// into one.
+/// stretch, with no stillness or sleep before them to go on.
 pub const CONTEXT: usize = 30;
 
 // ==============================================================================
@@ -244,18 +250,6 @@ pub fn classify(before: Kind, minutes: &[Minute], out: &mut [Kind]) {
         out[t..t + moving].fill(kind);
         t += moving;
     }
-
-    // Deep sleep: the inside of long, nearly motionless stretches of sleep.
-    let mut t = 0;
-    while t < n {
-        let length = (t..n)
-            .take_while(|&u| out[u] == Kind::Light && smoothed(u) < DEEP_LIMIT)
-            .count();
-        if length >= DEEP_RUN {
-            out[t + DEEP_SETTLE..t + length].fill(Kind::Deep);
-        }
-        t += length.max(1);
-    }
 }
 
 // ==============================================================================
@@ -284,10 +278,7 @@ pub fn last_sleep(kinds: &[Kind]) -> Option<(usize, usize, usize)> {
             }
         }
     }
-    let asleep = kinds[start..end]
-        .iter()
-        .filter(|k| matches!(k, Kind::Light | Kind::Deep))
-        .count();
+    let asleep = kinds[start..end].iter().filter(|k| k.is_stage()).count();
     Some((start, end, asleep))
 }
 

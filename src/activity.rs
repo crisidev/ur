@@ -40,7 +40,7 @@ use embassy_time::{Duration, Instant, Timer, with_timeout};
 use embedded_hal_async::i2c::I2c;
 
 use crate::i2c::Device;
-use crate::{clock, sleep};
+use crate::{clock, sleep, stages};
 
 // ==============================================================================
 // The BMA421
@@ -627,20 +627,60 @@ impl History {
             .is_some_and(|minute| self.samples[Self::slot(minute)].sleep().is_sleep())
     }
 
-    /// The most recent sleep in the history (see [`sleep::last_sleep`]).
-    fn last_sleep(&self) -> Option<Sleep> {
+    /// The most recent sleep in the history (see [`sleep::last_sleep`]),
+    /// staged (see [`stages`]) while it's recent: while it reaches into the
+    /// window that [`History::classify_sleep`] just rewrote as light. Once
+    /// it's older, its sleep and its stages' inputs are final, and so are
+    /// its stages.
+    fn last_sleep(&mut self) -> Option<Sleep> {
         let newest = self.newest?;
         let oldest = newest - HISTORY_MINUTES as i64 + 1;
-        let mut kinds = [sleep::Kind::Unknown; HISTORY_MINUTES];
-        for (i, kind) in kinds.iter_mut().enumerate() {
-            *kind = self.samples[Self::slot(oldest + i as i64)].sleep();
+        // The span, in its own scope: the copy of the classes is 1.4 KB of
+        // stack, not to be held while staging.
+        let (start, end) = {
+            let mut kinds = [sleep::Kind::Unknown; HISTORY_MINUTES];
+            for (i, kind) in kinds.iter_mut().enumerate() {
+                *kind = self.samples[Self::slot(oldest + i as i64)].sleep();
+            }
+            let (start, end, _) = sleep::last_sleep(&kinds)?;
+            (oldest + start as i64, oldest + end as i64)
+        };
+        if newest < end + sleep::WINDOW as i64 {
+            stages::stage(self, start, end);
         }
-        let (start, end, asleep) = sleep::last_sleep(&kinds)?;
+        let stages =
+            stages::Minutes::count((start..end).map(|m| self.samples[Self::slot(m)].sleep()));
         Some(Sleep {
-            start_utc_minute: oldest + start as i64,
-            end_utc_minute: oldest + end as i64,
-            asleep_minutes: asleep as u16,
+            start_utc_minute: start,
+            end_utc_minute: end,
+            asleep_minutes: stages.asleep(),
+            deep_minutes: stages.deep,
+            rem_minutes: stages.rem,
         })
+    }
+}
+
+/// Staging works on the history in place.
+impl stages::Record for History {
+    fn minute(&self, minute: i64) -> (sleep::Kind, Option<u16>, u8) {
+        let newest = self.newest.unwrap_or(i64::MIN);
+        if minute > newest || newest - minute >= HISTORY_MINUTES as i64 {
+            return (sleep::Kind::Unknown, None, 0);
+        }
+        let sample = &self.samples[Self::slot(minute)];
+        (
+            sample.sleep(),
+            sample.seen().then_some(sample.movement),
+            sample.heart_rate,
+        )
+    }
+
+    fn newest(&self) -> i64 {
+        self.newest.unwrap_or(i64::MIN)
+    }
+
+    fn set_stage(&mut self, minute: i64, kind: sleep::Kind) {
+        self.samples[Self::slot(minute)].set_sleep(kind);
     }
 }
 
@@ -650,8 +690,13 @@ pub struct Sleep {
     pub start_utc_minute: i64,
     /// The minute after the last asleep one.
     pub end_utc_minute: i64,
-    /// Minutes actually asleep (light or deep) in between.
+    /// Minutes actually asleep (light, deep, or REM; not restless) in
+    /// between.
     pub asleep_minutes: u16,
+    /// Of those, deep sleep (see [`stages`]).
+    pub deep_minutes: u16,
+    /// And REM sleep; the rest is light.
+    pub rem_minutes: u16,
 }
 
 static LAST_SLEEP: Mutex<CriticalSectionRawMutex, Cell<Option<Sleep>>> =
@@ -1029,7 +1074,8 @@ pub async fn activity_task(i2c: Device) {
             sample.movement = movement;
             sample.set_seen(crate::heart::worn());
         });
-        // Once a minute: revise the recent past's sleep, and the summary.
+        // Once a minute: revise the recent past's sleep, its stages, and the
+        // summary.
         if new_minute {
             let (summary, changed, asleep) = HISTORY.lock(|history| {
                 let mut history = history.borrow_mut();
@@ -1046,8 +1092,12 @@ pub async fn activity_task(i2c: Device) {
             }
             if changed && let Some(sleep) = summary {
                 info!(
-                    "sleep: {} min asleep, minutes {}..{} (UTC)",
-                    sleep.asleep_minutes, sleep.start_utc_minute, sleep.end_utc_minute
+                    "sleep: {} min asleep ({} deep, {} REM), minutes {}..{} (UTC)",
+                    sleep.asleep_minutes,
+                    sleep.deep_minutes,
+                    sleep.rem_minutes,
+                    sleep.start_utc_minute,
+                    sleep.end_utc_minute
                 );
             }
             LAST_SLEEP.lock(|s| s.set(summary));

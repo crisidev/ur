@@ -1,20 +1,23 @@
-//! Host tests for the firmware's `sleep` module, on synthetic days and
-//! nights.
+//! Host tests for the firmware's `sleep` and `stages` modules, on
+//! synthetic days and nights.
 //!
 //! `cargo run` prints each scenario's timeline (one character per minute);
 //! `cargo test` asserts on them. `cargo run -- <decoded field log>` replays
 //! a real day from a field log instead (see `replay`).
 //!
 //! The movement levels are guesses in the firmware's units (~25 on a desk,
-//! hundreds awake), like the classifier's thresholds. These tests check the
-//! *logic* (onset, waking, stirs, deep stretches, not-worn, and that
-//! classifying a trailing window every minute agrees with classifying the
-//! whole night at once), not that the thresholds match real wrists; field
-//! logs decide that.
+//! hundreds awake), like the classifier's thresholds, and the heart rates a
+//! caricature of a night's. These tests check the *logic* (onset, waking,
+//! stirs, stages, not-worn, and that classifying a trailing window every
+//! minute agrees with classifying the whole night at once), not that the
+//! thresholds match real wrists; field logs decide that.
 
 #[path = "../../../src/sleep.rs"]
 #[allow(dead_code)]
 mod sleep;
+#[path = "../../../src/stages.rs"]
+#[allow(dead_code)]
+mod stages;
 
 use sleep::{Kind, Minute};
 
@@ -50,9 +53,12 @@ enum Truth {
     Sitting,
     /// Watching TV: still-ish, with fidgets.
     Lounging,
+    /// Light sleep.
     Asleep,
     /// A long, very still stretch of sleep.
     DeepAsleep,
+    /// REM sleep: moving like light sleep, the heart rate up.
+    Rem,
     /// Up in the night.
     Up,
     OffWrist,
@@ -78,7 +84,7 @@ fn minute(rng: &mut Rng, truth: Truth) -> Minute {
             0,
         ),
         // A stir now and then: a minute or two of rolling over.
-        Truth::Asleep => (
+        Truth::Asleep | Truth::Rem => (
             if rng.chance(0.04) {
                 rng.range(200, 700)
             } else {
@@ -120,11 +126,15 @@ fn a_night(rng: &mut Rng) -> (Vec<Truth>, Vec<Minute>) {
             (Truth::Sitting, 30),   // 22:30 reading
             (Truth::Asleep, 60),    // 23:00 asleep
             (Truth::DeepAsleep, 70),
-            (Truth::Asleep, 110),
+            (Truth::Asleep, 50),
+            (Truth::Rem, 25),
+            (Truth::Asleep, 35),
             (Truth::Up, 6), // 03:00 bathroom
             (Truth::Asleep, 50),
             (Truth::DeepAsleep, 45),
-            (Truth::Asleep, 140), // until 07:00
+            (Truth::Asleep, 50),
+            (Truth::Rem, 30),
+            (Truth::Asleep, 60), // until 07:00
             (Truth::Active, 300),
             (Truth::Sitting, 360),
             (Truth::Active, 39),
@@ -132,10 +142,36 @@ fn a_night(rng: &mut Rng) -> (Vec<Truth>, Vec<Minute>) {
     )
 }
 
+/// Heart rate readings for `truth` (one every 5 minutes, as the watch
+/// takes them asleep), from their own random numbers so that adding them
+/// leaves the movement as it was. Asleep, a baseline drifting down 1 BPM
+/// every 80 minutes from 23:00 (minute 300); light sleep a few beats over
+/// it, deep at it, REM well over it.
+fn heart_rates(seed: u64, truth: &[Truth]) -> Vec<u8> {
+    let mut rng = Rng::new(seed.wrapping_add(1_000_000));
+    truth
+        .iter()
+        .enumerate()
+        .map(|(t, truth)| {
+            let base = 56 - (t.saturating_sub(300).min(480) / 80) as u16;
+            let bpm = match truth {
+                Truth::Active | Truth::Up => rng.range(75, 95),
+                Truth::Sitting | Truth::Lounging => rng.range(62, 72),
+                Truth::Asleep => base + rng.range(1, 4),
+                Truth::DeepAsleep => base + rng.range(0, 2) - 1,
+                Truth::Rem => base + rng.range(9, 13),
+                Truth::OffWrist => 0,
+            };
+            if t % 5 == 0 { bpm as u8 } else { 0 }
+        })
+        .collect()
+}
+
 // ==============================================================================
 // Running the classifier
 // ==============================================================================
 
+#[cfg(test)]
 /// Classifies everything at once.
 fn batch(minutes: &[Minute]) -> Vec<Kind> {
     let mut out = vec![Kind::Unknown; minutes.len()];
@@ -143,30 +179,47 @@ fn batch(minutes: &[Minute]) -> Vec<Kind> {
     out
 }
 
-/// Classifies as the firmware does: every minute, the trailing window and
-/// its context, seeded with the (final) class of the minute before them,
-/// writing back only the window.
-fn incremental(minutes: &[Minute]) -> Vec<Kind> {
-    let mut kinds = vec![Kind::Unknown; minutes.len()];
-    for now in 0..minutes.len() {
-        let window = (now + 1).saturating_sub(sleep::WINDOW);
-        let start = window.saturating_sub(sleep::CONTEXT);
-        let before = if start == 0 {
-            Kind::Unknown
-        } else {
-            kinds[start - 1]
-        };
-        let mut out = vec![Kind::Unknown; now + 1 - start];
-        sleep::classify(before, &minutes[start..=now], &mut out);
-        kinds[window..=now].copy_from_slice(&out[window - start..]);
-    }
-    kinds
+/// The firmware's per-minute record, as `crate::activity`'s history
+/// holds it, up to minute `newest`.
+struct Record<'a> {
+    kinds: &'a mut [Kind],
+    minutes: &'a [Minute],
+    heart: &'a [u8],
+    newest: i64,
 }
 
-/// What the firmware's `activity::asleep()` says each minute: whether the
-/// newest minute of that minute's pass (the leading edge, where unfinished
-/// movement is still restless) is sleep.
-fn leading_edge(minutes: &[Minute]) -> Vec<bool> {
+impl stages::Record for Record<'_> {
+    fn minute(&self, minute: i64) -> (Kind, Option<u16>, u8) {
+        if !(0..=self.newest).contains(&minute) {
+            return (Kind::Unknown, None, 0);
+        }
+        let t = minute as usize;
+        let m = self.minutes[t];
+        (
+            self.kinds[t],
+            m.seen.then_some(m.movement),
+            self.heart.get(t).copied().unwrap_or(0),
+        )
+    }
+
+    fn newest(&self) -> i64 {
+        self.newest
+    }
+
+    fn set_stage(&mut self, minute: i64, kind: Kind) {
+        self.kinds[minute as usize] = kind;
+    }
+}
+
+/// Runs as the firmware does, every minute: classifies the trailing window
+/// and its context, seeded with the (final) class of the minute before
+/// them, writing back only the window; then re-stages the last sleep while
+/// it reaches into that window (`activity::History::last_sleep`). Returns
+/// the classes at the end, and whether the newest minute was sleep at each
+/// minute (`activity::asleep()`: the leading edge, where unfinished
+/// movement is still restless). `heart` may be shorter than `minutes`
+/// (empty for no readings).
+fn firmware(minutes: &[Minute], heart: &[u8]) -> (Vec<Kind>, Vec<bool>) {
     let mut kinds = vec![Kind::Unknown; minutes.len()];
     let mut asleep = Vec::with_capacity(minutes.len());
     for now in 0..minutes.len() {
@@ -180,11 +233,59 @@ fn leading_edge(minutes: &[Minute]) -> Vec<bool> {
         let mut out = vec![Kind::Unknown; now + 1 - start];
         sleep::classify(before, &minutes[start..=now], &mut out);
         kinds[window..=now].copy_from_slice(&out[window - start..]);
+        if let Some((start, end, _)) = sleep::last_sleep(&kinds[..=now])
+            && now < end + sleep::WINDOW
+        {
+            let mut record = Record {
+                kinds: &mut kinds,
+                minutes,
+                heart,
+                newest: now as i64,
+            };
+            stages::stage(&mut record, start as i64, end as i64);
+        }
         asleep.push(kinds[now].is_sleep());
     }
-    asleep
+    (kinds, asleep)
 }
 
+#[cfg(test)]
+/// Classifies as the firmware does, without heart rate readings (so all
+/// sleep is light).
+fn incremental(minutes: &[Minute]) -> Vec<Kind> {
+    firmware(minutes, &[]).0
+}
+
+#[cfg(test)]
+/// What the firmware's `activity::asleep()` says each minute.
+fn leading_edge(minutes: &[Minute]) -> Vec<bool> {
+    firmware(minutes, &[]).1
+}
+
+#[cfg(test)]
+/// Stages every sleep of `kinds` (as classified, with sleep as light)
+/// once, at the end: what the minute-by-minute staging should come to.
+fn staged_at_once(kinds: &[Kind], minutes: &[Minute], heart: &[u8]) -> Vec<Kind> {
+    let mut kinds: Vec<Kind> = kinds
+        .iter()
+        .map(|&k| if k.is_stage() { Kind::Light } else { k })
+        .collect();
+    let mut until = kinds.len();
+    while let Some((start, end, _)) = sleep::last_sleep(&kinds[..until]) {
+        let newest = kinds.len() as i64 - 1;
+        let mut record = Record {
+            kinds: &mut kinds,
+            minutes,
+            heart,
+            newest,
+        };
+        stages::stage(&mut record, start as i64, end as i64);
+        until = start;
+    }
+    kinds
+}
+
+#[cfg(test)]
 /// Runs [`sleep::Night`] over a day of `asleep` verdicts (one a minute,
 /// from 18:00 as in [`a_night`]), with an alarm ringing at minute `alarm`
 /// if given. Returns whether each minute was quiet.
@@ -215,15 +316,13 @@ fn timeline(kinds: &[Kind]) -> String {
             Kind::Deep => 'D',
             Kind::Restless => 'r',
             Kind::NotWorn => 'x',
+            Kind::Rem => 'R',
         })
         .collect()
 }
 
 fn asleep_minutes(kinds: &[Kind]) -> usize {
-    kinds
-        .iter()
-        .filter(|k| matches!(k, Kind::Light | Kind::Deep))
-        .count()
+    kinds.iter().filter(|k| k.is_stage()).count()
 }
 
 // ==============================================================================
@@ -231,15 +330,17 @@ fn asleep_minutes(kinds: &[Kind]) -> usize {
 // ==============================================================================
 
 /// Replays a decoded field log (`defmt-print` output): rebuilds each
-/// minute's movement, steps, and worn verdict from the accelerometer and
-/// heart rate lines, and classifies them, to tune the thresholds on real
-/// nights. Uptimes become wall-clock time via the `clock:` lines.
+/// minute's movement, steps, worn verdict, and heart rate from the
+/// accelerometer and heart rate lines, and classifies and stages them as
+/// the firmware does, to tune the thresholds on real nights. Uptimes become
+/// wall-clock time via the `clock:` lines.
 fn replay(path: &str) {
     let text = std::fs::read_to_string(path).expect("a readable log");
     // (uptime seconds, UTC seconds) anchors, from `clock: <utc> UTC = ...`.
     let mut anchor: Option<(f64, i64)> = None;
     let mut minutes: std::collections::BTreeMap<i64, (u64, u64, u16, Option<bool>)> =
         Default::default();
+    let mut heart: std::collections::BTreeMap<i64, u8> = Default::default();
     let mut worn: Option<bool> = None;
     for line in text.lines() {
         let Some((uptime, rest)) = line.split_once(' ') else {
@@ -258,9 +359,17 @@ fn replay(path: &str) {
             }
             continue;
         }
-        if message.starts_with("heart: ") {
+        let minute = anchor.map(|(at, utc)| (utc + (uptime - at) as i64).div_euclid(60));
+        if let Some(rest) = message.strip_prefix("heart: ") {
             if message.contains(" BPM") && !message.contains("window") {
                 worn = Some(true);
+                // "heart: 56 BPM after 24 s (...)", or "heart: 56 BPM" for
+                // the readings after the first: what the history records.
+                if let Some((bpm, _)) = rest.split_once(" BPM")
+                    && let (Ok(bpm), Some(minute)) = (bpm.parse::<u8>(), minute)
+                {
+                    heart.insert(minute, bpm);
+                }
             } else if message.contains("not on a wrist") || message.contains("too much light") {
                 worn = Some(false);
             } else if message.contains("no reading") {
@@ -286,8 +395,7 @@ fn replay(path: &str) {
         let [samples, movement, steps, ..] = numbers[..] else {
             continue;
         };
-        let Some((at, utc)) = anchor else { continue };
-        let minute = (utc + (uptime - at) as i64).div_euclid(60);
+        let Some(minute) = minute else { continue };
         let entry = minutes.entry(minute).or_insert((0, 0, 0, None));
         entry.0 += movement * samples;
         entry.1 += samples;
@@ -312,21 +420,31 @@ fn replay(path: &str) {
             None => Minute::default(),
         })
         .collect();
-    let kinds = incremental(&evidence);
+    let heart: Vec<u8> = (first..=last)
+        .map(|m| heart.get(&m).copied().unwrap_or(0))
+        .collect();
+    let (kinds, _) = firmware(&evidence, &heart);
+    let stages = stages::Minutes::count(kinds.iter().copied());
     println!(
-        "{} minutes; asleep {}; last sleep {:?}",
+        "{} minutes, {} heart rate readings; asleep {} (light {}, deep {}, REM {}); last sleep {:?}",
         kinds.len(),
+        heart.iter().filter(|&&b| b > 0).count(),
         asleep_minutes(&kinds),
+        stages.light,
+        stages.deep,
+        stages.rem,
         sleep::last_sleep(&kinds)
     );
+
     // One row per hour, labelled in UTC.
-    for (hour, row) in timeline(&kinds).as_bytes().chunks(60).enumerate() {
+    let ours = timeline(&kinds);
+    for (hour, row) in ours.as_bytes().chunks(60).enumerate() {
         let start = (first + hour as i64 * 60) * 60;
         println!(
             "  {:02}:{:02}Z {}",
             start.rem_euclid(86_400) / 3600,
             start.rem_euclid(3600) / 60,
-            std::str::from_utf8(row).unwrap()
+            std::str::from_utf8(row).expect("ASCII")
         );
     }
 }
@@ -338,54 +456,40 @@ fn main() {
     for seed in 0..3 {
         let mut rng = Rng::new(seed);
         let (truth, minutes) = a_night(&mut rng);
-        let kinds = incremental(&minutes);
-        if std::env::var("BATCH").is_ok() {
-            let b = batch(&minutes);
-            for (hour, row) in timeline(&b)
-                .as_bytes()
-                .chunks(60)
-                .enumerate()
-                .skip(4)
-                .take(5)
-            {
-                println!(
-                    "B {:02}:00 {}",
-                    (18 + hour) % 24,
-                    std::str::from_utf8(row).unwrap()
-                );
-            }
-            let t: String = truth
-                .iter()
-                .map(|t| match t {
-                    Truth::DeepAsleep => 'D',
-                    Truth::Asleep => 'l',
-                    Truth::Up => 'U',
-                    _ => '.',
-                })
-                .collect();
-            for (hour, row) in t.as_bytes().chunks(60).enumerate().skip(4).take(5) {
-                println!(
-                    "T {:02}:00 {}",
-                    (18 + hour) % 24,
-                    std::str::from_utf8(row).unwrap()
-                );
-            }
-        }
+        let (kinds, _) = firmware(&minutes, &heart_rates(seed, &truth));
         let real = truth
             .iter()
-            .filter(|t| matches!(t, Truth::Asleep | Truth::DeepAsleep))
+            .filter(|t| matches!(t, Truth::Asleep | Truth::DeepAsleep | Truth::Rem))
             .count();
         println!(
             "seed {seed}: asleep {} min (truth {real}), last sleep {:?}",
             asleep_minutes(&kinds),
             sleep::last_sleep(&kinds)
         );
-        for (hour, row) in timeline(&kinds).as_bytes().chunks(60).enumerate() {
+        let truth: String = truth
+            .iter()
+            .map(|t| match t {
+                Truth::DeepAsleep => 'D',
+                Truth::Asleep => 'l',
+                Truth::Rem => 'R',
+                Truth::Up => 'U',
+                _ => '.',
+            })
+            .collect();
+        for (hour, (row, truth)) in timeline(&kinds)
+            .as_bytes()
+            .chunks(60)
+            .zip(truth.as_bytes().chunks(60))
+            .enumerate()
+        {
             println!(
                 "  {:02}:00 {}",
                 (18 + hour) % 24,
-                std::str::from_utf8(row).unwrap()
+                std::str::from_utf8(row).expect("ASCII")
             );
+            if (4..14).contains(&hour) {
+                println!("   truth {}", std::str::from_utf8(truth).expect("ASCII"));
+            }
         }
     }
 }
@@ -408,7 +512,7 @@ mod tests {
             let kinds = incremental(&minutes);
             let real = truth
                 .iter()
-                .filter(|t| matches!(t, Truth::Asleep | Truth::DeepAsleep))
+                .filter(|t| matches!(t, Truth::Asleep | Truth::DeepAsleep | Truth::Rem))
                 .count();
             let (start, end, asleep) = sleep::last_sleep(&kinds).expect("a night");
             // Onset is dated back to the start of the stillness; the last
@@ -428,9 +532,244 @@ mod tests {
                 "seed {seed}:\n{}",
                 timeline(&kinds)
             );
-            // Some deep sleep, during the very still stretches.
-            assert!(kinds.contains(&Kind::Deep), "seed {seed}");
+            // Without heart rate readings, all of it light.
+            assert!(
+                !kinds.iter().any(|k| matches!(k, Kind::Deep | Kind::Rem)),
+                "seed {seed}"
+            );
         }
+    }
+
+    // ==========================================================================
+    // Stages
+    // ==========================================================================
+
+    /// The night's stages, from the heart rate: deep in the first deep
+    /// stretch, REM in the REM ones, and nothing that the rules rule out.
+    /// (The synthetic light sleep stirs less than a real one, so some of it
+    /// passes for deep; that's not what this checks.)
+    #[test]
+    fn a_night_is_staged() {
+        for seed in 0..20 {
+            let mut rng = Rng::new(seed);
+            let (truth, minutes) = a_night(&mut rng);
+            let (kinds, _) = firmware(&minutes, &heart_rates(seed, &truth));
+            let share = |range: std::ops::Range<usize>, kind: Kind| {
+                kinds[range.clone()].iter().filter(|&&k| k == kind).count() as f64
+                    / range.len() as f64
+            };
+            // 00:00–01:10 deep, 02:00–02:25 and 05:31–06:01 REM.
+            let msg = || format!("seed {seed}:\n{}", timeline(&kinds));
+            assert!(share(360..430, Kind::Deep) > 0.8, "{}", msg());
+            // (Some nights' classifier wakes in the middle of a REM
+            // stretch, leaving too short a bout on one side: together.)
+            let rem = share(480..505, Kind::Rem) * 25.0 + share(691..721, Kind::Rem) * 30.0;
+            assert!(rem / 55.0 > 0.6, "{}", msg());
+            let (start, end, asleep) = sleep::last_sleep(&kinds).expect("a night");
+            assert!(
+                !kinds[start..start + stages::REM_AFTER as usize].contains(&Kind::Rem),
+                "REM in the first hour: {}",
+                msg()
+            );
+            assert!(
+                !kinds[start + stages::DEEP_UNTIL as usize..end].contains(&Kind::Deep),
+                "deep after five hours: {}",
+                msg()
+            );
+            let stages = stages::Minutes::count(kinds[start..end].iter().copied());
+            assert_eq!(usize::from(stages.asleep()), asleep);
+        }
+    }
+
+    /// Staging relabels sleep only: what's sleep, restless, or awake is
+    /// the same with heart rate readings as without.
+    #[test]
+    fn staging_keeps_sleep_and_waking() {
+        for seed in 0..20 {
+            let mut rng = Rng::new(seed);
+            let (truth, minutes) = a_night(&mut rng);
+            let (staged, asleep) = firmware(&minutes, &heart_rates(seed, &truth));
+            let (plain, plain_asleep) = firmware(&minutes, &[]);
+            assert_eq!(asleep, plain_asleep, "seed {seed}: asleep() differs");
+            for (t, (a, b)) in staged.iter().zip(&plain).enumerate() {
+                assert!(
+                    a == b || (a.is_stage() && *b == Kind::Light),
+                    "seed {seed}, minute {t}: {a:?} vs {b:?}"
+                );
+            }
+        }
+    }
+
+    /// Re-staging every minute, as the night goes on, ends up where staging
+    /// the whole night at once does.
+    #[test]
+    fn staging_incrementally_matches_at_once() {
+        for seed in 0..20 {
+            let mut rng = Rng::new(seed);
+            let (truth, minutes) = a_night(&mut rng);
+            let heart = heart_rates(seed, &truth);
+            let (kinds, _) = firmware(&minutes, &heart);
+            let once = staged_at_once(&kinds, &minutes, &heart);
+            assert_eq!(
+                timeline(&kinds),
+                timeline(&once),
+                "seed {seed}\n{}\n{}",
+                timeline(&kinds),
+                timeline(&once)
+            );
+        }
+    }
+
+    /// A hand-made sleep for the rules: `minutes` of still sleep with a
+    /// heart rate reading every minute at 50 BPM, but 62 at `raised`.
+    fn hand_made(
+        minutes: usize,
+        raised: &[std::ops::Range<usize>],
+    ) -> (Vec<Kind>, Vec<Minute>, Vec<u8>) {
+        let kinds = vec![Kind::Light; minutes];
+        let still = Minute {
+            seen: true,
+            movement: 30,
+            steps: 0,
+            worn: Some(true),
+        };
+        let mut heart = vec![50; minutes];
+        for range in raised {
+            heart[range.clone()].fill(62);
+        }
+        (kinds, vec![still; minutes], heart)
+    }
+
+    fn stage_once(kinds: &mut [Kind], minutes: &[Minute], heart: &[u8]) {
+        let newest = kinds.len() as i64 - 1;
+        let end = kinds.len() as i64;
+        let mut record = Record {
+            kinds,
+            minutes,
+            heart,
+            newest,
+        };
+        stages::stage(&mut record, 0, end);
+    }
+
+    /// Still and calm is deep, but only for the first five hours; a raised
+    /// heart rate is REM, but not in the first hour (when it's light: too
+    /// raised for deep). The level averages the readings within 3 minutes,
+    /// so 40..100 raised is deep until 40 (39 has one raised neighbour of
+    /// 7), and 100 is deep again.
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)] // a list of raised ranges
+    fn stages_follow_the_hours() {
+        let (mut kinds, minutes, heart) = hand_made(400, &[40..100]);
+        stage_once(&mut kinds, &minutes, &heart);
+        let expect = |range: std::ops::Range<usize>, kind| {
+            assert!(
+                kinds[range.clone()].iter().all(|&k| k == kind),
+                "{range:?} not {kind:?}:\n{}",
+                timeline(&kinds)
+            )
+        };
+        let (rem_after, deep_until) = (stages::REM_AFTER as usize, stages::DEEP_UNTIL as usize);
+        expect(0..40, Kind::Deep);
+        expect(40..rem_after, Kind::Light);
+        expect(rem_after..100, Kind::Rem);
+        expect(100..deep_until, Kind::Deep);
+        expect(deep_until..400, Kind::Light);
+    }
+
+    /// Stirring keeps it from being deep, however calm the heart.
+    #[test]
+    fn stirs_are_not_deep() {
+        let (mut kinds, mut minutes, heart) = hand_made(200, &[]);
+        // A stir every third minute from 60 to 140.
+        for t in (60..140).step_by(3) {
+            minutes[t].movement = 400;
+        }
+        stage_once(&mut kinds, &minutes, &heart);
+        assert!(
+            kinds[70..130].iter().all(|&k| k == Kind::Light),
+            "{}",
+            timeline(&kinds)
+        );
+        assert!(
+            kinds[..40].iter().all(|&k| k == Kind::Deep),
+            "{}",
+            timeline(&kinds)
+        );
+    }
+
+    /// Bouts: short ones are light, and short light gaps between two of the
+    /// same stage are filled. (After five hours, so the rest is light, not
+    /// deep. A raised stretch of `n` minutes makes `n + 2` REM minutes, as
+    /// the level averages over 3 minutes either side.)
+    #[test]
+    fn bouts_are_cleaned_up() {
+        let raised = |start: usize, n: usize| 300 + start..300 + start + n;
+        let rem = |kinds: &[Kind], start: usize, n: usize| {
+            kinds[299 + start..301 + start + n]
+                .iter()
+                .all(|&k| k == Kind::Rem)
+        };
+        // Too short (6 minutes), and just long enough (8).
+        let (mut kinds, minutes, heart) = hand_made(500, &[raised(10, 4), raised(50, 6)]);
+        stage_once(&mut kinds, &minutes, &heart);
+        assert!(!kinds[300..].contains(&Kind::Deep));
+        assert!(
+            !kinds[300..340].contains(&Kind::Rem),
+            "{}",
+            timeline(&kinds)
+        );
+        assert!(rem(&kinds, 50, 6), "{}", timeline(&kinds));
+        // Gaps of 5 light minutes (filled) and 6 (not).
+        let (mut kinds, minutes, heart) = hand_made(
+            500,
+            &[
+                raised(10, 10),
+                raised(27, 10),
+                raised(100, 10),
+                raised(118, 10),
+            ],
+        );
+        stage_once(&mut kinds, &minutes, &heart);
+        assert!(
+            kinds[309..338].iter().all(|&k| k == Kind::Rem),
+            "{}",
+            timeline(&kinds)
+        );
+        assert!(
+            rem(&kinds, 100, 10) && rem(&kinds, 118, 10),
+            "{}",
+            timeline(&kinds)
+        );
+        assert!(
+            kinds[411..417].iter().all(|&k| k == Kind::Light),
+            "{}",
+            timeline(&kinds)
+        );
+    }
+
+    /// Restless minutes stay restless, without splitting a bout; a wake
+    /// does split it.
+    #[test]
+    fn bouts_and_wakes() {
+        let (mut kinds, minutes, heart) = hand_made(500, &[310..320, 350..356]);
+        kinds[314] = Kind::Restless;
+        kinds[352] = Kind::Awake;
+        stage_once(&mut kinds, &minutes, &heart);
+        assert_eq!(kinds[314], Kind::Restless);
+        assert!(
+            kinds[309..314]
+                .iter()
+                .chain(&kinds[315..321])
+                .all(|&k| k == Kind::Rem)
+        );
+        // 349..352 and 353..357: each too short.
+        assert_eq!(kinds[352], Kind::Awake);
+        assert!(
+            !kinds[340..370].contains(&Kind::Rem),
+            "{}",
+            timeline(&kinds)
+        );
     }
 
     /// Getting up in the night is awake, not sleep.

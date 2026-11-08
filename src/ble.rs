@@ -999,10 +999,11 @@ async fn send_activity(
     // task's static storage (twice: once per connection slot); a few
     // samples per lock is plenty.
     //
-    // Start a sleep window early: the recent past's sleep classes may have
-    // been revised since the last sync (sleep is only recognised after the
-    // fact), and Gadgetbridge overwrites samples it already has.
-    let mut next = since_ms.div_euclid(60_000) - crate::sleep::WINDOW as i64;
+    // Start early: the recent past's sleep classes and stages may have been
+    // revised since the last sync (sleep is only recognised after the fact,
+    // and stages need the hour after), and Gadgetbridge overwrites samples
+    // it already has.
+    let mut next = since_ms.div_euclid(60_000) - crate::stages::REVISED as i64;
     let mut sent = 0;
     // Whether every sample went out (as far as we can tell: notifications
     // aren't acknowledged).

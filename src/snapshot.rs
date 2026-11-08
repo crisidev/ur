@@ -110,7 +110,7 @@ impl Header {
 /// and the newest the phone has fetched since boot (if it has).
 ///
 /// The phone's next fetch starts `resend` minutes before what it last got
-/// (the window in which sleep is still being reclassified), so the record
+/// (the window in which sleep and its stages are still being revised), so the record
 /// starts there too: those minutes may have changed since. Without a fetch
 /// this boot, all of the history is (as far as we know) unsynced.
 pub fn unsynced_from(newest: i64, synced_through: Option<i64>, resend: i64) -> i64 {

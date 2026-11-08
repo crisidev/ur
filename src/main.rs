@@ -62,6 +62,7 @@ mod sleep;
 mod snapshot;
 mod spi;
 mod spi_flash;
+mod stages;
 mod storage;
 mod system_off;
 mod temperature;
