@@ -19,11 +19,14 @@ build with `--no-default-features` to leave the window out.
 
 ## The window
 
-The mouse is a finger: click to tap, hold still for 0.6 s to long press,
-drag to swipe, all through the firmware's gesture recogniser
-(`src/gesture.rs`). The right edge of the bezel is the button, and the
-bezel lights up while the motor buzzes. The panel dims with the
-backlight, and goes black when the screen is off. Keys:
+The watch, drawn to scale from PINE64's dimensions and photos: the 1.3″
+screen in a black 37.5 × 40 mm case, and the button on its left edge. The
+mouse is a finger: click to tap, hold still for 0.6 s to long press, drag
+to swipe, all through the firmware's gesture recogniser
+(`src/gesture.rs`). Click the button to press it. The screen dims with
+the backlight and goes black when it's off, and the watch shakes while
+the motor buzzes. `--zoom N` sets its size: N pixels a canvas pixel (4,
+a 320-pixel screen, by default). Keys:
 
 | Key | | Key | |
 |---|---|---|---|
@@ -65,7 +68,8 @@ tap                               # snooze
   `timer`, `theme`.
 - **Time:** `wait 1.5s`, `until HH:MM`.
 - **Output:** `shot FILE.png [THEME]` (with a theme: in its colours, as
-  `screenshot.py --theme`), `expect`.
+  `screenshot.py --theme`; with `--watch`, the whole watch, as the window
+  draws it), `expect`.
 
 `gb` takes a line exactly as Gadgetbridge sends it (less the `\x10`
 before it), say from Gadgetbridge's log, and runs it through the

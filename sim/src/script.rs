@@ -63,6 +63,7 @@ Time:
 Output:
   shot FILE.png [THEME]      a screenshot (relative to --out); with THEME,
                              in its colours (as screenshot.py --theme)
+  shot FILE.png --watch      the whole watch, as the window shows it
   expect [not] STATE         fail unless: screen-on, dim, quiet-night,
                              buzzing, off (switched off), or clock (the
                              clock face, for someone to read)
@@ -78,6 +79,8 @@ pub enum Next {
 /// Where screenshots go.
 pub struct Output {
     pub dir: PathBuf,
+    /// Pixels a canvas pixel, for the whole watch (`shot … --watch`).
+    pub zoom: usize,
 }
 
 /// Runs one line. Blank lines and `#` comments do nothing.
@@ -374,8 +377,11 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
         }
         "shot" => {
             let path = output.dir.join(need(0, "FILE")?);
-            let palette = arg(1).map(find_theme).transpose()?;
-            watch.screenshot(&path, palette)?;
+            match arg(1) {
+                // The whole watch, as the window shows it.
+                Some("--watch") => crate::shot::save_watch(&path, watch.backlight, output.zoom)?,
+                theme => watch.screenshot(&path, theme.map(find_theme).transpose()?)?,
+            }
             watch.log(format!("screenshot: {}", path.display()));
         }
         "expect" => {

@@ -8,7 +8,7 @@ use crate::script::{self, Next, Output};
 use crate::watch::Watch;
 
 const USAGE: &str = "\
-Usage: ur-sim [--window] [--out DIR] [--speed N] [SCRIPT ...]
+Usage: ur-sim [--window] [--out DIR] [--speed N] [--zoom N] [SCRIPT ...]
 
 Runs the ur firmware's UI on this computer. With scripts, runs them (each
 line a command; `-` reads commands from stdin) and exits; without, or with
@@ -18,6 +18,9 @@ after running any scripts, and takes commands typed into the terminal.
   --window     open the window even with scripts
   --out DIR    where `shot` writes screenshots (default: .)
   --speed N    in the window, run time N times as fast (default: 1)
+  --zoom N     in the window (and `shot … --watch`), draw a canvas pixel N
+               pixels wide (default: 4, a 320-pixel screen; 3 is the
+               panel's own size)
   --help       this, and the commands
 ";
 
@@ -26,6 +29,7 @@ pub struct Options {
     pub window: bool,
     pub output: Output,
     pub speed: f64,
+    pub zoom: usize,
 }
 
 pub fn main() -> ExitCode {
@@ -93,13 +97,25 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
     let mut options = Options {
         scripts: Vec::new(),
         window: false,
-        output: Output { dir: ".".into() },
+        output: Output {
+            dir: ".".into(),
+            zoom: 4,
+        },
         speed: 1.0,
+        zoom: 4,
     };
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--help" | "-h" => return Ok(None),
             "--window" => options.window = true,
+            "--zoom" => {
+                let zoom = args.next().ok_or("--zoom needs N")?;
+                options.zoom = match zoom.parse::<usize>() {
+                    Ok(n @ 1..=12) => n,
+                    _ => return Err(format!("--zoom {zoom}? (1 to 12)")),
+                };
+                options.output.zoom = options.zoom;
+            }
             "--out" => options.output.dir = args.next().ok_or("--out needs a DIR")?.into(),
             "--speed" => {
                 let speed = args.next().ok_or("--speed needs N")?;

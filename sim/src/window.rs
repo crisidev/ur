@@ -1,9 +1,12 @@
-//! The window: the panel in a bezel, the mouse as a finger, the keyboard
-//! for the button and the phone, and the terminal for every other command.
+//! The window: the watch, drawn to scale, with the mouse as a finger, the
+//! keyboard for the button and the phone, and the terminal for every other
+//! command.
 //!
-//! Time runs at the wall clock's pace (or `--speed` times it). The panel
-//! is shown as the backlight would light it: off is black, and the dimmer
-//! levels darker. The bezel lights up while the motor runs.
+//! The watch is drawn as the PineTime is built (see [`Case`]): a black
+//! 37.5 × 40 mm case, the 1.3″ panel behind black glass, and the button on
+//! the left edge. Time runs at the wall clock's pace (or `--speed` times
+//! it). The panel is shown as the backlight would light it: off is black,
+//! and the dimmer levels darker. The watch shakes while the motor runs.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -11,32 +14,24 @@ use std::sync::mpsc;
 use std::time::{Duration as StdDuration, Instant as StdInstant};
 
 use embassy_time::Duration;
-use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Scale, Window, WindowOptions};
+use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Window, WindowOptions};
 
-use crate::brightness::{self, BY_CURRENT};
+use crate::brightness;
+use crate::case::Case;
 use crate::cli::Options;
-use crate::display::{PANEL, SIZE, rgb888};
 use crate::gesture::{Gesture, Touch};
 use crate::script::{self, Next};
 use crate::ui::PhoneEvent;
 use crate::watch::Watch;
 use crate::{InputEvent, clock};
 
-/// The bezel around the panel, in panel pixels.
-const BEZEL: usize = 16;
-/// The side button, on the right of the bezel: its rows.
-const BUTTON_ROWS: std::ops::Range<usize> = 100..156;
-const WIDTH: usize = SIZE + 2 * BEZEL;
-const HEIGHT: usize = SIZE + 2 * BEZEL;
-const BEZEL_COLOR: u32 = 0x202020;
-const BUZZ_COLOR: u32 = 0xc08020;
-const BUTTON_COLOR: u32 = 0x484848;
 /// How often to show a frame.
 const FRAME: StdDuration = StdDuration::from_millis(16);
 
 const KEYS: &str = "\
 Window: the mouse is a finger (hold still 0.6 s for a long press, drag to
-swipe); click the bezel's right edge, or Space, for the button.
+swipe); click the button on the watch's left edge, or press Space, for the
+button.
   G glance   N notification   M music play/pause   C call/hang up
   arrows swipe   T tap   L long press (at the middle)
   F a minute on   H an hour on   S screenshot   Q quit
@@ -45,61 +40,44 @@ The terminal takes commands (`help` lists them).
 
 struct Screen {
     window: Window,
+    case: Case,
     buffer: Vec<u32>,
-    /// The backlight's brightness, 0 (off) to 1, and the bezel's colour,
-    /// as of the last whole frame: a transition's frames keep them.
+    zoom: usize,
+    /// The backlight's brightness, 0 (off) to 1, and how far the motor has
+    /// shaken the watch, in window pixels, as of the last whole frame: a
+    /// transition's frames keep them.
     light: f32,
-    bezel: u32,
+    shake: isize,
     shown: StdInstant,
 }
 
 impl Screen {
     fn draw(&mut self) {
-        let (light, bezel) = (self.light, self.bezel);
-        self.buffer.fill(bezel);
-        for y in BUTTON_ROWS {
-            for x in WIDTH - BEZEL / 2..WIDTH {
-                self.buffer[y * WIDTH + x] = BUTTON_COLOR;
-            }
-        }
-        PANEL.with_borrow(|panel| {
-            for y in 0..SIZE {
-                for x in 0..SIZE {
-                    let [r, g, b] = rgb888(panel.pixels[y * SIZE + x], panel.idle)
-                        .map(|c| (f32::from(c) * light) as u32);
-                    self.buffer[(y + BEZEL) * WIDTH + x + BEZEL] = r << 16 | g << 8 | b;
-                }
-            }
-        });
+        self.case.draw(&mut self.buffer, self.light, self.shake);
     }
 
     fn show(&mut self) -> Result<(), String> {
         self.draw();
         self.shown = StdInstant::now();
         self.window
-            .update_with_buffer(&self.buffer, WIDTH, HEIGHT)
+            .update_with_buffer(&self.buffer, self.case.width, self.case.height)
             .map_err(|e| format!("showing the window: {e}"))
     }
 }
 
 pub fn run(mut watch: Watch, options: &Options) -> Result<(), String> {
-    let mut window = Window::new(
-        "ur",
-        WIDTH,
-        HEIGHT,
-        WindowOptions {
-            scale: Scale::X2,
-            ..WindowOptions::default()
-        },
-    )
-    .map_err(|e| format!("opening the window: {e}"))?;
+    let case = Case::new(options.zoom);
+    let mut window = Window::new("ur", case.width, case.height, WindowOptions::default())
+        .map_err(|e| format!("opening the window: {e}"))?;
     // Paced here instead: a transition shows frames from within the watch.
     window.set_target_fps(0);
     let screen = Rc::new(RefCell::new(Screen {
         window,
-        buffer: vec![0; WIDTH * HEIGHT],
+        buffer: vec![0; case.width * case.height],
+        case,
+        zoom: options.zoom,
         light: 0.0,
-        bezel: BEZEL_COLOR,
+        shake: 0,
         shown: StdInstant::now(),
     }));
     eprint!("{KEYS}");
@@ -131,6 +109,8 @@ pub fn run(mut watch: Watch, options: &Options) -> Result<(), String> {
     });
 
     let mut mouse_down = false;
+    // The mouse is holding the button down.
+    let mut button_down = false;
     let mut last = StdInstant::now();
     let mut title = String::new();
     let mut notification = 0;
@@ -151,21 +131,34 @@ pub fn run(mut watch: Watch, options: &Options) -> Result<(), String> {
             return Ok(());
         }
         if let Some((mx, my)) = mouse {
-            let (x, y) = (mx as i32 - BEZEL as i32, my as i32 - BEZEL as i32);
-            let on_panel = (0..SIZE as i32).contains(&x) && (0..SIZE as i32).contains(&y);
-            let on_button = mx as usize >= WIDTH - BEZEL && BUTTON_ROWS.contains(&(my as usize));
-            match (pressed, mouse_down) {
-                (true, false) if on_button => watch.input(InputEvent::Button),
-                (true, false) if on_panel => {
-                    watch.finger_at(x, y);
-                    mouse_down = true;
+            let (on_panel, on_button) = {
+                let case = &screen.borrow().case;
+                (case.on_panel(mx, my), case.on_button(mx, my))
+            };
+            match (pressed, mouse_down, button_down) {
+                // The button, pressed once until the mouse lets go of it.
+                (true, false, true) => {}
+                (true, false, false) if on_button => {
+                    watch.input(InputEvent::Button);
+                    button_down = true;
                 }
-                (true, true) => watch.finger_at(x, y),
-                (false, true) => {
+                (true, false, false) => {
+                    if let Some((x, y)) = on_panel {
+                        watch.finger_at(x, y);
+                        mouse_down = true;
+                    }
+                }
+                // Off the panel, the finger stays where it left it.
+                (true, true, _) => {
+                    if let Some((x, y)) = on_panel {
+                        watch.finger_at(x, y);
+                    }
+                }
+                (false, true, _) => {
                     watch.lift();
                     mouse_down = false;
                 }
-                _ => {}
+                (false, false, _) => button_down = false,
             }
         }
         for key in keys {
@@ -222,11 +215,15 @@ pub fn run(mut watch: Watch, options: &Options) -> Result<(), String> {
         // And the watch shows it.
         {
             let mut screen = screen.borrow_mut();
-            screen.light = light(watch.backlight);
-            screen.bezel = if watch.motor_on() {
-                BUZZ_COLOR
+            screen.light = crate::case::light(watch.backlight);
+            // Shaken a canvas pixel's width each way, a frame at a time.
+            let zoom = screen.zoom as isize;
+            screen.shake = if !watch.motor_on() {
+                0
+            } else if screen.shake > 0 {
+                -zoom
             } else {
-                BEZEL_COLOR
+                zoom
             };
             screen.show()?;
             let now = status(&watch);
@@ -247,15 +244,6 @@ fn command(watch: &mut Watch, line: &str, options: &Options) -> Next {
             eprintln!("{e}");
             Next::Continue
         }
-    }
-}
-
-/// How bright a backlight level looks: off is black, and the dimmest
-/// still readable.
-fn light(level: brightness::Level) -> f32 {
-    match BY_CURRENT.iter().position(|&l| l == level) {
-        Some(rank) => 0.5 + 0.5 * rank as f32 / (BY_CURRENT.len() - 1) as f32,
-        None => 0.0,
     }
 }
 

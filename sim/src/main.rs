@@ -196,6 +196,7 @@ defmt::timestamp!("{=u64:us}", embassy_time::Instant::now().as_micros());
 // The simulator's own
 // ==============================================================================
 
+mod case;
 mod cli;
 mod script;
 mod shot;
