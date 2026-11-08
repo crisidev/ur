@@ -15,6 +15,11 @@
 //! unencrypted gets a banner on the watch pointing at the README's FAQ (see
 //! `not_paired`).
 //!
+//! Pairing is also what an attacker in range would go for, so: a pairing
+//! that didn't use the passkey ("just works") leaves no bond behind; one
+//! that fails puts back any bond it displaced; and after each failure the
+//! next pairing waits longer (see [`pairing_backoff`]).
+//!
 //! The stack is Nordic's SoftDevice Controller (link layer, a binary blob
 //! wrapped by `nrf-sdc`) under TrouBLE (host, in Rust), with Nordic's MPSL
 //! scheduling the radio. MPSL owns RTC0, TIMER0, the RADIO, TEMP, some PPI
@@ -438,10 +443,20 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
     .await;
 }
 
-/// Gives the host the bonds kept in flash.
-async fn restore_bonds(stack: &BleStack) {
+/// Gives the host the bonds kept in flash that it hasn't got: all of them
+/// at boot, and after a pairing that failed, those it dropped (see
+/// [`pairing_failed`]).
+async fn restore_bonds<C: trouble_host::Controller>(stack: &Stack<'_, C, Pool>) {
     for slot in storage::key::BONDS {
         if let Some(bond) = storage::load(slot).await.as_ref().and_then(decode_bond) {
+            let known = stack.with_bond_information(|bonds| {
+                bonds
+                    .iter()
+                    .any(|b| b.identity.match_identity(&bond.identity))
+            });
+            if known {
+                continue;
+            }
             info!("ble: restored bond with {}", bond.identity.addr);
             if let Err(e) = stack.add_bond_information(bond) {
                 warn!("ble: restoring bond failed: {}", e);
@@ -687,6 +702,9 @@ async fn serve(
     // `Instant` in this future, which is in RAM twice (once per slot), and
     // RAM is that scarce.
     let mut security = Security::Pending;
+    // Whether a pairing has shown its passkey and not yet ended: one the
+    // client cuts short by leaving counts as failed.
+    let mut pairing = false;
 
     let reason = loop {
         let idle = async {
@@ -875,7 +893,16 @@ async fn serve(
                 }
             }
             GattConnectionEvent::PassKeyDisplay(passkey) => {
+                if let Some(wait) = pairing_backoff() {
+                    warn!(
+                        "ble: pairing {} ms after a failed one; refused",
+                        wait.as_millis()
+                    );
+                    conn.raw().disconnect();
+                    continue;
+                }
                 info!("ble: pairing; showing passkey");
+                pairing = true;
                 make_room_for_bond(stack, conn);
                 show_passkey(Some(passkey.value()));
             }
@@ -889,13 +916,33 @@ async fn serve(
                     bond.is_some()
                 );
                 show_passkey(None);
-                if bond.is_some() {
-                    save_bonds(stack).await;
+                pairing = false;
+                if security_level == SecurityLevel::EncryptedAuthenticated {
+                    PAIRING_FAILURES.lock(|cell| cell.set((0, Instant::now())));
+                    if bond.is_some() {
+                        save_bonds(stack).await;
+                    }
+                } else {
+                    // "Just works", from a client that can neither show
+                    // nor type a passkey: none of our services take its
+                    // link, and its bond mustn't stay either. Kept, it
+                    // takes a slot (two make the table full), and a client
+                    // claiming a bonded phone's identity address replaces
+                    // that phone's bond with its own, so the phone can't
+                    // reconnect: our bonds go back to what's in flash.
+                    warn!("ble: paired without the passkey; not kept");
+                    if let Some(bond) = bond {
+                        let _ = stack.remove_bond_information(bond.identity);
+                    }
+                    pairing_failed(stack).await;
+                    not_paired(conn, &mut security);
                 }
             }
             GattConnectionEvent::PairingFailed(e) => {
                 warn!("ble: pairing failed: {}", e);
                 show_passkey(None);
+                pairing = false;
+                pairing_failed(stack).await;
                 not_paired(conn, &mut security);
             }
             GattConnectionEvent::BondLost => {
@@ -929,6 +976,9 @@ async fn serve(
         }
     };
     update.abandon("left").await;
+    if pairing {
+        pairing_failed(stack).await;
+    }
     if security == Security::Told {
         UNPAIRED.lock(|cell| cell.set(None));
     }
@@ -1093,6 +1143,46 @@ async fn send_activity(server: &Server<'_>, conn: &GattConnection<'_, '_, Pool>,
         // was, and up to what it asked from otherwise.
         crate::system_off::on_synced((next - 1).max(since_ms.div_euclid(60_000)));
     }
+}
+
+/// How many pairings failed in a row, for [`pairing_backoff`], and when
+/// the last one did.
+static PAIRING_FAILURES: Mutex<CriticalSectionRawMutex, Cell<(u8, Instant)>> =
+    Mutex::new(Cell::new((0, Instant::from_ticks(0))));
+
+/// After a pairing fails, the next waits 2 s, then 4 s, … up to a minute
+/// for each further failure in a row, as the Bluetooth core spec suggests
+/// ("Repeated Attempts", Vol 3, Part H, 2.3.6): `Some(how much longer)`
+/// while that wait lasts.
+///
+/// Anyone in range can start pairing, and each attempt wakes the screen
+/// to show a passkey (and could evict a bond; see [`make_room_for_bond`]).
+/// Unchecked, that's a battery drained by a screen kept lit, and a passkey
+/// guessed (one in a million each time) at a few tries a second instead of
+/// one a minute. It's one wait for everyone, since an attacker's address
+/// can change at will; so a wearer who mistypes the passkey waits a few
+/// seconds too, and one pairing under an attack waits up to a minute.
+fn pairing_backoff() -> Option<Duration> {
+    let (failures, at) = PAIRING_FAILURES.lock(Cell::get);
+    if failures == 0 {
+        return None;
+    }
+    let wait = Duration::from_secs(1 << failures.min(6)).min(Duration::from_secs(60));
+    let until = at + wait;
+    let now = Instant::now();
+    (now < until).then(|| until - now)
+}
+
+/// After a pairing that failed, or was refused for not using the passkey:
+/// starts [`pairing_backoff`]'s next wait, and puts back the bonds it
+/// dropped or replaced, from flash. (`make_room_for_bond` may have evicted
+/// one for it, which only flash still has until a pairing succeeds.)
+async fn pairing_failed<C: trouble_host::Controller>(stack: &Stack<'_, C, Pool>) {
+    PAIRING_FAILURES.lock(|cell| {
+        let (failures, _) = cell.get();
+        cell.set((failures.saturating_add(1), Instant::now()));
+    });
+    restore_bonds(stack).await;
 }
 
 /// Who's connected right now, so pairing never evicts their bonds.
