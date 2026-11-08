@@ -40,8 +40,9 @@ timepiece.)
   estimated from your wrist's movement and heart rate: a rough guide,
   tuned against a Garmin on one watch.
 - **Notifications:** which app, and who from, briefly. With the screen off
-  they're full-screen and dim. The last three wait above the clock face.
-  Calls take over the screen, and you can answer or decline.
+  they're full-screen and dim. The last three wait above the clock face,
+  with when each came. Calls take over the screen, and you can answer or
+  decline.
 - **Quiet nights:** from when you fall asleep until the morning's first
   alarm (or until you've been up for 22 minutes), notifications neither
   buzz nor light the screen; the latest waits on the clock face for you.

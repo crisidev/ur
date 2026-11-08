@@ -38,6 +38,7 @@
 
 mod activity;
 mod alarm;
+mod arrival;
 mod battery;
 mod ble;
 mod brightness;

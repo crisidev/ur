@@ -12,7 +12,8 @@
 //!   Last night (sleep).
 //! - Right, what's next: Alarms, then the phone's alarms, once it has sent
 //!   some.
-//! - Above: the last [`HISTORY`] notifications, newest nearest, one a page.
+//! - Above: the last [`HISTORY`] notifications, newest nearest, one a page,
+//!   with when each arrived (see [`crate::arrival`]).
 //! - Below: Music, while the phone has media, then Info.
 //!
 //! Screens away from the clock show a short bar, a handle, in the middle of
@@ -105,12 +106,14 @@
 //!   ring and buzz.
 
 use core::fmt::Write as _;
+use core::num::NonZeroU32;
 
 use embassy_time::{Duration, Instant};
 use heapless::String;
 
 use crate::InputEvent;
 use crate::alarm;
+use crate::arrival;
 use crate::battery::Battery;
 use crate::ble;
 use crate::brightness;
@@ -340,12 +343,21 @@ enum Shows {
 }
 
 /// How many notifications the history above the clock keeps. Each costs
-/// 72 bytes of RAM (its two strings), where there's little to spare.
+/// 76 bytes of RAM (its two strings, and when it arrived), where there's
+/// little to spare.
 const HISTORY: usize = 3;
 
 struct Notification {
     app: String<24>,
     who: String<40>,
+    /// When it arrived, in local minutes since 1970 (see [`arrival`]), if
+    /// the time was known then. The whole minute rather than the minute
+    /// of the day, so a page can say which day: with only a few kept,
+    /// they can be days old. It costs nothing over a `u16` minute of the
+    /// day, which the strings' 4-byte alignment would pad to 4 bytes
+    /// anyway; `NonZero`, so that `None` is free too (minute 0, in 1970,
+    /// is never a real time).
+    arrived: Option<NonZeroU32>,
 }
 
 /// The latest notifications, for the history above the clock.
@@ -366,11 +378,11 @@ struct Notifications {
 
 impl Notifications {
     /// Keeps a new notification, forgetting the oldest if there's no room.
-    fn push(&mut self, app: String<24>, who: String<40>) {
+    fn push(&mut self, app: String<24>, who: String<40>, arrived: Option<NonZeroU32>) {
         if self.list.is_full() {
             self.list.pop();
         }
-        let _ = self.list.insert(0, Notification { app, who });
+        let _ = self.list.insert(0, Notification { app, who, arrived });
         self.unseen = true;
     }
 }
@@ -1019,7 +1031,15 @@ impl App {
         // history, too), or that a client can't connect.
         let event = match event {
             PhoneEvent::Notification { app, who } => {
-                self.notifications.push(app, who);
+                // The time as of the last tick, at most a second old. (A
+                // test notification may be backdated, to see how older
+                // ones show.)
+                let arrived = self
+                    .local_second
+                    .map(|second| second.div_euclid(60) - crate::debug::take_backdate_minutes())
+                    .and_then(|minute| u32::try_from(minute).ok())
+                    .and_then(NonZeroU32::new);
+                self.notifications.push(app, who, arrived);
                 return self.show_banner(Shows::Newest, now);
             }
             PhoneEvent::Unpaired(why) => return self.show_banner(Shows::Unpaired(why), now),
@@ -1400,16 +1420,21 @@ impl App {
             Screen::PhoneAlarms => render_phone_alarms(canvas, &self.phone_alarms),
             // Like a notification that arrived with the screen off, its
             // text scrolling from when the page opened (the swipe there),
-            // but a line short at 2×, to leave the bottom edge for the
-            // handle (see `edge_bar`).
+            // but a line short at 2×, to leave the bottom for when it
+            // arrived, and the handle (see `edge_bar`) below that.
             Screen::Notification(i) => match self.notifications.list.get(usize::from(i)) {
-                Some(n) => render_quiet_notification(
-                    canvas,
-                    &n.app,
-                    &n.who,
-                    now - self.last_input,
-                    QUIET_LINES_2X - 1,
-                ),
+                Some(n) => {
+                    render_quiet_notification(
+                        canvas,
+                        &n.app,
+                        &n.who,
+                        now - self.last_input,
+                        QUIET_LINES_2X - 1,
+                    );
+                    if let (Some(arrived), Some(second)) = (n.arrived, status.local_second) {
+                        render_arrived(canvas, arrived.get().into(), second.div_euclid(60));
+                    }
+                }
                 None => render_clock(canvas, status, next_alarm, None),
             },
             Screen::Music => match &self.music {
@@ -2618,6 +2643,20 @@ fn render_quiet_notification(
         }
         None => canvas.marquee(3..3 + BANNER_TEXT_WIDTH, 44, who, Color::TEXT, 2, elapsed),
     }
+}
+
+/// Where a history page shows when its notification arrived: small, and
+/// centred near the bottom, where the sender never reaches (three lines at
+/// 2× end at y = 62; at 1×, the longest sender, 40 bytes, takes at most
+/// four lines, ending at y = 55), above the handle at y = 78.
+const ARRIVED_Y: i32 = 70;
+
+/// When a history page's notification arrived, at local minute `at`, as
+/// of local minute `now` (see [`arrival::write`]).
+fn render_arrived(canvas: &mut Canvas, at: i64, now: i64) {
+    let mut text = heapless::String::<{ arrival::MAX_LEN }>::new();
+    arrival::write(&mut text, at, now).expect("fits in MAX_LEN");
+    canvas.text_centered(40, ARRIVED_Y, &text, Color::TEXT_DIM);
 }
 
 /// Where the decline/answer buttons start, for both drawing and tapping.

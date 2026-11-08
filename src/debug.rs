@@ -8,7 +8,7 @@
 //! script finds in the ELF. They're inert without a probe; the cost is
 //! [`input_task`]'s poll, ten wake-ups of a few µs a second.
 
-use core::sync::atomic::{AtomicPtr, AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU16, AtomicU32, Ordering};
 
 use embassy_time::Timer;
 
@@ -22,7 +22,8 @@ static UR_CANVAS: AtomicPtr<Canvas> = AtomicPtr::new(core::ptr::null_mut());
 
 /// An input to inject: 0 for none; otherwise the low byte is the kind (1
 /// button, 2 tap, 3 long press, 4–7 swipe up, down, left, right, 8 a
-/// glance, 9 a test notification, 10 hang (spin forever, to test what the
+/// glance, 9 a test notification (`x` picks the sender, `y` how many hours
+/// ago it arrived), 10 hang (spin forever, to test what the
 /// watchdog records), 11 a `defmt::panic!`, 12 a `core::panic!` as from a
 /// SoftDevice Controller fault (to test what a panic records), 13 a battery
 /// voltage, `x` + 256 × `y` millivolts, from now on instead of the measured
@@ -37,6 +38,17 @@ static UR_INPUT: AtomicU32 = AtomicU32::new(0);
 
 /// The battery voltage injected by input 13, in millivolts, or 0.
 static BATTERY_MV: AtomicU16 = AtomicU16::new(0);
+
+/// How many hours ago the next test notification arrived (input 9's `y`),
+/// to see how older ones show in the history; taken by
+/// [`take_backdate_minutes`].
+static BACKDATE_HOURS: AtomicU8 = AtomicU8::new(0);
+
+/// How many minutes before now a notification arriving now should count
+/// as having arrived: 0, bar a backdated test notification.
+pub fn take_backdate_minutes() -> i64 {
+    i64::from(BACKDATE_HOURS.swap(0, Ordering::Relaxed)) * 60
+}
 
 /// The battery voltage to use instead of the measured one, if one was
 /// injected, as a raw SAADC sample (see [`crate::battery::Battery::update`]).
@@ -131,10 +143,13 @@ pub async fn input_task() {
                     3 => ("Signal", "Nora Lindqvist"),
                     // Accents, and a hyphenated word.
                     4 => ("Signal", "Åse Kristiansen"),
+                    // One line, even at 2×.
+                    5 => ("Messages", "Ida"),
                     _ => ("Signal", "Jane Smith"),
                 };
                 let _ = app.push_str(from);
                 let _ = who.push_str(sender);
+                BACKDATE_HOURS.store(y, Ordering::Relaxed);
                 let notification = crate::ui::PhoneEvent::Notification { app, who };
                 INPUT.send(InputEvent::Phone(notification)).await;
                 continue;

@@ -15,7 +15,8 @@ enough for a transition): `button`, `tap:X,Y`, `long:X,Y`, or `up`, `down`,
 `glance` (as if the wrist turned) and `notify` (a test notification;
 `notify:1,0` has a four-line sender, `notify:2,0` a much longer one,
 `notify:3,0` a two-line one, `notify:4,0` one with an accent and a
-hyphenated word). `hang`, `panic` (a `defmt::panic!`) and `fault` (a
+hyphenated word, `notify:5,0` a one-line one; `notify:X,H` arrived H
+hours ago, for the history's arrival times). `hang`, `panic` (a `defmt::panic!`) and `fault` (a
 `core::panic!` as from a SoftDevice Controller fault, at "line" Y;
 `fault:1,Y` with a message too long to keep whole) crash the watch on
 purpose, to test the crash reports. `battery:MV` makes the watch read its
