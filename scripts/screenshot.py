@@ -10,8 +10,10 @@ Usage:
     screenshot.py <elf> <out.png> [--input STEP ...] [--wait SECONDS] [--theme NAME]
 
 Each STEP is applied in order, with --wait seconds after each (default 1.5,
-enough for a transition): `button`, `tap:X,Y`, `long:X,Y`, or `up`, `down`,
-`left`, `right` (swipes, optionally with `:X,Y`), in canvas pixels (0–79);
+enough for a transition): `button` (`button:2,0` presses twice, 0.2 s
+apart), `tap:X,Y` (`tap:X,Y,MS` held for MS milliseconds, up to 255,
+rather than 80), `long:X,Y`, or `up`, `down`, `left`, `right` (swipes,
+optionally with `:X,Y`), in canvas pixels (0–79);
 `glance` (as if the wrist turned) and `notify` (a test notification;
 `notify:1,0` has a four-line sender, `notify:2,0` a much longer one,
 `notify:3,0` a two-line one, `notify:4,0` one with an accent and a
@@ -111,10 +113,14 @@ def inject(elf: Path, step: str) -> None:
     if name in ("battery", "steps"):
         # Millivolts or steps, little endian, in the two coordinate bytes.
         value = int(where)
-        x, y = value & 0xFF, value >> 8
+        x, y, rest = value & 0xFF, value >> 8, []
     else:
-        x, y = (int(v) for v in where.split(",")) if where else (40, 40)
-    write_word(symbol(elf, "UR_INPUT"), KINDS[name] | x << 8 | y << 16)
+        x, y, *rest = (int(v) for v in where.split(",")) if where else (40, 40)
+    # A tap's duration, in milliseconds (0: the default), in the top byte.
+    held_ms = rest[0] if name == "tap" and rest else 0
+    if not 0 <= held_ms <= 255:
+        sys.exit(f"a tap is held for at most 255 ms here, not {held_ms}")
+    write_word(symbol(elf, "UR_INPUT"), KINDS[name] | x << 8 | y << 16 | held_ms << 24)
 
 
 def png(path: Path, pixels: list[tuple[int, int, int]], width: int, height: int) -> None:

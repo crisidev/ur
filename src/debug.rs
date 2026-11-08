@@ -21,7 +21,9 @@ use crate::{INPUT, InputEvent};
 static UR_CANVAS: AtomicPtr<Canvas> = AtomicPtr::new(core::ptr::null_mut());
 
 /// An input to inject: 0 for none; otherwise the low byte is the kind (1
-/// button, 2 tap, 3 long press, 4–7 swipe up, down, left, right, 8 a
+/// button, pressed twice 0.2 s apart (a double press) if `x` is 2, 2 tap
+/// (held for the top byte's milliseconds, if not 0, to try taps too brief
+/// to be deliberate; see [`crate::wake::deliberate`]), 3 long press, 4–7 swipe up, down, left, right, 8 a
 /// glance, 9 a test notification (`x` picks the sender, `y` how many hours
 /// ago it arrived), 10 hang (spin forever, to test what the
 /// watchdog records), 11 a `defmt::panic!`, 12 a `core::panic!` as from a
@@ -88,10 +90,14 @@ pub async fn input_task() {
         if word == 0 {
             continue;
         }
-        let [kind, x, y, _] = word.to_le_bytes();
+        let [kind, x, y, held_ms] = word.to_le_bytes();
         let gesture = match kind {
             1 => {
                 INPUT.send(InputEvent::Button).await;
+                if x == 2 {
+                    Timer::after_millis(200).await;
+                    INPUT.send(InputEvent::Button).await;
+                }
                 continue;
             }
             8 => {
@@ -191,11 +197,12 @@ pub async fn input_task() {
             gesture,
             x: i32::from(x),
             y: i32::from(y),
-            // A finger's typical tap (and a long press's, for that).
-            held_ms: if gesture == Gesture::LongPress {
-                800
-            } else {
-                80
+            // A finger's typical tap (and a long press's, for that), or
+            // as asked.
+            held_ms: match (gesture, held_ms) {
+                (Gesture::LongPress, _) => 800,
+                (_, 0) => 80,
+                (_, held_ms) => u16::from(held_ms),
             },
         };
         INPUT.send(InputEvent::Touch(touch)).await;
