@@ -19,10 +19,13 @@ User documentation: [buttons.md](buttons.md). Code: `src/buttons.rs`
   the key is on Settings → HA KEY.
 - **Payload:** §2's four button slots can't carry 90 codes (Home
   Assistant tells repeated objects apart only by position), and a
-  button object has no number. So: packet id, battery, and three
-  **dimmer** objects, one per gesture (`dimmer_1` tap, `dimmer_2` double
-  tap, `dimmer_3` hold), the active one turning right by the code. 13 B
-  of plaintext, 29 B encrypted. Checked against `bthome-ble`'s parser.
+  button object has no number. So: packet id, battery, one **button**
+  object for the gesture (`press`, `double_press`, `hold_press`, and
+  `hold_release` on the lift), and three **dimmer** objects, one per
+  gesture (`dimmer_1` tap, `dimmer_2` double tap, `dimmer_3` hold), the
+  active one turning right by the code. 15 B of plaintext, 31 B
+  encrypted. Checked against `bthome-ble`'s parser
+  (`host-tests/bthome/check.py`). The button came in a rework, below.
 - **Radio:** not a separate non-connectable burst. The watch's two
   connection slots mean one is nearly always advertising (connectably,
   even with the phone connected), so a burst swaps that advertising's
@@ -51,6 +54,93 @@ receiver code read on GitHub on 2026-11-07: `Bluetooth-Devices/bthome-ble`
 `parser.py`, and `home-assistant/core` `components/bthome/{__init__,event,const}.py`.
 `docs/bthome_vectors.py` checks the published encryption test vector and
 produced every example payload below.
+
+## The button-event rework (2026-11-08)
+
+The user asked for BTHome's own button events (press, double_press,
+long_press, and hold_press/hold_release for a hold's start and end)
+rather than gestures as which dimmer turns. What the format and Home
+Assistant allow, as read on 2026-11-08:
+
+- **The button object** (`0x3A`, one byte) has the events `00` none,
+  `01` press, `02` double_press, `03` triple_press, `04` long_press,
+  `05` long_double_press, `06` long_triple_press, `80` hold_press, `81`
+  hold_release, and nothing else: no number ([bthome.io/format]). The
+  page gives no meaning beyond the names; `81` is "released after a
+  `hold_press`" ([bthome-ble#423], [#430]). The only event objects that
+  carry a number are the dimmer (`3C`, steps, `uint8`) and the new
+  command (`3B`: on, off, toggle, step up/down, with manufacturer
+  arguments, which Home Assistant shows as hex).
+- **Home Assistant** (`homeassistant/components/bthome` at 2026.11.0,
+  `bthome-ble` 3.25.0): every event fires `bthome_ble_event` with
+  `device_id`, `address`, `event_class` (`button`, or `button_N` when an
+  advertisement has more than one; likewise `dimmer`), `event_type`, and
+  `event_properties` (`{steps: n}` for a dimmer, none for a button).
+  Each class becomes an `event` entity ("Button", "Dimmer 2"; the
+  properties become state attributes) and device triggers, one per
+  class and type, listed once the class has been seen
+  (`known_events` in the config entry; `device_trigger.py`). A device
+  trigger matches `event_class` and `event_type` only, never the
+  properties. `hold_release` arrived in 2026.11.0 ([core#188847]);
+  older versions parse `81` as no event, so ignore it.
+- **The local name** is no help: `bthome-ble` uses it only for the
+  device's name and manufacturer (`_set_manufacture_name_type_and_title`),
+  never in event data or triggers, and Home Assistant passes it to
+  `async_get_or_create` with every event, so a name that changed per
+  press would rename the device each time (shown unless the user renamed
+  it). It also costs bytes the advertisement hasn't got, and in a burst
+  it's in the scan response, which a passive scanner never asks for.
+- **The budget:** 31 B, less flags (3), the service data's length, type
+  and UUID (4), the device info byte (1), the counter (4) and the MIC
+  (4): **15 B of objects**. The packet id (2) is what makes Home
+  Assistant drop a burst's repeats within 4 s (`bthome-ble` drops an
+  encrypted copy that's identical *after* 4 s, and no encrypted counter
+  check catches an equal counter), so 13 B remain: six buttons, or five
+  and the battery. Flags can't go: the burst rides the connectable
+  advertising, which needs them, and BlueZ wants them for BTHome.
+- **Extended advertising:** the SoftDevice Controller has it only in the
+  multirole library, which the Aranet4 scanning now links, but
+  trouble-host 0.8 needs its `extended-advertising` feature, and can't
+  run a second set beside the connectable one (§5.3). The receivers
+  decide it anyway: ESPHome's Bluetooth proxies scan with the legacy
+  API only (`esp32_ble_tracker.cpp`: `esp_ble_gap_start_scanning`,
+  `ESP_GAP_BLE_SCAN_RESULT_EVT`), so they'd never hear it, and they're
+  how most Home Assistant installs reach Bluetooth.
+
+So one button object per grid button (nine, 18 B) doesn't fit an
+encrypted legacy advertisement, let alone one per code. The options:
+
+| Option | Verdict |
+|---|---|
+| (a) `button_1`…`button_9`, gestures as event types; a sequence as two button events, or its first button some other way | 18 B; at most six fit. Rejected. Unencrypted would fit (23 B), but gives up spoofing protection and the stale-copy guard; not without the user's say. |
+| (b) one button for the gesture, one dimmer for the code | Fits (9 B), but the code and the gesture are two events, and an automation's trigger matches one: "2, then 3, tapped" would need a dimmer trigger plus a condition on the button entity's state, which only works in that order (the button fires first). Worse than today for the common case. |
+| (c) extended advertising, nine buttons | Proxies can't hear it. Rejected. |
+| (d) buttons for singles, dimmers for sequences | Singles need nine buttons. Rejected. |
+| **(e) today's per-gesture dimmers, plus one button for the gesture** | **Chosen.** 15 B exactly. The dimmer event still carries code and gesture together (one trigger; existing automations unchanged), and the button gives Home Assistant's own gesture names, as device triggers in the UI, and the release, which needs no code (one hold at a time). Costs a second event per press in the logbook. |
+| (f) the code in the local name | No use (above). |
+
+A hold's start is `hold_press`, sent as the hold is recognised, finger
+still down, as before (the dimmer is `dimmer_3`); lifting sends
+`hold_release` (no dimmer). `long_press` isn't sent: `hold_release`
+pairs with `hold_press` ([bthome-ble#423]), and a third event for the
+same hold would only duplicate one of them. The release's advertisement
+mustn't cut the hold's short: `ble::burst` now gives a burst 0.8 s on
+the air before the next replaces it (which also fixed the first of two
+presses completed by one touch being lost).
+
+Sources: [bthome.io/format]; `bthome-ble` 3.25.0 (`event.py`,
+`parser.py`) from PyPI; `home-assistant/core` 2026.11.0 and `dev`
+(`components/bthome/{event,device_trigger,const,__init__,logbook}.py`,
+`strings.json`; `components/event/{entity,trigger}.py`;
+`helpers/device_registry.py`); `habluetooth` 7.1.2 (`manager.py`:
+it drops an advertisement identical to the last one heard); ESPHome
+`dev` (`components/esp32_ble_tracker/esp32_ble_tracker.cpp`). Saved
+under `tmp/research/` in the worktree that made the change.
+
+[bthome.io/format]: https://bthome.io/format/
+[bthome-ble#423]: https://github.com/Bluetooth-Devices/bthome-ble/issues/423
+[#430]: https://github.com/Bluetooth-Devices/bthome-ble/pull/430
+[core#188847]: https://github.com/home-assistant/core/pull/188847
 
 ---
 

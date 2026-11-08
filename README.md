@@ -45,7 +45,8 @@ heart rate, alarms, timers, music control), and these on top:
   alarms and settings to the other, notifications above, music below.
 - **A button grid** for Home Assistant or Tasker: nine buttons that make
   90 codes (1–9, and pairs like 2 then 3), each tapped, double-tapped,
-  or held, sent over Bluetooth (BTHome) or through Gadgetbridge. See
+  or held (and released, for hold-to-dim), sent over Bluetooth as BTHome
+  button events or through Gadgetbridge. See
   [docs/buttons.md](docs/buttons.md).
 - **The room's air:** a nearby [Aranet4] (with Smart Home integrations
   on) gives the clock face the room's temperature, and its CO₂ gets a
@@ -223,8 +224,22 @@ shows how to rebuild one and compare.
 ## FAQ
 
 When the watch points you here, it shows an entry's code: a letter for
-its area (C connectivity, U updates, P power, S sensors, D display and
-touch, A alarms, N notifications, E errors), and a number.
+its area (B the button grid, C connectivity, U updates, P power, S
+sensors, D display and touch, A alarms, N notifications, E errors), and a
+number.
+
+### B01: Home Assistant fires two events for each grid press
+
+That's by design: a `button` event for the gesture alone (press, double
+press, hold press), and a `dimmer_1`, `_2` or `_3` event that turns by
+the press's code. Trigger on whichever your automation needs; see
+[docs/buttons.md](docs/buttons.md#home-assistant).
+
+### B02: Home Assistant has no trigger for a grid gesture
+
+It lists a BTHome device's events only once it has seen each: tap,
+double-tap and hold a grid button once. "Hold release" needs Home
+Assistant 2026.11 or later; older versions ignore it.
 
 ### C01: The watch says "NOT PAIRED"
 

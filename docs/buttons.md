@@ -34,7 +34,9 @@ phone.
 A tap waits briefly to see whether more follows: 0.8 s for a second
 button to start, then 0.4 s for a double tap. The buttons it's waiting on
 stay lit; once sent, the last one shows the code and buzzes. A hold goes
-at once. To cancel, swipe away or press the button. Two buzzes, and the
+at once (after 0.6 s, finger still down), and lifting the finger then
+sends a **release**, for what should last while you hold, like dimming a
+light. To cancel, swipe away or press the button. Two buzzes, and the
 code in red, mean it had nowhere to go (only the phone, which isn't
 connected).
 
@@ -59,17 +61,31 @@ Presses are encrypted with a key the watch made for itself.
 2. Press any grid button. Home Assistant discovers a BTHome device with
    that address (Settings → Devices & services); add it, and paste (or
    type) the key.
-3. Each gesture is a `dimmer` event, turning right by the code:
+3. Press each gesture once (tap, double tap, hold): Home Assistant
+   only lists a device's events once it has seen them.
 
-   | Gesture    | Event class | Entity (rename it) |
-   |------------|-------------|--------------------|
-   | tap        | `dimmer_1`  | Dimmer 1           |
-   | double tap | `dimmer_2`  | Dimmer 2           |
-   | hold       | `dimmer_3`  | Dimmer 3           |
+Each press fires two events, `bthome_ble_event`s with the watch's
+`address`, for two kinds of automation:
 
-   (BTHome has no event that carries a number but the dimmer's steps.)
-   Each entity appears the first time its gesture is used. The device
-   also gets a battery sensor, which updates with each press.
+| Gesture             | `button` event (any code) | Dimmer event, by the code   |
+|---------------------|---------------------------|-----------------------------|
+| tap                 | `press`                   | `dimmer_1` `rotate_right`   |
+| double tap          | `double_press`            | `dimmer_2` `rotate_right`   |
+| hold                | `hold_press`              | `dimmer_3` `rotate_right`   |
+| lifting after a hold | `hold_release`           | none                        |
+
+- **The button** is the gesture alone, whichever code it was: the device
+  page's **Button** entity, and device triggers in the automation
+  editor ("Press" button, "Hold release" button, …). The release needs
+  Home Assistant 2026.11 or later.
+- **The dimmer** for the gesture turns right by the code (`steps: 23` for
+  2, then 3), so one event says both: what most automations want.
+
+(Home Assistant names BTHome's buttons by their place in the
+advertisement, `button_1` to `button_9`, and an encrypted advertisement
+has room for six; nor can a button carry a number. So the code rides on
+dimmers, which can: see [bthome-design.md](bthome-design.md).) The
+device also gets a battery sensor, which updates with each press.
 
 An automation for 2, then 3, double-tapped:
 
@@ -86,6 +102,41 @@ actions:
     target: { entity_id: light.kitchen }
 ```
 
+In the automation editor, that's a **Manual event** trigger, with that
+event type and data. What needs no code, such as "any hold ended", is a
+**Device** trigger: the watch, then "Hold release" button.
+
+Holding 5 to dim the kitchen, until you let go (or 6 s, should the
+release be missed):
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: bthome_ble_event
+    event_data:
+      address: "E5:12:34:56:78:9A"
+      event_class: dimmer_3          # hold
+      event_properties: { steps: 5 }
+actions:
+  - repeat:
+      sequence:
+        - action: light.turn_on
+          target: { entity_id: light.kitchen }
+          data: { brightness_step_pct: -10 }
+        - delay: { milliseconds: 300 }
+      until:
+        - condition: or
+          conditions:
+            - condition: state      # the Button entity: rename it
+              entity_id: event.ur_watch_button
+              attribute: event_type
+              state: hold_release
+            - "{{ repeat.index >= 20 }}"
+```
+
+A release goes once its hold has been on the air for 0.8 s, so a quick
+hold's release can come that late.
+
 The watch can't know whether Home Assistant heard: a lit, buzzing button
 means it was sent. Home Assistant forgets which presses it has seen when
 it restarts, so a press recorded nearby could then be replayed once:
@@ -101,14 +152,15 @@ broadcast intent, for [Tasker], MacroDroid, Automate, and the like:
 
 - action `ur.watch.BUTTON`
 - extra `button`: the code, a number (`23`)
-- extra `gesture`: `tap`, `double_tap`, or `hold`
+- extra `gesture`: `press` (a tap), `double_press`, `hold_press`, or
+  `hold_release` (lifting after a hold), as BTHome names them
 
 1. In Gadgetbridge, in the watch's settings, turn on **Allow Intents**.
    Without it, Gadgetbridge drops presses, and the watch says "INTENTS
    OFF".
 2. In Tasker: a profile on **Event → System → Intent Received**, action
    `ur.watch.BUTTON`; in its task, `If %button eq 23 AND %gesture eq
-   double_tap`.
+   double_press`.
 
 The phone must be connected; presses while it isn't are dropped.
 
