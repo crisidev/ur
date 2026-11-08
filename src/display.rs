@@ -193,7 +193,7 @@ impl Display {
     /// Into or out of idle mode: 8 colours (each of red, green, and blue
     /// only on or off, from its most significant bit), at a much slower
     /// refresh (see [`FRCTRL1_IDLE`]), for less current. For the dim
-    /// white-on-black look, which has no other colours (see
+    /// white-on-black look, which uses only white and red of them (see
     /// [`crate::theme::GLANCE`]).
     ///
     /// Switch only with a finished frame on the panel, or with the

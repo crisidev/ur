@@ -135,7 +135,8 @@
 //! - A double press of the button ends it: the first press wakes the
 //!   screen (dimly) as usual, and the second, rather than turning it off
 //!   again, brightens it.
-//! - Everything shows in the dim white-on-black look, at the glance's low
+//! - Everything shows in the dim look (white, and red for what comes
+//!   second, on black; see [`theme::GLANCE`]), at the glance's low
 //!   backlight.
 //! - With the screen off, the touch controller sleeps (see
 //!   [`crate::touch::set_asleep`]).

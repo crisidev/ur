@@ -132,26 +132,35 @@ pub static PARCHMENT: Theme = theme("PARCHMENT", [
 ]);
 
 /// The dim look (see `ui`: a glance, a notification on a dark screen, the
-/// quiet night): white on black, whatever the theme. Black pixels are the
-/// cheapest on this panel only in that the backlight is dimmed for it;
-/// mostly, it's what reads best at a glance.
+/// quiet night): white on black, whatever the theme, with red for what
+/// comes second. Black pixels are the cheapest on this panel only in that
+/// the backlight is dimmed for it; mostly, it's what reads best at a
+/// glance.
 ///
-/// Only black and white: the panel shows the dim look in idle mode (see
-/// `display::Display::set_idle`), which keeps just the top bit of each of
-/// red, green, and blue. The greys this had (dim and faint text, shadows)
-/// would have come out white or black anyway (faint text black, i.e.
-/// invisible), so they're spelt out as such: shadows black, all text
-/// white. So are the sleep stages: Last night in a quiet night (say,
-/// just after waking) has one white bar, though each stage's time still
-/// shows below its name.
-/// TODO: idle mode has six more colours (red, green, blue, and their
-/// pairs), which could tell the stages apart here, if the dim look may have
-/// colour at all.
+/// Only black, white and red: the panel shows the dim look in idle mode
+/// (see `display::Display::set_idle`), which keeps just the top bit of
+/// each of red, green, and blue, so greys would come out white or black
+/// (faint text black, i.e. invisible). Pure red is one of the eight
+/// colours it can show, and the one that keeps the night's dark
+/// adaptation, as astronomers' and cockpits' lights do. So the text is
+/// white, and labels, titles, hints and accents (`TEXT_DIM`,
+/// `TEXT_FAINT`, `ACCENT`) are red: a notification's app and time, the
+/// clock's seconds and colon, the step blocks, the missing phone's rune.
+/// That's the one step of hierarchy the dark themes get from their greys
+/// and their accent. The heart and a low battery are red, as in the
+/// other themes; shadows black.
+///
+/// Last night's stages: deep white, REM and light red (light sleep is
+/// `TEXT_DIM`), so deep sleep stands out from the rest, and each stage's
+/// time still shows below its name.
+/// TODO: idle mode has five more colours (green, blue, and their pairs),
+/// which could tell REM from light sleep here, if the dim look may have
+/// more colour than red.
 #[rustfmt::skip]
 pub static GLANCE: Theme = theme("GLANCE", [
-    0x000000, 0x000000, 0xffffff, 0xffffff, 0xffffff, 0x000000, 0xffffff,
-    0x000000, 0x000000, 0xffffff, 0xffffff, 0xffffff, 0xffffff, 0xffffff,
-    0xffffff,
+    0x000000, 0x000000, 0xffffff, 0xff0000, 0xff0000, 0x000000, 0xff0000,
+    0x000000, 0x000000, 0xff0000, 0xffffff, 0xffffff, 0xff0000, 0xffffff,
+    0xff0000,
 ]);
 
 /// Themes for after sunset. Long press cycles within this list at night.
