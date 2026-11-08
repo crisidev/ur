@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ur: the watch, in a browser</title>
+<style>
+  body { margin: 0; padding: 1rem; background: #5c5c60; color: #eee;
+         font: 14px/1.4 system-ui, sans-serif; display: flex; flex-wrap: wrap;
+         gap: 1rem; align-items: flex-start; }
+  /* The watch, at its own size or smaller: pixels stay square. */
+  canvas { max-width: 100%; image-rendering: pixelated; touch-action: none;
+           cursor: pointer; }
+  #side { flex: 1; min-width: 18rem; max-width: 46rem; display: flex;
+          flex-direction: column; gap: 0.5rem; }
+  #status { font-weight: bold; }
+  #log { background: #1a1a1c; padding: 0.5rem; height: 22rem; overflow: auto;
+         margin: 0; font: 12px/1.35 ui-monospace, monospace; white-space: pre-wrap; }
+  .error { color: #ff8a80; }
+  .command { color: #9ecbff; }
+  input[type=text] { width: 100%; box-sizing: border-box; font: inherit;
+                     font-family: ui-monospace, monospace; padding: 0.3rem; }
+  kbd { background: #333; border-radius: 3px; padding: 0 0.3em; }
+  a { color: #9ecbff; }
+</style>
+</head>
+<body>
+<canvas id="watch"></canvas>
+<div id="side">
+  <div id="status">loading…</div>
+  <div>
+    <button data-key="f">+1 minute</button>
+    <button data-key="h">+1 hour</button>
+    <button data-key="s">Screenshot</button>
+    <label>Theme <select id="theme"><option value="auto">auto (the sun's)</option></select></label>
+    <label>Run a script <input id="script" type="file" accept=".txt,text/plain"></label>
+  </div>
+  <input id="command" type="text" placeholder="a command, as in a script (help lists them)"
+         autocomplete="off" spellcheck="false">
+  <pre id="log"></pre>
+  <div>
+    The pointer is a finger: tap, hold still for a long press, drag to swipe.
+    Click the button on the watch's left edge to press it. Keys:
+    <kbd>Space</kbd> the button, <kbd>G</kbd> a glance, <kbd>N</kbd> a notification,
+    <kbd>M</kbd> music, <kbd>C</kbd> a call, arrows swipe, <kbd>T</kbd> tap,
+    <kbd>L</kbd> long press, <kbd>F</kbd>/<kbd>H</kbd> a minute/hour on,
+    <kbd>S</kbd> a screenshot.
+    The firmware's own UI code, compiled to WebAssembly: see
+    <a href="https://github.com/jonhoo/ur/tree/main/sim">sim/</a>.
+  </div>
+</div>
+<script type="module">
+// The page runs the loop the window does (sim/src/window.rs): each
+// animation frame, the time since the last passes on the watch, and the
+// watch is drawn. Everything else is handing input to the module.
+import { load, ERROR, STATUS, THEMES } from "./ur.js";
+
+const canvas = document.getElementById("watch");
+const log = document.getElementById("log");
+const status = document.getElementById("status");
+const themes = document.getElementById("theme");
+const typed = document.getElementById("command");
+
+// The log keeps its last lines; a long `wait` can print thousands.
+function show(text, className) {
+  const line = document.createElement("div");
+  line.textContent = text;
+  if (className) line.className = className;
+  log.append(line);
+  while (log.childElementCount > 1000) log.firstElementChild.remove();
+  log.scrollTop = log.scrollHeight;
+}
+
+function print(kind, text) {
+  if (kind === STATUS) {
+    status.textContent = text;
+  } else if (kind === THEMES) {
+    for (const name of text.split("\n")) themes.add(new Option(name, name));
+  } else if (kind === ERROR) {
+    show(text, "error");
+  } else {
+    show(text, text.startsWith("> ") ? "command" : "");
+  }
+}
+
+function download(name, bytes) {
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 10_000);
+}
+
+const bytes = await (await fetch("ur_sim.wasm")).arrayBuffer();
+const ur = await load(bytes, { print, download });
+
+// A trap (a panic, which `print` has explained) leaves the module unusable:
+// stop calling it.
+let crashed = false;
+function guard(f) {
+  if (crashed) return;
+  try {
+    return f();
+  } catch (e) {
+    crashed = true;
+    show(`stopped: ${e}; reload the page to start again`, "error");
+  }
+}
+
+canvas.width = ur.width;
+canvas.height = ur.height;
+const context = canvas.getContext("2d");
+guard(() => ur.themes());
+
+// The pointer, in the drawn watch's pixels, however big the page shows it.
+function at(event) {
+  const box = canvas.getBoundingClientRect();
+  return [
+    (event.clientX - box.left) * canvas.width / box.width,
+    (event.clientY - box.top) * canvas.height / box.height,
+  ];
+}
+canvas.addEventListener("pointerdown", (event) => {
+  // Moves outside the canvas still count, as a finger dragged off the
+  // edge of the panel.
+  canvas.setPointerCapture(event.pointerId);
+  guard(() => ur.pointer("down", ...at(event)));
+});
+canvas.addEventListener("pointermove", (event) => {
+  if (event.buttons) guard(() => ur.pointer("move", ...at(event)));
+});
+for (const type of ["pointerup", "pointercancel"]) {
+  canvas.addEventListener(type, (event) => guard(() => ur.pointer("up", ...at(event))));
+}
+
+// Keys go to the watch unless something else on the page wants them.
+document.addEventListener("keydown", (event) => {
+  const target = event.target;
+  if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement) return;
+  if (event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (guard(() => ur.key(event.key))) event.preventDefault();
+});
+for (const button of document.querySelectorAll("button[data-key]")) {
+  button.addEventListener("click", () => guard(() => ur.key(button.dataset.key)));
+}
+
+// Typed commands, with the up and down arrows going through earlier ones.
+const history = [];
+let back = 0;
+typed.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    const line = typed.value;
+    if (line.trim()) history.push(line);
+    back = 0;
+    typed.value = "";
+    guard(() => ur.command(line));
+  } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+    back = Math.max(0, Math.min(history.length, back + (event.key === "ArrowUp" ? 1 : -1)));
+    typed.value = back ? history[history.length - back] : "";
+    event.preventDefault();
+  }
+});
+themes.addEventListener("change", () => guard(() => ur.command(`theme ${themes.value}`)));
+document.getElementById("script").addEventListener("change", async (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+  show(`> (the script ${file.name})`, "command");
+  const text = await file.text();
+  guard(() => ur.script(text));
+  event.target.value = "";
+});
+
+// Time runs as the browser's clock does. A hidden tab gets no animation
+// frames; when it's back, the time it was away passes all at once, so the
+// watch keeps the browser's time.
+let last = performance.now();
+let lastStatus = -Infinity;
+function frame(now) {
+  guard(() => {
+    ur.advance(now - last);
+    last = now;
+    // A copy: the frame is a view into the module's memory, which moves
+    // if it grows.
+    const pixels = new Uint8ClampedArray(ur.frame());
+    context.putImageData(new ImageData(pixels, ur.width, ur.height), 0, 0);
+    if (now - lastStatus > 250) {
+      ur.status();
+      lastStatus = now;
+    }
+  });
+  if (!crashed) requestAnimationFrame(frame);
+}
+// The first frame at once, not at the browser's first animation frame.
+frame(last);
+</script>
+</body>
+</html>

@@ -6,7 +6,7 @@
 //! what a dev kit can't be made to do: the phone's every message, the time
 //! and place, sensors, and skipping ahead in time. [`HELP`] lists them.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use embassy_time::Duration;
 
@@ -164,8 +164,7 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
         }
         "time" => {
             let (utc, offset) = if arg(0) == Some("now") {
-                let now = chrono::Local::now();
-                (now.timestamp(), now.offset().local_minus_utc() / 60)
+                crate::platform::now()
             } else {
                 parse_time(need(0, "a date")?, need(1, "a time")?, arg(2))?
             };
@@ -445,7 +444,7 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
         }
         "echo" => watch.log(args.join(" ")),
         "verbose" => watch.verbose = on_off(need(0, "on|off")?, "on", "off")?,
-        "help" => eprint!("{HELP}"),
+        "help" => crate::platform::log(HELP.trim_end()),
         "quit" | "exit" => return Ok(Next::Quit),
         other => return Err(format!("unknown command {other:?} (try `help`)")),
     }
@@ -524,14 +523,25 @@ fn gadgetbridge(watch: &mut Watch, line: &str) -> Result<(), String> {
 }
 
 /// Runs a script file, line by line, stopping at the first error.
-pub fn run_file(watch: &mut Watch, path: &Path, output: &Output) -> Result<Next, String> {
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_file(
+    watch: &mut Watch,
+    path: &std::path::Path,
+    output: &Output,
+) -> Result<Next, String> {
     let text =
         std::fs::read_to_string(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
+    run(watch, &path.display().to_string(), &text, output)
+}
+
+/// Runs a script, line by line, stopping at the first error, which names
+/// the script (`name`) and the line.
+pub fn run(watch: &mut Watch, name: &str, text: &str, output: &Output) -> Result<Next, String> {
     for (n, line) in text.lines().enumerate() {
         match execute(watch, line, output) {
             Ok(Next::Continue) => {}
             Ok(Next::Quit) => return Ok(Next::Quit),
-            Err(e) => return Err(format!("{}:{}: {e}", path.display(), n + 1)),
+            Err(e) => return Err(format!("{name}:{}: {e}", n + 1)),
         }
     }
     Ok(Next::Continue)

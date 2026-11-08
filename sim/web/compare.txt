@@ -1,0 +1,13 @@
+# Whole-watch screenshots (the case drawn round the panel, as the page
+# shows it), for check.sh to compare the browser's against the command
+# line's: the panel lit, dimmed, and off.
+time 2026-11-09 07:29:50 +01:00
+connect
+demo-day
+wait 1s
+shot lit-watch.png --watch
+glance
+wait 1s
+shot glance-watch.png --watch
+wait 1m
+shot off-watch.png --watch

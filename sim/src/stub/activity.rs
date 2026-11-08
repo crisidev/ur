@@ -138,6 +138,7 @@ pub fn record_steps_at(utc_minute: i64, steps: u16) {
 }
 
 /// Shows a dev kit's day from now on, instead of the history here.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn show_devkit_day(day: Option<crate::day::Day>) {
     state().today_from_devkit = Some(day);
 }

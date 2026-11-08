@@ -41,6 +41,30 @@ Everything else (the time, the phone, sensors) is a command typed into
 the terminal, as in a script. The watch starts as after a reset: no time,
 no phone. `time now` and `connect` get it going.
 
+## In a browser
+
+The same watch, compiled to WebAssembly, on a web page: the window's
+watch, mouse (or touchscreen) and keys (bar quitting), time running with
+the browser's clock, buttons to skip a minute or an hour, a theme
+picker, and a box for commands, as typed into the terminal. Screenshots
+(`S`, or `shot`) download. A script file runs from the page too. It
+starts in use, not as after a reset: the time set from the browser's
+clock, a phone connected, and a little of a day to look at
+(`web/start.txt`).
+
+```sh
+rustup target add wasm32-unknown-unknown   # once
+web/build.sh                               # into target/web
+python3 -m http.server -d target/web       # then open http://localhost:8000
+```
+
+It needs a web server, as browsers won't load the module into a page
+opened as a file. `web/check.sh` checks it headless (with node): it
+drives it as the page does, then runs the tour, the README's
+screenshots, `gadgetbridge.txt` and `web/compare.txt` on it and on the
+command line, and checks that every screenshot is the same, byte for
+byte.
+
 ## Scripts
 
 One command a line; `#` starts a comment. `help` lists them all. Inputs
@@ -223,6 +247,13 @@ paths expect each other. Stand-ins replace the rest:
 power), on a clock of its own (at the watch's 32 768 Hz), which only moves
 when told: scripts are deterministic, and skip hours at no cost. **It mirrors `main.rs` by hand**:
 a change to the UI loop there may need one here.
+
+The browser's build is the same library, as a WebAssembly module whose
+exports (`src/web.rs`) the page calls each animation frame and for each
+input, through plain functions and a few lines of JavaScript
+(`web/ur.js`), rather than wasm-bindgen: only cargo builds it.
+`src/platform.rs` has what differs: the wall clock comes from the page,
+log lines go to it, and files download.
 
 ## What it can't simulate
 

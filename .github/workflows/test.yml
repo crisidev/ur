@@ -9,6 +9,7 @@
 #   pinned toolchain and on beta
 # - sim: the simulator's tests (sim/), which check its screenshots of the
 #   UI against the approved ones, and those screenshots, to look at
+# - sim-web: the simulator built for browsers, checked against the above
 # - firmware: builds and packages both variants exactly as a release would
 #   (scripts/release.sh), and uploads them, so every PR, and every commit on
 #   main, has a package to try on a watch; checks them, and the `compare`
@@ -80,6 +81,38 @@ jobs:
         with:
           name: screenshots
           path: sim/target/*/tmp/shots/
+          if-no-files-found: error
+  # The simulator in a browser (sim/web/): that it builds for WebAssembly
+  # (and lints clean there: much of it is compiled differently), that it
+  # works driven as the page drives it, and that every screenshot it takes
+  # is the same as the command line's, byte for byte (web/check.sh). The
+  # built page is uploaded, to serve and try.
+  sim-web:
+    runs-on: ubuntu-latest
+    name: sim / web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      # Not in rust-toolchain.toml's targets, which every firmware build
+      # would then download.
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
+        with:
+          workspaces: sim
+          key: web
+      - name: cargo clippy
+        working-directory: sim
+        run: cargo clippy --locked --lib --no-default-features --target wasm32-unknown-unknown -- -D warnings
+      # Node comes with the runner image.
+      - name: web/check.sh
+        working-directory: sim
+        run: web/check.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # tag=v7.0.2
+        with:
+          name: sim-web
+          path: sim/target/web/
           if-no-files-found: error
   firmware:
     runs-on: ubuntu-latest

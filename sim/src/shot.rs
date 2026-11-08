@@ -1,8 +1,6 @@
 //! Screenshots: the panel's 240×240 pixels as a PNG, as
 //! `scripts/screenshot.py` takes them from a dev kit; or the whole watch.
 
-use std::fs::File;
-use std::io::BufWriter;
 use std::path::Path;
 
 use crate::brightness::Level;
@@ -49,7 +47,11 @@ pub fn save_watch(path: &Path, backlight: Level, zoom: usize) -> Result<(), Stri
 // tests do against the approved ones, and CI between a PR and its base).
 // Both show a difference the same way, drawn here.
 
+// Comparing screenshots (`--diff`, `--devkit`) is the command line's: the
+// browser's build has no files to read.
+
 /// An RGB image, 8 bits a channel, row by row.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(PartialEq, Eq)]
 pub struct Image {
     pub width: usize,
@@ -57,6 +59,7 @@ pub struct Image {
     pub rgb: Vec<u8>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Image {
     /// The pixel at (`x`, `y`), or `None` outside the image.
     fn pixel(&self, x: usize, y: usize) -> Option<[u8; 3]> {
@@ -69,9 +72,10 @@ impl Image {
 
 /// Reads a PNG as RGB, whatever its colour type: the simulator writes RGB,
 /// but an image approved by hand (or by another tool) needn't be.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn read(path: &Path) -> Result<Image, String> {
     let fail = |e: &dyn std::fmt::Display| format!("reading {}: {e}", path.display());
-    let file = File::open(path).map_err(|e| fail(&e))?;
+    let file = std::fs::File::open(path).map_err(|e| fail(&e))?;
     let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().map_err(|e| fail(&e))?;
@@ -111,6 +115,7 @@ pub fn read(path: &Path) -> Result<Image, String> {
 /// The two needn't be the same size (a screenshot of the whole watch,
 /// say, against one of the panel): each panel is as large as the larger,
 /// and a pixel only one of them has differs.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn save_difference(path: &Path, before: &Image, after: &Image) -> Result<usize, String> {
     const GAP: usize = 8;
     const BACKGROUND: u8 = 0x80;
@@ -147,16 +152,21 @@ pub fn save_difference(path: &Path, before: &Image, after: &Image) -> Result<usi
 }
 
 fn write(path: &Path, width: usize, height: usize, rgb: &[u8]) -> Result<(), String> {
-    let fail = |e: &dyn std::fmt::Display| format!("writing {}: {e}", path.display());
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| fail(&e))?;
-    }
-    let file = File::create(path).map_err(|e| fail(&e))?;
-    let mut encoder = png::Encoder::new(BufWriter::new(file), width as u32, height as u32);
+    let png =
+        encode(width, height, rgb).map_err(|e| format!("encoding {}: {e}", path.display()))?;
+    crate::platform::save(path, &png)
+}
+
+/// A PNG of `rgb`, in memory: the file is the platform's business (the
+/// browser downloads it).
+fn encode(width: usize, height: usize, rgb: &[u8]) -> Result<Vec<u8>, png::EncodingError> {
+    let mut png = Vec::new();
+    let mut encoder = png::Encoder::new(&mut png, width as u32, height as u32);
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
     encoder.set_compression(png::Compression::High);
-    let mut writer = encoder.write_header().map_err(|e| fail(&e))?;
-    writer.write_image_data(rgb).map_err(|e| fail(&e))?;
-    writer.finish().map_err(|e| fail(&e))
+    let mut writer = encoder.write_header()?;
+    writer.write_image_data(rgb)?;
+    writer.finish()?;
+    Ok(png)
 }

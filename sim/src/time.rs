@@ -12,7 +12,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::Waker;
 
-use embassy_time::{Duration, Instant};
+use embassy_time::Duration;
 use embassy_time_driver::Driver;
 
 static NOW: AtomicU64 = AtomicU64::new(0);
@@ -29,8 +29,9 @@ impl Driver for Clock {
 
 embassy_time_driver::time_driver_impl!(static CLOCK: Clock = Clock);
 
-/// Moves the clock to `at`, if that's later.
-pub fn set(at: Instant) {
+/// Moves the clock to `at`, if that's later (to a dev kit's instant).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn set(at: embassy_time::Instant) {
     crate::record::clock_moving();
     NOW.fetch_max(at.as_ticks(), Ordering::Relaxed);
 }

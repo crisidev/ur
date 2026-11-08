@@ -176,12 +176,12 @@ impl Watch {
         let wall = clock::now()
             .map(|t| format!(" {:02}:{:02}:{:02}", t.hour, t.minute, t.second))
             .unwrap_or_default();
-        eprintln!(
+        crate::platform::log(&format!(
             "[{:>6}.{:03}{wall}] {}",
             uptime / 1000,
             uptime % 1000,
             message.as_ref()
-        );
+        ));
     }
 
     // ==========================================================================
@@ -382,7 +382,7 @@ impl Watch {
     }
 
     /// Whether the motor is on right now.
-    #[cfg(feature = "window")]
+    #[cfg(any(feature = "window", target_arch = "wasm32"))]
     pub fn motor_on(&self) -> bool {
         let Some((pattern, since)) = self.motor else {
             return false;

@@ -16,7 +16,10 @@ use crate::display::{PANEL, SIZE, rgb888};
 /// the left edge, level with the panel's lower third.
 pub struct Case {
     /// Window pixels per millimetre.
-    #[cfg_attr(not(feature = "window"), allow(dead_code, reason = "for the mouse"))]
+    #[cfg_attr(
+        not(any(feature = "window", target_arch = "wasm32")),
+        allow(dead_code, reason = "for the mouse")
+    )]
     scale: f32,
     pub width: usize,
     pub height: usize,
@@ -24,7 +27,10 @@ pub struct Case {
     panel: (usize, usize),
     panel_side: usize,
     /// The button, in window pixels: left, top, right, bottom.
-    #[cfg_attr(not(feature = "window"), allow(dead_code, reason = "for the mouse"))]
+    #[cfg_attr(
+        not(any(feature = "window", target_arch = "wasm32")),
+        allow(dead_code, reason = "for the mouse")
+    )]
     button: (f32, f32, f32, f32),
     /// Everything but the panel, drawn once.
     background: Vec<u32>,
@@ -122,7 +128,7 @@ impl Case {
     }
 
     /// Where the window pixel (`x`, `y`) is on the panel, in panel pixels.
-    #[cfg(feature = "window")]
+    #[cfg(any(feature = "window", target_arch = "wasm32"))]
     pub fn on_panel(&self, x: f32, y: f32) -> Option<(i32, i32)> {
         let (px, py) = (x - self.panel.0 as f32, y - self.panel.1 as f32);
         let side = self.panel_side as f32;
@@ -134,7 +140,7 @@ impl Case {
 
     /// Whether the window pixel (`x`, `y`) is on the button, or near
     /// enough: it's small.
-    #[cfg(feature = "window")]
+    #[cfg(any(feature = "window", target_arch = "wasm32"))]
     pub fn on_button(&self, x: f32, y: f32) -> bool {
         let slack = self.scale;
         let (left, top, right, bottom) = self.button;

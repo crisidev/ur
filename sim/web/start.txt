@@ -1,0 +1,9 @@
+# What the web page runs when it loads (built into the module): a watch
+# in use, not one fresh from a reset. The time is the browser's, a phone
+# is connected, and there's a day so far, a night, and a song to look at.
+time now
+connect
+demo-day
+last-night 23:10 06:45
+heart 62
+music "Ida Moreau" "Night Signals" paused

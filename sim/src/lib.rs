@@ -205,25 +205,44 @@ fn defmt_panic() -> ! {
     panic!("the firmware panicked through defmt (its message isn't decoded here)")
 }
 
+// Not in the browser: WebAssembly keeps a `#[link_section]` static only if
+// it's plain bytes, and the timestamp's isn't. Its logs go nowhere anyway,
+// so there, every log's timestamp is nothing (defmt calls this for each).
+#[cfg(not(target_arch = "wasm32"))]
 defmt::timestamp!("{=u64:us}", embassy_time::Instant::now().as_micros());
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+fn _defmt_timestamp(_: defmt::Formatter<'_>) {}
 
 // ==============================================================================
 // The simulator's own
 // ==============================================================================
 
 mod case;
-mod cli;
-mod devkit;
-mod diff;
+mod platform;
 mod record;
 mod script;
 mod shot;
 mod time;
 mod watch;
-#[cfg(feature = "window")]
+
+// The command line's: a terminal, files, a probe for the dev kit,
+// comparing screenshots, and the window.
+#[cfg(not(target_arch = "wasm32"))]
+mod cli;
+#[cfg(not(target_arch = "wasm32"))]
+mod devkit;
+#[cfg(not(target_arch = "wasm32"))]
+mod diff;
+#[cfg(all(feature = "window", not(target_arch = "wasm32")))]
 mod window;
 
+// The browser's: see web/.
+#[cfg(target_arch = "wasm32")]
+mod web;
+
 /// The command line (see `src/main.rs`, which is only this).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn main() -> std::process::ExitCode {
     cli::main()
 }
