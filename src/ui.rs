@@ -354,9 +354,13 @@ struct Notifications {
     /// Newest first.
     list: heapless::Vec<Notification, HISTORY>,
     /// Whether any came in that the wearer hasn't seen: that they haven't
-    /// touched the watch, or pressed its button, while it showed, nor
-    /// opened the history since. (It lit the screen, but nobody may have
-    /// been looking.)
+    /// opened the history since. Only opening it counts, not touching the
+    /// watch while a banner (or a notification with the screen to itself)
+    /// shows: a banner is brief, and a touch then is as likely to be for
+    /// the screen beneath. Opening the history shows its first page, the
+    /// newest, and one arriving while it's open goes straight there (see
+    /// [`App::show_banner`]), so each is seen once its page shows. Seeing
+    /// one doesn't remove it: they stay until newer ones push them out.
     unseen: bool,
 }
 
@@ -688,15 +692,6 @@ impl App {
         }
     }
 
-    /// Whether the banner is on screen for the wearer to see.
-    fn banner_showing(&self) -> bool {
-        self.awake
-            && self.call.is_none()
-            && self.ringing.is_none()
-            && self.editing.is_none()
-            && self.banner.as_ref().is_some_and(|b| b.until != UNSEEN)
-    }
-
     /// Whether there's a banner for the newest notification (showing, or
     /// waiting to).
     fn banner_newest(&self) -> bool {
@@ -767,12 +762,11 @@ impl App {
             .last_tap
             .take()
             .filter(|&tap| self.awake && now - tap <= DOUBLE_TAP);
-        // A user input (or a request for attention) from here on. Touching
-        // or pressing while a notification shows means the wearer saw it.
-        if self.banner_showing() && self.banner_newest() && !matches!(event, InputEvent::Attention)
-        {
-            self.notifications.unseen = false;
-        }
+        // A user input (or a request for attention) from here on. (Touching
+        // or pressing while a banner shows doesn't count as seeing the
+        // notification: only opening the history does; see
+        // `Notifications::unseen`.)
+        //
         // A notification that has the screen to itself (it arrived with
         // the screen off) isn't the clock face, whose gestures it doesn't
         // take: a touch there only makes it a proper wake-up.

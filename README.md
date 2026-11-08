@@ -88,8 +88,8 @@ hardware by a human.
   notifications, newest first; up for music (while something is playing),
   then info. Swipe the same way again to go further, the other way to come
   back. A short bar on a screen's edge means you can swipe that way. A
-  coloured one at the top of the clock means notifications you haven't
-  seen.
+  coloured one at the top of the clock means new notifications, until you
+  swipe down to them.
 - **Media, from the clock:** while the phone is playing (a note shows
   beside the Bluetooth icon) or paused, long-press to play or pause, and
   double-tap for the next track.
