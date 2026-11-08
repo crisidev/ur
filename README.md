@@ -241,6 +241,13 @@ It lists a BTHome device's events only once it has seen each: tap,
 double-tap and hold a grid button once. "Hold release" needs Home
 Assistant 2026.11 or later; older versions ignore it.
 
+### B03: Home Assistant asks for the watch's key again
+
+The watch made a new key: it lost track of how many presses it had
+encrypted with the old one, and reusing that count would let anyone
+listening decode them. Give Home Assistant the new key from **Settings →
+HA KEY**, as when you [set it up](docs/buttons.md#home-assistant).
+
 ### C01: The watch says "NOT PAIRED"
 
 A phone or computer connected without pairing, and ur only talks to

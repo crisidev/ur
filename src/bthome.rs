@@ -213,31 +213,52 @@ mod device {
     /// starting here keeps that check on from the first press.
     const FIRST: u32 = 256;
 
-    /// Loads the key (or makes one, from the hardware RNG, on first boot)
-    /// and the counter. Before the Bluetooth controller takes the RNG.
+    /// Loads the key and the counter, or, on first boot, makes a key
+    /// (from the hardware RNG) and starts the counter. Before the Bluetooth
+    /// controller takes the RNG.
+    ///
+    /// A key whose counter is gone (its flash entry lost, or unreadable)
+    /// is replaced, as on first boot: the counter would start again, and
+    /// repeat nonces under that key, which lets anyone who heard both
+    /// presses decrypt them (CTR mode). Home Assistant then can't decrypt
+    /// the watch, and asks for its key again: the price of never reusing
+    /// a nonce. So a new key's counter is saved with it, not at its first
+    /// press: a key without one then only ever means it was lost.
     pub async fn init(rng: &mut Rng<'static, embassy_nrf::mode::Async>, address: [u8; 6]) {
-        let key = match storage::load::<16>(storage::key::BTHOME_KEY).await {
+        // Whatever was left of the last reserved block is skipped: it may
+        // have been used. 0 if there's none (it's never below `FIRST`):
+        // plain values, as what's held across an await here takes static
+        // RAM, in the main task's future.
+        let reserved = storage::load::<4>(storage::key::BTHOME_COUNTER)
+            .await
+            .map_or(0, |r| u32::from_le_bytes(r).max(FIRST));
+        let mut key = storage::load::<16>(storage::key::BTHOME_KEY).await;
+        if key.is_some() && reserved == 0 {
+            warn!("bthome: the counter's gone; a new key, for Home Assistant");
+            key = None;
+        }
+        let key = match key {
             Some(key) => key,
             None => {
                 let mut key = [0u8; 16];
                 // Bias correction, for a key's worth of good bits; slower,
-                // but this is once.
+                // but this is rare.
                 rng.set_bias_correction(true);
                 rng.fill_bytes(&mut key).await;
                 rng.set_bias_correction(false);
-                if storage::save(storage::key::BTHOME_KEY, &key).await {
+                // And a counter with it: a key in flash without one means
+                // it was lost (or this didn't finish, which is as safe).
+                if storage::save(storage::key::BTHOME_KEY, &key).await
+                    && storage::save(storage::key::BTHOME_COUNTER, &const { FIRST.to_le_bytes() })
+                        .await
+                {
                     info!("bthome: made a key");
                 }
                 key
             }
         };
+        let reserved = reserved.max(FIRST);
         IDENTITY.lock(|i| i.set(Some(Identity { key, address })));
-        // Whatever was left of the last reserved block is skipped: it may
-        // have been used.
-        let reserved = storage::load::<4>(storage::key::BTHOME_COUNTER)
-            .await
-            .map_or(FIRST, u32::from_le_bytes)
-            .max(FIRST);
         COUNTER.lock(|c| c.set((reserved, reserved)));
     }
 

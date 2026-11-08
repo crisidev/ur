@@ -137,6 +137,13 @@ actions:
 A release goes once its hold has been on the air for 0.8 s, so a quick
 hold's release can come that late.
 
+The key stays across updates. Should the watch lose track of how many
+presses it has sent with it (its flash entry for that lost), it makes a
+new key rather than risk reusing an encryption counter with the old one,
+which would let a listener decode those presses: Home Assistant then
+asks for the key again (or presses just stop arriving), and **HA KEY**
+shows the new one to give it.
+
 The watch can't know whether Home Assistant heard: a lit, buzzing button
 means it was sent. Home Assistant forgets which presses it has seen when
 it restarts, so a press recorded nearby could then be replayed once:
