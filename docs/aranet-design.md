@@ -12,7 +12,9 @@ changes from the plan below, which was written 2026-11-07 against
   during an update; a look at the clock face with a sensor around scans
   once the last scan is 10 min old, and opening the Air screen once it's
   a minute old. A scan lasts at most 3 s, and stops once every sensor
-  heard within the hour has been heard again.
+  heard within the hour has been heard again. (Since the BTHome
+  thermometers below: every sensor the last scan heard, and up to 6 s
+  while that includes a BTHome one.)
 - **Measured on a dev kit** (2026-11-08, two Aranet4s on firmware
   v2.0.7 in range, the phone connected): §4.0's questions answered. The
   readings come in `ADV_IND` (passive scanning is enough), from static
@@ -42,6 +44,52 @@ changes from the plan below, which was written 2026-11-07 against
   in the `compare` build); stack +104 B at the deepest measured. A DFU
   ran at the same 5.7 KiB/s into this build as into main's. The packet
   pool at 8 would win 2 KB of RAM back, untested.
+
+- **BTHome thermometers too** (2026-11-08, branch `bthome-temp`): a
+  scan also reads unencrypted BTHome v2 service data (UUID `0xFCD2`),
+  in `src/bthome_sensor.rs`, and they're room sensors like the Aranet4,
+  in the same `Nearby` table (four slots for both kinds, so no RAM
+  grew: `Reading` holds a kind, signed hundredths of a degree, and
+  optional humidity and battery, and `Sighting` stays 40 bytes; flash
+  +1.9 KB, +2.4 KB in the logging build). Decisions:
+  - **Parsing** follows <https://bthome.io/format/> and Home Assistant's
+    `bthome-ble` (its object table is copied into a host test): the
+    objects are walked by their spec lengths (a length byte for text,
+    raw and command), the walk stops at an unknown id or an object
+    past the end, keeping what came before; temperature from `0x02`
+    (hundredths) or `0x45` (tenths), the first of several; humidity
+    `0x03`/`0x2E`, battery `0x01`, pressure `0x04`, CO₂ `0x12`.
+    Encrypted adverts (no key; the watch's own presses among them) and
+    other versions are passed over; bit 1, which the spec reserves,
+    means a MAC first, as `bthome-ble` reads it; bit 2 ("trigger
+    based") marks a sensor that advertises irregularly. An advert
+    without a temperature isn't a sensor heard (pvvx's firmware
+    alternates its temperature with its battery voltage).
+  - **Which:** the nearest of either kind by RSSI, with the same 3 dB
+    hysteresis; its temperature is the clock face's, with the same
+    marker (`Source::Sensor`, `temperature_from_sensor`), and it
+    calibrates the wrist estimate like an Aranet4's: it's a room
+    thermometer, rated to a few tenths. But no pair is learnt outside
+    10–35 °C, since BTHome thermometers often sit in fridges,
+    freezers, saunas and outdoors.
+  - **Air screen:** with no CO₂, the temperature (to the tenth,
+    signed) takes the big digits, labelled `°C`, with no band; then
+    humidity, and pressure and battery if sent.
+  - **Scans:** a LYWSD03MMC on pvvx's firmware advertises every 2.5 s
+    by default (`app.c`), so its temperature comes every 5 s
+    (`bthome_beacon.c`), which a 3 s scan hears ~60% of the time. A scan
+    that waits for a BTHome thermometer may listen 6 s
+    (`aranet::SLOW_SCAN_LIMIT`), still stopping once it has heard
+    everyone it waits for. And it waits only for what the last scan
+    heard: one it missed has likely gone, or advertises too seldom
+    (a Shelly BLU H&T sends once a minute, by Shelly's docs), and
+    waiting for it held every scan to its limit for the hour. Scans
+    come no more often than before. Energy (estimate): with a pvvx
+    thermometer at home, ~70 scans a day of ~2.5 s, ~12 µA, against
+    ~5 µA with an Aranet4.
+  - **Not done:** a minimum RSSI, so a neighbour's thermometer through
+    a wall isn't taken for the room when nothing nearer is heard;
+    BTHome v1; a sensor's 1-byte temperatures (`0x57`, `0x58`).
 
 Sources:
 

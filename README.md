@@ -50,8 +50,10 @@ heart rate, alarms, timers, music control), and these on top:
   [docs/buttons.md](docs/buttons.md).
 - **The room's air:** a nearby [Aranet4] (with Smart Home integrations
   on) gives the clock face the room's temperature, and its CO₂ gets a
-  screen. Without one, the watch estimates the room from its own warmth,
-  learning from any Aranet4 it meets: roughly ±2–3 °C on the wrist once
+  screen. So does an unencrypted [BTHome] thermometer (such as a Xiaomi
+  LYWSD03MMC on pvvx's firmware); the nearest sensor wins. Without one,
+  the watch estimates the room from its own warmth, learning from any
+  sensor it meets: roughly ±2–3 °C on the wrist once
   it has, worse before, in the cold, or while you exercise.
 - **Follows the sun:** two dark themes after sunset and two light ones
   by day, and a screen that's brightest while the sun is up and dim from
@@ -87,6 +89,7 @@ and am daily driving this in real life :)
 [Bangle.js protocol]: https://www.espruino.com/Gadgetbridge
 [InfiniTime]: https://github.com/InfiniTimeOrg/InfiniTime
 [Aranet4]: https://aranet.com
+[BTHome]: https://bthome.io
 [embassy]: https://embassy.dev
 
 ## Using it
@@ -99,7 +102,7 @@ Oslo's, the phone has to share its location: see
 [C03](#c03-the-watch-never-gets-a-location-from-the-phone).
 
 **The clock face** shows the time, date, battery, heart rate, the next
-alarm or timer, and the room's temperature: a nearby Aranet4's
+alarm or timer, and the room's temperature: a nearby room sensor's
 (underlined at the °), or else estimated from the watch's own on the
 wrist, or the watch's own off it. Steps fill ten blocks of 1,000 (×1K)
 towards 10,000, then of 10,000 (×10K); Today has the exact count. A bar
@@ -115,9 +118,9 @@ screen off, it gets the whole screen, dimly, with the time.
 **Screens:** swipe right for Today (steps and heart rate by the hour),
 then Last night; left for Alarms, the alarms set in Gadgetbridge,
 Settings, then Info; down for the last three notifications; up for the
-button grid (if on), Music, and Air (while an Aranet4 is near: its CO₂,
-temperature, humidity and pressure). A short bar on an edge means
-there's more that way.
+button grid (if on), Music, and Air (while a room sensor is near: its
+CO₂, temperature, humidity and pressure, or those it measures). A short
+bar on an edge means there's more that way.
 
 **Touch and button:**
 
