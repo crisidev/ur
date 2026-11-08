@@ -38,6 +38,7 @@ missing below were test builds for the dev kit.
 
 ### Fixed
 
+- Stop the watch sometimes resetting as it saved something to its flash (a setting, the alarms, a pairing, the temperature calibration, the button grid's counter, or confirming an update), or, more rarely, never finishing the save, which kept every later save from happening until a restart (caead12)
 - Leave no gap between Bluetooth and the temperature once media is paused or stopped (introduced in 0.9.0) (fcd0a6d)
 - Keep notification titles of up to 40 characters whole, however many æ, ø and å they have (20 of them filled it), and end one that's cut with an ellipsis rather than passing it off as whole; leave emoji out, rather than showing each as `?`, and draw Ø so it doesn't read as an 8 (86ebb6a)
 - Show `&`, `#`, `@`, `"`, `*` and the rest of ASCII's symbols (and `×`) in notifications, and curly quotes, dashes and ellipses as their plain look-alikes, instead of `?` (929a956)
