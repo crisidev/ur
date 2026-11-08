@@ -41,18 +41,16 @@ timepiece.)
   Connect], if you like). Sleep comes in light, deep, and REM stages,
   estimated from your wrist's movement and heart rate: a rough guide,
   tuned against a Garmin on one watch.
-- **Notifications:** which app, and who from, briefly. With the screen off
-  they're full-screen and dim. The last three wait above the clock face,
-  with when each came. Calls take over the screen, and you can answer or
-  decline.
-- **Quiet nights:** from when you fall asleep until the morning's first
-  alarm (or until you've been up for 22 minutes, or double-press the
-  button), notifications neither buzz nor light the screen; the latest
-  waits on the clock face for you. The screen is dim all night. Alarms,
-  timers, calls, and "find my watch" still ring.
-- **Media controls:** play, pause, next, and previous, while something is
-  playing; play, pause, and next from the clock face, too, whenever the
-  phone is connected.
+- **Notifications:** which app, and who from, briefly; full-screen and
+  dim if the screen was off. The last three wait above the clock face,
+  with when each came. Calls take over the screen, to answer or decline.
+- **Quiet nights and naps:** once you fall asleep, notifications neither
+  buzz nor light the screen, touches don't wake it, and it stays dim,
+  until the morning's first alarm (or until you're up). Alarms, timers,
+  calls, and "find my watch" still ring.
+- **Media controls:** with a phone connected, play, pause, and skip from
+  the clock face, even with the screen off; previous too, on the music
+  screen.
 - **Updates:** over Bluetooth, with automatic rollback if an update doesn't
   work out.
 
@@ -81,32 +79,37 @@ now landed on, and am daily driving this in real life :)
 
 ## Using it
 
-- **Waking the screen:** press the button, or tap the middle of the
-  screen firmly (or twice, if no phone is connected: with one, a double tap
-  is the next track; see below). Brief touches and touches at the edge
-  don't wake it, so brushing against something doesn't either. Turning
-  your wrist to look shows the time on its own; tap then to wake the
-  screen fully. During a quiet night, taps don't wake it at all: use the
-  button.
-- **Button:** with the screen on, back to the clock, or off from the
-  clock. Also silences a call, and stops a ringing alarm. During a quiet
-  night, a double press ends it: the screen lights up bright, and
-  notifications buzz again.
+- **Connecting a phone:** in Gadgetbridge, add the watch "Bangle.js ur" and
+  type the passkey the watch shows when Android asks to pair. The watch only
+  talks to a phone that paired this way: if it shows "NOT PAIRED" or
+  "PAIRING LOST", see FAQ C01 or C02. Gadgetbridge then syncs time,
+  location, notifications, activity, sleep, and heart rate on its own. For
+  sun-based themes away from Oslo, the phone has to share its location:
+  see FAQ C03.
 - **Screens:** around the clock face. Swipe right for today (steps and
   heart rate, by the hour), then last night's sleep; left for alarms, then
   phone alarms (once Gadgetbridge has sent some); down for the last three
-  notifications, newest first; up for music (while something is playing),
+  notifications, newest first; up for music (while the phone has some),
   then info. Swipe the same way again to go further, the other way to come
   back. A short bar on a screen's edge means you can swipe that way. A
   coloured one at the top of the clock means new notifications, until you
   swipe down to them.
-- **Media, from the clock:** while the phone is connected, long-press to
-  play or pause, and double-tap for the next track, in the middle of the
-  screen (a note beside the Bluetooth icon means something's playing).
-  These work with the screen off or on a glance too (bar during a quiet
-  night), leaving it be: the watch buzzes to say it took. So with a phone
-  connected, a single tap takes a moment (0.3 s) to wake the screen, in
-  case a second follows.
+- **Waking the screen:** press the button, or tap firmly, away from the
+  screen's edge. Brief touches and touches near the edge don't wake it,
+  so brushing against something doesn't either. Turning your wrist to
+  look shows a glance; tap then to wake the screen fully. With a phone
+  connected, a tap takes 0.3 s to wake the screen, in case a second
+  follows (a double tap is the next track); without one, a double tap
+  wakes it too. During a quiet night, touches don't wake it: use the
+  button.
+- **Button:** back to the clock, or off from the clock. Also silences a
+  call, and stops a ringing alarm.
+- **Media:** with a phone connected, on the clock face, long-press to play
+  or pause, and double-tap for the next track. These work on a glance and
+  with the screen off too, leaving it be (but not during a quiet night):
+  the watch buzzes to say it took. A note beside the Bluetooth icon means
+  something's playing. The music screen has previous, play/pause, and
+  next along the bottom.
 - **Long-press:** on the alarms screen, an alarm or timer to switch it on
   or off; on the info screen, for storage mode. The watch acts, and
   buzzes, once you've held for 0.6 s, so let go when you feel it.
@@ -116,9 +119,10 @@ now landed on, and am daily driving this in real life :)
   tap LIGHT on the info screen to switch from AUTO to SOFT: medium while
   the sun is up, dim otherwise. Glances and quiet nights stay dim either
   way.
-- **Tap an alarm or timer** to set it: swipe up and down to change the
-  time, then the left button switches it on or off (or starts and stops a
-  timer).
+- **Setting an alarm or timer:** tap it, then swipe up and down on the
+  hours (left) and minutes (right), and tap the bottom left button to
+  switch it on or off (or start and stop a timer). Smart wake has a page
+  each for weekdays and weekends.
 - **A ringing alarm:** tap to snooze for 9 minutes, or press the button to
   stop it. Alarms (but not timers) start with the screen dim, and
   brighten over a minute.
@@ -127,27 +131,25 @@ now landed on, and am daily driving this in real life :)
   one-off alarm switches itself off on the watch once it has rung, but
   Gadgetbridge doesn't hear of it: to set it again, switch it off and on
   there.
-- **Storage mode,** for putting the watch away: long-press the info
-  screen, then tap. The watch saves the activity the phone hasn't
-  fetched and switches off. Press the button or plug in the charger to
-  wake it. Off, it uses roughly 40% of a full charge in six weeks.
-- **An empty battery:** before it runs flat (at about 3.4 V), the watch
-  saves the activity the phone hasn't fetched, shows "BATTERY EMPTY", and
-  switches off. Plug in the charger to wake it.
-- **After switching off,** the watch doesn't know the time (or show
-  steps, or ring alarms) until the phone reconnects. The phone then gets
-  the saved activity with its next sync.
-- **Connecting a phone:** in Gadgetbridge, add the watch "Bangle.js ur" and
-  type the passkey the watch shows when Android asks to pair. The watch only
-  talks to a phone that paired this way: if it shows "NOT PAIRED" or
-  "PAIRING LOST", see FAQ C01 or C02. Gadgetbridge then syncs time,
-  location, notifications, activity, sleep, and heart rate on its own. For
-  sun-based themes away from Oslo, the phone has to share its location:
-  see FAQ C03.
+- **Quiet nights** end with the morning's first alarm, once you've been
+  up for 22 minutes, or when you double-press the button: the screen
+  lights up bright, and notifications buzz again. Until then, the latest
+  notification waits on the clock face. Falling asleep between 09:00 and
+  20:00 is a nap, which ends after 7 minutes up.
 - **Directions:** Gadgetbridge forwards them by default, from Google Maps
   (it reads its navigation notification) and OsmAnd; CoMaps needs turning
   on, under Settings, "Navigation apps". Directions disappear when
   navigation ends, or after three minutes without an update.
+- **Storage mode,** for putting the watch away: long-press the info
+  screen, then tap. The watch saves the activity the phone hasn't
+  fetched and switches off. Press the button or plug in the charger to
+  wake it. Off, it uses roughly 40% of a full charge in six weeks.
+- **An empty battery:** before it runs flat (below about 3.4 V for a
+  minute), the watch saves the activity the phone hasn't fetched, shows
+  "BATTERY EMPTY", and switches off. Plug in the charger to wake it.
+- **After switching off,** the watch doesn't know the time (or show
+  steps, or ring alarms) until the phone reconnects. The phone then gets
+  the saved activity with its next sync.
 
 ## Installing
 
@@ -310,18 +312,17 @@ outside.
 
 The watch thinks you're asleep: it's a quiet night (see [Using
 it](#using-it)). It ends with the morning's first alarm, or once you've
-been up for 22 minutes. If you're up before either, double-press the
-button.
+been up for 22 minutes (7 after a nap). If you're up before either,
+double-press the button.
 
 ### P01: How do I put the watch away for a while?
 
 Use storage mode: long-press the Info screen (swipe up from the clock,
-past Music if something's playing), then tap to confirm. The watch saves the activity the phone hasn't fetched yet and
-switches itself off almost completely, using roughly 40% of a full
-charge in six weeks. Press the button or plug in the charger to wake it;
-the phone sets the time again when it reconnects, and gets the saved
-activity with its next sync. (When the battery runs nearly flat, the
-watch does the same by itself, then wakes only on the charger.)
+past Music if the phone has some), then tap to confirm. The watch saves
+the activity the phone hasn't fetched yet and switches itself off almost
+completely, using roughly 40% of a full charge in six weeks. Press the
+button or plug in the charger to wake it; the phone sets the time again
+when it reconnects, and gets the saved activity with its next sync.
 
 ### U01: A phone update fails at "Enabling bootloader" or with "GATT CONN TIMEOUT"
 
