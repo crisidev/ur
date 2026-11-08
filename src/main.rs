@@ -6,7 +6,9 @@
 //!   glyphs, and colour themes.
 //! - [`display`]: the async LCD driver the canvas pushes pixels through.
 //! - [`spi`] / [`spi_flash`]: the bus the LCD shares with the external flash.
-//! - [`ui`] / [`nav`]: screens, navigation, and screen power.
+//! - [`ui`] / [`nav`]: screens, navigation, and screen power;
+//!   [`ui_loop`]: what the UI loop does each pass, which the simulator runs
+//!   too.
 //! - [`buttons`] / [`bthome`]: the button grid, and its presses as
 //!   advertisements for Home Assistant.
 //! - [`brightness`]: how bright the backlight is.
@@ -69,6 +71,7 @@ mod geo;
 mod gesture;
 mod glance;
 mod heart;
+mod heart_reading;
 mod heart_schedule;
 mod i2c;
 mod mcuboot;
@@ -91,34 +94,32 @@ mod temperature;
 mod theme;
 mod touch;
 mod ui;
+mod ui_loop;
 mod wake;
 
-use core::cell::Cell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use defmt::{debug, info, warn};
+use defmt::{info, warn};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either3, select3};
 use embassy_nrf::gpio::{Input, Level, Output, OutputDrive, Pull};
 use embassy_nrf::interrupt::{self, InterruptExt, Priority};
-use embassy_nrf::wdt::{self, HaltConfig, Watchdog};
+use embassy_nrf::wdt::{self, HaltConfig, Watchdog, WatchdogHandle};
 use embassy_nrf::{bind_interrupts, peripherals, rng, saadc, spim, twim};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
-use embassy_time::{Duration, Instant, Ticker, Timer};
+use embassy_time::{Duration, Ticker, Timer};
 use nrf_sdc::mpsl;
 use static_cell::StaticCell;
 
 // The panic handler is `field_log::panic`.
 use defmt_rtt as _;
 
-use crate::battery::Battery;
-use crate::canvas::{Canvas, Sweep};
+use crate::canvas::Canvas;
 use crate::display::Display;
-use crate::touch::Touch;
-use crate::ui::{App, Status, ThemeChoice};
+use crate::ui_loop::{Board, Stored, UiLoop, Wake};
 
 bind_interrupts!(struct Irqs {
     SPI2 => spim::InterruptHandler<peripherals::SPI2>;
@@ -144,18 +145,7 @@ const APP_PRIORITY: Priority = Priority::P2;
 // Input
 // ==============================================================================
 
-#[derive(defmt::Format)]
-pub enum InputEvent {
-    Button,
-    Touch(Touch),
-    /// Something needs the user to look (e.g. a pairing passkey): wake the
-    /// screen if it's off, and redraw.
-    Attention,
-    /// A notification, call, or media update from the phone.
-    Phone(ui::PhoneEvent),
-    /// The wrist turned to look at the watch (see [`glance`]).
-    Glance,
-}
+pub use crate::ui_loop::InputEvent;
 
 /// Every user input, in order, for the UI loop.
 pub static INPUT: Channel<CriticalSectionRawMutex, InputEvent, 8> = Channel::new();
@@ -200,14 +190,6 @@ async fn button_task(mut enable: Output<'static>, mut button: Input<'static>) {
     }
 }
 
-/// Local seconds since 1970 (UTC plus the phone's UTC offset), once the
-/// phone has set the clock; what [`alarm`] works in.
-fn local_second() -> Option<i64> {
-    let utc = clock::now_utc_seconds()?;
-    let offset = i64::from(clock::utc_offset_minutes()?);
-    Some(utc + offset * 60)
-}
-
 /// The three active-low backlight transistors (low/mid/high), which sum;
 /// see [`brightness`] for which to light when.
 struct Backlight {
@@ -230,6 +212,108 @@ impl Backlight {
 
     fn off(&mut self) {
         self.set(brightness::Level::OFF);
+    }
+}
+
+/// What the UI loop drives directly: the panel, the backlight, the
+/// sensors it reads itself, and the watchdog (see [`ui_loop::Board`]).
+struct Hardware {
+    display: Display,
+    backlight: Backlight,
+    /// The battery's voltage, through a divider (see `main`).
+    adc: saadc::Saadc<'static, 1>,
+    /// The charger's status lines, both active-low.
+    charging: Input<'static>,
+    power_present: Input<'static>,
+    /// For the die temperature, which MPSL owns.
+    mpsl: &'static mpsl::MultiprotocolServiceLayer<'static>,
+    watchdog: Option<WatchdogHandle>,
+}
+
+impl Board for Hardware {
+    fn die_temperature(&mut self) -> i32 {
+        // From thread mode, as MPSL requires: the same priority as its
+        // `mpsl_task`. This blocks for ~50 µs.
+        self.mpsl.get_temperature().raw()
+    }
+
+    fn sample_battery<'a>(&'a mut self, sample: &'a mut [i16; 1]) -> impl Future<Output = ()> + 'a {
+        self.adc.sample(sample)
+    }
+
+    fn charger(&mut self) -> (bool, bool) {
+        (self.charging.is_low(), self.power_present.is_low())
+    }
+
+    fn daytime(&mut self) -> bool {
+        geo::is_daytime()
+    }
+
+    fn finger_down(&mut self) -> bool {
+        touch::finger_down()
+    }
+
+    fn display(&mut self) -> &mut Display {
+        &mut self.display
+    }
+
+    fn wake_panel(&mut self) -> impl Future<Output = ()> {
+        self.display.wake()
+    }
+
+    fn sleep_panel(&mut self) -> impl Future<Output = ()> {
+        self.display.sleep()
+    }
+
+    fn show_panel(&mut self) -> impl Future<Output = ()> {
+        self.display.show()
+    }
+
+    fn set_idle(&mut self, idle: bool) -> impl Future<Output = ()> {
+        self.display.set_idle(idle)
+    }
+
+    fn wait_for_refresh(&mut self) -> impl Future<Output = ()> {
+        Timer::after(display::REFRESH)
+    }
+
+    fn backlight(&mut self, level: brightness::Level) {
+        self.backlight.set(level);
+    }
+
+    fn bthome(&mut self) -> Option<bthome::Identity> {
+        bthome::identity()
+    }
+
+    fn send_press(&mut self, press: buttons::Press, battery: u8) -> impl Future<Output = ()> {
+        bthome::send(press, battery)
+    }
+
+    async fn switch_off(
+        &mut self,
+        reason: system_off::Reason,
+        canvas: &mut Canvas,
+        panel_awake: bool,
+    ) {
+        system_off::shut_down(
+            reason,
+            &mut self.display,
+            canvas,
+            &mut self.backlight,
+            panel_awake,
+            &mut self.watchdog,
+        )
+        .await
+    }
+
+    fn pet_watchdog(&mut self) {
+        // Holding the button long enough to starve the watchdog is the
+        // user's way back into the bootloader: see `Board::pet_watchdog`.
+        if let Some(watchdog) = &mut self.watchdog
+            && !BUTTON_HELD.load(Ordering::Relaxed)
+        {
+            watchdog.pet();
+        }
     }
 }
 
@@ -297,7 +381,7 @@ async fn main(spawner: Spawner) {
     // Before adopting (which consumes the peripheral): note where we were
     // if it ever bites.
     field_log::catch_watchdog();
-    let mut watchdog = match Watchdog::try_new::<_, 1>(p.WDT, wdt_config) {
+    let watchdog = match Watchdog::try_new::<_, 1>(p.WDT, wdt_config) {
         Ok((_wdt, [handle])) => Some(handle),
         Err(_) => {
             // Already running with more than one reload register enabled. We
@@ -319,7 +403,7 @@ async fn main(spawner: Spawner) {
     // chip-select must be high from the start, so it ignores LCD traffic.
     let flash_cs = Output::new(p.P0_05, Level::High, OutputDrive::Standard);
 
-    let mut backlight = Backlight {
+    let backlight = Backlight {
         low: Output::new(p.P0_14, Level::High, OutputDrive::Standard),
         mid: Output::new(p.P0_22, Level::High, OutputDrive::Standard),
         high: Output::new(p.P0_23, Level::High, OutputDrive::Standard),
@@ -345,7 +429,7 @@ async fn main(spawner: Spawner) {
     // of time to settle.
     let mut battery_channel = saadc::ChannelConfig::single_ended(p.P0_31);
     battery_channel.time = saadc::Time::_40US;
-    let mut adc = saadc::Saadc::new(p.SAADC, Irqs, saadc::Config::default(), [battery_channel]);
+    let adc = saadc::Saadc::new(p.SAADC, Irqs, saadc::Config::default(), [battery_channel]);
     interrupt::SAADC.set_priority(APP_PRIORITY);
     adc.calibrate().await;
 
@@ -491,7 +575,7 @@ async fn main(spawner: Spawner) {
     let lcd_cs = Output::new(p.P0_25, Level::High, OutputDrive::Standard);
     let lcd_dc = Output::new(p.P0_18, Level::Low, OutputDrive::Standard);
     let lcd_reset = Output::new(p.P0_26, Level::High, OutputDrive::Standard);
-    let mut display = Display::new(lcd_cs, lcd_dc, lcd_reset).await;
+    let display = Display::new(lcd_cs, lcd_dc, lcd_reset).await;
     info!("display initialised");
     *spi_flash::FLASH.lock().await = Some(spi_flash::SpiFlash::new(flash_cs).await);
     #[cfg(feature = "field-log")]
@@ -502,415 +586,42 @@ async fn main(spawner: Spawner) {
     // ==========================================================================
     //
     // Wakes once a second and on every input. Each pass: update state, then
-    // (if the screen is on) render a full frame and push what changed.
+    // (if the screen is on) render a full frame and push what changed. What
+    // a pass does is `ui_loop`'s, free of hardware, so that the simulator
+    // runs it too; here is only when it runs, and with what hardware.
 
     // Static rather than on the stack: two 3.2 KB frame buffers.
     static CANVAS: StaticCell<Canvas> = StaticCell::new();
     let canvas = CANVAS.init(Canvas::new());
     debug::register_canvas(canvas);
     spawner.spawn(debug::input_task().expect("spawned once"));
-    let mut battery = Battery::new();
-    let load_u8 = async |key| storage::load::<1>(key).await.map_or(0, |[value]| value);
-    let themes = ThemeChoice {
-        light: load_u8(storage::key::THEME_LIGHT).await,
-        dark: load_u8(storage::key::THEME_DARK).await,
+    let (mut app, mut ui) = UiLoop::boot(Stored::load().await);
+    let mut board = Hardware {
+        display,
+        backlight,
+        adc,
+        charging,
+        power_present,
+        mpsl,
+        watchdog,
     };
-    let alarms = storage::load(storage::key::ALARMS)
-        .await
-        .map(alarm::Settings::from_bytes)
-        .unwrap_or_default();
-    let booted = Instant::now();
-    let mut app = App::new(booted, themes, alarms);
-    if let Some(phone_alarms) = storage::load(storage::key::PHONE_ALARMS).await {
-        app.phone_alarms = alarm::Phone::from_bytes(phone_alarms);
-    }
-    app.brightness = brightness::Setting::from_byte(load_u8(storage::key::BRIGHTNESS).await);
-    app.buttons = buttons::Setting::from_byte(load_u8(storage::key::BUTTONS).await);
-    if let Some(location) = storage::load(storage::key::LOCATION).await {
-        geo::set_location(geo::Location::from_bytes(location));
-    }
-    #[cfg(feature = "compare")]
-    compare::boot(booted, &app);
-    // Start "asleep" so the first pass goes through the wake path: render the
-    // first frame, then turn the backlight on. (Waking an already-awake
-    // ST7789 is harmless.)
-    let mut panel_awake = false;
-    // The panel's memory holds noise after power-up; sweeping the first frame
-    // in covers every block of it, and doubles as a retro boot effect.
-    let mut first_frame = true;
-
-    let mut ticker = Ticker::every(Duration::from_secs(1));
-    // The first reading is still settling (it's smoothed); log after a minute.
-    let mut next_battery_log = Instant::now() + Duration::from_secs(60);
-    let mut last_power_report = Instant::now();
-    // Since when the panel (and backlight) have been on, for `power`.
-    let mut panel_since = Instant::now();
-    // Whether the last frame was in the dim look; see below.
-    let mut was_dim = false;
-    // The clock face's temperature, once read, and where from; and what
-    // goes into it (see `temperature`): the die's own, in quarter degrees,
-    // whether the watch is worn, and the estimate's calibration, which a
-    // nearby Aranet4 teaches.
-    let mut temperature: Option<(i8, temperature::Source)> = None;
-    let mut die = None;
-    let mut wear = temperature::Wear::new(booted.as_millis());
-    let mut calibration = storage::load(storage::key::CALIBRATION)
-        .await
-        .map(temperature::Calibration::from_bytes)
-        .unwrap_or_default();
-    let mut pairing = temperature::Pairing::new();
-    // Whether the calibration has learnt since it was last saved, and
-    // when that was: saved at most hourly, as it may learn every quarter
-    // hour, and a reset only loses what was learnt since.
-    let mut calibration_unsaved = false;
-    let mut calibration_saved = booted;
-    // When the Aranet4 reading last looked at was heard, so each is
-    // looked at once.
-    let mut sighting_seen = None;
+    let mut ticker = Ticker::every(ui_loop::TICK);
     loop {
-        let now = Instant::now();
-        let now_ms = now.as_millis();
-        wear.update(
-            now_ms,
-            heart::worn() == Some(false),
-            activity::still(),
-            heart::latest().map(|(_, at)| at.as_millis()),
-        );
-        // At the top of each minute of uptime, rather than at a stored
-        // time, to save the RAM. A pass delayed past that second just
-        // waits for the next minute, and an extra pass within it (an input)
-        // reads again, which is harmless.
-        let sample = die.is_none() || now.as_secs().is_multiple_of(temperature::SAMPLE_EVERY);
-        if sample {
-            // From thread mode, as MPSL requires: the same priority as its
-            // `mpsl_task`. This blocks for ~50 µs.
-            die = Some(mpsl.get_temperature().raw());
-        }
-        let (best, fresh) = ble::NEARBY.lock(|nearby| {
-            let nearby = nearby.borrow();
-            (nearby.best(), nearby.fresh(now_ms))
-        });
-        let heard = best.map(|s| s.heard);
-        let new_sighting = heard != sighting_seen;
-        sighting_seen = heard;
-        if let Some(die) = die
-            && (sample || new_sighting)
-        {
-            // A new Aranet4 reading, recent enough to pair with the die's
-            // temperature now, on a settled wrist: learn from it.
-            if new_sighting
-                && let Some(sighting) = best
-                && sighting.age(now_ms) <= temperature::PAIR_AGE
-                && let Some(air) = sighting.reading.quarters()
-                && pairing.offer(now_ms, die, air, wear.worn_for(now_ms))
-            {
-                calibration.learn(die, air);
-                calibration_unsaved = true;
-                let (k, c) = calibration.line();
-                info!(
-                    "temperature: learnt die {}/4 C, air {}/4 C; slope {}, height {}, {} pairs",
-                    die,
-                    air,
-                    k,
-                    c,
-                    calibration.pairs()
-                );
-            }
-            let aranet = fresh.and_then(|s| s.reading.quarters());
-            let (quarters, source) = temperature::pick(aranet, wear.worn(), die, &calibration);
-            // A change of source shows the new value at once, rather than
-            // holding the old within a degree.
-            let previous = temperature.filter(|&(_, s)| s == source).map(|(d, _)| d);
-            let shown = (temperature::shown(previous, quarters), source);
-            if temperature != Some(shown) {
-                info!("temperature: {} C ({}), die {}/4 C", shown.0, source, die);
-            }
-            temperature = Some(shown);
-        }
-        if calibration_unsaved && calibration_saved.elapsed() >= Duration::from_secs(60 * 60) {
-            storage::save(storage::key::CALIBRATION, &calibration.to_bytes()).await;
-            calibration_unsaved = false;
-            calibration_saved = Instant::now();
-        }
-        let mut samples = [0i16; 1];
-        adc.sample(&mut samples).await;
-        let sample = debug::battery_sample().unwrap_or(samples[0]);
-        battery.update(sample, charging.is_low(), power_present.is_low());
-        let report = ble::BatteryReport {
-            percent: battery.percent() as u8,
-            charging: battery.charging,
-            millivolts: battery.millivolts(),
-        };
-        ble::BATTERY.lock(|cell| cell.set(report));
-        // Critically low, or storage mode chosen: save what the phone hasn't
-        // fetched, and switch off until the charger (or the button) wakes
-        // the watch.
-        let off = if battery.critical(now.as_secs() as u32) {
-            Some(system_off::Reason::BatteryEmpty)
-        } else if app.storage_mode {
-            Some(system_off::Reason::Storage)
-        } else {
-            None
-        };
-        if let Some(reason) = off {
-            system_off::shut_down(
-                reason,
-                &mut display,
-                canvas,
-                &mut backlight,
-                panel_awake,
-                &mut watchdog,
-            )
-            .await;
-        }
-        // For battery-life analysis from the field log.
-        if now >= next_battery_log {
-            clock::log_now();
-            if now - last_power_report >= Duration::from_secs(60 * 60) {
-                if panel_awake {
-                    power::add(power::Meter::Panel, panel_since);
-                    power::add(power::Meter::Backlight, panel_since);
-                    panel_since = now;
-                }
-                power::report(now - last_power_report);
-                last_power_report = now;
-            }
-            info!(
-                "battery: {} mV, {}%, charging: {}",
-                report.millivolts, report.percent, report.charging
-            );
-            next_battery_log = now + Duration::from_secs(10 * 60);
-        }
-
-        // Every pass, not only while the screen is on: its media gestures
-        // work with it off too, and need to know there's a phone to send
-        // them to.
-        let connected = ble::CONNECTED.load(Ordering::Relaxed);
-        app.set_connected(connected);
-        let air = ble::NEARBY.lock(|nearby| {
-            nearby
-                .borrow()
-                .best()
-                .is_some_and(|s| now_ms.saturating_sub(s.heard) < aranet::RECENT)
-        });
-        app.set_air(air);
-        // Apply screen power changes. Waking renders before the backlight
-        // comes on, so the old frame never flashes up.
-        if app.awake {
-            if !panel_awake {
-                display.wake().await;
-            }
-            let status = Status {
-                uptime_secs: now.as_secs(),
-                local_time: clock::now(),
-                connected,
-                unpaired: ble::UNPAIRED.lock(Cell::get),
-                passkey: ble::PASSKEY.lock(Cell::get),
-                update_progress: dfu::PROGRESS.lock(Cell::get),
-                steps: activity::steps_today(),
-                sleep: activity::last_sleep(),
-                local_second: local_second(),
-                heart_rate: heart::current(now),
-                temperature: temperature.map(|(degrees, _)| degrees),
-                temperature_from_aranet: temperature
-                    .is_some_and(|(_, source)| source == temperature::Source::Aranet),
-                // Read again rather than kept from above: kept, it would
-                // sit in this task's future across every await between.
-                air: ble::NEARBY.lock(|nearby| nearby.borrow().best()),
-                battery: &battery,
-                bthome: bthome::identity(),
-            };
-            let daytime = geo::is_daytime();
-            app.set_daytime(daytime);
-            // Into or out of the dim white-on-black look (a glance, a quiet
-            // notification) with the panel lit: go dark for the redraw.
-            // Otherwise the old frame (often a light theme, at full
-            // backlight) flashes up while the new one is drawn over it.
-            let relighting = panel_awake && app.dim() != was_dim;
-            if relighting {
-                backlight.off();
-            }
-            was_dim = app.dim();
-            // A frame to be shown in the dark (on waking, or relighting) is
-            // shown out of idle mode, at the normal frame rate, so it's
-            // whole by the time the backlight comes on (see
-            // `Display::set_idle`); so is anything not in the dim look,
-            // which needs all its colours.
-            if !panel_awake || relighting || !app.dim() {
-                display.set_idle(false).await;
-            }
-            canvas.set_theme(app.theme());
-            // Nothing between this and the render may await: see
-            // `compare::rendering`.
-            #[cfg(feature = "compare")]
-            compare::rendering(now, &status, daytime, activity::today());
-            app.render(canvas, &status, now);
-            match app.take_transition() {
-                // Waking straight into a transition would animate over a
-                // stale frame; just show the new one.
-                Some(sweep) if panel_awake => canvas.transition(&mut display, sweep).await,
-                _ if first_frame => canvas.transition(&mut display, Sweep::LeftToRight).await,
-                _ => canvas.flush(&mut display).await,
-            }
-            first_frame = false;
-            #[cfg(feature = "compare")]
-            compare::rendered();
-            // Light only a finished frame: after waking, the output is blank
-            // until shown (see `Display::sleep`); after a redraw in the dark,
-            // the panel's scan needs a refresh to reach the bottom rows.
-            if !panel_awake {
-                display.show().await;
-            } else if relighting {
-                Timer::after(display::REFRESH).await;
-            }
-            display.set_idle(app.dim()).await;
-            // Low for a glance, and back up if it turns into a proper wake;
-            // brightening while a wake alarm rings (see `brightness`).
-            backlight.set(app.backlight(Instant::now()));
-            if !panel_awake {
-                panel_awake = true;
-                panel_since = Instant::now();
-            }
-        } else if panel_awake {
-            backlight.off();
-            power::add(power::Meter::Panel, panel_since);
-            power::add(power::Meter::Backlight, panel_since);
-            // In sleep the ST7789 keeps its frame memory, so the canvas's
-            // idea of what's on the panel stays valid across sleep/wake.
-            display.sleep().await;
-            panel_awake = false;
-        }
-        // Someone looking at the clock face gets a fresh heart rate, but one
-        // is enough: the LED (3–8 mA) needn't stay on for the rest of the
-        // glance once there's a reading from the last few minutes.
-        //
-        // Saturating: `now` was read at the top of this pass, and the heart
-        // task may have recorded a reading during one of the awaits since,
-        // timestamped after it. `now - at` then panicked (embassy-time's
-        // `Instant` subtraction `unwrap!`s), which a field log caught right
-        // after a redraw.
-        let fresh = heart::latest()
-            .is_some_and(|(_, at)| now.saturating_duration_since(at) < Duration::from_secs(5 * 60));
-        heart::set_watching(app.showing_clock() && !fresh);
-        // Listen for Aranet4s, when it's time (see `aranet::Nearby::due`).
-        let context = aranet::Context {
-            quiet_night: app.quiet_night(),
-            off_wrist: !wear.worn(),
-            showing_clock: app.showing_clock(),
-            showing_air: app.showing_air(),
-            updating: dfu::PROGRESS.lock(Cell::get).is_some(),
-        };
-        let due = ble::NEARBY.lock(|nearby| {
-            let mut nearby = nearby.borrow_mut();
-            let due = nearby.due(now_ms, context);
-            if due.is_some() {
-                nearby.begin(now_ms);
-            }
-            due
-        });
-        if let Some(why) = due {
-            debug!("aranet: scanning ({})", why);
-            ble::SCAN.signal(());
-        }
-        glance::set_screen_on(app.awake);
-        // Taps don't wake the screen in the quiet night (see `ui`), so the
-        // touch controller can sleep while it's off.
-        touch::set_asleep(app.quiet_night() && !app.awake);
-        // Holding the button long enough to starve the watchdog is the
-        // user's way back into the bootloader (and to rollback), even when
-        // this firmware is otherwise wedged in a way that still runs this loop.
-        if let Some(watchdog) = &mut watchdog
-            && !BUTTON_HELD.load(Ordering::Relaxed)
-        {
-            watchdog.pet();
-        }
-        clock::checkpoint();
-
-        // Wake for the next second, the next input, while text is
-        // scrolling, the next animation frame (which only redraws), and
-        // when the button grid has something due (see `App::deadline`),
-        // unless a finger is down: that touch decides, and its event
-        // wakes us.
-        let frame = (app.animating()).then(|| Instant::now() + canvas::MARQUEE_FRAME);
-        let due = app.deadline().filter(|_| !touch::finger_down());
+        ui.pass(&mut app, &mut board, canvas).await;
+        // Wake for the next second, the next input, or the loop's timer
+        // (see `ui_loop::timer_at`).
+        let timer_at = ui_loop::timer_at(&app, touch::finger_down());
         let timer = async {
-            match frame.into_iter().chain(due).min() {
+            match timer_at {
                 Some(at) => Timer::at(at).await,
                 None => core::future::pending::<()>().await,
             }
         };
-        let alarms_before = app.alarms;
-        match select3(ticker.next(), INPUT.receive(), timer).await {
-            Either3::Third(()) => {
-                // Maybe only a frame; then this does nothing.
-                let (at, finger_down) = (Instant::now(), touch::finger_down());
-                #[cfg(feature = "compare")]
-                compare::timer(at, finger_down);
-                app.on_timer(at, finger_down);
-            }
-            Either3::First(()) => {
-                // A stir after stillness: what a smart alarm waits for.
-                let stirring = activity::movement() >= sleep::STILL_LIMIT;
-                let (at, second, asleep) = (Instant::now(), local_second(), activity::asleep());
-                app.check_alarms(at, second, stirring, asleep);
-                // Pairing and updates need the user to watch the screen.
-                let watching = ble::PASSKEY.lock(Cell::get).is_some()
-                    || dfu::PROGRESS.lock(Cell::get).is_some();
-                let ticked = Instant::now();
-                #[cfg(feature = "compare")]
-                compare::tick(at, second, stirring, asleep, ticked, watching);
-                app.on_tick(ticked, watching)
-            }
-            Either3::Second(event) => {
-                info!("input: {}", event);
-                // What woke the screen, if this does: not every input does
-                // (a single tap, say; see `ui::DOUBLE_TAP`).
-                let wake = match event {
-                    InputEvent::Button => power::Count::WakeButton,
-                    InputEvent::Touch(_) => power::Count::WakeTouch,
-                    InputEvent::Phone(_) => power::Count::WakePhone,
-                    InputEvent::Attention => power::Count::WakeAttention,
-                    InputEvent::Glance => power::Count::WakeGlance,
-                };
-                let was_awake = app.awake;
-                let before = app.themes;
-                let brightness_before = app.brightness;
-                let buttons_before = app.buttons;
-                let at = Instant::now();
-                #[cfg(feature = "compare")]
-                compare::input(&event, at);
-                app.on_input(event, at);
-                if !was_awake && app.awake {
-                    power::count(wake);
-                }
-                if app.themes.light != before.light {
-                    storage::save(storage::key::THEME_LIGHT, &[app.themes.light]).await;
-                }
-                if app.themes.dark != before.dark {
-                    storage::save(storage::key::THEME_DARK, &[app.themes.dark]).await;
-                }
-                if app.brightness != brightness_before {
-                    info!("brightness: {=str}", app.brightness.name());
-                    storage::save(storage::key::BRIGHTNESS, &[app.brightness.to_byte()]).await;
-                }
-                if app.buttons != buttons_before {
-                    info!("buttons: {}", app.buttons);
-                    storage::save(storage::key::BUTTONS, &[app.buttons.to_byte()]).await;
-                }
-            }
-        }
-        // The button grid's presses for Home Assistant, from an input or
-        // its wait running out.
-        while let Some(press) = app.take_ha_press() {
-            bthome::send(press, battery.percent() as u8).await;
-        }
-        // Edited, switched, or (a one-off alarm) rung and switched off.
-        if app.alarms != alarms_before {
-            storage::save(storage::key::ALARMS, &app.alarms.to_bytes()).await;
-        }
-        // Synced, or a one-off rung and switched off.
-        if app.take_phone_alarms_changed() {
-            storage::save(storage::key::PHONE_ALARMS, &app.phone_alarms.to_bytes()).await;
-        }
+        let wake = match select3(ticker.next(), INPUT.receive(), timer).await {
+            Either3::First(()) => Wake::Tick,
+            Either3::Second(event) => Wake::Input(event),
+            Either3::Third(()) => Wake::Timer,
+        };
+        ui.handle(&mut app, &mut board, wake).await;
     }
 }

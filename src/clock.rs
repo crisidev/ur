@@ -153,7 +153,20 @@ const RETAINED_ADDRESS: usize = 0x2000_D420;
 const _: () = assert!(size_of::<Retained>() <= 32);
 
 fn retained() -> *mut Retained {
-    RETAINED_ADDRESS as *mut Retained
+    #[cfg(target_os = "none")]
+    return RETAINED_ADDRESS as *mut Retained;
+    // On the host (the simulator, which runs the UI loop and its
+    // checkpoints), an ordinary static stands in for the retained block.
+    #[cfg(not(target_os = "none"))]
+    {
+        static mut HOST: Retained = Retained {
+            magic: 0,
+            offset_minutes: 0,
+            utc_seconds: 0,
+            check: 0,
+        };
+        &raw mut HOST
+    }
 }
 
 /// Saves the current time for [`restore`]. Call about once a second; the
@@ -184,6 +197,14 @@ pub fn checkpoint() {
 pub fn forget() {
     // SAFETY: As in `checkpoint`, from the same (UI loop) task.
     unsafe { core::ptr::addr_of_mut!((*retained()).magic).write_volatile(0) };
+}
+
+/// Loses the time, as RAM is lost while the watch is off: for the
+/// simulator, whose RAM outlives its switching off. (On the watch, the
+/// next boot starts without a time anyway.)
+#[cfg(not(target_os = "none"))]
+pub fn lose() {
+    SYNC.lock(|cell| cell.set(None));
 }
 
 /// Resumes the clock from the last [`checkpoint`] before a reset, if there

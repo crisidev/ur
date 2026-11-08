@@ -10,7 +10,8 @@
 //!   for up to [`SESSION_LIMIT`] or until it has a reading (typically
 //!   ~13 s), giving up sooner if the wrist won't keep still
 //!   ([`heart_schedule::give_up`]), and
-//! - while the clock face is showing (see [`set_watching`]), continuously,
+//! - while the clock face is showing (see
+//!   [`crate::heart_reading::set_watching`]), continuously,
 //!   since then someone is looking at the number.
 //!
 //! Between sessions the sensor is fully off: no LED, no oscillator.
@@ -19,20 +20,19 @@
 //! the hardware; this module drives the sensor, keeps its signal in range
 //! ([`LEVELS`]), vetoes measurements while the wrist moves (using
 //! [`activity::movement`]), and publishes readings for the clock face
-//! ([`current`]) and the per-minute history Gadgetbridge fetches.
-
-use core::cell::Cell;
-use core::sync::atomic::{AtomicBool, Ordering};
+//! and the per-minute history Gadgetbridge fetches, through
+//! [`crate::heart_reading`].
 
 use defmt::{debug, info, trace, warn};
 use embassy_futures::select::select;
-use embassy_sync::blocking_mutex::Mutex;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Ticker, Timer, with_timeout};
 use embedded_hal_async::i2c::I2c;
 
 use crate::activity;
+// What the rest of the firmware reads and sets lives there, free of
+// hardware, so the simulator runs it too.
+use crate::heart_reading::{WAKE, publish, watching};
+pub use crate::heart_reading::{wake, worn};
 use crate::heart_schedule::{self, Before, Outcome, Schedule};
 use crate::i2c::Device;
 use crate::ppg::{Consensus, Conversions, Ppg};
@@ -46,10 +46,6 @@ use crate::ppg::{Consensus, Conversions, Ppg};
 /// more estimates 2 s apart that must agree); this leaves room for a few
 /// rejected windows, or the gain adjusting.
 const SESSION_LIMIT: Duration = Duration::from_secs(30);
-
-/// How long a reading is shown on the clock face. Past this (longer than
-/// the schedule waits at rest), "--" is more honest than an old number.
-const STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 
 /// Wrist movement (see [`activity::movement`]) above which the PPG can't be
 /// trusted: moving the sensor against the skin changes the light far more
@@ -92,64 +88,6 @@ const RECHECK_SECS: u32 = 30;
 /// Seconds of movement readings kept (one per level check, i.e. a second),
 /// to judge a whole window: an analysis window is ~8 s.
 const MOTION_HISTORY: usize = 8;
-
-/// Whether the clock face is showing; set by the UI loop.
-static WATCHING: AtomicBool = AtomicBool::new(false);
-/// Raised when [`WATCHING`] becomes true, to start a session right away,
-/// and when [`activity::still`] changes (see [`wake`]).
-static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-
-/// Whether the last session saw skin; for sleep tracking, which must tell
-/// a still wrist from a watch on the nightstand.
-static WORN: Mutex<CriticalSectionRawMutex, Cell<Option<bool>>> = Mutex::new(Cell::new(None));
-
-/// Whether the watch is on a wrist, as of the last measurement session
-/// (`None` before the first). Up to an hour stale (see
-/// [`crate::heart_schedule::MAX_FAILED_INTERVAL`]).
-pub fn worn() -> Option<bool> {
-    WORN.lock(Cell::get)
-}
-
-/// The latest reading and when it was taken.
-static LATEST: Mutex<CriticalSectionRawMutex, Cell<Option<(u8, Instant)>>> =
-    Mutex::new(Cell::new(None));
-
-/// Tells the heart-rate task whether someone's looking at the clock face.
-/// Cheap; the UI loop calls it every pass.
-pub fn set_watching(watching: bool) {
-    let was = WATCHING.swap(watching, Ordering::Relaxed);
-    if watching && !was {
-        WAKE.signal(());
-    }
-}
-
-/// Has the heart-rate task look again at what it's waiting for: the wrist
-/// just went still (a due session may start), or started moving (which
-/// may bring the next session forward). Cheap.
-pub fn wake() {
-    WAKE.signal(());
-}
-
-fn watching() -> bool {
-    WATCHING.load(Ordering::Relaxed)
-}
-
-/// The latest heart rate and when it was measured, however old.
-pub fn latest() -> Option<(u8, Instant)> {
-    LATEST.lock(Cell::get)
-}
-
-/// The latest heart rate, if it's recent enough to show.
-pub fn current(now: Instant) -> Option<u8> {
-    latest()
-        .filter(|&(_, at)| now.saturating_duration_since(at) <= STALE_AFTER)
-        .map(|(bpm, _)| bpm)
-}
-
-fn publish(bpm: u8) {
-    LATEST.lock(|latest| latest.set(Some((bpm, Instant::now()))));
-    activity::record_heart_rate(bpm);
-}
 
 // ==============================================================================
 // The HRS3300
@@ -484,7 +422,7 @@ pub async fn heart_task(i2c: Device) {
             Ok(Ended::NoContact | Ended::TooBright) => (Some(false), Outcome::OffWrist),
             Ok(Ended::TimedOut | Ended::GaveUp) | Err(()) => (None, Outcome::NoReading),
         };
-        WORN.lock(|w| w.set(worn));
+        crate::heart_reading::set_worn(worn);
         schedule.ended(uptime(), led_seconds, outcome, background, before);
 
         // A session only ends while someone's watching if there's no

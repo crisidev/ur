@@ -23,12 +23,19 @@ use core::ops::Range;
 use defmt::warn;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
-use nrf_sdc::mpsl::Flash;
 use sequential_storage::cache::{Cache, Uncached};
 use sequential_storage::map::{MapConfig, MapStorage};
 
+/// The internal flash, through MPSL. In the simulator (`sim/`), which
+/// runs this module too, a model of it, with the same pages and the same
+/// addresses.
+#[cfg(target_os = "none")]
+pub type Flash = nrf_sdc::mpsl::Flash<'static>;
+#[cfg(not(target_os = "none"))]
+pub type Flash = crate::flash::Flash;
+
 /// Must match the `STORAGE` region in `memory.x`.
-const RANGE: Range<u32> = 0x7D000..0x80000;
+pub const RANGE: Range<u32> = 0x7D000..0x80000;
 
 /// Every stored item's key. Never reuse a retired number: old data under it
 /// may still be in flash.
@@ -66,7 +73,7 @@ pub mod key {
 /// to flash word alignment.
 const BUFFER: usize = 64;
 
-type Map = MapStorage<u8, Flash<'static>, Cache<Uncached, Uncached, Uncached, u8>>;
+type Map = MapStorage<u8, Flash, Cache<Uncached, Uncached, Uncached, u8>>;
 
 /// The map, made storable in a `static`.
 struct Store(Map);
@@ -80,7 +87,7 @@ unsafe impl Send for Store {}
 static STORE: Mutex<CriticalSectionRawMutex, Option<Store>> = Mutex::new(None);
 
 /// Must be called once, before anything loads or saves.
-pub fn init(flash: Flash<'static>) {
+pub fn init(flash: Flash) {
     let map = MapStorage::new(flash, MapConfig::new(RANGE), Cache::new_uncached());
     *STORE.try_lock().expect("nothing uses storage before init") = Some(Store(map));
 }
