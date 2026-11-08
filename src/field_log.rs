@@ -594,8 +594,12 @@ const WATCHDOG_MAGIC: u32 = u32::from_le_bytes(*b"urW3");
 const FAULT_MAGIC: u32 = u32::from_le_bytes(*b"urF3");
 /// The lowest address the stack may use: just above the retained block (see
 /// `memory.x`), which an overflow would otherwise run into first, then our
-/// statics. [`guard_stack`] puts a tripwire at the bottom.
-const STACK_END: u32 = 0x2000_D500;
+/// statics. [`guard_stack`] puts a tripwire at the bottom. Must match
+/// `_stack_end` in `memory.x`.
+pub const STACK_END: u32 = 0x2000_D500;
+/// The size of [`guard_stack`]'s tripwire: the stack's last bytes, which
+/// can't be read or written.
+pub const STACK_GUARD: u32 = 32;
 /// Must match the `RETAINED` region in `memory.x`.
 const BREADCRUMB_ADDRESS: usize = 0x2000_D440;
 // The retained block from +0x40 to its end (see `memory.x`).
@@ -782,6 +786,7 @@ pub fn guard_stack() {
     // Region 0: base STACK_END (32-byte aligned), size 32 bytes
     // (RASR.SIZE = log2(32) - 1), no access (AP = 0), never executable (XN),
     // enabled. Everything else keeps the default memory map (PRIVDEFENA).
+    const _: () = assert!(STACK_GUARD == 32);
     const SIZE_32: u32 = 4 << 1;
     const XN: u32 = 1 << 28;
     const ENABLE: u32 = 1;

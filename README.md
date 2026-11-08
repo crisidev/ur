@@ -81,10 +81,12 @@ hardware by a human.
 - **A ringing alarm:** tap to snooze for 9 minutes, or press the button to
   stop it.
 - **Connecting a phone:** in Gadgetbridge, add the watch "Bangle.js ur" and
-  type the passkey the watch shows. Gadgetbridge then syncs time, location,
-  notifications, activity, sleep, and heart rate on its own. For sun-based
-  themes away from Oslo, turn on "Use phone GPS data" in the watch's
-  Gadgetbridge settings.
+  type the passkey the watch shows when Android asks to pair. The watch only
+  talks to a phone that paired this way: if it shows "NOT PAIRED" or
+  "PAIRING LOST", see FAQ C01 or C02. Gadgetbridge then syncs time,
+  location, notifications, activity, sleep, and heart rate on its own. For
+  sun-based themes away from Oslo, turn on "Use phone GPS data" in the
+  watch's Gadgetbridge settings.
 
 ## Installing
 
@@ -196,6 +198,35 @@ PINE64's recovery firmware from the SPI flash, a minimal InfiniTime to
 reinstall from. (This is the [bootloader] every PineTime ships with.)
 
 [bootloader]: https://github.com/InfiniTimeOrg/pinetime-mcuboot-bootloader
+
+## FAQ
+
+Each entry has a code: a letter for its area (C connectivity, U updates,
+P power, S sensors, D display and touch, A alarms, N notifications, E
+errors the watch reports), and a number. When the watch points you here,
+it shows the code.
+
+### C01: The watch says "NOT PAIRED"
+
+A phone or computer connected without pairing with the watch. ur only
+talks to devices paired with its passkey. In Gadgetbridge, add the watch
+(or remove it and add it again), and when Android asks to pair, type the
+6-digit passkey the watch shows.
+
+### C02: The watch says "PAIRING LOST"
+
+The watch remembers pairing with this phone, but the phone has forgotten
+it (it reconnected without the shared key), for instance after the watch
+was removed from Android's Bluetooth settings. Remove the watch from both
+Android's Bluetooth settings and Gadgetbridge, then add it again in
+Gadgetbridge and type the passkey.
+
+### U01: A phone update fails at "Enabling bootloader" or with "GATT CONN TIMEOUT"
+
+The nRF Device Firmware Update app only works over a paired link: if the
+phone hasn't paired with the watch, the app tries a different kind of
+update, and fails. Pair first (see [C01](#c01-the-watch-says-not-paired)
+and [C02](#c02-the-watch-says-pairing-lost)), then send the update again.
 
 ## Contributing
 

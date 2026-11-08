@@ -533,6 +533,7 @@ async fn main(spawner: Spawner) {
                 uptime_secs: now.as_secs(),
                 local_time: clock::now(),
                 connected: ble::CONNECTED.load(Ordering::Relaxed),
+                unpaired: ble::UNPAIRED.lock(Cell::get),
                 passkey: ble::PASSKEY.lock(Cell::get),
                 update_progress: dfu::PROGRESS.lock(Cell::get),
                 steps: activity::steps_today(),

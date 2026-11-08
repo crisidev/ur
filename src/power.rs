@@ -7,6 +7,9 @@
 //! `docs/power-plan.md`), they give an energy budget per hour that can be
 //! checked against the battery voltage's slope, and they show which knob
 //! to turn next.
+//!
+//! The same report carries the hour's deepest stack use (see
+//! [`stack_peak`]), since an overflow crashes the watch.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -113,7 +116,7 @@ pub fn report(period: embassy_time::Duration) {
         "power: awake {=u64}‰, {=u32} wakeups; ms: panel {=u32}, backlight {=u32}, \
          led {=u32}/{=u32}/{=u32}/{=u32}, connected {=u32}, flash {=u32}; \
          wakes: button {=u32}, touch {=u32}, phone {=u32}, attention {=u32}, glance {=u32}; \
-         hr sessions {=u32}, disconnects {=u32}",
+         hr sessions {=u32}, disconnects {=u32}; stack {=u32} B",
         1000 - asleep.min(total) * 1000 / total,
         WAKEUPS.swap(0, Ordering::Relaxed),
         take(&MILLIS[Meter::Panel as usize]),
@@ -131,5 +134,52 @@ pub fn report(period: embassy_time::Duration) {
         take(&EVENTS[Count::WakeGlance as usize]),
         take(&EVENTS[Count::HeartSessions as usize]),
         take(&EVENTS[Count::Disconnects as usize]),
+        stack_peak(),
     );
+}
+
+// ==============================================================================
+// Stack depth
+// ==============================================================================
+
+/// The most stack used since the last call (or since boot), in bytes.
+///
+/// cortex-m-rt paints the whole stack with a known word at boot
+/// (`paint-stack`), and whatever the stack has reached since has scrubbed
+/// the paint off, so the lowest scrubbed word is the deepest it has been.
+/// That word is found by scanning up from the bottom; then the scrubbed part
+/// below where the stack is now is repainted, so the next call reports the
+/// next period's peak rather than the boot's (building the Bluetooth host
+/// takes one of the deepest paths there are, so a peak since boot would
+/// hide everything after it).
+///
+/// It's a lower bound: a frame that reserves space it never writes leaves
+/// paint there, and if that's the deepest frame, the scan stops above it.
+/// It's ~2700 words read and fewer written, tens of µs, once an hour, and
+/// no RAM.
+fn stack_peak() -> u32 {
+    unsafe extern "C" {
+        static _stack_start: u32;
+    }
+    let top = (&raw const _stack_start) as u32;
+    // Above the guard (see `field_log::guard_stack`), which faults on any
+    // access.
+    let bottom = crate::field_log::STACK_END + crate::field_log::STACK_GUARD;
+    let sp = cortex_m::register::msp::read();
+    let word = |address: u32| address as *mut u32;
+    let mut deepest = bottom;
+    // SAFETY: Reads the stack between its guard and where it is now: our
+    // RAM, and unused (painted or dead) below `sp`.
+    while deepest < sp && unsafe { word(deepest).read_volatile() } == cortex_m_rt::STACK_PAINT_VALUE
+    {
+        deepest += 4;
+    }
+    // Below `sp` is free: code only ever uses the stack above it (an
+    // interrupt that preempts us here pushes below it, but is gone before
+    // we carry on). So it's ours to repaint, from thread mode.
+    for address in (deepest..sp).step_by(4) {
+        // SAFETY: As above.
+        unsafe { word(address).write_volatile(cortex_m_rt::STACK_PAINT_VALUE) };
+    }
+    top - deepest
 }

@@ -6,10 +6,14 @@
 //! lines to its RX characteristic. Everything else (time, notifications,
 //! GPS, activity) travels as text over that pair.
 //!
-//! Pairing is required in practice: Android starts it on connect (a request
-//! the watch must answer within 30 s, or the phone gives up and disconnects),
-//! so we support LE Secure Connections with a passkey shown on the watch, and
-//! keep the resulting bonds in flash so the phone needn't pair again.
+//! Pairing is required: every service but GAP needs a link encrypted with a
+//! bond made with the passkey (LE Secure Connections, the passkey shown on
+//! the watch), and the watch asks each client for that as it connects (an
+//! SMP Security Request). A bonded phone then encrypts at once; a new one
+//! pairs (Android prompts for the passkey, and gives up after 30 s). Bonds
+//! are kept in flash so the phone needn't pair again. A client that stays
+//! unencrypted gets a banner on the watch pointing at the README's FAQ (see
+//! `not_paired`).
 //!
 //! The stack is Nordic's SoftDevice Controller (link layer, a binary blob
 //! wrapped by `nrf-sdc`) under TrouBLE (host, in Rust), with Nordic's MPSL
@@ -28,11 +32,12 @@ use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use heapless::Vec;
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
+use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
 use crate::gb::{self, Incoming, LineBuffer, Outgoing};
 use crate::geo::{self, GpsPolicy, Location};
-use crate::ui::PhoneEvent;
+use crate::ui::{PhoneEvent, Unpaired};
 use crate::{activity, clock, dfu, storage};
 
 /// The advertised and GAP device name. Gadgetbridge's Bangle.js support
@@ -41,6 +46,10 @@ const NAME: &str = "Bangle.js ur";
 
 /// Whether a phone is connected, for the status bar.
 pub static CONNECTED: AtomicBool = AtomicBool::new(false);
+/// Whether a client is connected over a link that never became encrypted,
+/// and why, for the Info screen (see [`not_paired`]).
+pub static UNPAIRED: Mutex<CriticalSectionRawMutex, Cell<Option<Unpaired>>> =
+    Mutex::new(Cell::new(None));
 /// The passkey to show while pairing, for the user to type on the phone.
 pub static PASSKEY: Mutex<CriticalSectionRawMutex, Cell<Option<u32>>> = Mutex::new(Cell::new(None));
 /// Battery state, published by the UI loop for status reports to the phone.
@@ -87,17 +96,30 @@ struct Server {
 
 /// The Nordic UART service: a byte pipe each way. "RX" and "TX" are from the
 /// watch's point of view.
+///
+/// Only for clients that paired with the passkey (`authenticated`), like
+/// the rest of our services: the phone's link carries notifications (who
+/// messaged you) and sets the clock, so it must be the bonded phone's, and
+/// encrypted. A client that hasn't paired gets "insufficient
+/// authentication" for its writes and subscriptions (writes without
+/// response are dropped silently), which tells Android to pair; our
+/// Security Request at connect (see `host_task`) asks for that up front.
 #[gatt_service(uuid = "6e400001-b5a3-f393-e0a9-e50e24dcca9e")]
 struct UartService {
     /// Phone to watch. Writes arrive in pieces of at most MTU − 3 bytes.
     #[characteristic(
         uuid = "6e400002-b5a3-f393-e0a9-e50e24dcca9e",
         write,
-        write_without_response
+        write_without_response,
+        permissions(authenticated)
     )]
     rx: Vec<u8, 244>,
     /// Watch to phone, as notifications.
-    #[characteristic(uuid = "6e400003-b5a3-f393-e0a9-e50e24dcca9e", notify)]
+    #[characteristic(
+        uuid = "6e400003-b5a3-f393-e0a9-e50e24dcca9e",
+        notify,
+        permissions(authenticated)
+    )]
     tx: Vec<u8, 244>,
 }
 
@@ -165,18 +187,52 @@ pub async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
     mpsl.run().await
 }
 
+type BleStack = Stack<'static, Controller, DefaultPacketPool>;
+
+/// Builds the host and the GATT server, in statics.
+///
+/// The stack's depth is what this arrangement is about. The host's state,
+/// the attribute table, and the stack itself are big values that their
+/// constructors build on the stack and then move into place; built inside
+/// `host_task`'s future, those temporaries reserved space in its poll
+/// function's frame (4.4 KB of it), on the stack for every poll, whatever
+/// it was doing. Built here, in a function of its own, they take the stack
+/// once, at boot, and the statics cost no more RAM than the same values did
+/// inside the task's future.
+#[inline(never)]
+fn build(
+    controller: Controller,
+    address: [u8; 6],
+) -> (&'static BleStack, &'static Server<'static>) {
+    // The host's resources and the server share a cell: each cell costs a
+    // word for its "taken" flag.
+    type Resources = HostResources<DefaultPacketPool, CONNECTIONS, L2CAP_CHANNELS, 1, BONDS>;
+    static PARTS: StaticCell<(Resources, Server<'static>)> = StaticCell::new();
+    static STACK: StaticCell<BleStack> = StaticCell::new();
+    let (resources, server) = PARTS.init((
+        HostResources::new(),
+        Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
+            name: NAME,
+            appearance: &appearance::watch::GENERIC_WATCH,
+        }))
+        .expect("the attribute table is sized for this server"),
+    ));
+    let stack = STACK.init(
+        trouble_host::new(controller, resources)
+            .set_random_address(Address::random(address))
+            // We can show a passkey but not enter one: the phone's user
+            // types the number shown on the watch, which protects pairing
+            // against man-in-the-middle attacks (unlike "just works").
+            .set_io_capabilities(IoCapabilities::DisplayOnly)
+            .build(),
+    );
+    (stack, &*server)
+}
+
 /// Runs the BLE host: advertise, serve one phone, repeat.
 #[embassy_executor::task]
 pub async fn host_task(controller: Controller, address: [u8; 6]) {
-    let mut resources: HostResources<DefaultPacketPool, CONNECTIONS, L2CAP_CHANNELS, 1, BONDS> =
-        HostResources::new();
-    let stack = trouble_host::new(controller, &mut resources)
-        .set_random_address(Address::random(address))
-        // We can show a passkey but not enter one: the phone's user types
-        // the number shown on the watch, which protects pairing against
-        // man-in-the-middle attacks (unlike "just works").
-        .set_io_capabilities(IoCapabilities::DisplayOnly)
-        .build();
+    let (stack, server) = build(controller, address);
     for slot in storage::key::BONDS {
         if let Some(bond) = storage::load(slot).await.as_ref().and_then(decode_bond) {
             info!("ble: restored bond with {}", bond.identity.addr);
@@ -188,12 +244,6 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
     let mut runner = stack.runner();
     // Shared by the connection slots below: one advertises at a time.
     let peripheral = embassy_sync::mutex::Mutex::<NoopRawMutex, _>::new(stack.peripheral());
-
-    let server = Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
-        name: NAME,
-        appearance: &appearance::watch::GENERIC_WATCH,
-    }))
-    .expect("the attribute table is sized for this server");
 
     let host = async {
         loop {
@@ -215,7 +265,7 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
                 let mut peripheral = peripheral.lock().await;
                 match advertise(
                     &mut peripheral,
-                    &server,
+                    server,
                     advertising_interval(last_disconnect.get()),
                 )
                 .await
@@ -234,6 +284,17 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
             if let Err(e) = conn.raw().set_bondable(true) {
                 warn!("ble: enabling bonding failed: {}", defmt::Debug2Format(&e));
             }
+            // Ask the client to secure the link (an SMP Security Request):
+            // one with our bond encrypts with it at once, one without pairs,
+            // which shows the passkey. Everything but the GAP service needs
+            // that (see `UartService`), and some clients never ask on their
+            // own: Gadgetbridge's Bangle.js support doesn't.
+            if let Err(e) = conn.raw().request_security() {
+                warn!(
+                    "ble: requesting security failed: {}",
+                    defmt::Debug2Format(&e)
+                );
+            }
             // Whether this is the phone; see `serve`. The status reporter
             // waits for that, and never finishes on its own.
             let phone = Cell::new(false);
@@ -243,7 +304,7 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
                 let _ = active.borrow_mut().push(peer);
             });
             select(
-                serve(&stack, &server, &conn, &gps, &phone),
+                serve(stack, server, &conn, &gps, &phone),
                 report_status(&phone),
             )
             .await;
@@ -492,6 +553,13 @@ async fn serve(
     // the idle parameters (see `slow_down`).
     let mut last_traffic = Instant::now();
     let mut slowed = false;
+    // Whether the link's security is still to be judged (see
+    // `not_paired`), at `last_traffic + SECURITY_GRACE`: while it is,
+    // `last_traffic` stays at the connection's start. (It only matters once
+    // the phone is here, which takes an encrypted link.) That saves an
+    // `Instant` in this future, which is in RAM twice (once per slot), and
+    // RAM is that scarce.
+    let mut security = Security::Pending;
 
     let reason = loop {
         let idle = async {
@@ -501,8 +569,12 @@ async fn serve(
                 core::future::pending().await
             }
         };
-        let gps_timeout = async {
-            match gps_deadline {
+        // The GPS and security deadlines share a branch (`select4` has
+        // only four); which one passed is sorted out below.
+        let deadline = async {
+            let security_deadline =
+                (security == Security::Pending).then_some(last_traffic + SECURITY_GRACE);
+            match gps_deadline.into_iter().chain(security_deadline).min() {
                 Some(deadline) => Timer::at(deadline).await,
                 None => core::future::pending().await,
             }
@@ -514,7 +586,7 @@ async fn serve(
                 core::future::pending().await
             }
         };
-        let event = match select4(conn.next(), outgoing, gps_timeout, idle).await {
+        let event = match select4(conn.next(), outgoing, deadline, idle).await {
             Either4::First(event) => event,
             Either4::Second(message) => {
                 send(server, conn, message).await;
@@ -526,16 +598,36 @@ async fn serve(
                 continue;
             }
             Either4::Third(()) => {
-                warn!("ble: no location from the phone; is GPS forwarding enabled?");
-                gps_deadline = None;
-                send(server, conn, Outgoing::GpsPower(false)).await;
+                let now = Instant::now();
+                if security == Security::Pending && last_traffic + SECURITY_GRACE <= now {
+                    security = Security::Settled;
+                    // A pairing under way (the passkey showing) gets as
+                    // long as it needs: its failure tells the user instead.
+                    // Encrypted without the passkey ("just works", from a
+                    // client that can't show or type one) is no better:
+                    // our services need `authenticated`.
+                    let authenticated = conn
+                        .raw()
+                        .security_level()
+                        .is_ok_and(|l| l == SecurityLevel::EncryptedAuthenticated);
+                    if !authenticated && PASSKEY.lock(Cell::get).is_none() {
+                        not_paired(conn, &mut security);
+                    }
+                }
+                if gps_deadline.is_some_and(|at| at <= now) {
+                    warn!("ble: no location from the phone; is GPS forwarding enabled?");
+                    gps_deadline = None;
+                    send(server, conn, Outgoing::GpsPower(false)).await;
+                }
                 continue;
             }
         };
         match event {
             GattConnectionEvent::Disconnected { reason } => break reason,
             GattConnectionEvent::Gatt { event } => {
-                last_traffic = Instant::now();
+                if security != Security::Pending {
+                    last_traffic = Instant::now();
+                }
                 let mut actions: Vec<Action, 4> = Vec::new();
                 // DFU writes are acted on after replying (flash work is
                 // async; this callback isn't), so keep a copy.
@@ -659,6 +751,7 @@ async fn serve(
             GattConnectionEvent::PairingFailed(e) => {
                 warn!("ble: pairing failed: {}", defmt::Debug2Format(&e));
                 show_passkey(None);
+                not_paired(conn, &mut security);
             }
             GattConnectionEvent::BondLost => {
                 // The phone forgot us (e.g. "forget device"); it will pair
@@ -667,6 +760,11 @@ async fn serve(
             }
             GattConnectionEvent::Encrypted { security_level, .. } => {
                 info!("ble: link encrypted ({})", security_level);
+                if security == Security::Pending
+                    && security_level == SecurityLevel::EncryptedAuthenticated
+                {
+                    security = Security::Settled;
+                }
             }
             // What the phone actually gave us: the single biggest factor in
             // what the connection costs (see `docs/power-plan.md`).
@@ -686,7 +784,58 @@ async fn serve(
         }
     };
     update.abandon().await;
+    if security == Security::Told {
+        UNPAIRED.lock(|cell| cell.set(None));
+    }
     info!("ble: disconnected: {}", defmt::Debug2Format(&reason));
+}
+
+/// Where a connection stands on [`not_paired`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Security {
+    /// Waiting for the link to become encrypted.
+    Pending,
+    /// Encrypted, or a pairing is under way: nothing to say (unless the
+    /// pairing fails).
+    Settled,
+    /// The user has been told.
+    Told,
+}
+
+/// How long a new connection has to become encrypted before we tell the
+/// user it isn't (see [`not_paired`]). A bonded phone encrypts within a
+/// second of our Security Request; a new one shows the passkey by then.
+const SECURITY_GRACE: Duration = Duration::from_secs(10);
+
+/// Tells the user, once per connection, that a client is connected but
+/// the link isn't encrypted with a passkey bond (it ignored our Security
+/// Request, or pairing failed), so it can't use anything of ours. A banner
+/// points at the README's FAQ for the steps (see [`Unpaired`]), and the
+/// Info screen's phone row says so for as long as the connection lasts.
+///
+/// Two cases, told apart by whether the client's address matches one of
+/// our bonds (its identity address, or a private address that one of the
+/// bonds' identity resolving keys resolves), which the host knows from the
+/// moment it connects:
+///
+/// - It doesn't: a phone that never paired, e.g. one set up before ur
+///   required pairing. It has to pair.
+/// - It does, yet didn't encrypt with the bond: the phone has forgotten its
+///   side (as a sealed watch's phone once had: Android had no bond, the
+///   watch still did). It has to forget the watch too, and pair again.
+fn not_paired(conn: &GattConnection<'_, '_, DefaultPacketPool>, security: &mut Security) {
+    if core::mem::replace(security, Security::Told) == Security::Told {
+        return;
+    }
+    let why = if conn.raw().is_bonded_peer() {
+        Unpaired::PairingLost
+    } else {
+        Unpaired::NotPaired
+    };
+    warn!("ble: link not encrypted: {}", why);
+    UNPAIRED.lock(|cell| cell.set(Some(why)));
+    // Not awaited-for space: see `show_passkey`.
+    let _ = crate::INPUT.try_send(crate::InputEvent::Phone(PhoneEvent::Unpaired(why)));
 }
 
 /// Parses one line from the phone into actions; logs what we ignore.

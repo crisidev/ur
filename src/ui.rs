@@ -118,6 +118,9 @@ pub struct Status<'a> {
     pub local_time: Option<DateTime>,
     /// Whether a phone is connected over Bluetooth.
     pub connected: bool,
+    /// Whether a client is connected over a link that never became
+    /// encrypted, and why (see [`Unpaired`]).
+    pub unpaired: Option<Unpaired>,
     /// While pairing: the passkey to type on the phone.
     pub passkey: Option<u32>,
     /// While a firmware update is arriving: how far along it is, in percent.
@@ -156,6 +159,41 @@ pub enum PhoneEvent {
     Find {
         on: bool,
     },
+    /// A client connected but never secured the link (see
+    /// `ble::not_paired`). Shown like a notification.
+    Unpaired(Unpaired),
+}
+
+/// Why a connected client can't use the watch: its link never became
+/// encrypted.
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum Unpaired {
+    /// Not a device we have a bond with: it has to pair.
+    NotPaired,
+    /// A device we have a bond with, which didn't use it: the phone forgot
+    /// its side of the bond, and has to forget the watch and pair again.
+    PairingLost,
+}
+
+/// README.md's FAQ entries for [`Unpaired`]: the watch shows only these
+/// IDs, since the steps don't fit on its screen.
+pub const NOT_PAIRED_FAQ: &str = "C01";
+pub const PAIRING_LOST_FAQ: &str = "C02";
+
+impl Unpaired {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::NotPaired => "NOT PAIRED",
+            Self::PairingLost => "PAIRING LOST",
+        }
+    }
+
+    fn faq(self) -> &'static str {
+        match self {
+            Self::NotPaired => NOT_PAIRED_FAQ,
+            Self::PairingLost => PAIRING_LOST_FAQ,
+        }
+    }
 }
 
 /// Logged without contents: names and titles stay out of the logs.
@@ -168,6 +206,7 @@ impl defmt::Format for PhoneEvent {
             Self::MusicInfo { .. } => "MusicInfo",
             Self::MusicState { .. } => "MusicState",
             Self::Find { .. } => "Find",
+            Self::Unpaired(_) => "Unpaired",
         };
         defmt::write!(f, "{=str}", kind)
     }
@@ -645,6 +684,19 @@ impl App {
     }
 
     fn on_phone(&mut self, event: PhoneEvent, now: Instant) {
+        // A banner like a notification's, pointing at the FAQ for the
+        // steps; the Info screen's phone row keeps saying so meanwhile.
+        let event = match event {
+            PhoneEvent::Unpaired(why) => {
+                let mut who = String::new();
+                let _ = write!(who, "SEE FAQ {}", why.faq());
+                PhoneEvent::Notification {
+                    app: String::try_from(why.title()).expect("fits in 24"),
+                    who,
+                }
+            }
+            event => event,
+        };
         // In the quiet night, a notification makes no sound or light: it's
         // only kept, as a banner that waits until the screen is properly on
         // (see `on_tick`), even if that's now. Only the latest is kept.
@@ -667,6 +719,7 @@ impl App {
             self.last_input = now;
         }
         match event {
+            PhoneEvent::Unpaired(_) => unreachable!("made a notification above"),
             PhoneEvent::Notification { app, who } => {
                 // With the screen off, the notification gets the whole
                 // screen.
@@ -1407,6 +1460,8 @@ fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
     canvas.text(4, y, "PHONE", Color::TEXT_DIM);
     let phone = if status.connected {
         "CONNECTED"
+    } else if let Some(why) = status.unpaired {
+        why.title()
     } else {
         "WAITING"
     };

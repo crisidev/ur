@@ -50,8 +50,15 @@ MEMORY
 }
 
 /* The stack takes the 11 KiB above the retained block, growing down towards
- * it. Measured (by painting it over SWD and reading it back after a few
- * minutes of use): under 4 KiB, since embassy tasks keep their state in
- * statics, not on the stack. Our statics have only 53 KiB (`RAM`), so the
- * retained block stays clear of the bootloader. */
+ * it. Embassy tasks keep their state in statics, not on the stack, but a
+ * task's poll still nests every call it makes. The deepest is pairing's
+ * elliptic-curve maths under the Bluetooth host's runner: 8.9 KB measured,
+ * radio interrupts included (see `ble::build`). The hourly power log
+ * reports each hour's deepest (`power`). Our statics have only 53 KiB
+ * (`RAM`), so the retained block stays clear of the bootloader.
+ *
+ * `_stack_end` bounds what cortex-m-rt paints at boot (`paint-stack`), for
+ * that report: the retained block must not be painted over. It must match
+ * `field_log::STACK_END`. */
 _stack_start = 0x20010000;
+_stack_end = ORIGIN(RETAINED) + LENGTH(RETAINED);
