@@ -298,6 +298,43 @@ mod tests {
     }
 
     #[test]
+    fn implausible_times_are_refused() {
+        for (seconds, zone) in [
+            (0, "1.0"),
+            (1_577_836_799, "1.0"), // a second before 2020
+            (4_102_444_800, "1.0"), // 2100
+            (-1794150000, "1.0"),
+            (1794150000, "18.25"),
+            (1794150000, "-18.25"),
+            (1794150000, "1e9"),
+            (1794150000, "-1e9"),
+        ] {
+            assert_eq!(
+                parse(&set_time_line(seconds, zone)),
+                None,
+                "{seconds} {zone}"
+            );
+        }
+        assert_eq!(
+            parse(b"setTime(99999999999999999999);E.setTimeZone(1.0);"),
+            None
+        );
+        for (seconds, zone, minutes) in [
+            (1_577_836_800, "18.0", 1080),
+            (4_102_444_799, "-18.0", -1080),
+        ] {
+            assert_eq!(
+                parse(&set_time_line(seconds, zone)),
+                Some(Incoming::SetTime {
+                    utc_seconds: seconds,
+                    offset_minutes: minutes
+                }),
+                "{seconds} {zone}"
+            );
+        }
+    }
+
+    #[test]
     fn set_time_needs_both_numbers() {
         for line in [
             &b"setTime(1794150000);"[..],
@@ -670,6 +707,79 @@ mod tests {
                 alarm(8, 15, 0x7F, Switch::On),
             ]
         );
+    }
+
+    /// Parses `line` on a thread of its own, and fails if that takes more
+    /// than a second: on the watch, a parse that never ends stalls the
+    /// Bluetooth task until the watchdog resets the watch.
+    fn parses_in_time(line: Vec<u8>) {
+        let (done, finished) = std::sync::mpsc::channel();
+        let shown = String::from_utf8_lossy(&line).into_owned();
+        std::thread::spawn(move || {
+            let _ = gb::parse(&line);
+            let _ = done.send(());
+        });
+        assert!(
+            finished
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .is_ok(),
+            "never finished parsing {shown}"
+        );
+    }
+
+    #[test]
+    fn alarm_lists_that_dont_parse_end() {
+        // A `}` where an item should start once had the array's items
+        // repeat forever (as empty values, none of them an alarm).
+        for list in [
+            "[}]",
+            "[ }",
+            r#"[{"h":6,"m":45},}]"#,
+            r#"[{"h":6,"m":45}}]"#,
+            "[1}",
+            "[,}",
+            "[:}",
+        ] {
+            parses_in_time(format!(r#"GB({{"t":"alarm","d":{list}}})"#).into_bytes());
+        }
+        fn property(list: Vec<u8>) -> bool {
+            let mut line = br#"GB({"t":"alarm","d":["#.to_vec();
+            line.extend(list);
+            line.extend(b"})");
+            parses_in_time(line);
+            true
+        }
+        QuickCheck::new()
+            .tests(2000)
+            .quickcheck(property as fn(Vec<u8>) -> bool);
+    }
+
+    /// Whatever follows a message's kind, every kind's parse ends.
+    #[test]
+    fn every_kind_of_message_parses_in_time() {
+        fn property(kind: u8, rest: Vec<u8>) -> bool {
+            let kinds = [
+                "notify",
+                "call",
+                "musicinfo",
+                "musicstate",
+                "find",
+                "alarm",
+                "nav",
+                "gps",
+                "actfetch",
+                "weather",
+            ];
+            let kind = kinds[usize::from(kind) % kinds.len()];
+            let mut line = format!(r#"GB({{"t":"{kind}","#).into_bytes();
+            line.extend(rest);
+            line.extend(b"})");
+            parses_in_time(line);
+            true
+        }
+        QuickCheck::new()
+            .tests(2000)
+            .quickcheck(property as fn(u8, Vec<u8>) -> bool);
     }
 
     #[test]

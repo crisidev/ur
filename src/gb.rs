@@ -284,6 +284,9 @@ fn phone_event(kind: &str, object: Object<'_>, bitmaps: &mut bool) -> Option<Pho
     })
 }
 
+/// The times [`parse_set_time`] believes: 2020-01-01 to 2100-01-01 UTC.
+const SANE_UTC_SECONDS: core::ops::Range<i64> = 1_577_836_800..4_102_444_800;
+
 /// `1762436800);E.setTimeZone(1.0);…` → UTC seconds and offset.
 fn parse_set_time(rest: &[u8]) -> Option<Incoming<'static>> {
     let end = rest.iter().position(|&b| b == b')')?;
@@ -295,6 +298,14 @@ fn parse_set_time(rest: &[u8]) -> Option<Incoming<'static>> {
     // Offsets are whole quarter-hours in practice (e.g. +5:45); rounding to
     // minutes absorbs float noise in Gadgetbridge's division.
     let offset_minutes = libm::roundf(hours * 60.0) as i16;
+    // A time no phone could mean is refused rather than believed: the
+    // clock, the activity history's minutes, and the alarms all build on
+    // it, and the arithmetic there assumes a sane date. Offsets stop at
+    // ±18 hours, as Java's (and so Gadgetbridge's) do.
+    if !SANE_UTC_SECONDS.contains(&utc_seconds) || offset_minutes.unsigned_abs() > 18 * 60 {
+        warn!("gb: refused an implausible time");
+        return None;
+    }
     Some(Incoming::SetTime {
         utc_seconds,
         offset_minutes,
@@ -495,7 +506,15 @@ impl<'a> Value<'a> {
             }
             let (value, after) = take_value(here)?;
             let after = skip_whitespace(after);
-            rest = Some(after.strip_prefix(b",").unwrap_or(after));
+            let after = after.strip_prefix(b",").unwrap_or(after);
+            // An item that takes up nothing (a stray `}` where one should
+            // start) would come round again forever, stalling the
+            // Bluetooth task until the watchdog reset the watch: it ends
+            // what parses instead.
+            if after.len() == here.len() {
+                return None;
+            }
+            rest = Some(after);
             Some(Value(value))
         })
     }
