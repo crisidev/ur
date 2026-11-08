@@ -222,9 +222,12 @@ reason says it happened.
 
 Some host-test crates replay decoded logs, to tune against real wrists:
 
-- `host-tests/sleep`: `cargo run --release -- decoded.log` reclassifies
-  and stages the log's sleep, minute by minute, from its movement and
-  heart rate readings.
+- `host-tests/sleep`: `cargo run --release -- decoded.log [stages.txt]`
+  reclassifies and stages the log's sleep, minute by minute, from its
+  movement and heart rate readings. With `stages.txt`, it prints another
+  watch's stages under ours, and how well they agree;
+  `scripts/hc-stages.py export.db > stages.txt` gets a Garmin's from a
+  [Health Connect] export.
 - `host-tests/ppg`: `cargo run --release -- sessions.txt` replays the
   heart rate sensor's raw samples. `scripts/ppg_sessions.py` extracts
   them from a decoded log, alongside another watch's heart rate from an

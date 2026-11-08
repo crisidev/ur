@@ -2,8 +2,9 @@
 //! synthetic days and nights.
 //!
 //! `cargo run` prints each scenario's timeline (one character per minute);
-//! `cargo test` asserts on them. `cargo run -- <decoded field log>` replays
-//! a real day from a field log instead (see `replay`).
+//! `cargo test` asserts on them. `cargo run -- <decoded field log>
+//! [<reference stages>]` replays a real day from a field log instead (see
+//! `replay`).
 //!
 //! The movement levels are guesses in the firmware's units (~25 on a desk,
 //! hundreds awake), like the classifier's thresholds, and the heart rates a
@@ -334,7 +335,12 @@ fn asleep_minutes(kinds: &[Kind]) -> usize {
 /// accelerometer and heart rate lines, and classifies and stages them as
 /// the firmware does, to tune the thresholds on real nights. Uptimes become
 /// wall-clock time via the `clock:` lines.
-fn replay(path: &str) {
+///
+/// With `reference`, a file of `<UTC minute> <stage>` lines (`awake`,
+/// `light`, `deep`, or `rem`; see `scripts/hc-stages.py` for a Garmin's,
+/// from a Health Connect export), also prints those stages under ours, and
+/// how well they agree.
+fn replay(path: &str, reference: Option<&str>) {
     let text = std::fs::read_to_string(path).expect("a readable log");
     // (uptime seconds, UTC seconds) anchors, from `clock: <utc> UTC = ...`.
     let mut anchor: Option<(f64, i64)> = None;
@@ -436,6 +442,38 @@ fn replay(path: &str) {
         sleep::last_sleep(&kinds)
     );
 
+    let reference: Option<Vec<Option<Kind>>> = reference.map(|path| {
+        let text = std::fs::read_to_string(path).expect("a readable reference");
+        let mut stages = vec![None; kinds.len()];
+        for line in text.lines() {
+            let Some((minute, stage)) = line.split_once(' ') else {
+                continue;
+            };
+            let Ok(minute) = minute.parse::<i64>() else {
+                continue;
+            };
+            let kind = match stage.trim() {
+                "awake" => Kind::Awake,
+                "light" => Kind::Light,
+                "deep" => Kind::Deep,
+                "rem" => Kind::Rem,
+                _ => continue,
+            };
+            if (first..=last).contains(&minute) {
+                stages[(minute - first) as usize] = Some(kind);
+            }
+        }
+        stages
+    });
+    let reference_row = |range: std::ops::Range<usize>| -> String {
+        let stages = reference.as_ref().expect("a reference");
+        let kinds: Vec<Kind> = stages[range]
+            .iter()
+            .map(|k| k.unwrap_or(Kind::Unknown))
+            .collect();
+        timeline(&kinds)
+    };
+
     // One row per hour, labelled in UTC.
     let ours = timeline(&kinds);
     for (hour, row) in ours.as_bytes().chunks(60).enumerate() {
@@ -446,12 +484,93 @@ fn replay(path: &str) {
             start.rem_euclid(3600) / 60,
             std::str::from_utf8(row).expect("ASCII")
         );
+        if reference.is_some() {
+            let at = hour * 60;
+            println!("     ref {}", reference_row(at..at + row.len()));
+        }
+    }
+    if let Some(reference) = &reference {
+        compare(&kinds, reference);
     }
 }
 
+/// Prints how our classes compare with reference stages, minute by minute:
+/// a confusion matrix, the share of the reference's asleep minutes we
+/// agree on (restless counting as light), and Cohen's kappa over the
+/// minutes both call light, deep, or REM.
+fn compare(ours: &[Kind], reference: &[Option<Kind>]) {
+    const STAGES: [Kind; 4] = [Kind::Awake, Kind::Light, Kind::Deep, Kind::Rem];
+    const ROWS: [Kind; 7] = [
+        Kind::Awake,
+        Kind::Restless,
+        Kind::Light,
+        Kind::Deep,
+        Kind::Rem,
+        Kind::NotWorn,
+        Kind::Unknown,
+    ];
+    let name = |k: Kind| format!("{k:?}").to_lowercase();
+    let count = |o: Kind, r: Kind| {
+        ours.iter()
+            .zip(reference)
+            .filter(|&(&x, &y)| x == o && y == Some(r))
+            .count()
+    };
+    print!("\n{:>10}", "ours \\ ref");
+    for r in STAGES {
+        print!("{:>7}", name(r));
+    }
+    println!();
+    for o in ROWS {
+        let row: Vec<usize> = STAGES.iter().map(|&r| count(o, r)).collect();
+        if row.iter().sum::<usize>() > 0 {
+            print!("{:>10}", name(o));
+            for n in row {
+                print!("{n:>7}");
+            }
+            println!();
+        }
+    }
+    let asleep: Vec<(Kind, Kind)> = ours
+        .iter()
+        .zip(reference)
+        .filter_map(|(&o, &r)| r.filter(|r| r.is_stage()).map(|r| (o, r)))
+        .collect();
+    let agree = asleep
+        .iter()
+        .filter(|&&(o, r)| o == r || (r == Kind::Light && o == Kind::Restless))
+        .count();
+    let both: Vec<(Kind, Kind)> = asleep
+        .iter()
+        .copied()
+        .filter(|(o, _)| o.is_stage())
+        .collect();
+    if both.is_empty() {
+        println!("no minutes that both call sleep");
+        return;
+    }
+    let n = both.len() as f64;
+    let observed = both.iter().filter(|(o, r)| o == r).count() as f64 / n;
+    let chance: f64 = [Kind::Light, Kind::Deep, Kind::Rem]
+        .iter()
+        .map(|&k| {
+            let o = both.iter().filter(|(o, _)| *o == k).count() as f64;
+            let r = both.iter().filter(|(_, r)| *r == k).count() as f64;
+            o * r / (n * n)
+        })
+        .sum();
+    println!(
+        "agreement over the reference's {} asleep minutes {:.0}%; kappa (light/deep/REM) {:.2}",
+        asleep.len(),
+        100.0 * agree as f64 / asleep.len() as f64,
+        (observed - chance) / (1.0 - chance)
+    );
+}
+
 fn main() {
-    if let Some(path) = std::env::args().nth(1) {
-        return replay(&path);
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(path) = args.get(1) {
+        return replay(path, args.get(2).map(String::as_str));
     }
     for seed in 0..3 {
         let mut rng = Rng::new(seed);
