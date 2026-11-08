@@ -699,6 +699,11 @@ impl App {
                 if !self.phone_alarms.alarms().is_empty() {
                     add(Screen::PhoneAlarms);
                 }
+                // Info sits here, a swipe or two away, rather than at the
+                // end of the line below, behind the grid, music, the air
+                // and settings; after the phone's alarms, so the two kinds
+                // of alarm stay together.
+                add(Screen::Info);
             }
             Side::Above => {
                 for i in 0..self.notifications.list.len() {
@@ -716,7 +721,6 @@ impl App {
                     add(Screen::Air);
                 }
                 add(Screen::Settings);
-                add(Screen::Info);
             }
         }
         line

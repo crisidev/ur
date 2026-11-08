@@ -106,11 +106,11 @@ top means unseen notifications; a note beside Bluetooth, that music is
 playing.
 
 **Screens:** swipe right for Today (steps and heart rate by the hour),
-then Last night; left for Alarms, then the alarms set in Gadgetbridge;
-down for the last three notifications; up for the button grid (if on),
-Music, Air (while an Aranet4 is near: its CO₂, temperature, humidity
-and pressure), Settings, then Info. A short bar on an edge means there's
-more that way.
+then Last night; left for Alarms, the alarms set in Gadgetbridge, then
+Info; down for the last three notifications; up for the button grid (if
+on), Music, Air (while an Aranet4 is near: its CO₂, temperature,
+humidity and pressure), then Settings. A short bar on an edge means
+there's more that way.
 
 **Touch and button:**
 
@@ -281,9 +281,8 @@ Gadgetbridge, under Notifications.
 
 ### P01: How do I put the watch away for a while?
 
-Use storage mode: long-press the Info screen (swipe up from the clock,
-past the button grid if it's on, Music if the phone has some, and
-Settings), then tap to confirm. The watch saves the activity the phone
+Use storage mode: long-press the Info screen (swipe left from the clock,
+past Alarms and any alarms from Gadgetbridge), then tap to confirm. The watch saves the activity the phone
 hasn't fetched and switches itself off, using roughly 40% of a full
 charge in six weeks. Press the button or plug in the charger to wake
 it; the phone sets the time when it reconnects, and gets the saved

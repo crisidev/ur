@@ -70,7 +70,7 @@ wait 200ms
 shot 09-paused.png
 
 # Below the music, the settings; tapping THEME switches theme. Then the
-# info screen, below that.
+# info screen, right of the alarms (and the phone's alarms).
 press 40,40
 wait 50ms
 press 40,10
@@ -85,7 +85,11 @@ wait 1s
 shot 11-settings-theme.png
 tap 40,20
 wait 1s
-up
+button
+wait 1s
+left
+left
+left
 wait 1s
 shot 11a-info.png
 button
@@ -218,11 +222,11 @@ shot 19-morning.png
 # Switching off
 # ==============================================================================
 
-# Storage mode: a long press on the info screen (below the music's, and
-# the settings) offers it, a tap confirms.
-up
-up
-up
+# Storage mode: a long press on the info screen (right of the alarms and
+# the phone's alarms) offers it, a tap confirms.
+left
+left
+left
 wait 1s
 long 40,40
 wait 1s
