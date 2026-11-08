@@ -175,4 +175,48 @@ mod tests {
         // And a pair everyone can tell apart passes easily.
         assert!(delta_e(&theme::ARCADE, Color::TEXT, Color::BACKGROUND) > 80.0);
     }
+
+    // ==============================================================================
+    // The button grid
+    // ==============================================================================
+
+    /// What a grid button (`ui::draw_key`) needs to tell apart, in a dark
+    /// theme and in a light one: its edge from the background, its cap from
+    /// the side it stands on (raised) and the shadow of its well (pressed),
+    /// the cap's lit edge from the cap, and a lit (waiting) cap from an
+    /// unlit one and from its well. `draw_key` picks these roles; keep the
+    /// two in step.
+    const KEY_DARK: [(&str, Color, Color); 5] = [
+        ("edge", Color::TEXT_FAINT, Color::BACKGROUND),
+        ("cap and side", Color::TRACK, Color::SHADOW),
+        ("lit edge", Color::TEXT_DIM, Color::TRACK),
+        ("lit and unlit", Color::ACCENT, Color::TRACK),
+        ("lit and well", Color::ACCENT, Color::SHADOW),
+    ];
+    const KEY_LIGHT: [(&str, Color, Color); 5] = [
+        ("edge", Color::TEXT, Color::BACKGROUND),
+        ("cap and side", Color::TRACK, Color::TEXT),
+        ("lit edge", Color::BACKGROUND, Color::TRACK),
+        ("lit and unlit", Color::ACCENT, Color::TRACK),
+        ("lit and well", Color::ACCENT, Color::TEXT),
+    ];
+
+    /// Plainly different, if not far apart: these are shading, not text.
+    const KEY_PARTS: f64 = 10.0;
+
+    #[test]
+    fn grid_buttons_have_visible_edges() {
+        for (group, pairs) in [(&theme::DARK, KEY_DARK), (&theme::LIGHT, KEY_LIGHT)] {
+            for theme in group.iter() {
+                for (what, a, b) in pairs {
+                    let distance = delta_e(theme, a, b);
+                    assert!(
+                        distance >= KEY_PARTS,
+                        "{}: a grid button's {what} differ by only {distance:.1}",
+                        theme.name
+                    );
+                }
+            }
+        }
+    }
 }
