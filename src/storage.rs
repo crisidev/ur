@@ -68,6 +68,10 @@ pub mod key {
     /// [`crate::temperature::Calibration`]. (Not 33–39: kept clear for
     /// what other branches add.)
     pub const CALIBRATION: u8 = 40;
+    /// Written only by builds with the `flash-stress` feature (see
+    /// `flash_stress.rs`); a dev kit that ran one may hold it.
+    #[allow(dead_code)] // Used only by those builds.
+    pub const STRESS: u8 = 99;
 }
 
 /// Big enough for the largest item (a 43-byte bond) plus its key, rounded up

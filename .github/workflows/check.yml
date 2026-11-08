@@ -50,7 +50,7 @@ jobs:
       fail-fast: false
       matrix:
         toolchain: [pinned, beta]
-        variant: [ur, ur-logging, compare]
+        variant: [ur, ur-logging, compare, flash-stress]
         include:
           - variant: ur
             features: ""
@@ -59,6 +59,9 @@ jobs:
           # Not released: for checking the simulator against a dev kit.
           - variant: compare
             features: compare
+          # Not released: a dev kit's flash stress test.
+          - variant: flash-stress
+            features: flash-stress
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
       - name: Install the pinned toolchain

@@ -60,3 +60,7 @@ field-log = []
 # against a dev kit (`ur-sim --devkit`); see `src/compare.rs`. Costs ~2.3 KB
 # of RAM, so not for releases.
 compare = []
+# Save to flash back to back, for `scripts/flash-stress.py` to check that
+# erases and writes never overrun their radio timeslots; see
+# `src/flash_stress.rs`. Only for dev kits.
+flash-stress = []

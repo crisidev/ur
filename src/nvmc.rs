@@ -253,6 +253,8 @@ impl NorFlash for Flash {
             step.micros(),
             step.timer0_us
         );
+        #[cfg(feature = "flash-stress")]
+        crate::flash_stress::erased(step.micros(), step.timer0_us);
         Ok(())
     }
 

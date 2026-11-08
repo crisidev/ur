@@ -320,6 +320,31 @@ off, start with `button` to wake it. (The README's screenshots come
 from the [simulator](#the-simulator), which matches these pixel for
 pixel.)
 
+`scripts/flash-stress.py` checks that saving to the internal flash can't
+reset the watch: a build with the `flash-stress` feature saves back to
+back (a page erase every few seconds), while the script reads RAM over
+the probe as fast as it goes, and reports resets (with the boot log's
+reason), failed or stalled saves, and how long erases took. Run it after
+changing `src/nvmc.rs` or `src/storage.rs`:
+
+```sh
+RTT_SECS=3 cargo run --release --features flash-stress
+python3 scripts/flash-stress.py target/thumbv7em-none-eabihf/release/ur --minutes 10
+```
+
+(`RTT_SECS=3`, so the runner detaches before the saving starts: see
+below.) Its saves stay behind under a key of their own
+(`storage::key::STRESS`), harmless to a normal build.
+
+**Probe sessions halt the core.** Each `esprobe` command is a probe-rs
+session, which halts the core for ~20 ms as it attaches and again as
+it detaches (to clear breakpoints); `screenshot.py` and `ur-sim
+--devkit` run one per read. A halt in the middle of a flash timeslot
+overruns it, and MPSL resets the watch, so a dev kit that saves while
+being read that way can reset (a watch without a probe can't). The
+stress script reads with `esprobe fast-dump`, which doesn't halt;
+`--halting` reads as the others do, to see it.
+
 **With a different probe**, nothing in the repository needs to change.
 Write your own runner, doing what `scripts/run-esprobe.sh` does, and
 point cargo at it for yourself: the environment variable overrides the

@@ -67,6 +67,8 @@ mod dfu;
 mod display;
 mod field_log;
 mod firmware;
+#[cfg(feature = "flash-stress")]
+mod flash_stress;
 mod font;
 mod gb;
 mod geo;
@@ -506,6 +508,8 @@ async fn main(spawner: Spawner) {
     // Flash writes go through MPSL so they don't disturb the radio; see
     // `nvmc` and `storage`.
     storage::init(nvmc::Flash::new(mpsl, p.NVMC));
+    #[cfg(feature = "flash-stress")]
+    spawner.spawn(flash_stress::stress_task().expect("spawned once"));
 
     static RNG: StaticCell<rng::Rng<'static, embassy_nrf::mode::Async>> = StaticCell::new();
     let rng = RNG.init(rng::Rng::new(p.RNG, Irqs));
