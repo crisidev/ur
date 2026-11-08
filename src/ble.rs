@@ -21,11 +21,13 @@
 //! channels, and interrupt priority 0; see `main` for the setup.
 
 use core::cell::{Cell, RefCell};
+use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
+use core::task::{Context, Poll};
 
 use defmt::{debug, info, warn};
 use embassy_futures::join::join3;
-use embassy_futures::select::{Either4, select, select4};
+use embassy_futures::select::{Either3, Either4, select, select3, select4};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
 use embassy_sync::channel::{Channel, TrySendError};
@@ -250,25 +252,52 @@ fn build_host(controller: Controller, address: [u8; 6]) -> &'static BleStack {
     )
 }
 
+/// Polls a future from a function of its own (`#[inline(never)]`), so
+/// that its locals take a stack frame of their own instead of swelling the
+/// frame of whatever polls it.
+///
+/// A task's `async` body is polled by one function, and the futures it
+/// awaits or joins are mostly inlined into it, so its frame holds all
+/// their locals at once, on the stack under every poll of any one of them.
+/// Wrapping the ones that sit beside a deep path keeps them off it.
+struct OwnFrame<F>(F);
+
+impl<F: Future> Future for OwnFrame<F> {
+    type Output = F::Output;
+
+    #[inline(never)]
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+        // SAFETY: Structural pinning: the future is only ever reached
+        // through this pinned projection, never moved out, and `OwnFrame`
+        // has no `Drop` (nor an `Unpin` beyond the future's own).
+        unsafe { self.map_unchecked_mut(|own| &mut own.0) }.poll(cx)
+    }
+}
+
 /// Runs the BLE host: advertise, serve one phone, repeat.
 #[embassy_executor::task]
 pub async fn host_task(controller: Controller, address: [u8; 6]) {
     let (stack, server) = build(controller, address);
-    for slot in storage::key::BONDS {
-        if let Some(bond) = storage::load(slot).await.as_ref().and_then(decode_bond) {
-            info!("ble: restored bond with {}", bond.identity.addr);
-            if let Err(e) = stack.add_bond_information(bond) {
-                warn!("ble: restoring bond failed: {}", e);
-            }
-        }
-    }
-    let mut runner = stack.runner();
+    OwnFrame(restore_bonds(stack)).await;
+    let (mut rx, mut control, mut tx) = stack.runner().split();
     // Shared by the connection slots below: one advertises at a time.
     let peripheral = embassy_sync::mutex::Mutex::<NoopRawMutex, _>::new(stack.peripheral());
 
+    // The host's three loops, as `Runner::run` runs them (the first to
+    // stop stops the others), but each polled in its own frame: `run`'s
+    // own poll holds the control and transmit loops' locals (0.8 KB), on
+    // the stack beneath the receive loop, whose pairing maths is the
+    // deepest the stack goes.
     let host = async {
         loop {
-            if let Err(e) = runner.run().await {
+            let (Either3::First(result) | Either3::Second(result) | Either3::Third(result)) =
+                select3(
+                    OwnFrame(tx.run()),
+                    OwnFrame(rx.run()),
+                    OwnFrame(control.run()),
+                )
+                .await;
+            if let Err(e) = result {
                 warn!("ble: host runner failed: {}", e);
             }
         }
@@ -348,7 +377,20 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
             }
         }
     };
-    join3(host, slot(), slot()).await;
+    // The slots poll in frames of their own too, off the host's path.
+    join3(host, OwnFrame(slot()), OwnFrame(slot())).await;
+}
+
+/// Gives the host the bonds kept in flash.
+async fn restore_bonds(stack: &BleStack) {
+    for slot in storage::key::BONDS {
+        if let Some(bond) = storage::load(slot).await.as_ref().and_then(decode_bond) {
+            info!("ble: restored bond with {}", bond.identity.addr);
+            if let Err(e) = stack.add_bond_information(bond) {
+                warn!("ble: restoring bond failed: {}", e);
+            }
+        }
+    }
 }
 
 /// How long one advertising run lasts before its interval is reconsidered
