@@ -66,6 +66,13 @@ screenshots and GIFs, `gadgetbridge.txt` and `web/compare.txt` on it and
 on the command line, and checks that every screenshot and recording is
 the same, byte for byte.
 
+The project's site, <https://jonhoo.github.io/ur/>, is this page under
+`sim/`, beneath a landing page made from the top-level README.
+`web/site.sh` builds it into `target/site`, as the Pages workflow does:
+it renders the README with GitHub's markdown API (so it needs `gh`,
+logged in), puts it into `web/site.html` with `web/site.py`, and copies
+the images it shows (fetching them from Git LFS if they're missing).
+
 ## Scripts
 
 One command a line; `#` starts a comment. `help` lists them all. Inputs

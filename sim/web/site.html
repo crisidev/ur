@@ -1,0 +1,220 @@
+<!doctype html>
+<!--
+  The landing page's template. site.py fills in the README, as GitHub
+  renders it: $name and $hero are its title and opening paragraphs, $body
+  the rest. Only the page's frame lives here (the bar, the "Try it" button,
+  the footer); what it says about ur stays in README.md.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>$title</title>
+<meta name="description" content="$description">
+<meta name="color-scheme" content="dark light">
+<!-- The logo (below), as the tab's icon. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-1 -3 17 17'%3E%3Crect x='-1' y='-3' width='17' height='17' fill='%23101010'/%3E%3Cpath fill='%23e8e8e8' d='M0 0h2v10h-2zM4 0h2v10h-2zM2 8h2v2h-2zM8 0h2v10h-2zM10 0h2v2h-2zM12 2h2v2h-2zM10 4h2v2h-2zM12 6h2v4h-2z'/%3E%3C/svg%3E">
+<style>
+  /*
+   * The watch's themes (src/theme.rs), and like the watch, a dark one by
+   * night and a light one by day; here, by the system's setting rather
+   * than the sun. Arcade, white and red on black, is the dark one;
+   * Parchment, brown ink on cream, the light. Only `--panel`, behind code,
+   * isn't one of a theme's colours.
+   */
+  :root {
+    --bg: #101010;
+    --panel: #1c1c1c;
+    --text: #e8e8e8;
+    --dim: #a8a8a8;
+    --track: #303030;
+    --accent: #d82828;
+    --shadow: #5a1010;
+    /* The accent is too dark to read as small text on black; this is
+       Arcade's low-battery red. */
+    --link: #ff5050;
+    --on-accent: #ffffff;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #e8dcb8;
+      --panel: #ded0a8;
+      --text: #3a2414;
+      --dim: #6a4a2a;
+      --track: #c0a878;
+      --accent: #a02820;
+      --shadow: #c0a878;
+      --link: #a02820;
+      --on-accent: #e8dcb8;
+    }
+  }
+
+  /*
+   * Body text in the system's own font, at a comfortable size and line
+   * length; the watch's look is for the frame and headings, not for
+   * reading paragraphs.
+   */
+  * { box-sizing: border-box; }
+  html { scroll-padding-top: 4.5rem; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 1.0625rem/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  a { color: var(--link); }
+  code, pre, kbd { font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+                   font-size: 0.9em; }
+  :not(pre) > code { background: var(--panel); padding: 0.1em 0.3em; border-radius: 3px; }
+  pre { background: var(--panel); border-left: 4px solid var(--accent); padding: 0.8rem 1rem;
+        overflow-x: auto; line-height: 1.45; }
+  /* GitHub's highlighting of shell: comments and operators. */
+  .pl-c { color: var(--dim); }
+  .pl-k { color: var(--link); }
+
+  /*
+   * Headings as the watch's screen titles: monospace capitals in the
+   * accent, with the hard drop shadow its big digits have.
+   * TODO: the watch's own 3×5 font (src/font.rs), as a web font, for
+   * h1 and h2; for now only the logo is drawn in it.
+   */
+  h1, h2, h3, .bar, .button {
+    font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  h2 { color: var(--accent); text-transform: uppercase; letter-spacing: 0.08em;
+       font-size: 1.5rem; margin: 2.5rem 0 0.5rem; text-shadow: 2px 2px 0 var(--shadow); }
+  h3 { font-size: 1.1rem; margin: 1.8rem 0 0.4rem; }
+  /* GitHub's link to each heading: a # in the margin, on hover. */
+  .markdown-heading { position: relative; }
+  .markdown-heading .anchor { position: absolute; left: -1.2rem; bottom: 0; color: var(--dim);
+                              text-decoration: none; opacity: 0; }
+  .markdown-heading .anchor::before { content: "#"; font-family: ui-monospace, monospace; }
+  .markdown-heading:hover .anchor, .markdown-heading .anchor:focus { opacity: 1; }
+
+  /*
+   * The bar along the top: always there, so "Try it" is too.
+   */
+  .bar { position: sticky; top: 0; z-index: 1; display: flex; align-items: center;
+         gap: 1rem; padding: 0.6rem max(1rem, calc(50% - 30rem));
+         background: var(--bg); border-bottom: 2px solid var(--track); }
+  .bar .brand { display: flex; align-items: center; gap: 0.5rem; color: var(--text);
+                text-decoration: none; font-weight: bold; font-size: 1.2rem; }
+  .bar nav { margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end;
+             gap: 0.2rem 1rem; font-size: 0.95rem; }
+  .bar nav a { color: var(--text); text-decoration: none; }
+  .bar nav a:hover { color: var(--link); }
+  .bar nav a.try { color: var(--link); font-weight: bold; }
+
+  /*
+   * The logo: "ur" in the watch's 3×5 font (src/font.rs), each of its
+   * pixels two of these units, shadowed one unit down and right as the
+   * clock's digits are.
+   */
+  .logo .shadow { fill: var(--shadow); }
+  .logo .ink { fill: var(--text); }
+
+  /*
+   * The hero: the README's opening, and the way in to the simulator.
+   */
+  .hero { text-align: center; padding: 3rem 1rem 2.5rem; max-width: 44rem; margin: 0 auto; }
+  .hero h1 { margin: 0 0 1.5rem; line-height: 0; }
+  .hero p { color: var(--dim); }
+  .hero p:first-of-type { color: var(--text); font-size: 1.4rem; line-height: 1.4; }
+  .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 1rem;
+             margin: 2rem 0 0.5rem; }
+  .button { display: inline-block; padding: 0.8em 1.4em; font-weight: bold;
+            text-transform: uppercase; letter-spacing: 0.05em; text-decoration: none;
+            color: var(--text); border: 2px solid var(--text); }
+  .button.primary { background: var(--accent); color: var(--on-accent);
+                    border-color: var(--accent); box-shadow: 4px 4px 0 var(--shadow);
+                    font-size: 1.15rem; }
+  .button:hover { transform: translate(-1px, -1px); }
+  .button.primary:hover { box-shadow: 5px 5px 0 var(--shadow); }
+  .hero .note { font-size: 0.9rem; }
+
+  /* The watch's transition between screens, a dithered checkerboard in
+     the accent, as a rule between the hero and the README. */
+  .dither { height: 8px; background: repeating-conic-gradient(var(--accent) 0 25%, transparent 0 50%)
+                                    0 0 / 4px 4px; }
+
+  /*
+   * The README: one readable column, but the rows of screenshots
+   * (GitHub's `<p align="center">`) as wide as the window allows.
+   */
+  .readme { display: grid; grid-template-columns: 1fr min(42rem, 100% - 2rem) 1fr;
+            padding: 1rem 0 2rem; }
+  /* A grid's items don't collapse their margins into each other as
+     paragraphs otherwise do, so each keeps only the space above it. The
+     headings' own margins are inside their (GitHub's) wrappers. */
+  .readme > * { grid-column: 2; min-width: 0; margin: 1rem 0 0; }
+  .readme > .markdown-heading { margin: 0; }
+  .readme > .markdown-heading > * { margin-bottom: 0; }
+  .highlight > pre { margin: 0; }
+  .readme > p[align="center"] { grid-column: 1 / -1; display: flex; flex-wrap: wrap;
+                                justify-content: center; gap: 1rem; margin: 1rem 1rem 0; }
+  /* 240×240 screenshots of an 80×80 canvas: at 160, each of the watch's
+     pixels is two of the screen's, so they stay square and sharp. On a
+     phone, two to a row. The black rim is the watch's bezel. */
+  .readme img { image-rendering: pixelated; }
+  .readme > p[align="center"] img { width: min(160px, calc(50vw - 2rem)); height: auto;
+                                    border: 6px solid #000; border-radius: 10px; background: #000; }
+  .readme li + li { margin-top: 0.4rem; }
+  .readme li > p { margin: 0.4rem 0; }
+  table { border-collapse: collapse; }
+  th, td { border: 1px solid var(--track); padding: 0.3rem 0.6rem; }
+
+  footer { border-top: 2px solid var(--track); color: var(--dim); font-size: 0.9rem;
+           text-align: center; padding: 1.5rem 1rem 2rem; }
+  footer a { color: var(--dim); }
+
+  /* On a phone, the bar keeps only what matters most. */
+  @media (max-width: 30rem) {
+    .bar nav .wide { display: none; }
+  }
+</style>
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="#top" aria-label="$name: back to the top">
+    <svg class="logo" viewBox="0 0 15 11" width="30" height="22" aria-hidden="true">
+      <use href="#logo-glyphs" class="shadow" x="1" y="1"/>
+      <use href="#logo-glyphs" class="ink"/>
+    </svg>
+  </a>
+  <nav>
+    <a class="wide" href="#using-it">Using it</a>
+    <a href="#installing">Install</a>
+    <a href="#faq">FAQ</a>
+    <a class="wide" href="https://github.com/jonhoo/ur">GitHub</a>
+    <a class="try" href="sim/">Try it</a>
+  </nav>
+</header>
+<main id="top">
+  <section class="hero">
+    <h1 aria-label="$name">
+      <svg class="logo" viewBox="0 0 15 11" width="150" height="110" aria-hidden="true">
+        <defs>
+          <!-- U: 101 101 101 101 111; R: 110 101 110 101 101. -->
+          <path id="logo-glyphs"
+                d="M0 0h2v10h-2zM4 0h2v10h-2zM2 8h2v2h-2zM8 0h2v10h-2zM10 0h2v2h-2zM12 2h2v2h-2zM10 4h2v2h-2zM12 6h2v4h-2z"/>
+        </defs>
+        <use href="#logo-glyphs" class="shadow" x="1" y="1"/>
+        <use href="#logo-glyphs" class="ink"/>
+      </svg>
+    </h1>
+    $hero
+    <p class="actions">
+      <a class="button primary" href="sim/">Try it in your browser</a>
+      <a class="button" href="https://github.com/jonhoo/ur/releases">Download</a>
+    </p>
+    <p class="note">The simulator runs the firmware's own code, compiled to WebAssembly:
+      tap, swipe, and press its button as you would the watch's.</p>
+  </section>
+  <div class="dither"></div>
+  <article class="readme">
+$body
+  </article>
+</main>
+<footer>
+  Made from the README at <a href="https://github.com/jonhoo/ur/commit/$commit">$short</a>.
+  The source, the issues, and the releases are at
+  <a href="https://github.com/jonhoo/ur">github.com/jonhoo/ur</a>.
+</footer>
+</body>
+</html>
