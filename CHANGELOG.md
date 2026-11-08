@@ -16,6 +16,7 @@ missing below were test builds for the dev kit.
 
 - Show today's steps and heart rate hour by hour, with a resting heart rate, and last night's sleep with its stages, on screens of their own left of the clock face (the Info screen's SLEEP row moves there) (0b74bd9)
 - Keep the last three notifications above the clock face, one a page, with a mark on the clock while any are unseen (0b74bd9)
+- Show the next turn on the glance while Google Maps, OsmAnd, or CoMaps navigates on the phone (an arrow, the distance, and the street), and tap twice as a turn comes within 50 m (5fc179b)
 - Play, pause, and skip media from the clock face (long-press to play or pause, double-tap for the next track), with a note beside the Bluetooth icon while it plays (6667727)
 - Keep notifications quiet while the wearer sleeps, without buzzing or lighting the screen, until their alarm or until they've been up a while (20b73a8)
 - Sync the alarms set in Gadgetbridge to the watch, shown on a screen of their own (c1e45cb)
