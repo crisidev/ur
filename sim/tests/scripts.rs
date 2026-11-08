@@ -56,7 +56,7 @@ fn the_readme_screenshots() {
         &["--out", dir.to_str().expect("UTF-8")],
     );
     assert!(ok, "{log}");
-    assert_eq!(pngs(&dir), 10, "{log}");
+    assert_eq!(pngs(&dir), 12, "{log}");
 }
 
 #[test]

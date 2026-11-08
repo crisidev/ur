@@ -1,8 +1,47 @@
 # Design sketch: watch taps → Home Assistant via BTHome v2
 
-Status: plan only (scheduled after alarms and sleep tracking). No `src/`
-changes. Written 2026-11-07 against the tree at `23ed848` plus uncommitted
-work. Line references to `src/` may drift because other work is in progress.
+Status: built for 0.10 (2026-11-08), as the button grid, with the
+changes below; the rest of this document is the original plan, kept for
+its research (the radio, Home Assistant's parser, encryption). Written
+2026-11-07 against the tree at `23ed848`; line references have drifted.
+
+## What was built, and how it differs
+
+User documentation: [buttons.md](buttons.md). Code: `src/buttons.rs`
+(gestures), `src/bthome.rs` (payload, encryption, key and counter),
+`ble::burst` (the radio).
+
+- **Trigger:** not a 2×2 Home screen of labelled tiles, but a 3×3 grid
+  of unlabelled buttons, the first screen below the clock (turned on in
+  a new Settings screen), making 90 codes: 1–9, and pairs a→b as 10a+b,
+  each tapped or held, and pairs double-tapped too (261 events; see
+  `buttons.rs`). No swipe dimmer, no labels, no setup page on the title:
+  the key is on Settings → HA KEY.
+- **Payload:** §2's four button slots can't carry 90 codes (Home
+  Assistant tells repeated objects apart only by position), and a
+  button object has no number. So: packet id, battery, and three
+  **dimmer** objects, one per gesture (`dimmer_1` tap, `dimmer_2` double
+  tap, `dimmer_3` hold), the active one turning right by the code. 13 B
+  of plaintext, 29 B encrypted. Checked against `bthome-ble`'s parser.
+- **Radio:** not a separate non-connectable burst. The watch's two
+  connection slots mean one is nearly always advertising (connectably,
+  even with the phone connected), so a burst swaps that advertising's
+  data for the BTHome payload (name in the scan response) at 20 ms for
+  1.2 s. No stop/start dance around connections, and a phone can still
+  connect mid-burst. If both slots are serving (phone plus an update or
+  log fetch), nothing advertises, and a burst is lost (a TODO in
+  `ble::burst`).
+- **Encryption:** as planned (key from the RNG at first boot, counter
+  from 256, reserved 64 at a time in flash; storage keys 31 and 32), but
+  CCM is hand-rolled over the already-linked `aes` 0.8 (four block
+  encryptions), checked against bthome.io's vector in
+  `host-tests/bthome`, rather than the `ccm` crate.
+- **Also:** the same presses can go to the phone instead (or as well),
+  as a Gadgetbridge `intent` message (`ur.watch.BUTTON`, extras
+  `button` and `gesture`), for Tasker: the BUTTONS setting picks either,
+  or both.
+- **Feedback:** the last button shows the code for 0.8 s, with a buzz;
+  red and two buzzes if it could go nowhere. No "SENT" text.
 
 Sources: `tmp/ha-research/` (REPORT.md, `web/bthome_format.txt`,
 `web/bthome_encryption.txt`, `web/ha_bthome.txt`, the Gadgetbridge sources),

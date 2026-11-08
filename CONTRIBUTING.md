@@ -12,9 +12,10 @@ sealed watch, and how releases are made.
   each module's documentation explains its part. The hardware-free ones
   (`ppg`, `sleep`, `stages`, `alarm`, `glance`, `heart_schedule`,
   `brightness`, `temperature`, `battery`, `snapshot`, `nav`, `day`,
-  `route`, `arrival`, `decimal`, `gesture`, `wake`, `gb`, `phone`) are pure
-  logic, tested on the computer, as are `theme`'s colours (that those with
-  different meanings differ in every theme).
+  `route`, `arrival`, `decimal`, `gesture`, `wake`, `gb`, `phone`,
+  `buttons`, and `bthome`'s encoding) are pure logic, tested on the
+  computer, as are `theme`'s colours (that those with different meanings
+  differ in every theme).
 - `host-tests/<module>/`: one crate per hardware-free module (`sleep`'s
   covers `stages` too, and `gb`'s `phone`), which includes the firmware's
   source file with `#[path]` and tests it on the host. Some also replay

@@ -43,6 +43,10 @@ heart rate, alarms, timers, music control), and these on top:
   says it took.
 - **Screens in four directions** around the clock: the past to one side,
   alarms to the other, notifications above, music and settings below.
+- **A button grid** for Home Assistant or Tasker: nine buttons that make
+  90 codes (1–9, and pairs like 2 then 3), each tapped, double-tapped,
+  or held, sent over Bluetooth (BTHome) or through Gadgetbridge. See
+  [docs/buttons.md](docs/buttons.md).
 - **Follows the sun:** two dark themes after sunset and two light ones
   by day, and a screen that's brightest while the sun is up and dim from
   midnight until you get up.
@@ -96,8 +100,9 @@ playing.
 
 **Screens:** swipe right for Today (steps and heart rate by the hour),
 then Last night; left for Alarms, then the alarms set in Gadgetbridge;
-down for the last three notifications; up for Music, then Info. A short
-bar on an edge means there's more that way.
+down for the last three notifications; up for the button grid (if on),
+Music, Settings, then Info. A short bar on an edge means there's more
+that way.
 
 **Touch and button:**
 
@@ -115,8 +120,9 @@ bar on an edge means there's more that way.
 - **A ringing alarm:** tap to snooze for 9 minutes; press the button to
   stop it.
 
-On Info, tap **THEME** for the next theme, and **LIGHT** to switch
-brightness from AUTO to SOFT, a step dimmer, for a longer battery. To set
+On Settings, tap **THEME** for the next theme, **LIGHT** to switch
+brightness from AUTO to SOFT, a step dimmer, for a longer battery, and
+**BUTTONS** to turn on the [button grid](docs/buttons.md). To set
 an alarm or timer, tap it, then swipe the hours and minutes. Alarms set
 in Gadgetbridge are read-only on the watch; a one-off one switches
 itself off once it has rung, without Gadgetbridge hearing of it, so
@@ -245,6 +251,12 @@ Phones without Google Play services may have no network location, so
 nothing arrives indoors until the watch happens to ask while the phone
 is outside.
 
+### C04: The watch says "INTENTS OFF"
+
+Gadgetbridge didn't pass a [button grid](docs/buttons.md) press on to
+other apps: turn on "Allow Intents" in the watch's settings in
+Gadgetbridge.
+
 ### N01: Notifications don't buzz, and the screen stays dim
 
 The watch thinks you're asleep: it's a quiet night. It ends with the
@@ -262,11 +274,12 @@ Gadgetbridge, under Notifications.
 ### P01: How do I put the watch away for a while?
 
 Use storage mode: long-press the Info screen (swipe up from the clock,
-past Music if the phone has some), then tap to confirm. The watch saves
-the activity the phone hasn't fetched and switches itself off, using
-roughly 40% of a full charge in six weeks. Press the button or plug in
-the charger to wake it; the phone sets the time when it reconnects, and
-gets the saved activity with its next sync.
+past the button grid if it's on, Music if the phone has some, and
+Settings), then tap to confirm. The watch saves the activity the phone
+hasn't fetched and switches itself off, using roughly 40% of a full
+charge in six weeks. Press the button or plug in the charger to wake
+it; the phone sets the time when it reconnects, and gets the saved
+activity with its next sync.
 
 ### U01: A phone update fails at "Enabling bootloader" or with "GATT CONN TIMEOUT"
 

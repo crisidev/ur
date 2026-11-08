@@ -14,11 +14,14 @@ missing below were test builds for the dev kit.
 
 ### Added
 
+- Add a button grid for Home Assistant or Tasker, the first screen below the clock once turned on in Settings: nine buttons that make 90 codes (1–9, and pairs such as 2 then 3, code 23), each tapped, double-tapped (pairs only), or held, sent over Bluetooth as encrypted BTHome, or through Gadgetbridge as an Android intent (see docs/buttons.md); with Gadgetbridge's "Allow Intents" off, say "INTENTS OFF" / "SEE FAQ C04" (5e1aa6c)
+- Add a Settings screen below the clock, before Info: THEME, LIGHT, BUTTONS, and HA KEY, the button grid's key for Home Assistant (5e1aa6c)
 - Say "TEXT AS BITMAPS" / "SEE FAQ N02" (once a connection) when Gadgetbridge's "Text as Bitmaps" setting is on, and show each word it sends as a picture as a `?` rather than a run of junk; the README's FAQ N02 says how to switch it off (718ad96)
 
 ### Changed
 
 - Redesign the clock face's lower half: the date with small seconds under the time, the heart rate and the next alarm or timer in one row, and the day's steps as ten blocks rather than a number: 1,000 a block (×1K) towards a fixed goal of 10,000, then 10,000 a block (×10K) past it, full at 100,000 (the exact count is on Today, a swipe right) (a02d355, e268ba3)
+- Move THEME and LIGHT from Info to the new Settings screen, leaving Info to the watch's status (5e1aa6c)
 
 ### Deprecated
 
