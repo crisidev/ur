@@ -113,3 +113,26 @@ fn the_whole_watch() {
     assert!(decoder.width() > 320 && decoder.height() > decoder.width());
     assert_eq!(frames(&path).len(), 2);
 }
+
+/// The README's GIFs: the script runs to the end, and each GIF stays
+/// small enough for a README to load without thinking twice.
+#[test]
+fn the_readme_gifs() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("record-readme");
+    let _ = std::fs::remove_dir_all(&dir);
+    let output = Command::new(env!("CARGO_BIN_EXE_ur-sim"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .arg("--out")
+        .arg(&dir)
+        .arg("readme-gifs.txt")
+        .output()
+        .expect("the simulator runs");
+    let log = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{log}");
+    for name in ["swipe", "notification", "glance", "alarm"] {
+        let path = dir.join(format!("{name}.gif"));
+        let size = std::fs::metadata(&path).expect("the GIF was written").len();
+        assert!(size < 100_000, "{name}.gif is {size} bytes");
+        assert!(frames(&path).len() > 1, "{name}.gif doesn't move");
+    }
+}

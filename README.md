@@ -14,6 +14,13 @@ ur, named after an archaic Norwegian word for a timepiece, runs on the
   <img src="docs/screenshots/directions.png" width="150" alt="A glance while the phone navigates: the time, a right-turn arrow, 150 m, and the street">
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/swipe.gif" width="150" alt="Swiping around the clock face, each screen sweeping in as a wave of red dithered blocks: right to Today's steps and heart rate, right again to last night's sleep, back to the clock, left to the alarms, back, and down to the latest notification">
+  <img src="docs/screenshots/notification.gif" width="150" alt="A notification arriving with the screen off: the sender's name, JANE SMITH, fills the dim screen; a tap wakes it to the clock face, with the notification along the bottom for a moment">
+  <img src="docs/screenshots/glance.gif" width="150" alt="A glance: from a dark screen, the time shows large and dim, 17 above 45, for five seconds, then the screen goes dark again">
+  <img src="docs/screenshots/alarm.gif" width="150" alt="An alarm ringing at 07:30, the screen saying TAP: SNOOZE, BUTTON: STOP; a tap snoozes it, and the clock face shows when it rings again, 07:39">
+</p>
+
 It does what you'd expect of a smartwatch (time, notifications, steps,
 heart rate, alarms, timers, music control), and these on top:
 

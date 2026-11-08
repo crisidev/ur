@@ -131,6 +131,10 @@ backlight's levels), so the commonest 255 stay exact and the rarest (all
 thin edges) become the nearest of those. Unlike `shot`, `record` takes
 no theme: pick one with `theme NAME` first.
 
+`readme-gifs.txt` makes the README's GIFs, in one command (see its top);
+rerun it when a screen they show changes. `cargo test` runs it too, and
+fails if one grows past 100 KB.
+
 ## Against a dev kit
 
 The simulator draws what the watch would, and this checks it, frame for
