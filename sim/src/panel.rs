@@ -4,16 +4,28 @@
 //! it (so a browser build can use it too).
 //!
 //! The panel is a 1.3″ transmissive IPS LCD on an ST7789V, lit by two
-//! white LEDs (PINE64's drawing of it,
-//! <https://files.pine64.org/doc/datasheet/pinetime/PineTime%20LCD%20Panel.jpg>,
-//! which gives no optical figures). Compared with an sRGB monitor, those
-//! who've held one next to a monitor say it's "much less saturated", and
-//! that the white point differs by batch: cold on early watches, close to
-//! neutral or a little warm on later ones (InfiniTime PR 1506's photo,
+//! white LEDs. Its only datasheet is the one PINE64's documentation links
+//! as the "1.3″ 240x240 IPS LCD Panel Specification for PineTime"
+//! (Further information → Datasheets, schematics and certifications,
+//! <https://files.pine64.org/doc/datasheet/pinetime/PineTime%20LCD%20Panel.jpg>):
+//! a one-page mechanical drawing dated 2019/6/24, page 1/1, with no model
+//! number, drawing number or revision filled in. Its table gives the
+//! display type (1.33″ TFT, transmissive), viewing direction (full view),
+//! driver IC (ST7789V), backlight (two white chip LEDs, in parallel),
+//! voltage (2.8 V), temperatures and connector, and **no optical
+//! figures at all**: no chromaticity of white or the primaries, no gamut,
+//! contrast, luminance or colour temperature. (PINE64's forum asked which
+//! module it is, in 2021, with no answer.)
+//!
+//! Compared with an sRGB monitor, those who've held one next to a
+//! monitor say it's "much less saturated", and that the white point
+//! differs by batch: cold on early watches, close to neutral or a little
+//! warm on later ones (InfiniTime PR 1506's photo,
 //! <https://github.com/InfiniTimeOrg/InfiniTime/pull/1506#issuecomment-1370628499>,
 //! and issue 745). Nobody has published a colorimeter's measurements of
-//! it, so this is a model built from the controller's settings and a
-//! comparable module's datasheet, in three steps, in linear light:
+//! it, so this is a model built from the controller's settings and the
+//! closest documented source, a comparable module's datasheet, in three
+//! steps, in linear light:
 //!
 //! 1. **Tone.** The ST7789V's gamma curve after reset is its G2.2
 //!    (GAMSET 26h, datasheet v1.6 p. 192), and the firmware writes no
@@ -23,18 +35,23 @@
 //!    which, InfiniTime found, removes a large step from black to the
 //!    first grey that the controller's defaults left; so no crushed
 //!    shadows are modelled.
-//! 2. **Gamut.** The panel's primaries, from a comparable 1.3″ 240×240
-//!    ST7789 IPS module's datasheet (Allshore ASI-T-1302A3SPN/N, p. 8,
-//!    <https://www.allshore.com/portals/0/PDFs/ASIT1302A3SPNN.pdf>):
-//!    red (0.624, 0.329), green (0.288, 0.522), blue (0.136, 0.137), about
+//! 2. **Gamut and white.** The panel's primaries and white, from a
+//!    comparable 1.3″ 240×240 ST7789 IPS module's datasheet (Allshore
+//!    ASI-T-1302A3SPN/N, revision A of 2021-08-31, section 5 "Optical
+//!    characteristics", p. 8, typical values,
+//!    <https://www.allshore.com/portals/0/PDFs/ASIT1302A3SPNN.pdf>): red
+//!    (0.624, 0.329), green (0.288, 0.522), blue (0.136, 0.137), about
 //!    50% of NTSC (its sibling's datasheet says 50.1%), against sRGB's
-//!    72%. [`GAMUT`] converts the panel's linear RGB to sRGB's: green and
-//!    blue lose saturation, and blue, slightly outside sRGB, leans
-//!    towards cyan. Its white (0.302, 0.325, about 7150 K) is the cold
-//!    of the early watches; the matrix is balanced to D65 instead, so
-//!    white stays white (see [`GAMUT`]).
-//! 3. **Black.** The same datasheets give a contrast ratio of 640–800:1,
-//!    so black lets through [`BLACK`] of white's light, more the brighter
+//!    71%; and white (0.302, 0.325), about 7160 K and a little greener
+//!    than a black body's. [`GAMUT`] converts the panel's linear RGB to
+//!    sRGB's, keeping that white rather than balancing it to D65 (as
+//!    this did at first): the PineTime's own datasheet gives no white to
+//!    use instead, and an idealised white hides what the panel does.
+//!    Green and blue lose saturation, blue, slightly outside sRGB, leans
+//!    towards cyan, and white is cold, as on the early watches: sRGB
+//!    (237, 251, 255).
+//! 3. **Black.** The same table gives a contrast ratio of 640–800:1, so
+//!    black lets through [`BLACK`] of white's light, more the brighter
 //!    the backlight; and the glass in front reflects the room, over
 //!    everything, lit or not.
 //!
@@ -47,9 +64,9 @@
 //! side by side, in a dim room, with the camera's exposure and white
 //! balance fixed (daylight), the dev kit showing the theme being checked
 //! and the window the same frame (`--zoom` until the screens are the same
-//! size). Then adjust: [`GAMMA`] until the greys' steps match,
-//! [`PRIMARIES`] (or simply [`GAMUT`]'s rows) until the colours do, and
-//! [`BLACK`] until black glows as much. A colour chart photographed under
+//! size). Then adjust: [`GAMMA`] until the greys' steps match, [`WHITE`]
+//! until white's tint does, [`PRIMARIES`] until the colours do (and
+//! re-derive [`GAMUT`]), and [`BLACK`] until black glows as much. A colour chart photographed under
 //! the same light lets the camera's own colour be corrected first.
 
 use std::sync::OnceLock;
@@ -64,22 +81,33 @@ pub const GAMMA: f32 = 2.2;
 )]
 pub const PRIMARIES: [(f64, f64); 3] = [(0.624, 0.329), (0.288, 0.522), (0.136, 0.137)];
 
-/// The panel's linear RGB to linear sRGB, from [`PRIMARIES`], with the
-/// panel's white taken to be D65 (as sRGB's is). Each row sums to 1, so
-/// greys stay grey. Derived in the test below.
+/// The panel's white, CIE 1931 (x, y): what its full RGB shows (step 2).
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "GAMUT is derived from it in the tests")
+)]
+pub const WHITE: (f64, f64) = (0.302, 0.325);
+
+/// The panel's linear RGB to linear sRGB, from [`PRIMARIES`] and
+/// [`WHITE`]: the colour the panel makes, as sRGB makes it, with no
+/// adaptation to sRGB's D65. Scaled so that the panel's white is as
+/// bright as a monitor can show that colour (its bluest channel at
+/// full, as the panel's white is the brightest it shows): its rows sum
+/// to 0.850, 0.964 and 1, so greys keep white's cold tint. Derived in
+/// the test below.
 ///
-/// Balanced to D65 rather than to the datasheet's bluer white, because
-/// watches vary (cold early, neutral or warm later), and the eye adapts
-/// to a screen's white; TODO: a choice of white, once a dev kit's has been
-/// photographed.
+/// Watches vary (cold early, neutral or warm later), and the eye adapts
+/// to a screen's white, so a watch on the wrist may well look less blue
+/// than this; TODO: refit [`WHITE`] once a dev kit's has been
+/// photographed (see "Calibrating it" above).
 pub const GAMUT: [[f32; 3]; 3] = [
-    [1.1109, 0.0414, -0.1523],
-    [0.0107, 0.8105, 0.1788],
-    [0.0129, 0.1263, 0.8608],
+    [0.9643, 0.0396, -0.1536],
+    [0.0093, 0.7748, 0.1803],
+    [0.0112, 0.1208, 0.8681],
 ];
 
 /// Black's light, as a fraction of white's (step 3): 1/700, from the
-/// middle of the 640–800:1 contrast ratio comparable modules give.
+/// middle of the 640–800:1 contrast ratio the comparable module gives.
 pub const BLACK: f32 = 1.0 / 700.0;
 
 /// The panel's colour, as an sRGB monitor shows it: `rgb` is what the
@@ -185,14 +213,24 @@ mod tests {
     }
 
     #[test]
-    fn the_gamut_matrix_is_derived_from_the_primaries() {
+    fn the_gamut_matrix_is_derived_from_the_primaries_and_white() {
         const D65: (f64, f64) = (0.3127, 0.3290);
         let srgb = to_xyz([(0.64, 0.33), (0.30, 0.60), (0.15, 0.06)], D65);
-        let panel = to_xyz(PRIMARIES, D65);
+        // The panel's own white, not D65: no chromatic adaptation, so
+        // the panel's white comes out as that colour in sRGB.
+        let panel = to_xyz(PRIMARIES, WHITE);
         let from_xyz = invert(srgb);
+        let unscaled: Matrix = std::array::from_fn(|i| {
+            std::array::from_fn(|j| (0..3).map(|k| from_xyz[i][k] * panel[k][j]).sum())
+        });
+        // Then dimmed until white's brightest sRGB channel is just full.
+        let brightest = unscaled
+            .map(|row| row.iter().sum::<f64>())
+            .into_iter()
+            .fold(0.0, f64::max);
         for (i, row) in GAMUT.iter().enumerate() {
             for (j, &value) in row.iter().enumerate() {
-                let derived: f64 = (0..3).map(|k| from_xyz[i][k] * panel[k][j]).sum();
+                let derived = unscaled[i][j] / brightest;
                 assert!(
                     (derived - f64::from(value)).abs() < 1e-4,
                     "GAMUT[{i}][{j}] is {value}, derived {derived:.4}"
@@ -202,15 +240,12 @@ mod tests {
     }
 
     #[test]
-    fn grey_stays_grey_and_white_white() {
-        for code in [0u8, 40, 128, 255] {
+    fn greys_and_white_take_the_panels_cold_white() {
+        assert_eq!(mimic([255; 3], 1.0, [0; 3]), [237, 251, 255]);
+        for code in [40u8, 128, 255] {
             let [r, g, b] = mimic([code; 3], 1.0, [0; 3]);
-            assert!(
-                r.abs_diff(g) <= 1 && g.abs_diff(b) <= 1,
-                "{code}: {r} {g} {b}"
-            );
+            assert!(r < g && g <= b, "{code}: {r} {g} {b}");
         }
-        assert_eq!(mimic([255; 3], 1.0, [0; 3]), [255; 3]);
     }
 
     #[test]

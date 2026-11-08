@@ -32,9 +32,10 @@ the phone, the battery and charger, and the time since boot (and
 320-pixel screen, by default).
 
 The screen's colours are the real panel's, as near as a model can make
-them (`src/panel.rs`): less saturated than a monitor's, and black
-glowing a little with the backlight. P switches to the colours as sent
-to the panel, as screenshots have them (`--sent-colours` starts there).
+them (`src/panel.rs`): less saturated than a monitor's, with a cold,
+bluish white, and black glowing a little with the backlight. P switches
+to the colours as sent to the panel, as screenshots have them
+(`--sent-colours` starts there).
 Keys:
 
 | Key | | Key | |
