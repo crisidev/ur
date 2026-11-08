@@ -3,8 +3,8 @@
 Finally, a smartwatch firmware for the 90s: as subtle as a retro watch,
 but with modern conveniences.
 
-ur runs on the [PineTime], and syncs with [Gadgetbridge] on Android.
-("Ur" is an older Norwegian word for a timepiece.)
+ur, named after an archaic Norwegian word for a timepiece, runs on the
+[PineTime] and syncs with [Gadgetbridge] on Android.
 
 <p align="center">
   <img src="docs/screenshots/clock-arcade.png" width="150" alt="The clock face in the Arcade theme, white and red on black: Bluetooth, a note for music playing, and 31° along the top, with the battery; then the time, with the date and the seconds under it; the heart rate; and ten blocks for the day's steps, six of them red, then ×1K: 6,000 steps so far, towards 10,000; a short red bar on the top edge means unseen notifications">
