@@ -1472,13 +1472,17 @@ impl App {
             Screen::Clock => {
                 // While media plays, a note; just after a media gesture,
                 // what it did.
-                let media = match (self.media_hint, &self.music) {
+                let icon = match (self.media_hint, &self.music) {
                     (Some((icon, _)), _) => Some((5, &icon[..], 3)),
                     (None, Some(music)) if music.playing() => {
                         Some((font::NOTE_W, &font::NOTE[..], 2))
                     }
                     _ => None,
                 };
+                // The slot stays while the phone has media at all, playing
+                // or not, so the temperature beside it doesn't shift as
+                // the icon changes (or goes, when paused).
+                let media = (self.music.is_some() || self.media_hint.is_some()).then_some(icon);
                 render_clock(canvas, status, next_alarm, media)
             }
             // From the day's history, only while it shows: walking it
@@ -1598,7 +1602,9 @@ fn render_clock(
     canvas: &mut Canvas,
     status: &Status,
     next_alarm: Option<(alarm::Kind, i64)>,
-    media: Option<(u32, &[u8], i32)>,
+    // `None` without media; otherwise the icon to show in the media slot,
+    // if any: (width, rows, y).
+    media: Option<Option<(u32, &[u8], i32)>>,
 ) {
     canvas.clear(BACKGROUND);
     render_battery(canvas, status.battery, status.uptime_secs);
@@ -1609,10 +1615,16 @@ fn render_clock(
     let temperature_x = if status.connected {
         canvas.sprite(3, 2, font::BLUETOOTH_W, &font::BLUETOOTH, 1, Color::ACCENT);
         let x = 3 + font::BLUETOOTH_W as i32 + 3;
+        // One width for every media icon (the widest, the note's), each
+        // centred in it, so nothing after it moves as the icon changes.
+        const MEDIA_SLOT: u32 = font::NOTE_W;
         match media {
-            Some((width, rows, y)) => {
-                canvas.sprite(x, y, width, rows, 1, Color::ACCENT);
-                Some(x + width as i32 + 3)
+            Some(icon) => {
+                if let Some((width, rows, y)) = icon {
+                    let left = x + (MEDIA_SLOT.saturating_sub(width) / 2) as i32;
+                    canvas.sprite(left, y, width, rows, 1, Color::ACCENT);
+                }
+                Some(x + MEDIA_SLOT as i32 + 3)
             }
             None => Some(x),
         }
