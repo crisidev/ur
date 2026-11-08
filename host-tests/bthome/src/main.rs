@@ -1,11 +1,12 @@
 //! Host tests for the firmware's `bthome` module: the button grid's
 //! presses as encrypted BTHome advertisements. `cargo test` runs them.
 //!
-//! `main` prints an advertisement for each gesture, for checking against
-//! Home Assistant's own parser (see docs/buttons.md):
+//! `main` prints an advertisement for each gesture, which `check.py`
+//! decodes with Home Assistant's own parser (`bthome-ble`), as Home
+//! Assistant would:
 //!
 //! ```sh
-//! cargo run --release -- E5:12:34:56:78:9A
+//! cargo run --release | uv run --with bthome-ble python -I check.py
 //! ```
 
 #[path = "../../../src/bthome.rs"]
@@ -37,15 +38,21 @@ fn main() {
         .nth(1)
         .unwrap_or("E5:12:34:56:78:9A".into());
     let identity = identity(&address);
-    for (counter, gesture) in [
-        (256, Gesture::Tap),
-        (257, Gesture::DoubleTap),
-        (258, Gesture::Hold),
+    println!("{address} {}", hex(&KEY));
+    for (counter, code, gesture) in [
+        (256, 23, Gesture::Tap),
+        (257, 23, Gesture::DoubleTap),
+        (258, 5, Gesture::Tap),
+        (259, 5, Gesture::Hold),
+        (260, 5, Gesture::Release),
     ] {
-        let (data, len) = bthome::advert(Press { code: 23, gesture }, 82, counter, &identity);
-        let hex: String = data[..len].iter().map(|b| format!("{b:02x}")).collect();
-        println!("{gesture:?} {hex}");
+        let (data, len) = bthome::advert(Press { code, gesture }, 82, counter, &identity);
+        println!("{code} {} {}", gesture.name(), hex(&data[..len]));
     }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]
@@ -98,21 +105,26 @@ mod tests {
     }
 
     #[test]
-    fn each_gesture_turns_its_own_dimmer() {
+    fn each_gesture_is_a_button_event_and_turns_its_own_dimmer() {
         let identity = identity("E5:12:34:56:78:9A");
-        for (slot, gesture) in [Gesture::Tap, Gesture::DoubleTap, Gesture::Hold]
-            .into_iter()
-            .enumerate()
-        {
+        for (event, slot, gesture) in [
+            (0x01, Some(0), Gesture::Tap),
+            (0x02, Some(1), Gesture::DoubleTap),
+            (0x80, Some(2), Gesture::Hold),
+            (0x81, None, Gesture::Release),
+        ] {
             let (data, len) = bthome::advert(Press { code: 47, gesture }, 82, 0x1234, &identity);
-            assert!(len <= 31, "a legacy advertisement");
+            assert_eq!(len, 31, "all of a legacy advertisement");
             let (plain, counter) = open(&data[..len], &identity);
             assert_eq!(counter, 0x1234);
-            // The packet id is the counter's low byte; the battery.
-            assert_eq!(&plain[..4], [0x00, 0x34, 0x01, 82]);
+            // The packet id is the counter's low byte; the battery; the
+            // button's event.
+            assert_eq!(&plain[..6], [0x00, 0x34, 0x01, 82, 0x3A, event]);
             let mut dimmers = vec![[0x3C, 0, 0]; 3];
-            dimmers[slot] = [0x3C, 0x02, 47];
-            assert_eq!(plain[4..].to_vec(), dimmers.concat(), "{gesture:?}");
+            if let Some(slot) = slot {
+                dimmers[slot] = [0x3C, 0x02, 47];
+            }
+            assert_eq!(plain[6..].to_vec(), dimmers.concat(), "{gesture:?}");
         }
     }
 

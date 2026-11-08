@@ -70,12 +70,18 @@ mod tests {
             self
         }
 
+        /// The finger lifting at `at`, after a long press.
+        fn lift(&mut self, at: u64) -> &mut Self {
+            self.sent.extend(self.grid.lift().map(|p| (at, p)));
+            self
+        }
+
         fn presses(&self) -> Vec<(u8, Gesture)> {
             self.sent.iter().map(|(_, p)| (p.code, p.gesture)).collect()
         }
     }
 
-    use Gesture::{DoubleTap, Hold, Tap};
+    use Gesture::{DoubleTap, Hold, Release, Tap};
 
     #[test]
     fn a_single_tap_goes_once_nothing_follows() {
@@ -112,6 +118,38 @@ mod tests {
             )]
         );
         assert_eq!(run.grid.deadline(), None);
+    }
+
+    #[test]
+    fn a_hold_ends_when_the_finger_lifts() {
+        let mut run = Run::default();
+        run.hold(7, 1000).lift(3000);
+        assert_eq!(run.presses(), [(7, Hold), (7, Release)]);
+        // Once: a second lift (or one with no hold before it) is nothing.
+        run.lift(3100);
+        assert_eq!(run.sent.len(), 2);
+        // A sequence's hold too, with the sequence's code.
+        run.tap(4, 5000).hold(7, 5300).lift(6000);
+        assert_eq!(run.presses()[2..], [(47, Hold), (47, Release)]);
+    }
+
+    #[test]
+    fn a_tap_has_no_release() {
+        let mut run = Run::default();
+        run.tap(2, 1000).until(5000).lift(5000);
+        assert_eq!(run.presses(), [(2, Tap)]);
+    }
+
+    #[test]
+    fn cancelling_keeps_a_holds_release() {
+        // Swiping away mid-hold can't happen (the hold took the touch),
+        // but the side button can: whatever the hold set going must still
+        // hear it end.
+        let mut run = Run::default();
+        run.hold(5, 1000);
+        assert!(!run.grid.cancel(), "nothing was waiting");
+        run.lift(2000);
+        assert_eq!(run.presses(), [(5, Hold), (5, Release)]);
     }
 
     #[test]
@@ -266,16 +304,16 @@ mod tests {
             let t = next();
             run.tap(a, t).until(t + 5000);
             let t = next();
-            run.hold(a, t);
+            run.hold(a, t).lift(t + 1000);
             for b in 1..=9 {
                 let t = next();
                 run.tap(a, t).tap(b, t + 400).until(t + 5000);
                 let t = next();
                 run.tap(a, t).tap(b, t + 400).tap(b, t + 600);
                 let t = next();
-                run.tap(a, t).hold(b, t + 400);
+                run.tap(a, t).hold(b, t + 400).lift(t + 2000);
             }
-            for (code, gesture) in run.presses() {
+            for (code, gesture) in run.presses().into_iter().filter(|&(_, g)| g != Release) {
                 assert!(
                     events.insert((code, gesture.name())),
                     "{code} {gesture:?} twice"
@@ -283,6 +321,12 @@ mod tests {
             }
         }
         assert_eq!(events.len(), 9 * 2 + 81 * 3);
+        let names: HashSet<&str> = events.iter().map(|&(_, name)| name).collect();
+        assert_eq!(
+            names,
+            HashSet::from(["press", "double_press", "hold_press"]),
+            "BTHome's names"
+        );
         let codes: HashSet<u8> = events.iter().map(|&(code, _)| code).collect();
         assert_eq!(codes.len(), 90);
         assert!(codes.iter().all(|&c| (1..=99).contains(&c) && c % 10 != 0));

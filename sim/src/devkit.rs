@@ -822,6 +822,7 @@ fn describe(event: &InputEvent) -> String {
                 Gesture::SwipeDown => "swipe down",
                 Gesture::SwipeLeft => "swipe left",
                 Gesture::SwipeRight => "swipe right",
+                Gesture::Release => "release",
             },
             touch.x,
             touch.y,

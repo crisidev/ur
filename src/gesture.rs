@@ -10,7 +10,9 @@
 //! the moment the finger has been down for [`LONG_PRESS`] without moving,
 //! while it's still down, so whatever it does (and its buzz) comes then,
 //! and the wearer knows when to let go rather than guessing. That touch
-//! is then spent: lifting the finger, or moving it, does nothing more. A
+//! is then spent: moving the finger does nothing more, and lifting it is
+//! only a [`Gesture::Release`], for what lasts while the finger stays
+//! down (the button grid's holds; everything else ignores it). A
 //! finger that moves past the tap tolerance before then is on its way to
 //! a swipe, and the long press is off for that touch, even if it comes
 //! back. Anything else is a tap.
@@ -38,6 +40,9 @@ pub enum Gesture {
     SwipeDown,
     SwipeLeft,
     SwipeRight,
+    /// The finger lifted after a [`Gesture::LongPress`] (see
+    /// [`Tracking::release`]).
+    Release,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -107,6 +112,16 @@ impl Tracking {
         } else {
             Gesture::Tap
         };
+        self.touch(gesture)
+    }
+
+    /// A long press's finger lifting: where it started, and how long it
+    /// was down in all.
+    pub fn release(&self) -> Touch {
+        self.touch(Gesture::Release)
+    }
+
+    fn touch(&self, gesture: Gesture) -> Touch {
         let scale = canvas::SCALE as i32;
         Touch {
             gesture,

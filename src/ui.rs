@@ -822,6 +822,16 @@ impl App {
                 }
                 return;
             }
+            // A long press's finger lifting: only a button grid hold's
+            // end, which goes wherever its start did (see
+            // `buttons::Grid::lift`). Nothing else acts on it, nor counts
+            // it as a touch: the long press was the touch.
+            InputEvent::Touch(touch) if touch.gesture == Gesture::Release => {
+                if let Some(press) = self.grid.lift() {
+                    self.send_press(press, now);
+                }
+                return;
+            }
             other => other,
         };
         // In the quiet night, a double press of the button ends it: the
@@ -1169,6 +1179,11 @@ impl App {
         }
         if self.buttons.ha() {
             let _ = self.ha_presses.push(press);
+        }
+        // A hold's end: the screen keeps showing the hold, which already
+        // buzzed.
+        if press.gesture == buttons::Gesture::Release {
+            return;
         }
         // Somewhere it could go. (Home Assistant can't say whether it
         // heard; Gadgetbridge only says if it didn't pass it on.)
@@ -3062,7 +3077,8 @@ fn draw_key(canvas: &mut Canvas, x: i32, y: i32, key: Key, dark: bool) {
         let how = match press.gesture {
             buttons::Gesture::Tap => "TAP",
             buttons::Gesture::DoubleTap => "2X",
-            buttons::Gesture::Hold => "HOLD",
+            // Never shown: a release leaves the hold's on the screen.
+            buttons::Gesture::Hold | buttons::Gesture::Release => "HOLD",
         };
         canvas.text_centered(x + 1 + SIZE / 2, top + 12, how, BACKGROUND);
     }

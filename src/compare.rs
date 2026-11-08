@@ -200,6 +200,7 @@ pub fn gesture_code(gesture: Gesture) -> u8 {
         Gesture::SwipeDown => 4,
         Gesture::SwipeLeft => 5,
         Gesture::SwipeRight => 6,
+        Gesture::Release => 7,
     }
 }
 
@@ -213,6 +214,7 @@ pub fn gesture_from_code(code: u8) -> Option<Gesture> {
         4 => Gesture::SwipeDown,
         5 => Gesture::SwipeLeft,
         6 => Gesture::SwipeRight,
+        7 => Gesture::Release,
         _ => return None,
     })
 }

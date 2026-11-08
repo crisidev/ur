@@ -294,12 +294,15 @@ async fn finish(touch: &Tracking) {
     // round to say so.
     DOWN.store(false, Ordering::Relaxed);
     // A long press was reported while held, and that was the touch's one
-    // event, whatever the finger did after.
+    // event, whatever the finger did after: its lift is only a release.
     if touch.held {
         info!(
             "touch: lifted after {}ms",
             touch.since.elapsed().as_millis()
         );
+        crate::INPUT
+            .send(crate::InputEvent::Touch(touch.release()))
+            .await;
         return;
     }
     let event = touch.classify();

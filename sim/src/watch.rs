@@ -320,12 +320,14 @@ impl Watch {
     }
 
     /// The finger lifted: what it did is decided now, unless it was a long
-    /// press, which was reported while it was down.
+    /// press, which was reported while it was down; its lift is a release.
     pub fn lift(&mut self) {
         let Some(finger) = self.finger.take() else {
             return;
         };
-        if !finger.held {
+        if finger.held {
+            self.input(InputEvent::Touch(finger.release()));
+        } else {
             self.input(InputEvent::Touch(finger.classify()));
         }
     }
@@ -370,14 +372,19 @@ impl Watch {
             let battery = self.battery.percent() as u8;
             let (data, len) = bthome::advert(press, battery, counter, &DEMO_IDENTITY);
             let hex: String = data[..len].iter().map(|b| format!("{b:02x}")).collect();
-            let slot = match press.gesture {
-                crate::buttons::Gesture::Tap => 1,
-                crate::buttons::Gesture::DoubleTap => 2,
-                crate::buttons::Gesture::Hold => 3,
+            // What Home Assistant fires for it (see `bthome`'s docs).
+            let dimmer = match press.gesture {
+                crate::buttons::Gesture::Tap => Some(1),
+                crate::buttons::Gesture::DoubleTap => Some(2),
+                crate::buttons::Gesture::Hold => Some(3),
+                crate::buttons::Gesture::Release => None,
             };
+            let dimmer = dimmer.map_or(String::new(), |slot| {
+                format!(", dimmer_{slot} rotate_right steps {}", press.code)
+            });
             self.log(format!(
-                "to Home Assistant: dimmer_{slot} rotate_right steps {} (counter {counter}): {hex}",
-                press.code
+                "to Home Assistant: button {}{dimmer} (counter {counter}): {hex}",
+                press.gesture.name()
             ));
         }
     }
@@ -739,5 +746,6 @@ fn gesture_name(gesture: crate::gesture::Gesture) -> &'static str {
         Gesture::SwipeDown => "swipe down",
         Gesture::SwipeLeft => "swipe left",
         Gesture::SwipeRight => "swipe right",
+        Gesture::Release => "release",
     }
 }

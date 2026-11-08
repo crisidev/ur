@@ -6,28 +6,39 @@
 //! 0xFCD2, and Home Assistant, listening through any of its Bluetooth
 //! adapters or proxies, decodes it. No pairing, no phone.
 //!
-//! **What a press looks like.** BTHome's only objects that make Home
-//! Assistant fire *events* (rather than update a sensor's state, which a
-//! second identical press wouldn't change) are the button (`0x3A`, an
-//! event type and nothing else) and the dimmer (`0x3C`, rotate left or
-//! right, by a number of steps). Home Assistant tells repeated objects
-//! apart only by their position in the advertisement (`button_1`,
-//! `button_2`, …), and a legacy advertisement has room for a handful, not
-//! 90. So the code rides in a dimmer's steps, and the gesture picks which
-//! of three dimmers turns:
+//! **What a press looks like.** Home Assistant fires *events* (rather
+//! than updating a sensor's state, which a second identical press
+//! wouldn't change) for BTHome's button (`0x3A`: press, double press,
+//! hold, release, … and nothing more) and dimmer (`0x3C`: rotate left or
+//! right, by a number of steps) objects. It tells repeated objects apart
+//! only by their position in the advertisement (`button_1`, `button_2`,
+//! …), and an encrypted legacy advertisement has room for six two-byte
+//! objects after the packet id, not one per grid button (nine), let alone
+//! one per code (90). So each advertisement says what happened twice
+//! over, for two kinds of automation:
 //!
-//! | Object    | Home Assistant's event class | For        |
-//! |-----------|------------------------------|------------|
-//! | `3C ...`  | `dimmer_1`                   | a tap      |
-//! | `3C ...`  | `dimmer_2`                   | a double tap |
-//! | `3C ...`  | `dimmer_3`                   | a hold     |
+//! | Object     | Home Assistant's event class | Fires                         |
+//! |------------|------------------------------|-------------------------------|
+//! | `3A ..`    | `button`                     | the gesture, as BTHome names it |
+//! | `3C ...`   | `dimmer_1`                   | a tap, turning right by the code |
+//! | `3C ...`   | `dimmer_2`                   | a double tap, by the code     |
+//! | `3C ...`   | `dimmer_3`                   | a hold, by the code           |
 //!
-//! The one that fires turns right (`02`) by the press's code (`23` for 2
-//! then 3); the others carry `00 00`, which fires nothing. Before them come
-//! the packet id (`00`, which Home Assistant uses to drop the repeats of
-//! one press) and the battery (`01`, a battery sensor that updates with
-//! each press). All three dimmers are in every advertisement, so their
-//! positions, and with them Home Assistant's names, never change.
+//! The button is the gesture alone: `press` (`01`), `double_press`
+//! (`02`), `hold_press` (`80`), or `hold_release` (`81`, on the lift after
+//! a hold), which Home Assistant offers as device triggers in its UI. The
+//! dimmers carry which code it was: the one for the gesture turns right
+//! (`02`) by the code (`23` for 2 then 3), so a single event says both,
+//! and one trigger can match it. A release turns no dimmer: only one hold
+//! can be down at a time, so its end needs no code. The dimmers that
+//! don't turn carry `00 00`, which fires nothing: every advertisement has
+//! the same objects, so their positions, and with them Home Assistant's
+//! names, never change. Before them come the packet id
+//! (`00`, which Home Assistant uses to drop the repeats of one press) and
+//! the battery (`01`, a battery sensor that updates with each press).
+//! That's 15 bytes, all a legacy advertisement holds once encrypted (see
+//! docs/bthome-design.md for the budget, and why not extended
+//! advertising).
 //!
 //! **Encrypted**, with AES-CCM and a key made on the watch at first boot
 //! (shown on the Settings screen, for typing into Home Assistant). Home
@@ -67,22 +78,24 @@ pub struct Identity {
 /// The advertising data for `press` (flags, then the service data), and
 /// its length. `counter` must never repeat for one key.
 pub fn advert(press: Press, battery: u8, counter: u32, identity: &Identity) -> ([u8; 31], usize) {
-    // The objects, in ascending id order, as BTHome asks.
-    let mut objects = [0u8; 13];
-    objects[..4].copy_from_slice(&[0x00, counter as u8, 0x01, battery.min(100)]);
-    let slot = match press.gesture {
-        Gesture::Tap => 0,
-        Gesture::DoubleTap => 1,
-        Gesture::Hold => 2,
+    // BTHome's button event, and which dimmer turns (none for a release).
+    let (event, slot) = match press.gesture {
+        Gesture::Tap => (0x01, Some(0)),
+        Gesture::DoubleTap => (0x02, Some(1)),
+        Gesture::Hold => (0x80, Some(2)),
+        Gesture::Release => (0x81, None),
     };
+    // The objects, in ascending id order, as BTHome asks.
+    let mut objects = [0u8; 15];
+    objects[..6].copy_from_slice(&[0x00, counter as u8, 0x01, battery.min(100), 0x3A, event]);
     for i in 0..3 {
-        let (event, steps) = if i == slot {
+        let (rotate, steps) = if slot == Some(i) {
             // Rotate right, by the code.
             (0x02, press.code)
         } else {
             (0x00, 0x00)
         };
-        objects[4 + 3 * i..7 + 3 * i].copy_from_slice(&[0x3C, event, steps]);
+        objects[6 + 3 * i..9 + 3 * i].copy_from_slice(&[0x3C, rotate, steps]);
     }
 
     // The nonce: the address as people write it (most significant byte

@@ -23,6 +23,10 @@
 //! That's 9 × 2 + 81 × 3 = 261 distinct events. What each does is up to
 //! whoever receives them (see `crate::bthome` and `gb::Outgoing::Button`).
 //!
+//! A hold also says when it ends: lifting the finger sends a
+//! [`Gesture::Release`] with the same code (see [`Grid::lift`]), for what
+//! should last as long as the finger stays down, like dimming a light.
+//!
 //! Telling them apart takes waiting, since every tap might be the start of
 //! something longer: [`Grid`] holds a tap until it can't be anything else.
 //!
@@ -40,7 +44,8 @@
 //!   too late, a tap on another button after a sequence's second) sends
 //!   what was waiting as it stood, and starts afresh.
 //! - A swipe, or the side button, cancels what's waiting: nothing is sent
-//!   (see [`Grid::cancel`]).
+//!   (see [`Grid::cancel`]). A hold's release is never cancelled: once
+//!   its start went, something may be waiting for its end.
 //!
 //! The waits are measured from one touch's lift to the next one's start,
 //! not between the moments each was recognised: a hold is only recognised
@@ -72,22 +77,29 @@ pub enum Gesture {
     Tap,
     /// Only ever the end of a sequence.
     DoubleTap,
+    /// Held down: sent the moment it's recognised, while the finger is
+    /// still down.
     Hold,
+    /// The finger lifted after a [`Gesture::Hold`] (of the same code).
+    Release,
 }
 
 impl Gesture {
-    /// As Gadgetbridge's intent carries it, and the logs show it.
+    /// As Gadgetbridge's intent carries it, and the logs show it: BTHome's
+    /// names for the same button events (see `crate::bthome`), so a
+    /// gesture reads the same wherever it went.
     pub fn name(self) -> &'static str {
         match self {
-            Self::Tap => "tap",
-            Self::DoubleTap => "double_tap",
-            Self::Hold => "hold",
+            Self::Tap => "press",
+            Self::DoubleTap => "double_press",
+            Self::Hold => "hold_press",
+            Self::Release => "hold_release",
         }
     }
 }
 
-/// One of the 261 events: which of the 90 codes, and what its last button
-/// did.
+/// One of the 261 events (or a hold's release): which of the 90 codes,
+/// and what its last button did.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(target_os = "none", derive(defmt::Format))]
 pub struct Press {
@@ -149,6 +161,11 @@ enum State {
         button: u8,
         until: Instant,
     },
+    /// A hold of `code` was sent, and its finger is still down: idle, but
+    /// for the release that goes on the lift (see [`Grid::lift`]).
+    Held {
+        code: u8,
+    },
 }
 
 /// The grid's state between touches: what's waiting to see whether more
@@ -177,6 +194,12 @@ impl Grid {
         now: Instant,
     ) -> [Option<Press>; 2] {
         let mut done = [None, None];
+        // A hold's finger lifts before the next touch can start, so its
+        // release has gone (see `touch::finish`); in case it hadn't, this
+        // touch starts afresh all the same.
+        if let State::Held { .. } = self.state {
+            self.state = State::Idle;
+        }
         // Too late to continue what was waiting, which is complete as it
         // stood. (The UI loop wakes at the deadline, but only expires it
         // with no finger down; this was that finger.)
@@ -191,14 +214,17 @@ impl Grid {
             done[0] = self.flush();
         }
         let (state, press) = match (self.state, touch) {
-            (State::Idle, Touch::Tap) => (
+            (State::Idle | State::Held { .. }, Touch::Tap) => (
                 State::First {
                     button,
                     until: now + WAIT_SECOND,
                 },
                 None,
             ),
-            (State::Idle, Touch::Hold) => (State::Idle, Some(Press::single(button, Gesture::Hold))),
+            (State::Idle | State::Held { .. }, Touch::Hold) => (
+                State::Held { code: button },
+                Some(Press::single(button, Gesture::Hold)),
+            ),
             (State::First { button: first, .. }, Touch::Tap) => (
                 State::Second {
                     first,
@@ -208,7 +234,9 @@ impl Grid {
                 None,
             ),
             (State::First { button: first, .. }, Touch::Hold) => (
-                State::Idle,
+                State::Held {
+                    code: first * 10 + button,
+                },
                 Some(Press::sequence(first, button, Gesture::Hold)),
             ),
             // The same button again (the rest was flushed above).
@@ -222,6 +250,21 @@ impl Grid {
         done
     }
 
+    /// The finger lifted after a long press: the release of the hold it
+    /// sent, if it sent one. Whatever screen it lifted on, as the hold's
+    /// start has gone, and something may be waiting for its end (a light
+    /// dimming, say).
+    pub fn lift(&mut self) -> Option<Press> {
+        let State::Held { code } = self.state else {
+            return None;
+        };
+        self.state = State::Idle;
+        Some(Press {
+            code,
+            gesture: Gesture::Release,
+        })
+    }
+
     /// Completes what's waiting if its wait is over at `now`, unless a
     /// finger is down: that touch may have started in time, and decides
     /// (see [`Grid::touch`]).
@@ -232,16 +275,23 @@ impl Grid {
         }
     }
 
-    /// Forgets what's waiting, unsent; returns whether anything was.
+    /// Forgets what's waiting, unsent; returns whether anything was. Not
+    /// a hold's release (see [`Grid::lift`]).
     pub fn cancel(&mut self) -> bool {
-        core::mem::replace(&mut self.state, State::Idle) != State::Idle
+        match self.state {
+            State::Idle | State::Held { .. } => false,
+            State::First { .. } | State::Second { .. } => {
+                self.state = State::Idle;
+                true
+            }
+        }
     }
 
     /// When what's waiting has waited long enough to be sent, if anything
     /// is waiting.
     pub fn deadline(&self) -> Option<Instant> {
         match self.state {
-            State::Idle => None,
+            State::Idle | State::Held { .. } => None,
             State::First { until, .. } | State::Second { until, .. } => Some(until),
         }
     }
@@ -250,7 +300,7 @@ impl Grid {
     /// there's a second, that one.
     pub fn waiting(&self) -> (Option<u8>, Option<u8>) {
         match self.state {
-            State::Idle => (None, None),
+            State::Idle | State::Held { .. } => (None, None),
             State::First { button, .. } => (Some(button), None),
             State::Second { first, button, .. } => (Some(first), Some(button)),
         }
@@ -259,7 +309,7 @@ impl Grid {
     /// What's waiting, completed as it stands.
     fn flush(&mut self) -> Option<Press> {
         let press = match self.state {
-            State::Idle => None,
+            State::Idle | State::Held { .. } => None,
             State::First { button, .. } => Some(Press::single(button, Gesture::Tap)),
             State::Second { first, button, .. } => {
                 Some(Press::sequence(first, button, Gesture::Tap))

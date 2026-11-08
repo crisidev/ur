@@ -104,6 +104,14 @@ mod tests {
         assert_eq!(tracking.classify().gesture, Gesture::LongPress);
         tracking.held = true;
         assert_eq!(tracking.long_press_at(), None);
+        // Its lift is a release, from where it started, after all the
+        // time it was down.
+        wait(900);
+        tracking.moved_to((150, 150));
+        let release = tracking.release();
+        assert_eq!(release.gesture, Gesture::Release);
+        assert_eq!((release.x, release.y), (40, 40));
+        assert_eq!(u64::from(release.held_ms), LONG_PRESS.as_millis() + 900);
     }
 
     #[test]
