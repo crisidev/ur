@@ -423,12 +423,56 @@ mod tests {
         let mut nearby = Nearby::new();
         nearby.begin(0);
         for i in 0..SENSORS as u8 {
-            nearby.hear([i; 6], -90 + i as i8, reading(), 0);
+            nearby.hear([i; 6], -79 + i as i8, reading(), 0);
         }
         nearby.hear([99; 6], -40, reading(), 0);
-        nearby.hear([98; 6], -95, reading(), 0);
+        nearby.hear([98; 6], -80, reading(), 0);
         nearby.end(0);
         assert_eq!(nearby.best().map(|s| s.address), Some([99; 6]));
+    }
+
+    #[test]
+    fn a_sensor_below_the_floor_is_not_heard() {
+        let mut nearby = Nearby::new();
+        // The dev kit's two Aranet4s: one in the room, one past a wall.
+        nearby.begin(0);
+        assert!(nearby.hear(KITCHEN, -63, reading(), 100));
+        assert!(!nearby.hear(BEDROOM, -84, reading(), 200));
+        nearby.end(LOOK_AROUND);
+        assert_eq!(nearby.best().map(|s| s.address), Some(KITCHEN));
+        // Alone, it's not taken for the room's.
+        let mut nearby = Nearby::new();
+        assert!(!scan(
+            &mut nearby,
+            0,
+            &[(BEDROOM, -84), (BEDROOM, FLOOR_DBM - 1)]
+        ));
+        assert!(nearby.best().is_none());
+        assert!(!nearby.around(MIN));
+        // Not even once a report is at the floor: its strongest counts.
+        assert!(scan(
+            &mut nearby,
+            15 * MIN,
+            &[(BEDROOM, -84), (BEDROOM, FLOOR_DBM)]
+        ));
+        assert_eq!(nearby.best().map(|s| s.rssi), Some(FLOOR_DBM));
+    }
+
+    #[test]
+    fn a_scan_listens_on_for_a_known_sensor_heard_too_weakly() {
+        let mut nearby = Nearby::new();
+        scan(&mut nearby, 0, &[(KITCHEN, -75)]);
+        // Shadowed by the wrist at first: not yet heard, so listening on.
+        nearby.begin(15 * MIN);
+        nearby.hear(KITCHEN, -83, reading(), 15 * MIN + 100);
+        assert!(!nearby.heard_everyone(15 * MIN + 100));
+        nearby.hear(KITCHEN, -77, reading(), 15 * MIN + 700);
+        assert!(nearby.heard_everyone(15 * MIN + 700));
+        nearby.end(15 * MIN + 700);
+        // A scan that hears it only below the floor keeps the reading,
+        // until it's stale: no flicker.
+        assert!(!scan(&mut nearby, 30 * MIN, &[(KITCHEN, -82)]));
+        assert!(nearby.fresh(31 * MIN).is_some());
     }
 
     fn worn() -> Context {

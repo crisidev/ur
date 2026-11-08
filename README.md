@@ -51,7 +51,8 @@ heart rate, alarms, timers, music control), and these on top:
 - **The room's air:** a nearby [Aranet4] (with Smart Home integrations
   on) gives the clock face the room's temperature, and its CO₂ gets a
   screen. So does an unencrypted [BTHome] thermometer (such as a Xiaomi
-  LYWSD03MMC on pvvx's firmware); the nearest sensor wins. Without one,
+  LYWSD03MMC on pvvx's firmware); the nearest sensor wins, and one only
+  heard faintly (through a wall, say) doesn't count. Without one,
   the watch estimates the room from its own warmth, learning from any
   sensor it meets: roughly ±2–3 °C on the wrist once
   it has, worse before, in the cold, or while you exercise.

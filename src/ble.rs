@@ -1533,11 +1533,14 @@ impl EventHandler for Reports {
 /// was everyone it waits for.
 fn hear(address: aranet::Address, rssi: i8, reading: Reading) {
     let now = Instant::now().as_millis();
-    let everyone = NEARBY.lock(|nearby| {
+    let (counts, everyone) = NEARBY.lock(|nearby| {
         let mut nearby = nearby.borrow_mut();
-        nearby.hear(address, rssi, reading, now);
-        nearby.heard_everyone(now)
+        let counts = nearby.hear(address, rssi, reading, now);
+        (counts, nearby.heard_everyone(now))
     });
+    if !counts {
+        debug!("aranet: {=[u8]:x} at {} dBm: too weak", address, rssi);
+    }
     if everyone {
         HEARD_EVERYONE.signal(());
     }

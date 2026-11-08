@@ -311,6 +311,31 @@ pub struct Nearby {
 /// sensors in the same room.
 const HYSTERESIS_DB: i8 = 3;
 
+/// The weakest signal (dBm, the strongest of a scan's reports) at which a
+/// sensor counts at all: anything weaker is taken for a neighbour's,
+/// through a wall or a floor, rather than the room's, and ignored, as if
+/// unheard. Otherwise, with nothing nearer heard, a thermometer next door
+/// would become the room's temperature, and calibrate the wrist's.
+///
+/// Indoors, a sensor in the same room is typically heard at −40 to −75 dBm,
+/// and through a wall at −75 to −90. On the dev kit, two Aranet4s came in
+/// at −63 and −84: one in the room, one past a wall (TODO: replace with
+/// the dev kit's spread once measured). −80 keeps the first with 17 dB to
+/// spare, room for the wrist's own shadow (5–10 dB), and drops the other.
+/// A sensor of one's own across a large room may fall below it, now and
+/// then, on the wrist: the watch then shows its own estimate, as it does
+/// with no sensor at all, which is the safe way to be wrong.
+///
+/// No hysteresis in dB, to let a sensor shown stay a little below the
+/// floor: one that once peaked above it would then stay at the
+/// through-the-wall level, the very thing this keeps out. A sensor at the
+/// edge doesn't flicker anyway: its reading stays shown until [`STALE`]
+/// (two scans missed), and it's "around" (the Air screen) for [`RECENT`].
+/// And a scan waiting for it ([`Nearby::heard_everyone`]) doesn't count a
+/// report below the floor, so it listens on, up to its limit, and takes
+/// the strongest of several reports, not the first.
+pub const FLOOR_DBM: i8 = -80;
+
 /// A sensor heard within this long is still "around": the scans keep
 /// their normal pace, and wait for it before stopping early. Also how
 /// long the Air screen exists after the last reading.
@@ -466,8 +491,12 @@ impl Nearby {
         self.scans = self.scans.wrapping_add(1);
     }
 
-    /// A sensor was heard, with its signal strength.
-    pub fn hear(&mut self, address: Address, rssi: i8, reading: Reading, now: u64) {
+    /// A sensor was heard, with its signal strength. Returns whether it
+    /// counts: not if it's below [`FLOOR_DBM`].
+    pub fn hear(&mut self, address: Address, rssi: i8, reading: Reading, now: u64) -> bool {
+        if rssi < FLOOR_DBM {
+            return false;
+        }
         let sighting = Sighting {
             address,
             rssi,
@@ -498,6 +527,7 @@ impl Nearby {
                 }
             }
         }
+        true
     }
 
     /// How long the scan under way may listen, at most, in ms:
