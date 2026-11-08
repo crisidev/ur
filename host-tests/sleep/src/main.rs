@@ -300,7 +300,7 @@ fn nights(asleep: &[bool], alarm: Option<usize>) -> Vec<bool> {
         let noon = t > 0 && sleep::noon_between(local - 60, local);
         night.update(asleep, t as u32 * 60, noon, sleep::nap_hours(Some(local)));
         if alarm == Some(t) {
-            night.alarm();
+            night.end();
         }
         quiet.push(night.quiet());
     }
@@ -1103,8 +1103,8 @@ mod tests {
             night.update(true, 100_000, false, false),
             Some(Change::Quiet { nap: false })
         );
-        assert!(night.alarm());
-        assert!(!night.alarm(), "already over");
+        assert!(night.end());
+        assert!(!night.end(), "already over");
         // Still asleep after the alarm: no new night until awake and
         // asleep again.
         assert_eq!(night.update(true, 100_060, false, false), None);

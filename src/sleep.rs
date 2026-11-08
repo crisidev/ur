@@ -293,8 +293,11 @@ pub fn last_sleep(kinds: &[Kind]) -> Option<(usize, usize, usize)> {
 /// It starts when the wearer falls asleep: when [`Night::update`] first
 /// sees `asleep` turn true. It ends at the first of:
 ///
-/// - **An alarm** ringing ([`Night::alarm`]): the morning has come. (Not
+/// - **An alarm** ringing ([`Night::end`]): the morning has come. (Not
 ///   a timer: one ringing at night is no sign of morning.)
+/// - **The wearer saying so**, with a double press of the button
+///   ([`Night::end`] too): up before the alarm, they needn't wait out
+///   [`QUIET_AWAKE`] for the watch to act as by day.
 /// - **Being awake for longer than [`QUIET_AWAKE`]**: the morning came
 ///   without an alarm. Being awake per the classifier isn't enough by
 ///   itself: getting up and walking (to the bathroom, say) ends sleep at
@@ -305,9 +308,11 @@ pub fn last_sleep(kinds: &[Kind]) -> Option<(usize, usize, usize)> {
 ///   because it's past any morning, and well before any night.
 ///
 /// Starting needs `asleep` to *turn* true, not just be true: after an alarm
-/// (or noon) ends the night with the wearer still asleep, it stays over
-/// until they've been awake and then fallen asleep again. Otherwise the
-/// alarm would end the night only for it to start again the next minute.
+/// (or noon, or the button) ends the night with the wearer still asleep
+/// (as the classifier sees it: lying still, reading, after the button),
+/// it stays over until they've been awake and then fallen asleep again.
+/// Otherwise the alarm would end the night only for it to start again the
+/// next minute.
 ///
 /// A **nap** is quiet too, but ends sooner: sleep that starts in the
 /// daytime ([`nap_hours`]) ends after [`NAP_AWAKE`] minutes awake, not
@@ -366,7 +371,8 @@ pub enum Change {
     Over(Over),
 }
 
-/// Why a night ended (other than an alarm, which [`Night::alarm`] reports).
+/// Why a night ended (other than an alarm or the button, which
+/// [`Night::end`] reports).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Over {
     /// Awake for longer than [`QUIET_AWAKE`] (or [`NAP_AWAKE`]).
@@ -415,9 +421,10 @@ impl Night {
         Some(Change::Over(over))
     }
 
-    /// Call when an alarm rings (not a timer): the night is over. Returns
+    /// Call when an alarm rings (not a timer), or the wearer ends the night
+    /// by hand (a double press of the button): the night is over. Returns
     /// whether it was quiet until now.
-    pub fn alarm(&mut self) -> bool {
+    pub fn end(&mut self) -> bool {
         core::mem::replace(&mut self.quiet, false)
     }
 }

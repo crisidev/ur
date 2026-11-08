@@ -44,10 +44,10 @@ timepiece.)
   with when each came. Calls take over the screen, and you can answer or
   decline.
 - **Quiet nights:** from when you fall asleep until the morning's first
-  alarm (or until you've been up for 22 minutes), notifications neither
-  buzz nor light the screen; the latest waits on the clock face for you.
-  The screen is dim all night. Alarms, timers, calls, and "find my watch"
-  still ring.
+  alarm (or until you've been up for 22 minutes, or double-press the
+  button), notifications neither buzz nor light the screen; the latest
+  waits on the clock face for you. The screen is dim all night. Alarms,
+  timers, calls, and "find my watch" still ring.
 - **Media controls:** play, pause, next, and previous, while something is
   playing; play, pause, and next from the clock face, too, whenever the
   phone is connected.
@@ -87,7 +87,9 @@ now landed on, and am daily driving this in real life :)
   screen fully. During a quiet night, taps don't wake it at all: use the
   button.
 - **Button:** with the screen on, back to the clock, or off from the
-  clock. Also silences a call, and stops a ringing alarm.
+  clock. Also silences a call, and stops a ringing alarm. During a quiet
+  night, a double press ends it: the screen lights up bright, and
+  notifications buzz again.
 - **Screens:** around the clock face. Swipe right for today (steps and
   heart rate, by the hour), then last night's sleep; left for alarms, then
   phone alarms (once Gadgetbridge has sent some); down for the last three
@@ -301,6 +303,13 @@ last known one, and drops them unless all of these are on:
 Phones without Google Play services may have no network location: then
 nothing comes indoors, until the watch happens to ask while the phone is
 outside.
+
+### N01: Notifications don't buzz, and the screen stays dim
+
+The watch thinks you're asleep: it's a quiet night (see [Using
+it](#using-it)). It ends with the morning's first alarm, or once you've
+been up for 22 minutes. If you're up before either, double-press the
+button.
 
 ### P01: How do I put the watch away for a while?
 

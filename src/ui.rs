@@ -30,7 +30,8 @@
 //!   no sideways step into another line. The transition sweeps the way
 //!   the content moves.
 //! - Button: back to the clock, sweeping towards it; on the clock, turn the
-//!   screen off. While a call rings: silence it.
+//!   screen off. While a call rings: silence it. In the quiet night, a
+//!   double press (two within [`DOUBLE_PRESS`]) ends it (see below).
 //! - On the clock, while a phone is connected: long press to play or
 //!   pause, double tap (two taps within [`DOUBLE_TAP`]) for the next
 //!   track. Each buzzes, and shows what it did for a moment where a note
@@ -115,6 +116,9 @@
 //!   them in the history).
 //! - Touches don't wake the screen (pillows and bedding tap it); the button
 //!   and turning the wrist still do. Once it's on, touches work as usual.
+//! - A double press of the button ends it: the first press wakes the
+//!   screen (dimly) as usual, and the second, rather than turning it off
+//!   again, brightens it.
 //! - Everything shows in the dim white-on-black look, at the glance's low
 //!   backlight.
 //! - With the screen off, the touch controller sleeps (see
@@ -169,6 +173,9 @@ const DOUBLE_TAP: Duration = Duration::from_millis(500);
 /// single tap's wake can live with. A slower double tap wakes the screen
 /// with its first tap, and skips with its second, on the clock face.
 const WAKE_WAIT: Duration = Duration::from_millis(300);
+/// In the quiet night, two presses of the button this close together end
+/// it (see [`App::on_input`]).
+const DOUBLE_PRESS: Duration = Duration::from_millis(500);
 /// How long a notification banner shows.
 const BANNER_TIME: Duration = Duration::from_secs(4);
 /// A banner's `until` while it waits to be seen: a notification that came
@@ -497,6 +504,9 @@ pub struct App {
     /// Whether `last_tap` wakes the screen at [`App::tap_wake_at`], unless
     /// a second tap (or anything else) comes first.
     tap_wakes: bool,
+    /// When the button was last pressed, for a double press (see
+    /// [`DOUBLE_PRESS`]). Boot, until the first.
+    last_press: Instant,
     /// Whether it's the quiet night, and what decides when it ends. (8
     /// bytes, in a build with little RAM to spare.)
     night: sleep::Night,
@@ -550,6 +560,7 @@ impl App {
             glance_until: None,
             last_tap: None,
             tap_wakes: false,
+            last_press: Instant::from_ticks(0),
             night: sleep::Night::default(),
             brightness: brightness::Setting::default(),
             small_hours: false,
@@ -788,6 +799,31 @@ impl App {
         // whatever comes next: a second tap makes it a double tap, and
         // anything else does what it does.
         let tap_waiting = core::mem::take(&mut self.tap_wakes);
+        // In the quiet night, a double press of the button ends it: the
+        // wearer is up, and wants the watch as by day, without waiting for
+        // `Night` to see them awake for a while. The first press did what
+        // a press does (most likely, woke the screen, dimly); the second,
+        // instead of its usual (turning the screen off again, from the
+        // clock), leaves the screen on, now bright. Outside the quiet
+        // night, a double press is just two presses.
+        if let InputEvent::Button = event {
+            let previous = core::mem::replace(&mut self.last_press, now);
+            if self.night.quiet() && now - previous <= DOUBLE_PRESS {
+                self.night.end();
+                defmt::info!("night: over (button)");
+                // Up for the day, for the brightness, as after an alarm.
+                self.small_hours = false;
+                self.glance_until = None;
+                self.brief_wake = false;
+                self.last_tap = None;
+                self.last_input = now;
+                if !self.awake {
+                    self.awake = true;
+                    self.screen = Screen::Clock;
+                }
+                return;
+            }
+        }
         // Touching or pressing during a glance: wake properly (and, as
         // with any wake-up, don't also act on it). Bar the clock face's
         // media gestures, while a phone is connected: a long press plays
@@ -1402,7 +1438,7 @@ impl App {
             // ends the night, so it rings with the screen bright. Not a
             // timer: that rings in the dim look, and the night goes on.
             if !matches!(kind, alarm::Kind::Timer(_)) {
-                if self.night.alarm() {
+                if self.night.end() {
                     defmt::info!("night: over (alarm)");
                 }
                 // Waking up, even without a quiet night: the small hours
