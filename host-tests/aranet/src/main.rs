@@ -300,13 +300,15 @@ mod tests {
     #[test]
     fn a_scan_stops_once_everyone_recent_is_heard() {
         let mut nearby = Nearby::new();
-        // Nothing known yet: the first sensor heard will do.
+        // Nothing known yet: the first sensor heard will do, once the scan
+        // has had time to hear any nearer one.
         nearby.begin(0);
         assert!(!nearby.heard_everyone(0));
         nearby.hear(KITCHEN, -60, reading(), 100);
-        assert!(nearby.heard_everyone(100));
+        assert!(!nearby.heard_everyone(100));
         nearby.hear(BEDROOM, -70, reading(), 200);
-        nearby.end(300);
+        assert!(nearby.heard_everyone(LOOK_AROUND));
+        nearby.end(LOOK_AROUND);
         // Both known now: one isn't enough.
         nearby.begin(15 * MIN);
         nearby.hear(KITCHEN, -60, reading(), 15 * MIN + 100);
@@ -314,11 +316,22 @@ mod tests {
         nearby.hear(BEDROOM, -70, reading(), 15 * MIN + 200);
         assert!(nearby.heard_everyone(15 * MIN + 200));
         nearby.end(15 * MIN + 300);
-        // An hour after the bedroom was last heard, it's forgotten.
+        // Then only the kitchen, a while later.
+        nearby.begin(45 * MIN);
+        nearby.hear(KITCHEN, -60, reading(), 45 * MIN);
+        nearby.end(45 * MIN + 100);
+        // An hour after the bedroom was last heard, it's forgotten: the
+        // kitchen alone will do.
         let later = 15 * MIN + 200 + RECENT;
         nearby.begin(later);
         nearby.hear(KITCHEN, -60, reading(), later);
         assert!(nearby.heard_everyone(later));
+        // An hour after that, nothing is known: it looks around again.
+        let much_later = 45 * MIN + RECENT;
+        nearby.begin(much_later);
+        nearby.hear(KITCHEN, -60, reading(), much_later);
+        assert!(!nearby.heard_everyone(much_later));
+        assert!(nearby.heard_everyone(much_later + LOOK_AROUND));
     }
 
     #[test]

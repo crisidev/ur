@@ -285,6 +285,10 @@ pub const OPENED: u64 = 60 * 1000;
 /// before (see [`Nearby::heard_everyone`]).
 pub const SCAN_LIMIT: u64 = 3_000;
 
+/// With no sensor heard recently, a scan listens at least this long (ms)
+/// before stopping at the first it hears (see [`Nearby::heard_everyone`]).
+pub const LOOK_AROUND: u64 = 1_200;
+
 /// What a scan is for, for the log.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(target_os = "none", derive(defmt::Format))]
@@ -413,13 +417,23 @@ impl Nearby {
 
     /// Whether the scan has heard every sensor heard within [`RECENT`]
     /// (and at least one), so listening longer would only cost power.
+    ///
+    /// With none heard recently, the first one heard isn't enough: a
+    /// nearer one may not have advertised yet, so it listens for at least
+    /// [`LOOK_AROUND`], two of an Aranet4's advertising periods.
     pub fn heard_everyone(&self, now: u64) -> bool {
-        !self.heard.is_empty()
-            && self
-                .known
-                .iter()
-                .filter(|k| now.saturating_sub(k.heard) < RECENT)
-                .all(|k| self.heard.iter().any(|s| s.address == k.address))
+        let mut recent = self
+            .known
+            .iter()
+            .filter(|k| now.saturating_sub(k.heard) < RECENT)
+            .peekable();
+        let looked_around = recent.peek().is_some()
+            || self
+                .last_scan
+                .is_some_and(|began| now.saturating_sub(began) >= LOOK_AROUND);
+        looked_around
+            && !self.heard.is_empty()
+            && recent.all(|k| self.heard.iter().any(|s| s.address == k.address))
     }
 
     /// The scan is over: picks the sensor to show, the strongest heard,
