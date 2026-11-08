@@ -113,12 +113,20 @@ pub static PARCHMENT: Theme = theme("PARCHMENT", [
     0xa02820, 0xe8dcb8, 0xa02820, 0xe07060, 0x4a6a2a, 0xa02820,
 ]);
 
-/// The glance (see `ui`): just the time, white on black, whatever the
-/// theme. Black pixels are the cheapest on this panel only in that the
-/// backlight is dimmed for it; mostly, it's what reads best at a glance.
+/// The dim look (see `ui`: a glance, a notification on a dark screen, the
+/// quiet night): white on black, whatever the theme. Black pixels are the
+/// cheapest on this panel only in that the backlight is dimmed for it;
+/// mostly, it's what reads best at a glance.
+///
+/// Only black and white: the panel shows the dim look in idle mode (see
+/// `display::Display::set_idle`), which keeps just the top bit of each of
+/// red, green, and blue. The greys this had (dim and faint text, shadows)
+/// would have come out white or black anyway (faint text black, i.e.
+/// invisible), so they're spelt out as such: shadows black, all text
+/// white.
 #[rustfmt::skip]
 pub static GLANCE: Theme = theme("GLANCE", [
-    0x000000, 0x202020, 0xffffff, 0xa0a0a0, 0x505050, 0x202020, 0xffffff,
+    0x000000, 0x000000, 0xffffff, 0xffffff, 0xffffff, 0x000000, 0xffffff,
     0x000000, 0x000000, 0xffffff, 0xffffff, 0xffffff, 0xffffff,
 ]);
 

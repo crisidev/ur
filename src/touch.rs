@@ -10,10 +10,20 @@
 //! to trigger with it, and its thresholds aren't adjustable. So we ask it for
 //! raw reports throughout each touch and classify the touch ourselves from
 //! where it started and ended, and how long it lasted.
+//!
+//! When touches can't do anything (the screen is off in the quiet night;
+//! see [`set_asleep`]), the chip goes into deep sleep, as InfiniTime puts
+//! it to sleep with the screen: it stops scanning the panel, and sends no
+//! interrupts for bedding to set off. Only a reset (P0.10) wakes it, which
+//! then needs configuring again, as at boot.
+
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use defmt::{Format, debug, info, warn};
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{Either3, select3};
 use embassy_nrf::gpio::{Input, Output};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
 use embedded_hal_async::i2c::I2c;
 
@@ -25,6 +35,9 @@ const ADDRESS: u8 = 0x15;
 const REG_REPORT: u8 = 0x01;
 /// Interrupt control.
 const REG_IRQ_CTL: u8 = 0xFA;
+/// Power mode; [`DEEP_SLEEP`] is the value InfiniTime writes.
+const REG_POWER: u8 = 0xA5;
+const DEEP_SLEEP: u8 = 0x03;
 /// Interrupt on: every periodic report while touched (`EnTouch`, bit 6),
 /// touch state changes, i.e. press and lift (`EnChange`, bit 5), and chip
 /// gestures (`EnMotion`, bit 4). Without `EnChange`, we never hear about the
@@ -45,6 +58,19 @@ const PANEL: i32 = 240;
 /// While a finger is down, the chip reports every ~10 ms. If reports stop for
 /// this long without a lift report, assume we missed the lift.
 const LIFT_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Whether the chip should be asleep, as last asked (see [`set_asleep`]).
+static ASLEEP: AtomicBool = AtomicBool::new(false);
+/// A change to [`ASLEEP`], for the task.
+static ASLEEP_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Puts the chip into deep sleep, or wakes it. The UI loop calls this every
+/// pass; only changes do anything.
+pub fn set_asleep(asleep: bool) {
+    if ASLEEP.swap(asleep, Ordering::Relaxed) != asleep {
+        ASLEEP_CHANGED.signal(());
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Format)]
 pub enum Gesture {
@@ -108,10 +134,7 @@ pub async fn touch_task(
     mut interrupt: Input<'static>,
     mut reset: Output<'static>,
 ) {
-    reset.set_low();
-    Timer::after_millis(5).await;
-    reset.set_high();
-    Timer::after_millis(50).await;
+    reset_chip(&mut reset).await;
     // The chip only listens for a short while after reset. If we miss that
     // window (e.g. the executor was busy), retry on the next interrupt, when
     // the chip is awake again. Until configured, touches still wake the
@@ -122,19 +145,40 @@ pub async fn touch_task(
     loop {
         // While a touch is in progress, also wake up if reports dry up, so a
         // missed lift can't leave us stuck mid-touch.
-        if tracking.is_some() {
-            if let Either::Second(()) = select(
-                interrupt.wait_for_falling_edge(),
-                Timer::after(LIFT_TIMEOUT),
-            )
-            .await
-            {
-                let touch = tracking.take().expect("checked is_some above");
+        let lift_timeout = async {
+            match tracking {
+                Some(_) => Timer::after(LIFT_TIMEOUT).await,
+                None => core::future::pending().await,
+            }
+        };
+        match select3(
+            interrupt.wait_for_falling_edge(),
+            lift_timeout,
+            ASLEEP_CHANGED.wait(),
+        )
+        .await
+        {
+            Either3::First(()) => {}
+            Either3::Second(()) => {
+                let touch = tracking.take().expect("only times out while tracking");
                 finish(&touch).await;
                 continue;
             }
-        } else {
-            interrupt.wait_for_falling_edge().await;
+            Either3::Third(()) => {
+                if ASLEEP.load(Ordering::Relaxed) {
+                    // Whatever was in progress is moot: the screen is off.
+                    tracking = None;
+                    sleep(&mut i2c, &mut reset).await;
+                    // Nothing to do until it's time to wake.
+                    while ASLEEP.load(Ordering::Relaxed) {
+                        ASLEEP_CHANGED.wait().await;
+                    }
+                    reset_chip(&mut reset).await;
+                    configured = configure(&mut i2c).await;
+                    info!("touch: awake");
+                }
+                continue;
+            }
         }
 
         if !configured {
@@ -191,6 +235,34 @@ pub async fn touch_task(
             // ~10 ms after each lift (its own gesture detection firing);
             // treating it as a touch produced a phantom second tap.
             (None, true) => {}
+        }
+    }
+}
+
+/// Resets the chip, which wakes it (even from deep sleep) and leaves it
+/// listening on I2C for a while.
+async fn reset_chip(reset: &mut Output<'static>) {
+    reset.set_low();
+    Timer::after_millis(5).await;
+    reset.set_high();
+    Timer::after_millis(50).await;
+}
+
+/// Puts the chip into deep sleep.
+///
+/// In its usual standby between touches it ignores I2C (see the module
+/// docs), so this resets it first, as InfiniTime does. If the write fails
+/// anyway, the chip just stays awake, costing a few µA and stray
+/// interrupts, which [`touch_task`] ignores until it's woken; and the I2C
+/// controller is reset, as after any failed transfer, so the bus the
+/// accelerometer and heart rate sensor share can't be left wedged.
+async fn sleep(i2c: &mut Device, reset: &mut Output<'static>) {
+    reset_chip(reset).await;
+    match i2c.write(ADDRESS, &[REG_POWER, DEEP_SLEEP]).await {
+        Ok(()) => info!("touch: asleep"),
+        Err(e) => {
+            warn!("touch: sleeping failed: {}", e);
+            crate::i2c::reset_controller().await;
         }
     }
 }

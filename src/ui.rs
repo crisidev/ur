@@ -11,6 +11,8 @@
 //!   alarms once it has sent some, music while the phone has media, info).
 //! - Long press: next colour theme within the current group (dark themes
 //!   after sunset, light ones after sunrise; each group remembers its own).
+//! - On the info screen, tap the brightness ("LIGHT") row: switch between
+//!   auto and soft (see [`crate::brightness`]).
 //! - Button: return to the clock; on the clock, turn the screen off. While a
 //!   call rings: silence it.
 //! - While the screen is off, a button press, a deliberate tap (see
@@ -34,8 +36,9 @@
 //! - The phone's alarms (see [`alarm::Phone`]) have a screen of their own,
 //!   read-only: they're set in Gadgetbridge.
 //! - Ringing takes over the screen: tap to snooze, button to stop. Alarms
-//!   start buzzing gently and build up (see [`Pattern::ALARM`]); timers
-//!   buzz at full strength straight away.
+//!   start buzzing gently and build up (see [`Pattern::ALARM`]), with the
+//!   backlight low and brightening over a minute; timers buzz at full
+//!   strength straight away.
 //!
 //! From the phone:
 //!
@@ -57,6 +60,8 @@
 //!   and turning the wrist still do. Once it's on, touches work as usual.
 //! - Everything shows in the dim white-on-black look, at the glance's low
 //!   backlight.
+//! - With the screen off, the touch controller sleeps (see
+//!   [`crate::touch::set_asleep`]).
 //! - Alarms (which end the night), timers, "find my watch", and calls still
 //!   ring and buzz.
 
@@ -69,6 +74,7 @@ use crate::InputEvent;
 use crate::alarm;
 use crate::battery::Battery;
 use crate::ble;
+use crate::brightness;
 use crate::canvas::{Canvas, Color, Sweep, marquee_cycle};
 use crate::clock::DateTime;
 use crate::font;
@@ -332,6 +338,11 @@ pub struct App {
     /// Whether it's the quiet night, and what decides when it ends. (8
     /// bytes, in a build with little RAM to spare.)
     night: sleep::Night,
+    /// The brightness setting, as stored (`main` saves it when it changes).
+    pub brightness: brightness::Setting,
+    /// Whether it's between local midnight and the wearer getting up (see
+    /// [`brightness::small_hours`]).
+    small_hours: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -366,7 +377,30 @@ impl App {
             glance_until: None,
             wake_tap: None,
             night: sleep::Night::default(),
+            brightness: brightness::Setting::default(),
+            small_hours: false,
         }
+    }
+
+    /// Whether it's the quiet night (see the module docs).
+    pub fn quiet_night(&self) -> bool {
+        self.night.quiet()
+    }
+
+    /// How bright the backlight should be now, while the screen is on.
+    pub fn backlight(&self, now: Instant) -> brightness::Level {
+        let waking = self
+            .ringing
+            .as_ref()
+            .filter(|r| !matches!(r.kind, alarm::Kind::Timer(_)))
+            .map(|r| (now - r.since).as_millis());
+        brightness::level(
+            self.brightness,
+            self.daytime,
+            self.small_hours,
+            self.dim(),
+            waking,
+        )
     }
 
     /// Whether the screen is only showing a glance (dim, time only).
@@ -624,6 +658,9 @@ impl App {
                         motor::buzz(Pattern::NOTIFY);
                     }
                 }
+                (Gesture::Tap, Screen::Info) if INFO_LIGHT_TAP.contains(&touch.y) => {
+                    self.brightness = self.brightness.next();
+                }
                 // TODO: remove once something real uses the motor; for now
                 // this is how we check it works.
                 (Gesture::Tap, Screen::Info) => motor::buzz(Pattern::NOTIFY),
@@ -828,10 +865,16 @@ impl App {
         };
         // Truncated to 32 bits to keep `Night` small; that's 136 years.
         let nap_hours = sleep::nap_hours(local_second);
-        match self
+        let change = self
             .night
-            .update(asleep, now.as_secs() as u32, noon, nap_hours)
-        {
+            .update(asleep, now.as_secs() as u32, noon, nap_hours);
+        // The night ending is getting up, for the brightness.
+        self.small_hours = brightness::small_hours(
+            self.small_hours,
+            before.zip(local_second),
+            matches!(change, Some(Change::Over(_))),
+        );
+        match change {
             Some(Change::Quiet { nap: false }) => defmt::info!("night: quiet"),
             Some(Change::Quiet { nap: true }) => defmt::info!("night: quiet (nap)"),
             Some(Change::Over(Over::Awake)) => defmt::info!("night: over (awake)"),
@@ -862,11 +905,19 @@ impl App {
             // The morning's first alarm (a snooze is still the morning)
             // ends the night, so it rings with the screen bright. Not a
             // timer: that rings in the dim look, and the night goes on.
-            if !matches!(kind, alarm::Kind::Timer(_)) && self.night.alarm() {
-                defmt::info!("night: over (alarm)");
+            if !matches!(kind, alarm::Kind::Timer(_)) {
+                if self.night.alarm() {
+                    defmt::info!("night: over (alarm)");
+                }
+                // Waking up, even without a quiet night: the small hours
+                // are over.
+                self.small_hours = false;
             }
             self.ringing = Some(Ringing { kind, since: now });
             self.editing = None;
+            // Not a glance any more: that would end, and turn the screen
+            // off, mid-ring (and keep the backlight low).
+            self.glance_until = None;
             motor::buzz(match kind {
                 alarm::Kind::Timer(_) => Pattern::TIMER,
                 _ => Pattern::ALARM,
@@ -1000,7 +1051,7 @@ impl App {
                 Some(music) => render_music(canvas, music, now),
                 None => render_clock(canvas, status, next_alarm),
             },
-            Screen::Info => render_info(canvas, status, self.chosen_theme()),
+            Screen::Info => render_info(canvas, status, self.chosen_theme(), self.brightness),
         }
         if let Some(banner) = &self.banner {
             render_banner(canvas, banner, now);
@@ -1515,8 +1566,13 @@ fn render_battery(canvas: &mut Canvas, battery: &Battery, uptime_secs: u64) {
 /// First value row, and the spacing between rows.
 const INFO_TOP: i32 = 12;
 const INFO_LINE: i32 = 8;
+/// The brightness row, after the theme's (both are about the look).
+const INFO_LIGHT: i32 = INFO_TOP + 4 * INFO_LINE;
+/// Where a tap switches the brightness: its row, and half a row either side
+/// (a row alone is only ~3 mm tall).
+const INFO_LIGHT_TAP: core::ops::Range<i32> = INFO_LIGHT - 4..INFO_LIGHT + 9;
 
-fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
+fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme, light: brightness::Setting) {
     canvas.clear(BACKGROUND);
     // The version without its build metadata (`0.9.0-pr.12`); the commit
     // goes at the bottom (see `build.rs`).
@@ -1525,12 +1581,19 @@ fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
     let battery = status.battery;
     let mv = battery.millivolts();
     let secs = status.uptime_secs;
-    let mut values: [heapless::String<12>; 4] = Default::default();
-    write!(values[0], "{}.{:02}V", mv / 1000, (mv % 1000) / 10).expect("fits in 12");
-    write!(values[1], "{}%", battery.percent()).expect("fits in 12");
-    write!(values[2], "{}", battery.status()).expect("fits in 12");
+    // The charge shares the battery's row, to make room for the brightness.
+    let mut values: [heapless::String<12>; 3] = Default::default();
     write!(
-        values[3],
+        values[0],
+        "{}% {}.{:02}V",
+        battery.percent(),
+        mv / 1000,
+        (mv % 1000) / 10
+    )
+    .expect("fits in 12");
+    write!(values[1], "{}", battery.status()).expect("fits in 12");
+    write!(
+        values[2],
         "{:02}:{:02}:{:02}",
         secs / 3600,
         (secs / 60) % 60,
@@ -1538,7 +1601,7 @@ fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
     )
     .expect("fits in 12 until uptime exceeds ~11 years");
 
-    let labels = ["BATTERY", "CHARGE", "POWER", "UPTIME"];
+    let labels = ["BATTERY", "POWER", "UPTIME"];
     for (i, (label, value)) in labels.iter().zip(&values).enumerate() {
         let y = INFO_TOP + INFO_LINE * i as i32;
         canvas.text(4, y, label, Color::TEXT_DIM);
@@ -1548,6 +1611,10 @@ fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
     let y = INFO_TOP + INFO_LINE * labels.len() as i32;
     canvas.text(4, y, "THEME", Color::TEXT_DIM);
     canvas.text_right(77, y, theme.name, Color::TEXT);
+    let y = y + INFO_LINE;
+    debug_assert_eq!(y, INFO_LIGHT);
+    canvas.text(4, y, "LIGHT", Color::TEXT_DIM);
+    canvas.text_right(77, y, light.name(), Color::TEXT);
     let y = y + INFO_LINE;
     canvas.text(4, y, "PHONE", Color::TEXT_DIM);
     // "PAIRED" rather than "CONNECTED": the phone only counts as here once

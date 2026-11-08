@@ -8,8 +8,20 @@
 //! line once and send it repeatedly (our 3× vertical scaling), and the
 //! executor keeps running other tasks while bytes go out.
 //!
-//! Only what the UI needs is implemented: init, sleep/wake, and writing a
-//! rectangle of pixels.
+//! Only what the UI needs is implemented: init, sleep/wake, idle mode, and
+//! writing a rectangle of pixels.
+//!
+//! The panel draws ~6 mA while awake (datasheet, at its defaults), as much
+//! as the backlight at its usual level, so it's set up to draw less, as
+//! InfiniTime does (on every panel revision PINE64 has shipped, including
+//! the ST7789P3 of 2026):
+//!
+//! - **Lower supply voltages** at init: the lowest AVDD/AVCL/VDDS
+//!   (PWCTRL1), gate voltages (GCTRL), and booster clocks (PWCTRL2).
+//!   InfiniTime's VDV (VDVS) too, which also evens out the step from black
+//!   to the darkest greys.
+//! - **Idle mode** for the dim white-on-black look ([`Display::set_idle`]):
+//!   8 colours, refreshed at ~8 Hz instead of 60.
 //!
 //! The SPI bus is shared with the SPI flash (see [`crate::spi`]), so the
 //! driver locks it per command, and for the whole of each rectangle of pixels
@@ -35,7 +47,26 @@ const CASET: u8 = 0x2A;
 const RASET: u8 = 0x2B;
 const RAMWR: u8 = 0x2C;
 const MADCTL: u8 = 0x36;
+const IDMOFF: u8 = 0x38;
+const IDMON: u8 = 0x39;
 const COLMOD: u8 = 0x3A;
+// Command table 2 (datasheet section 9.2), which needs CMD2EN.
+const PORCTRL: u8 = 0xB2;
+const FRCTRL1: u8 = 0xB3;
+const GCTRL: u8 = 0xB7;
+const VDVS: u8 = 0xC4;
+const PWCTRL1: u8 = 0xD0;
+const CMD2EN: u8 = 0xDF;
+const PWCTRL2: u8 = 0xE8;
+
+/// FRCTRL1 in idle mode: its own frame rate (FRSEN), divided by 4, from
+/// RTNB 0x1E and the idle porches below: 10 MHz / ((320 + 108) × (250 +
+/// 30 × 16)) / 4 ≈ 8 Hz. InfiniTime's always-on display uses the same.
+const FRCTRL1_IDLE: [u8; 3] = [0x12, 0x1E, 0x1E];
+/// FRCTRL1 out of idle mode: the defaults. InfiniTime found the divider
+/// applies in normal mode too (the datasheet says it shouldn't), so it's
+/// switched with idle mode rather than set once.
+const FRCTRL1_NORMAL: [u8; 3] = [0x00, 0x0F, 0x0F];
 
 /// The controller requires this long between entering and leaving sleep
 /// (either direction) before the next sleep command.
@@ -53,6 +84,8 @@ pub struct Display {
     dc: Output<'static>,
     /// When the last SLPIN/SLPOUT was sent, to honour [`SLEEP_SETTLE`].
     last_sleep_change: Instant,
+    /// Whether it's in idle mode (see [`Display::set_idle`]).
+    idle: bool,
 }
 
 impl Display {
@@ -72,12 +105,17 @@ impl Display {
             cs,
             dc,
             last_sleep_change: Instant::now(),
+            idle: false,
         };
         display.command(SWRESET, &[]).await;
         Timer::after_millis(150).await;
-        display.command(SLPOUT, &[]).await;
-        Timer::after_millis(10).await;
-        display.last_sleep_change = Instant::now();
+        // Configure everything while still asleep, and leave sleep last:
+        // InfiniTime moved SLPOUT there to fix a rotation problem on the
+        // ST7789P3, and it's as good an order on the older controllers.
+        //
+        // The voltages below (PWCTRL1 onwards) are in command table 2,
+        // which needs enabling first.
+        display.command(CMD2EN, &[0x5A, 0x69, 0x02, 0x01]).await;
         // 16 bits per pixel, RGB565, sent most significant byte first.
         display.command(COLMOD, &[0x55]).await;
         // Default scan direction and RGB order: row 0 at the top, and the
@@ -85,7 +123,28 @@ impl Display {
         display.command(MADCTL, &[0x00]).await;
         // This panel needs inversion on, or black comes out white.
         display.command(INVON, &[]).await;
+        // Porches: the default 12 lines each in normal mode (so its 60 Hz
+        // and [`REFRESH`] hold), and InfiniTime's longer ones in idle mode
+        // (with PSEN, separate porches per mode), towards its ~8 Hz.
+        display
+            .command(PORCTRL, &[0x0C, 0x0C, 0x01, 0xED, 0xED])
+            .await;
+        display.command(FRCTRL1, &FRCTRL1_NORMAL).await;
         display.command(NORON, &[]).await;
+        // VDV −0.4 V (default 0 V): InfiniTime's, for the black-to-grey
+        // step.
+        display.command(VDVS, &[0x10]).await;
+        // The lowest AVDD (6.4 V), AVCL (−4.4 V), and VDDS (2.19 V); the
+        // defaults are 6.8, −4.8, and 2.3 V.
+        display.command(PWCTRL1, &[0xA4, 0x00]).await;
+        // The slowest booster clocks (default 0x93).
+        display.command(PWCTRL2, &[0xB3]).await;
+        // The lowest VGH (12.2 V) and VGL (−7.16 V); the defaults are 13.26
+        // and −10.43 V.
+        display.command(GCTRL, &[0x00]).await;
+        display.command(SLPOUT, &[]).await;
+        Timer::after_millis(10).await;
+        display.last_sleep_change = Instant::now();
         display.command(DISPON, &[]).await;
         display
     }
@@ -129,6 +188,35 @@ impl Display {
         self.settle().await;
         self.command(DISPON, &[]).await;
         Timer::after(REFRESH).await;
+    }
+
+    /// Into or out of idle mode: 8 colours (each of red, green, and blue
+    /// only on or off, from its most significant bit), at a much slower
+    /// refresh (see [`FRCTRL1_IDLE`]), for less current. For the dim
+    /// white-on-black look, which has no other colours (see
+    /// [`crate::theme::GLANCE`]).
+    ///
+    /// Switch only with a finished frame on the panel, or with the
+    /// backlight off: at ~8 Hz, a new frame takes ~125 ms to reach the
+    /// bottom rows, rather than [`REFRESH`]. So the UI loop leaves idle
+    /// mode before drawing a frame to show with the backlight off (waking,
+    /// or going into or out of the dim look), shows it at the normal frame
+    /// rate, and only then enters idle mode.
+    ///
+    /// The mode survives sleep. Does nothing if already in that mode.
+    pub async fn set_idle(&mut self, idle: bool) {
+        if idle == self.idle {
+            return;
+        }
+        if idle {
+            self.command(IDMON, &[]).await;
+            self.command(FRCTRL1, &FRCTRL1_IDLE).await;
+        } else {
+            self.command(IDMOFF, &[]).await;
+            self.command(FRCTRL1, &FRCTRL1_NORMAL).await;
+        }
+        self.idle = idle;
+        defmt::debug!("display: idle mode {}", idle);
     }
 
     /// Starts writing pixels into the given rectangle, left to right, top to

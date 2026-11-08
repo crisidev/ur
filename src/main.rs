@@ -7,6 +7,7 @@
 //! - [`display`]: the async LCD driver the canvas pushes pixels through.
 //! - [`spi`] / [`spi_flash`]: the bus the LCD shares with the external flash.
 //! - [`ui`]: screens, navigation, and screen power.
+//! - [`brightness`]: how bright the backlight is.
 //! - [`touch`], the button task here: input, delivered through [`INPUT`].
 //! - [`motor`]: vibration patterns.
 //! - [`alarm`]: when alarms (smart wake, at a time, from the phone, timer)
@@ -37,6 +38,7 @@ mod activity;
 mod alarm;
 mod battery;
 mod ble;
+mod brightness;
 mod canvas;
 mod clock;
 mod debug;
@@ -178,7 +180,8 @@ fn local_second() -> Option<i64> {
     Some(utc + offset * 60)
 }
 
-/// The three active-low backlight transistors (low/mid/high), which sum.
+/// The three active-low backlight transistors (low/mid/high), which sum;
+/// see [`brightness`] for which to light when.
 struct Backlight {
     low: Output<'static>,
     mid: Output<'static>,
@@ -186,25 +189,19 @@ struct Backlight {
 }
 
 impl Backlight {
-    /// Mid alone is plenty indoors.
-    /// TODO: brightness setting, or adapt to time of day.
-    fn on(&mut self) {
-        self.low.set_high();
-        self.mid.set_low();
-        self.high.set_high();
-    }
-
-    /// Low alone: enough to read the glance's white on black.
-    fn dim(&mut self) {
-        self.low.set_low();
-        self.mid.set_high();
-        self.high.set_high();
+    fn set(&mut self, level: brightness::Level) {
+        let [low, mid, high] = level.drivers();
+        for (pin, on) in [
+            (&mut self.low, low),
+            (&mut self.mid, mid),
+            (&mut self.high, high),
+        ] {
+            pin.set_level(if on { Level::Low } else { Level::High });
+        }
     }
 
     fn off(&mut self) {
-        self.low.set_high();
-        self.mid.set_high();
-        self.high.set_high();
+        self.set(brightness::Level::OFF);
     }
 }
 
@@ -480,6 +477,7 @@ async fn main(spawner: Spawner) {
     if let Some(phone_alarms) = storage::load(storage::key::PHONE_ALARMS).await {
         app.phone_alarms = alarm::Phone::from_bytes(phone_alarms);
     }
+    app.brightness = brightness::Setting::from_byte(load_u8(storage::key::BRIGHTNESS).await);
     if let Some(location) = storage::load(storage::key::LOCATION).await {
         geo::set_location(geo::Location::from_bytes(location));
     }
@@ -576,6 +574,14 @@ async fn main(spawner: Spawner) {
                 backlight.off();
             }
             was_dim = app.dim();
+            // A frame to be shown in the dark (on waking, or relighting) is
+            // shown out of idle mode, at the normal frame rate, so it's
+            // whole by the time the backlight comes on (see
+            // `Display::set_idle`); so is anything not in the dim look,
+            // which needs all its colours.
+            if !panel_awake || relighting || !app.dim() {
+                display.set_idle(false).await;
+            }
             canvas.set_theme(app.theme());
             app.render(canvas, &status, now);
             match app.take_transition() {
@@ -594,13 +600,10 @@ async fn main(spawner: Spawner) {
             } else if relighting {
                 Timer::after(display::REFRESH).await;
             }
-            // Dim for a glance (white on black reads fine), and back up if
-            // it turns into a proper wake.
-            if app.dim() {
-                backlight.dim();
-            } else {
-                backlight.on();
-            }
+            display.set_idle(app.dim()).await;
+            // Low for a glance, and back up if it turns into a proper wake;
+            // brightening while a wake alarm rings (see `brightness`).
+            backlight.set(app.backlight(Instant::now()));
             if !panel_awake {
                 panel_awake = true;
                 panel_since = Instant::now();
@@ -620,6 +623,9 @@ async fn main(spawner: Spawner) {
         let fresh = heart::latest().is_some_and(|(_, at)| now - at < Duration::from_secs(5 * 60));
         heart::set_watching(app.showing_clock() && !fresh);
         glance::set_screen_on(app.awake);
+        // Taps don't wake the screen in the quiet night (see `ui`), so the
+        // touch controller can sleep while it's off.
+        touch::set_asleep(app.quiet_night() && !app.awake);
         // Holding the button long enough to starve the watchdog is the
         // user's way back into the bootloader (and to rollback), even when
         // this firmware is otherwise wedged in a way that still runs this loop.
@@ -664,6 +670,7 @@ async fn main(spawner: Spawner) {
                 };
                 let was_awake = app.awake;
                 let before = app.themes;
+                let brightness_before = app.brightness;
                 app.on_input(event, Instant::now());
                 if !was_awake && app.awake {
                     power::count(wake);
@@ -673,6 +680,10 @@ async fn main(spawner: Spawner) {
                 }
                 if app.themes.dark != before.dark {
                     storage::save(storage::key::THEME_DARK, &[app.themes.dark]).await;
+                }
+                if app.brightness != brightness_before {
+                    info!("brightness: {=str}", app.brightness.name());
+                    storage::save(storage::key::BRIGHTNESS, &[app.brightness.to_byte()]).await;
                 }
             }
         }

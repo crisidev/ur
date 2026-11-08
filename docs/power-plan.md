@@ -154,9 +154,10 @@ hour), M (a day). Risk is the chance of breaking something users notice.
 | 8 | Heart rate on a glance only while the last reading is >5 min old, and stop at the first reading | ~30 | XS | UX | The face may show a reading up to 5 min old (the background one is ≤10 min) |
 | 9 | Executor sleep loop with the anomaly 87 workaround and timing | 0, or mA | S | Low | Insurance and instrumentation in one; see below |
 | 10 | Screen timeout 15 → 10 s | ~45 | XS | UX | Glances by button dominate screen-on time |
-| 11 | Backlight low (1.83 mA, M) instead of mid (5.51 mA) after dark | ~15–25 | XS | UX | We already know when it's dark (`geo::is_daytime`) |
+| 11 | Backlight low (1.83 mA, M) instead of mid (5.51 mA) after dark | ~15–25 (SOFT); AUTO costs more by day | XS | UX | **Done** (`brightness`), as the user asked: AUTO is all three drivers (~19.6 mA) while the sun is up, low from midnight until getting up, mid otherwise. That *costs*: ~+14 mA over mid while the screen is on by day, roughly +50–90 µA averaged (300–550 of the budget's 1100 s/day by day), against ~15–25 µA saved at night. SOFT on the Info screen (mid by day, low otherwise) gets the saving without the cost. A wake alarm ramps from low over a minute |
 | 12 | Field-log flushes per page or per 30 s instead of per second | ~10 (field builds) | XS | Low | Loses ≤30 s of log on a hard reset |
-| 13 | CST816S into deep sleep (`0xA5 = 0x03`, as InfiniTime does) during detected sleep; button-only wake | ~5, plus no stray touch wakes | M | UX | Worth it only if step 0 shows many touch wakes. aykevl found the panel "very sensitive, causing spurious wakeups" |
+| 13 | CST816S into deep sleep (`0xA5 = 0x03`, as InfiniTime does) during detected sleep; button-only wake | ~5, plus no stray touch wakes | M | UX | **Done**, as the quiet night with the screen off (taps already didn't wake it then): ~2–3 µA averaged over a day, plus the I2C reads and task wake-ups that bedding's touches cost. Woken by a reset when the screen comes on |
+| 15 | ST7789 at InfiniTime's lowest voltages (PWCTRL1, PWCTRL2, GCTRL) and VDV; idle mode (8 colours, ~8 Hz) for the dim look | ~15–40 | S | Low–medium | **Done** (`display`). E: the voltages ~0.5–1.5 mA off the panel's 5.6 mA whenever it's on (~6–20 µA at 1100 s/day); idle mode at ~8 Hz perhaps 1.5–3 mA more while dim (~10–20 µA at ~600 s/day of glances and nights). Unmeasured: contrast and flicker need eyes on the panel |
 | 14 | Heart-rate polling at the conversion period (~27 Hz) instead of 100 Hz | ~2–5 | M | Medium | Timing resolution was the reason for 100 Hz (`Conversions`) |
 
 ### Anomaly 87 (FPU), in more detail
@@ -216,7 +217,8 @@ way:
   few hundred frames an hour, so nothing measurable.
 - **Watchdog feeding.** It's part of the 1 Hz pass; the WDT runs on LFCLK.
 - **ST7789 partial/idle modes.** Maybe 1–2 mA less while on, ~20 µA
-  averaged, for real complexity. Later, if ever.
+  averaged, for real complexity. Later, if ever. (Idle mode was done
+  after all, as `#15`, since the dim look is black and white anyway.)
 
 ### Incidental findings (also in SESSION.md)
 

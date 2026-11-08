@@ -48,6 +48,8 @@ pub mod key {
     pub const ALARMS: u8 = 23;
     /// The alarms synced from the phone; see [`crate::alarm::Phone`].
     pub const PHONE_ALARMS: u8 = 24;
+    /// The brightness setting; see [`crate::brightness::Setting`].
+    pub const BRIGHTNESS: u8 = 25;
 }
 
 /// Big enough for the largest item (a 43-byte bond) plus its key, rounded up

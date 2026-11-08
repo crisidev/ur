@@ -64,7 +64,9 @@ pub fn sleep() {
 pub enum Meter {
     /// Panel out of sleep (ST7789 ~5.6 mA).
     Panel,
-    /// Backlight on at the mid level (~5.5 mA).
+    /// Backlight on, at any level (1.8–19.6 mA; see [`crate::brightness`]).
+    ///
+    /// TODO: split by level, if the hourly line is to estimate its current.
     Backlight,
     /// HRS3300 measuring, by LED drive: 12.5, 20, 30, 40 mA settings.
     HeartLed0,

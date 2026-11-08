@@ -10,8 +10,8 @@ sealed watch, and how releases are made.
 
 - `src/`: the firmware. `main.rs` starts the tasks and runs the UI loop;
   each module's documentation explains its part. The hardware-free ones
-  (`ppg`, `sleep`, `alarm`, `glance`, `heart_schedule`, `temperature`)
-  are pure logic, tested on the computer.
+  (`ppg`, `sleep`, `alarm`, `glance`, `heart_schedule`, `brightness`,
+  `temperature`) are pure logic, tested on the computer.
 - `host-tests/<module>/`: one crate per hardware-free module, which
   includes the firmware's source file with `#[path]` and tests it on the
   host. Some also replay real data (see [Field logs](#field-logs)).

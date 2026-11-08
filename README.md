@@ -14,7 +14,7 @@ timepiece.)
   <img src="docs/screenshots/alarms.png" width="180" alt="The alarms screen: smart wake, two alarms, two timers">
   <img src="docs/screenshots/notification.png" width="180" alt="A notification that arrived with the screen off: the app at the top, the sender large in the middle, white on black">
   <img src="docs/screenshots/glance.png" width="180" alt="A glance: just the time, the hours above the minutes, large, white on black">
-  <img src="docs/screenshots/info.png" width="180" alt="The info screen: version, battery, uptime, theme, phone, last night's sleep, and build">
+  <img src="docs/screenshots/info.png" width="180" alt="The info screen: version, battery, uptime, theme, brightness, phone, last night's sleep, and build">
 </p>
 
 - **Clock face:** time with seconds, date, battery, steps, heart rate, and
@@ -80,11 +80,17 @@ hardware by a human.
   info screens.
 - **Long-press:** the next theme. On the alarms screen, long-pressing an
   alarm or timer switches it on or off instead.
+- **Brightness:** brightest while the sun is up, dim from midnight until
+  you get up, and in between, medium. For less (and a longer battery),
+  tap LIGHT on the info screen to switch from AUTO to SOFT: medium while
+  the sun is up, dim otherwise. Glances and quiet nights stay dim either
+  way.
 - **Tap an alarm or timer** to set it: swipe up and down to change the
   time, then the left button switches it on or off (or starts and stops a
   timer).
 - **A ringing alarm:** tap to snooze for 9 minutes, or press the button to
-  stop it.
+  stop it. Alarms (but not timers) start with the screen dim, and
+  brighten over a minute.
 - **Phone alarms:** set them in Gadgetbridge's Alarms screen for the watch;
   they sync whenever you change one, and the watch only shows them. A
   one-off alarm switches itself off on the watch once it has rung, but
