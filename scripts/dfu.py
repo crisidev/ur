@@ -18,10 +18,16 @@ shows, so pair first, e.g. in `bluetoothctl`:
 1.16 that must be on.)
 
 Usage: dfu.py <package.zip> --address <MAC> [--packet-size N]
+
+For testing the watch's checks only, `--corrupt`, `--truncate` and
+`--abort-after` damage the update on its way (see `--help`): the watch
+must refuse the first two before installing anything, and recover from
+the third.
 """
 
 import argparse
 import asyncio
+import binascii
 import json
 import struct
 import sys
@@ -51,11 +57,36 @@ STATUS = {
 RECEIPT_INTERVAL = 10
 
 
-async def run(package: str, address: str, packet_size: int) -> None:
+def damage(image: bytes, init_packet: bytes, corrupt: int | None, truncate: int | None) -> tuple[bytes, bytes]:
+    """Testing aids: flips every bit of the byte at `corrupt`, or cuts the
+    image to `truncate` bytes, and gives the init packet the damaged image's
+    CRC, as a sender that damaged it before computing the CRC would. So
+    the protocol's CRC check passes, and only the watch's own checks of
+    the image (see src/mcuboot.rs) stand between it and the bootloader."""
+    if corrupt is not None:
+        image = image[:corrupt] + bytes([image[corrupt] ^ 0xFF]) + image[corrupt + 1 :]
+        print(f"TESTING: corrupted byte {corrupt:#x} of the image")
+    if truncate is not None:
+        image = image[:truncate]
+        print(f"TESTING: cut the image to {truncate} bytes")
+    crc = binascii.crc_hqx(image, 0xFFFF)
+    return image, init_packet[:-2] + struct.pack("<H", crc)
+
+
+async def run(
+    package: str,
+    address: str,
+    packet_size: int,
+    corrupt: int | None = None,
+    truncate: int | None = None,
+    abort_after: int | None = None,
+) -> None:
     with zipfile.ZipFile(package) as archive:
         manifest = json.loads(archive.read("manifest.json"))["manifest"]["application"]
         image = archive.read(manifest["bin_file"])
         init_packet = archive.read(manifest["dat_file"])
+    if corrupt is not None or truncate is not None:
+        image, init_packet = damage(image, init_packet, corrupt, truncate)
 
     notifications: asyncio.Queue[bytes] = asyncio.Queue()
 
@@ -101,6 +132,9 @@ async def run(package: str, address: str, packet_size: int) -> None:
         loop = asyncio.get_running_loop()
         started = loop.time()
         for number, chunk in enumerate(packets, start=1):
+            if abort_after is not None and number * 100 >= abort_after * len(packets):
+                print(f"\nTESTING: disconnecting after {number} of {len(packets)} packets")
+                return
             await packet(chunk)
             if number % RECEIPT_INTERVAL == 0 and number != len(packets):
                 while True:
@@ -136,8 +170,18 @@ def main() -> None:
         default=20,
         help="bytes per data packet; InfiniTime only takes 20, ours up to 244 (MTU permitting)",
     )
+    testing = parser.add_argument_group(
+        "testing aids", "damage the update on purpose, to check that the watch refuses it"
+    )
+    testing.add_argument(
+        "--corrupt", type=lambda s: int(s, 0), metavar="OFFSET", help="flip the image's byte at OFFSET"
+    )
+    testing.add_argument("--truncate", type=int, metavar="BYTES", help="send only the image's first BYTES")
+    testing.add_argument(
+        "--abort-after", type=int, metavar="PERCENT", help="disconnect once PERCENT of the image is sent"
+    )
     args = parser.parse_args()
-    asyncio.run(run(args.package, args.address, args.packet_size))
+    asyncio.run(run(args.package, args.address, args.packet_size, args.corrupt, args.truncate, args.abort_after))
 
 
 if __name__ == "__main__":
