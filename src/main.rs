@@ -13,8 +13,8 @@
 //! - [`battery`]: battery voltage and charge state.
 //! - [`activity`] / [`sleep`]: steps, movement, and sleep, from the
 //!   accelerometer.
-//! - [`heart`] / [`ppg`]: heart rate from the optical sensor, and the
-//!   signal processing behind it.
+//! - [`heart`] / [`ppg`] / [`heart_schedule`]: heart rate from the optical
+//!   sensor, the signal processing behind it, and when to measure.
 //! - [`i2c`]: the shared sensor bus.
 //! - [`ble`] / [`gb`]: Bluetooth, speaking Gadgetbridge's Bangle.js protocol.
 //! - [`clock`] / [`geo`]: wall-clock time and location, both from the phone,
@@ -47,6 +47,7 @@ mod gb;
 mod geo;
 mod glance;
 mod heart;
+mod heart_schedule;
 mod i2c;
 mod motor;
 mod power;

@@ -21,7 +21,7 @@
 //! [`movement`] whether the wrist is still enough to trust.
 
 use core::cell::{Cell, RefCell};
-use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
 
 use defmt::{info, warn};
 use embassy_sync::blocking_mutex::Mutex;
@@ -519,6 +519,22 @@ pub fn movement() -> u16 {
 
 static MOVEMENT: AtomicU16 = AtomicU16::new(0);
 
+/// How many polls ([`POLL_SECONDS`] each) since [`take_active_polls`] last
+/// ran saw steps, or movement too vigorous to measure the heart rate
+/// through ([`crate::heart::MOTION_LIMIT`]): for the heart rate's schedule
+/// (see [`crate::heart_schedule::MOVED_POLLS`]), as a sign that activity may
+/// be starting. Saturates; it only has to tell a few from none.
+pub fn active_polls() -> u8 {
+    ACTIVE_POLLS.load(Ordering::Relaxed)
+}
+
+/// Like [`active_polls`], and starts counting afresh.
+pub fn take_active_polls() -> u8 {
+    ACTIVE_POLLS.swap(0, Ordering::Relaxed)
+}
+
+static ACTIVE_POLLS: AtomicU8 = AtomicU8::new(0);
+
 /// Set once the accelerometer is configured; nothing else may talk to it
 /// before (setup soft-resets it and uploads its program).
 static READY: AtomicBool = AtomicBool::new(false);
@@ -689,6 +705,11 @@ pub async fn activity_task(i2c: Device) {
         // Counts (1024 per g) to Bangle.js units (8192 per g).
         let recent = (moved * 8 / u64::from(samples.max(1))).min(u64::from(u16::MAX)) as u16;
         MOVEMENT.store(recent, Ordering::Relaxed);
+        if new_steps > 0 || recent > crate::heart::MOTION_LIMIT {
+            ACTIVE_POLLS.update(Ordering::Relaxed, Ordering::Relaxed, |polls| {
+                polls.saturating_add(1)
+            });
+        }
 
         // Per-minute history needs wall-clock time.
         let Some(utc_minute) = clock::now_utc_seconds().map(|s| s.div_euclid(60)) else {

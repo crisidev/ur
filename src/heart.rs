@@ -4,8 +4,10 @@
 //! watch short of the backlight and radio (12.5–40 mA while lit), so it
 //! isn't run continuously. Instead, a measurement *session* runs:
 //!
-//! - every [`INTERVAL`], at the first still moment (see [`CALM`]), for up
-//!   to [`SESSION_LIMIT`] or until it has a reading (typically ~13 s), and
+//! - in the background, when [`crate::heart_schedule`] says one is due
+//!   (every 2–20 minutes, depending on movement and recent readings), at
+//!   the first still moment after that (see [`CALM`]), for up to
+//!   [`SESSION_LIMIT`] or until it has a reading (typically ~13 s), and
 //! - while the clock face is showing (see [`set_watching`]), continuously,
 //!   since then someone is looking at the number.
 //!
@@ -29,6 +31,7 @@ use embassy_time::{Duration, Instant, Ticker, Timer, with_timeout};
 use embedded_hal_async::i2c::I2c;
 
 use crate::activity;
+use crate::heart_schedule::{Outcome, Schedule};
 use crate::i2c::Device;
 use crate::ppg::{Consensus, Conversions, Ppg};
 
@@ -36,17 +39,14 @@ use crate::ppg::{Consensus, Conversions, Ppg};
 // Scheduling
 // ==============================================================================
 
-/// How often to measure in the background.
-const INTERVAL: Duration = Duration::from_secs(10 * 60);
-
 /// How long a background session may try before giving up. A clean
 /// signal gives a reading after ~13 s (1 s settling, 8 s window, then two
 /// more estimates 2 s apart that must agree); this leaves room for a few
 /// rejected windows, or the gain adjusting.
 const SESSION_LIMIT: Duration = Duration::from_secs(30);
 
-/// How long a reading is shown on the clock face. Past this (a few missed
-/// background sessions), "--" is more honest than an old number.
+/// How long a reading is shown on the clock face. Past this (longer than
+/// the schedule waits at rest), "--" is more honest than an old number.
 const STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 
 /// Wrist movement (see [`activity::movement`]) above which the PPG can't be
@@ -59,8 +59,11 @@ const STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 /// passed the signal checks, though those matched a Garmin worn alongside
 /// to a median +0.4 BPM.
 ///
+/// Also what [`activity::active_polls`] counts as vigorous movement, for
+/// the schedule.
+///
 /// TODO: tune from a 0.8.x field log with walking in it.
-const MOTION_LIMIT: u16 = 1500;
+pub const MOTION_LIMIT: u16 = 1500;
 
 /// Wrist movement (see [`activity::movement`]) at or below which a
 /// background session may start. A due session waits for it, however long
@@ -74,6 +77,12 @@ const MOTION_LIMIT: u16 = 1500;
 /// 300–2500 throughout never read. Two sessions at 75–240 failed too:
 /// calm is necessary, not sufficient.
 const CALM: u16 = 150;
+
+/// How often to look again, while waiting for a background session to
+/// fall due, at whether movement has brought it forward. Precision isn't
+/// needed (the session waits for a calm wrist anyway), and waking for it
+/// is cheap but not free.
+const RECHECK_SECS: u32 = 30;
 
 /// Seconds of movement readings kept (one per level check, i.e. a second),
 /// to judge a whole window: an analysis window is ~8 s.
@@ -89,7 +98,8 @@ static WATCH_STARTED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static WORN: Mutex<CriticalSectionRawMutex, Cell<Option<bool>>> = Mutex::new(Cell::new(None));
 
 /// Whether the watch is on a wrist, as of the last measurement session
-/// (`None` before the first). Up to [`INTERVAL`] stale.
+/// (`None` before the first). Up to an hour stale (see
+/// [`crate::heart_schedule::MAX_FAILED_INTERVAL`]).
 pub fn worn() -> Option<bool> {
     WORN.lock(Cell::get)
 }
@@ -355,83 +365,95 @@ pub async fn heart_task(i2c: Device) {
     info!("heart: sensor ready");
 
     // The level the last *successful* session ended at: the wrist (and the
-    // sensor's oscillator) don't change much in ten minutes. A failed
+    // sensor's oscillator) don't change much between sessions. A failed
     // session (off the wrist, typically) climbs to the top level, 40 mA, and
     // starting every later session there would triple the LED's cost.
     // Starting at ×2 (12.5 mA): where on-wrist readings settled anyway, so
     // the first second isn't spent climbing to it.
     let mut good_level = 1;
-    // Consecutive background sessions without a reading, for backing off.
-    let mut failures = 0u32;
+    // When to measure in the background. Its first session is due at once,
+    // so the clock face has a number soon after boot.
+    let mut schedule = Schedule::new();
     let mut conversions = Conversions::new();
-    // Measure right away, so the clock face has a number soon after boot.
-    let mut next_due = Instant::now();
 
     loop {
-        // Wait for the next background session, or for someone to look at
-        // the clock face. (A signal left over from during the last session
-        // is stale: `watching()` says whether it still holds.)
-        WATCH_STARTED.reset();
-        if !watching() && Instant::now() < next_due {
-            select(Timer::at(next_due), WATCH_STARTED.wait()).await;
-        }
-        if !watching() && Instant::now() < next_due {
-            continue;
-        }
-        // Due: wait for a still wrist (or someone looking). Movement is
-        // only updated every 3 s, with each read of the accelerometer.
-        while !watching() && activity::movement() > CALM {
+        // Wait until a background session is due and the wrist is still,
+        // or until someone looks at the clock face. Movement can bring the
+        // session forward while we wait, so the due time is looked at
+        // again every `RECHECK_SECS`; once due, every 3 s, as movement is
+        // only updated with each read of the accelerometer. (A signal left
+        // over from during the last session is stale: `watching()` says
+        // whether it still holds.)
+        let due = loop {
             WATCH_STARTED.reset();
-            select(Timer::after_secs(3), WATCH_STARTED.wait()).await;
+            if watching() {
+                break None;
+            }
+            let (at, why) = schedule.due(activity::active_polls(), activity::asleep());
+            let now = uptime();
+            let wait = if now < at {
+                (at - now).min(RECHECK_SECS)
+            } else if activity::movement() > CALM {
+                // Measuring a busy wrist only spends LED time.
+                3
+            } else {
+                break Some(why);
+            };
+            select(Timer::after_secs(u64::from(wait)), WATCH_STARTED.wait()).await;
+        };
+        let background = due.is_some();
+        if let Some(why) = due {
+            let (awake, asleep) = schedule.resting();
+            info!(
+                "heart: due ({}); budget {} s, resting {}/{}",
+                why,
+                schedule.budget(uptime()),
+                awake,
+                asleep
+            );
         }
+        // Movement from here on counts towards the next session.
+        let active_polls = activity::take_active_polls();
+        let asleep = activity::asleep();
 
         let started = Instant::now();
         let mut level = good_level;
         crate::power::count(crate::power::Count::HeartSessions);
         let outcome = measure(&mut hrs, &mut level, &mut conversions).await;
-        if matches!(outcome, Ok(Ended::Measured)) {
+        if matches!(outcome, Ok(Ended::Measured(_))) {
             good_level = level;
         }
         if hrs.off().await.is_err() {
             // TODO: retry, or the LED stays lit until the next session.
             warn!("heart: couldn't turn the sensor off");
         }
-        let elapsed = started.elapsed().as_secs();
+        // Rounded up: the budget should err on the side of caution.
+        let led_seconds = started.elapsed().as_millis().div_ceil(1000) as u32;
         match outcome {
-            Ok(Ended::Measured) => {}
-            Ok(Ended::TimedOut) => info!("heart: no reading after {} s", elapsed),
-            Ok(Ended::NoContact) => info!("heart: not on a wrist (after {} s)", elapsed),
-            Ok(Ended::TooBright) => info!("heart: too much light (after {} s)", elapsed),
+            Ok(Ended::Measured(_)) => {}
+            Ok(Ended::TimedOut) => info!("heart: no reading after {} s", led_seconds),
+            Ok(Ended::NoContact) => info!("heart: not on a wrist (after {} s)", led_seconds),
+            Ok(Ended::TooBright) => info!("heart: too much light (after {} s)", led_seconds),
             Err(()) => warn!("heart: lost the sensor mid-session"),
         }
         // A pulse means skin. No light coming back, or ambient light
         // flooding in, means the sensor isn't against anything. Light
         // without a pulse proves nothing: a desk reflects the LED too (the
         // dev kit lying on one times out exactly like a busy wrist).
-        let worn = match outcome {
-            Ok(Ended::Measured) => Some(true),
-            Ok(Ended::NoContact | Ended::TooBright) => Some(false),
-            Ok(Ended::TimedOut) | Err(()) => None,
+        let (worn, outcome) = match outcome {
+            Ok(Ended::Measured(bpm)) => (Some(true), Outcome::Reading(bpm)),
+            Ok(Ended::NoContact | Ended::TooBright) => (Some(false), Outcome::OffWrist),
+            Ok(Ended::TimedOut) | Err(()) => (None, Outcome::NoReading),
         };
         WORN.lock(|w| w.set(worn));
-        // A reading resets the background schedule; so does a failed
-        // background session (retrying right away would most likely fail
-        // the same way: the watch is off the wrist, or the wrist is busy).
-        //
-        // Repeated failures mean the watch is most likely off the wrist (on
-        // a nightstand, in a drawer), where each session burns up to
-        // `SESSION_LIMIT` at the top LED level; back off to at most four
-        // times the interval. Being looked at (`WATCH_STARTED`) still starts
-        // a session right away.
-        // TODO: also end the back-off as soon as the accelerometer sees
-        // movement again.
-        if matches!(outcome, Ok(Ended::Measured)) {
-            failures = 0;
-            next_due = Instant::now() + INTERVAL;
-        } else if Instant::now() >= next_due {
-            failures = (failures + 1).min(2);
-            next_due = Instant::now() + INTERVAL * (1 << failures);
-        }
+        schedule.ended(
+            uptime(),
+            led_seconds,
+            outcome,
+            background,
+            active_polls,
+            asleep,
+        );
 
         // A session only ends while someone's watching if there's no
         // signal to be had; don't start another until they look away.
@@ -439,6 +461,11 @@ pub async fn heart_task(i2c: Device) {
             Timer::after_secs(1).await;
         }
     }
+}
+
+/// Seconds since boot, the schedule's clock.
+fn uptime() -> u32 {
+    Instant::now().as_secs() as u32
 }
 
 /// Accounts the LED's on-time to its drive current, for [`crate::power`].
@@ -479,8 +506,9 @@ impl Drop for LedMeter {
 
 /// Why a session ended.
 enum Ended {
-    /// We have a reading (and nobody's watching for more).
-    Measured,
+    /// We have a reading (and nobody's watching for more): the last, in
+    /// BPM.
+    Measured(u8),
     TimedOut,
     /// Almost no light comes back even at the highest level.
     NoContact,
@@ -503,9 +531,10 @@ async fn measure(
     let mut ppg = Ppg::new();
     let mut consensus = Consensus::new();
     let started = Instant::now();
-    let mut measured = false;
+    // The latest reading, once there is one.
+    let mut measured = None;
     // This window's movement, a reading a second (the accelerometer
-    // reports every 3 s, so about three distinct values).
+    // reports every 2 s, so about four distinct values).
     let mut movement = heapless::HistoryBuf::<u16, MOTION_HISTORY>::new();
     // This second's signal, for the level check.
     let (mut peak, mut sum, mut count) = (0u32, 0u32, 0u32);
@@ -519,11 +548,10 @@ async fn measure(
     loop {
         ticker.next().await;
         let now = Instant::now();
-        if !watching() && (measured || now - started >= SESSION_LIMIT) {
-            return Ok(if measured {
-                Ended::Measured
-            } else {
-                Ended::TimedOut
+        if !watching() && (measured.is_some() || now - started >= SESSION_LIMIT) {
+            return Ok(match measured {
+                Some(bpm) => Ended::Measured(bpm),
+                None => Ended::TimedOut,
             });
         }
 
@@ -598,7 +626,7 @@ async fn measure(
         };
         let bpm = estimate.bpm_at(conversions.period_us());
         // Only sustained movement vetoes a window: most of its readings
-        // high, not one 3-second spike (which used to veto the next 11 s).
+        // high, not one poll's spike (which used to veto the next 11 s).
         let moving = movement.iter().filter(|&&m| m > MOTION_LIMIT).count();
         if moving * 2 > movement.len() {
             debug!(
@@ -611,7 +639,7 @@ async fn measure(
         }
         debug!("heart: window {} BPM (quality {})", bpm, estimate.quality);
         if let Some(bpm) = consensus.push(bpm) {
-            if !measured {
+            if measured.is_none() {
                 info!(
                     "heart: {} BPM after {} s (level {}, conversion period {} µs)",
                     bpm,
@@ -623,7 +651,7 @@ async fn measure(
                 debug!("heart: {} BPM", bpm);
             }
             publish(bpm);
-            measured = true;
+            measured = Some(bpm);
         }
     }
 }
