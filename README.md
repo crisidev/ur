@@ -93,7 +93,9 @@ hardware by a human.
   swipe down to them.
 - **Media, from the clock:** while the phone is playing (a note shows
   beside the Bluetooth icon) or paused, long-press to play or pause, and
-  double-tap for the next track.
+  double-tap for the next track. These work on a glance too (bar during a
+  quiet night): a long-press plays or pauses and leaves the glance be,
+  while a double-tap wakes the screen and skips.
 - **Long-press:** on the alarms screen, an alarm or timer to switch it on
   or off; on the info screen, for storage mode. The watch acts, and
   buzzes, once you've held for 0.6 s, so let go when you feel it.

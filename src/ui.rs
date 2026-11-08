@@ -60,7 +60,12 @@
 //!   off: a glance, just the time in white on black at a low backlight,
 //!   for [`GLANCE_TIME`]. While the phone navigates, the next turn instead,
 //!   with the time smaller above it. A tap or press during it (one is
-//!   enough: the wearer is looking) wakes the screen properly.
+//!   enough: the wearer is looking) wakes the screen properly. While the
+//!   phone has media, outside the quiet night, the clock's media gestures
+//!   work during a glance too: a long press plays or pauses, and the
+//!   glance stays (its icon in a corner, for a moment); a tap still wakes
+//!   the screen at once, and a second within [`DOUBLE_TAP`] is the next
+//!   track, on the clock face it woke to.
 //!
 //! Alarms (see [`crate::alarm`] for when they ring):
 //!
@@ -455,7 +460,9 @@ pub struct App {
     /// [`DOUBLE_TAP`]): with the screen off, to wake it; on the clock, for
     /// the next track. One field for both, as RAM is tight: a tap only
     /// counts while the screen is in the same state (on or off) as for
-    /// the first, as waking or any other input clears it.
+    /// the first, as waking or any other input clears it. (Bar a tap that
+    /// wakes the screen from a glance: that one may be the first of a
+    /// double tap on the clock face it woke to.)
     last_tap: Option<Instant>,
     /// Whether it's the quiet night, and what decides when it ends. (8
     /// bytes, in a build with little RAM to spare.)
@@ -744,10 +751,30 @@ impl App {
             other => other,
         };
         // Touching or pressing during a glance: wake properly (and, as
-        // with any wake-up, don't also act on it).
-        if self.glance_until.take().is_some() {
+        // with any wake-up, don't also act on it). Bar the clock face's
+        // media gestures, while the phone has media: a long press plays or
+        // pauses without waking (a look at the wrist is all the wearer
+        // wanted), and a tap, though it wakes the screen at once, may be
+        // the first of a double tap for the next track, on the clock face
+        // it woke to. Not in the quiet night, when bedding presses on a
+        // wrist that turned in sleep could otherwise start the music; there
+        // any touch only wakes the screen, as before.
+        if let Some(until) = self.glance_until {
+            let media = self.music.is_some() && !self.night.quiet();
+            let gesture = match event {
+                InputEvent::Touch(touch) if media => Some(touch.gesture),
+                _ => None,
+            };
+            if gesture == Some(Gesture::LongPress) {
+                self.media(MusicCommand::PlayPause);
+                // Long enough for what it did to show (see `render`).
+                let hint = Duration::from_secs(u64::from(MEDIA_HINT_TICKS));
+                self.glance_until = Some(until.max(now + hint));
+                return;
+            }
+            self.glance_until = None;
             self.last_input = now;
-            self.last_tap = None;
+            self.last_tap = (gesture == Some(Gesture::Tap)).then_some(now);
             return;
         }
         // With the screen off, a touch only wakes it if it's a deliberate
@@ -1047,8 +1074,14 @@ impl App {
             PhoneEvent::Unpaired(why) => return self.show_banner(Shows::Unpaired(why), now),
             event => event,
         };
-        // Anything else from the phone gets the full screen.
-        if self.glance_until.take().is_some() {
+        // Anything else from the phone gets the full screen, bar media
+        // news, which shows nowhere on a glance: the phone confirming a
+        // play or pause from one (see `on_input`) mustn't end it.
+        if !matches!(
+            event,
+            PhoneEvent::MusicInfo { .. } | PhoneEvent::MusicState { .. }
+        ) && self.glance_until.take().is_some()
+        {
             self.last_input = now;
         }
         match event {
@@ -1376,6 +1409,11 @@ impl App {
             match &self.route {
                 Some(route) => render_route_glance(canvas, status, &route.step),
                 None => render_glance(canvas, status),
+            }
+            // Just after a long press played or paused the media, what it
+            // did, in the top right corner, which both layouts leave free.
+            if let Some((icon, _)) = self.media_hint {
+                canvas.sprite(67, 3, 5, icon, 2, Color::TEXT);
             }
             return;
         }
