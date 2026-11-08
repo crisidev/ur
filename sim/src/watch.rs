@@ -433,12 +433,14 @@ impl Watch {
             self.first_frame = false;
             PANEL.with_borrow_mut(|panel| panel.idle = self.app.dim());
             self.backlight = self.app.backlight(Instant::now());
+            PANEL.with_borrow_mut(|panel| panel.backlight = self.backlight);
             if !self.panel_awake {
                 self.panel_awake = true;
                 self.log("screen on");
             }
         } else if self.panel_awake {
             self.backlight = brightness::Level::OFF;
+            PANEL.with_borrow_mut(|panel| panel.backlight = self.backlight);
             self.panel_awake = false;
             self.log("screen off");
         }
@@ -459,6 +461,7 @@ impl Watch {
         run(canvas.flush(display), on_frame);
         PANEL.with_borrow_mut(|panel| panel.idle = false);
         self.backlight = brightness::Level::MID;
+        PANEL.with_borrow_mut(|panel| panel.backlight = self.backlight);
         self.panel_awake = true;
         self.off = Some(reason);
         self.finger = None;
@@ -470,6 +473,7 @@ impl Watch {
     fn off_tick(&mut self) {
         if self.panel_awake {
             self.backlight = brightness::Level::OFF;
+            PANEL.with_borrow_mut(|panel| panel.backlight = self.backlight);
             self.panel_awake = false;
             self.log("off");
         }

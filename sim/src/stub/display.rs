@@ -32,6 +32,10 @@ pub struct Panel {
     /// bit of each of red, green, and blue survives (see
     /// `display::Display::set_idle`).
     pub idle: bool,
+    /// The backlight, as the UI loop last set it (`OFF`: nothing shows),
+    /// mirrored here like `idle` for recordings (see `crate::record`),
+    /// which see the screen as the wearer would.
+    pub backlight: crate::brightness::Level,
 }
 
 thread_local! {
@@ -44,6 +48,7 @@ thread_local! {
         cursor: 0,
         pending: None,
         idle: false,
+        backlight: crate::brightness::Level::OFF,
     });
 }
 

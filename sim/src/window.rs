@@ -34,7 +34,8 @@ swipe); click the button on the watch's left edge, or press Space, for the
 button.
   G glance   N notification   M music play/pause   C call/hang up
   arrows swipe   T tap   L long press (at the middle)
-  F a minute on   H an hour on   S screenshot   Q quit
+  F a minute on   H an hour on   S screenshot   R record (again: stop)
+  Q quit
 The terminal takes commands (`help` lists them).
 ";
 
@@ -195,6 +196,15 @@ pub fn run(mut watch: Watch, options: &Options) -> Result<(), String> {
                     shots += 1;
                     command(&mut watch, &format!("shot ur-sim-{shots}.png"), options);
                 }
+                // On the watch's clock, as a script's: the GIF plays at
+                // the watch's pace, whatever `--speed`.
+                Key::R if crate::record::active() => {
+                    command(&mut watch, "stop", options);
+                }
+                Key::R => {
+                    let name = crate::record::timestamped();
+                    command(&mut watch, &format!("record {name}"), options);
+                }
                 Key::Q | Key::Escape => return Ok(()),
                 _ => {}
             }
@@ -296,5 +306,10 @@ fn status(watch: &Watch) -> String {
         ""
     };
     let phone = if watch.connected { "" } else { ", no phone" };
-    format!("ur · {time} · {screen}{night}{phone}")
+    let recording = if crate::record::active() {
+        " · recording"
+    } else {
+        ""
+    };
+    format!("ur · {time} · {screen}{night}{phone}{recording}")
 }

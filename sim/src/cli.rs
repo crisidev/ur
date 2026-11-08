@@ -68,17 +68,37 @@ pub fn main() -> ExitCode {
         };
         match result {
             Ok(Next::Continue) => {}
-            Ok(Next::Quit) => return ExitCode::SUCCESS,
+            Ok(Next::Quit) => return finish_recording(ExitCode::SUCCESS),
             Err(e) => {
                 eprintln!("ur-sim: {e}");
                 return ExitCode::FAILURE;
             }
         }
     }
-    if options.window {
-        return open_window(watch, &options);
+    let code = if options.window {
+        open_window(watch, &options)
+    } else {
+        ExitCode::SUCCESS
+    };
+    finish_recording(code)
+}
+
+/// A recording left going (no `stop`, a `quit`, or the window closed with
+/// one on) is written as it stands, rather than lost.
+fn finish_recording(code: ExitCode) -> ExitCode {
+    if !crate::record::active() {
+        return code;
     }
-    ExitCode::SUCCESS
+    match crate::record::stop() {
+        Ok(recorded) => {
+            eprintln!("ur-sim: never stopped; {recorded}");
+            code
+        }
+        Err(e) => {
+            eprintln!("ur-sim: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(feature = "window")]

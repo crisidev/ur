@@ -64,6 +64,12 @@ Output:
   shot FILE.png [THEME]      a screenshot (relative to --out); with THEME,
                              in its colours (as screenshot.py --theme)
   shot FILE.png --watch      the whole watch, as the window shows it
+  record FILE.gif [--watch] [--still DURATION] | stop
+                             an animated GIF (relative to --out) of the
+                             screen (or the whole watch) from now until
+                             `stop`, on the watch's clock; a still screen
+                             is held at most DURATION (2s) in it, so
+                             `wait`s and `until`s don't drag
   expect [not] STATE         fail unless: screen-on, dim, quiet-night,
                              buzzing, off (switched off), or clock (the
                              clock face, for someone to read)
@@ -383,6 +389,27 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
                 theme => watch.screenshot(&path, theme.map(find_theme).transpose()?)?,
             }
             watch.log(format!("screenshot: {}", path.display()));
+        }
+        "record" => {
+            let path = output.dir.join(need(0, "FILE.gif")?);
+            let mut look = crate::record::Look::Screen;
+            let mut still = crate::record::STILL;
+            let mut options = args[1..].iter();
+            while let Some(&option) = options.next() {
+                match option {
+                    "--watch" => look = crate::record::Look::Watch { zoom: output.zoom },
+                    "--still" => {
+                        still = duration(options.next().ok_or("record: --still needs a DURATION")?)?
+                    }
+                    other => return Err(format!("record: {other}? (--watch, --still DURATION)")),
+                }
+            }
+            crate::record::start(path.clone(), look, still)?;
+            watch.log(format!("recording: {}", path.display()));
+        }
+        "stop" => {
+            let recorded = crate::record::stop()?;
+            watch.log(recorded);
         }
         "expect" => {
             let (negated, what) = match need(0, "STATE")? {

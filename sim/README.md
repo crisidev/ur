@@ -34,7 +34,8 @@ a 320-pixel screen, by default). Keys:
 | N | a notification | M | music: play/pause |
 | C | a call; again to end it | arrows | swipes |
 | T, L | tap, long press | F, H | skip a minute, an hour |
-| S | a screenshot | Q, Esc | quit |
+| S | a screenshot | R | record a GIF; again to stop |
+| Q, Esc | quit | | |
 
 Everything else (the time, the phone, sensors) is a command typed into
 the terminal, as in a script. The watch starts as after a reset: no time,
@@ -69,7 +70,7 @@ tap                               # snooze
 - **Time:** `wait 1.5s`, `until HH:MM`.
 - **Output:** `shot FILE.png [THEME]` (with a theme: in its colours, as
   `screenshot.py --theme`; with `--watch`, the whole watch, as the window
-  draws it), `expect`.
+  draws it), `record FILE.gif` … `stop` (see below), `expect`.
 
 `gb` takes a line exactly as Gadgetbridge sends it (less the `\x10`
 before it), say from Gadgetbridge's log, and runs it through the
@@ -91,6 +92,44 @@ as pushed to the panel, in the same colours `screenshot.py` gives, so the
 two match pixel for pixel. `readme-screenshots.txt` makes the README's;
 `tour.txt` goes round most screens, checking itself as it goes; `cargo
 test` runs it, and `gadgetbridge.txt`.
+
+## Recordings
+
+`record FILE.gif` starts an animated GIF of the screen, and `stop`
+writes it; R in the window does both, to `ur-sim-DATE-TIME.gif` in
+`--out`. Its frames are what the panel got, as screenshots are:
+transitions, the dim look, and the screen going dark (black, with the
+backlight off) appear as on the watch. `--watch` records the whole
+watch instead, as `shot --watch` draws it.
+
+```text
+record swipe.gif --still 1s
+right
+wait 1.5s
+stop
+```
+
+The timing is the watch's clock's, so it's exact, and the same every
+run (and in the window, the watch's pace whatever `--speed`). Two rules
+turn it into a GIF:
+
+- **A still screen is held at most 2 s** (`--still DURATION` to change
+  it): a `wait 7h` with the screen off is a moment of black, not seven
+  hours. Anything that changes faster plays at its own pace.
+- **Frames land on a 20 ms grid**, as if filmed at 50 frames a second:
+  browsers play GIF delays under 20 ms as 100 ms. A frame replaced
+  within 20 ms isn't seen, and is left out (about every other step of a
+  transition). Each frame's start, not its length, is rounded, so a
+  frame is never more than 20 ms late, however long the recording.
+
+The last frame holds until `stop` (at least 20 ms): `wait` before it to
+linger. A recording never stopped is written when the simulator exits.
+Each frame holds only the rectangle that changed, so a clock's tick
+costs a few hundred bytes. The screen's colours fit one exact palette;
+the whole watch has more than a GIF's 256 (its anti-aliased edges, the
+backlight's levels), so the commonest 255 stay exact and the rarest (all
+thin edges) become the nearest of those. Unlike `shot`, `record` takes
+no theme: pick one with `theme NAME` first.
 
 ## Against a dev kit
 
@@ -128,8 +167,9 @@ can reach (and puts back what it changes).
 paths expect each other. Stand-ins replace the rest:
 
 - `display`: a fake ST7789 that collects what `Canvas::flush` and
-  `Canvas::transition` push, so screenshots and the window show what the
-  panel would, transitions included.
+  `Canvas::transition` push, so screenshots, recordings, and the window
+  show what the panel would, transitions included. A recording
+  (`src/record.rs`) looks at it each time the clock is about to move.
 - `activity`: steps, heart rates and sleep, as told.
 - `ble`: the queue of messages for the phone, which are printed.
 - `motor` is the real one; the simulator plays its requests on the bezel.
