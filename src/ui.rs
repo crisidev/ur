@@ -116,7 +116,8 @@ pub struct Status<'a> {
     pub uptime_secs: u64,
     /// Local wall-clock time, once the phone has set it.
     pub local_time: Option<DateTime>,
-    /// Whether a phone is connected over Bluetooth.
+    /// Whether the phone is connected over Bluetooth, which it can only be
+    /// paired (see `ble::CONNECTED`).
     pub connected: bool,
     /// Whether a client is connected over a link that never became
     /// encrypted, and why (see [`Unpaired`]).
@@ -1475,8 +1476,12 @@ fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme) {
     canvas.text_right(77, y, theme.name, Color::TEXT);
     let y = y + INFO_LINE;
     canvas.text(4, y, "PHONE", Color::TEXT_DIM);
+    // "PAIRED" rather than "CONNECTED": the phone only counts as here once
+    // it has written over an authenticated link (see `ble`), which takes
+    // its bond, so this says both that it's connected and that it's paired
+    // (and bonded: ur always stores the keys it pairs with).
     let phone = if status.connected {
-        "CONNECTED"
+        "PAIRED"
     } else if let Some(why) = status.unpaired {
         why.title()
     } else {
