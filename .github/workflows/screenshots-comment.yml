@@ -1,0 +1,240 @@
+# Posts what a PR changes on the watch's screens, as screenshots.yml found
+# it, in one comment on the PR, kept up to date as the PR changes: each
+# screen that changed (before, after, and where, side by side), was
+# added, or was removed. When a push leaves no screen changed, an
+# existing comment says so; a PR that never changed a screen gets none.
+#
+# Fork-safe: screenshots.yml runs the PR's code with read-only access;
+# this runs after it (on `workflow_run`, from the default branch's copy of
+# this file), with write access, and never checks out or runs the PR's
+# code. What it gets from that run, an artifact, is the PR's to write, so
+# it's untrusted: the PR must exist and be at the commit the run was for
+# (so a PR can't post on another), every file must be a PNG with a plain
+# name (they become paths and URLs), and there are only so many, of only
+# so large. Nothing from it reaches a shell command but through
+# variables, after those checks.
+#
+# PR comments can't embed artifacts, so the images go to the
+# `pr-screenshots` branch, under `pr-<number>/<commit>/`, and the comment
+# links them by that branch's commit on raw.githubusercontent.com: a
+# later push, or the branch moving on, doesn't change what an older
+# comment shows. (The repository is public, so the links work for
+# anyone; GitHub proxies them through its image cache.) Each commit there
+# holds only its own run's images, but the branch's history keeps them
+# all: it only grows, by a few kilobytes a PR push that changes a screen.
+#
+# TODO: prune `pr-screenshots`, say by squashing the images of merged or
+# closed PRs out of its history now and then. That breaks those PRs'
+# comments' images, which is why it isn't done automatically.
+on:
+  workflow_run:
+    workflows: [screenshots]
+    types: [completed]
+# Nothing by default; the job asks for what it needs (as size-report.yml).
+permissions: {}
+# One at a time a PR, so two runs don't both create its comment. The
+# names only go into the group's name, never a shell.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+name: screenshots-comment
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    name: post
+    permissions:
+      # To download the other run's artifact.
+      actions: read
+      # To push the images to `pr-screenshots`.
+      contents: write
+      # To comment.
+      pull-requests: write
+    # Only after a whole render: a cancelled run (superseded by a newer
+    # push) or a failed one has nothing complete to say. Dependabot's
+    # PRs' runs get a read-only token, so couldn't post anyway.
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.actor.login != 'dependabot[bot]'
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # tag=v8.0.2
+        with:
+          name: screenshots-comment
+          path: ${{ runner.temp }}/artifact
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - name: post
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # GitHub's, not the artifact's: the commit the run was for.
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          ARTIFACT: ${{ runner.temp }}/artifact
+          WORK: ${{ runner.temp }}/work
+        run: |
+          set -euo pipefail
+          marker='<!-- ur:screenshots -->'
+          branch='pr-screenshots'
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          # ====================================================================
+          # What the artifact claims, checked
+          # ====================================================================
+
+          # The PR: a number, which GitHub says is at the commit this run
+          # was for. If it has moved on since, a newer run will post.
+          pr=$(head -c 16 "$ARTIFACT/pr" | tr -d '\n')
+          [[ $pr =~ ^[1-9][0-9]{0,8}$ ]] || fail "the artifact's PR number isn't one"
+          at=$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)
+          if [[ $at != "$HEAD_SHA" ]]; then
+            echo "PR #$pr is at $at now, not $HEAD_SHA: not posting"
+            exit 0
+          fi
+          base=$(head -c 48 "$ARTIFACT/base" | tr -d '\n')
+          [[ $base =~ ^[0-9a-f]{40}$ ]] || fail "the artifact's base isn't a commit"
+
+          # The images: only plain files and directories; each file a
+          # PNG, under changed/, added/ or removed/, with a name of
+          # letters, digits, `.`, `_` and `-` (not starting with `.`, so
+          # no `..`); at most 200, of at most 1 MiB each.
+          images="$ARTIFACT/images"
+          odd=$(find "$images" -mindepth 1 -not -type d -not -type f | wc -l)
+          # (Not naming them: an unchecked name could be a workflow command.)
+          ((odd == 0)) || fail "the artifact has something other than files"
+          name='[A-Za-z0-9][A-Za-z0-9._-]*'
+          shots=()
+          while IFS= read -r -d '' path; do
+            rel=${path#"$images"/}
+            [[ $rel == report.tsv ]] && continue
+            [[ $rel =~ ^(changed|added|removed)/($name/)*$name\.png$ ]] ||
+              fail "the artifact has a file it shouldn't"
+            (($(stat -c %s "$path") <= 1048576)) || fail "$rel is too large"
+            [[ $(head -c 8 "$path" | od -An -tx1 | tr -d ' \n') == 89504e470d0a1a0a ]] ||
+              fail "$rel isn't a PNG"
+            shots+=("$rel")
+          done < <(find "$images" -type f -print0 | sort -z)
+          ((${#shots[@]} <= 200)) || fail "the artifact has too many images"
+
+          # How many pixels each changed screen differs in, from the
+          # report: only lines that are exactly a known shot and a number.
+          declare -A pixels=()
+          if [[ -f $images/report.tsv ]]; then
+            while IFS=$'\t' read -r kind shot count; do
+              if [[ $kind == changed && $shot =~ ^($name/)*$name\.png$ && $count =~ ^[0-9]{1,9}$ ]]; then
+                pixels[$shot]=$count
+              fi
+            done < <(head -c 65536 "$images/report.tsv")
+          fi
+
+          # ====================================================================
+          # The comment so far, if any
+          # ====================================================================
+
+          comment=$(gh api --paginate "repos/$REPO/issues/$pr/comments" --jq \
+            ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" |
+            sed -n 1p)
+          [[ -z $comment || $comment =~ ^[0-9]+$ ]] || fail "odd comment id"
+          if ((${#shots[@]} == 0)) && [[ -z $comment ]]; then
+            echo "No screen changed, and nothing posted before: not posting"
+            exit 0
+          fi
+
+          # ====================================================================
+          # The images, on the pr-screenshots branch
+          # ====================================================================
+
+          # A commit of just this run's images, on top of the branch (or
+          # starting it), pushed without force: if another run pushed
+          # first, fetch its commit and try again on top of it.
+          if ((${#shots[@]} > 0)); then
+            dest="pr-$pr/$HEAD_SHA"
+            git init -q "$WORK"
+            cd "$WORK"
+            git remote add origin "https://github.com/$REPO"
+            git config http.https://github.com/.extraheader \
+              "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+            for rel in "${shots[@]}"; do
+              mkdir -p "$dest/$(dirname "$rel")"
+              cp "$images/$rel" "$dest/$rel"
+            done
+            git add -A
+            tree=$(git write-tree)
+            pushed=
+            for attempt in 1 2 3 4 5; do
+              parent=()
+              if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+                git fetch -q --depth=1 origin "$branch"
+                parent=(-p FETCH_HEAD)
+              fi
+              commit=$(git -c user.name='github-actions[bot]' \
+                -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+                commit-tree "$tree" "${parent[@]}" -m "PR #$pr at $HEAD_SHA")
+              if git push -q origin "$commit:refs/heads/$branch"; then
+                pushed=1
+                break
+              fi
+              sleep $((attempt * 5))
+            done
+            [[ -n $pushed ]] || fail "couldn't push to $branch"
+            url="https://raw.githubusercontent.com/$REPO/$commit/$dest"
+          fi
+
+          # ====================================================================
+          # The comment
+          # ====================================================================
+
+          body="$RUNNER_TEMP/body.md"
+          count() {
+            local n=0 rel
+            for rel in "${shots[@]}"; do [[ $rel == "$1"/* ]] && n=$((n + 1)); done
+            echo "$n"
+          }
+          {
+            echo "$marker"
+            echo "### Screenshots"
+            echo
+            printf 'What this PR changes on the watch'\''s screens, as the simulator draws them: '
+            printf 'its head, %s, against %s, where it branched off. ' "$HEAD_SHA" "$base"
+            if ((${#shots[@]} == 0)); then
+              echo "**No screen changed.**"
+            else
+              echo "$(count changed) changed, $(count added) added, $(count removed) removed."
+            fi
+            for kind in changed added removed; do
+              n=$(count "$kind")
+              ((n > 0)) || continue
+              echo
+              case $kind in
+                changed) echo "<details open><summary>Changed ($n): before, after, and where (magenta)</summary>" ;;
+                added) echo "<details open><summary>Added ($n)</summary>" ;;
+                removed) echo "<details open><summary>Removed ($n)</summary>" ;;
+              esac
+              for rel in "${shots[@]}"; do
+                [[ $rel == "$kind"/* ]] || continue
+                shot=${rel#"$kind"/}
+                echo
+                if [[ $kind == changed && -n ${pixels[$shot]:-} ]]; then
+                  echo "\`$shot\`: ${pixels[$shot]} pixels differ"
+                else
+                  echo "\`$shot\`"
+                fi
+                echo
+                echo "<img src=\"$url/$rel\" alt=\"$shot ($kind)\">"
+              done
+              echo
+              echo "</details>"
+            done
+          } >"$body"
+
+          payload="$RUNNER_TEMP/payload.json"
+          jq -n --rawfile body "$body" '{body: $body}' >"$payload"
+          if [[ -n $comment ]]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$comment" --input "$payload" >/dev/null
+            echo "Updated the comment on PR #$pr"
+          else
+            gh api "repos/$REPO/issues/$pr/comments" --input "$payload" >/dev/null
+            echo "Commented on PR #$pr"
+          fi

@@ -191,6 +191,34 @@ checked, and the README's `info.png`, which isn't. CI's `sim` job
 uploads what the tests drew, and the images of any differences, as its
 `screenshots` artifact.
 
+On every pull request, CI draws the screenshots for its head and for
+where it branched off its base, and keeps one comment on the PR up to
+date with each screen that changed (before, after, and where, side by
+side), was added, or was removed. It says so when a push leaves no
+screen changed, but doesn't comment at all on a PR that never changed
+one. Two workflows do this, so that a PR from a fork never runs with
+write access:
+
+- `screenshots.yml` runs on the PR, with read-only access: it builds the
+  simulator from both commits, draws both sets, compares them
+  (`ur-sim --diff`), and uploads the differences, with the PR's number,
+  as an artifact.
+- `screenshots-comment.yml` runs after it, on `workflow_run`, from the
+  default branch's copy of itself, never the PR's code. It treats the
+  artifact as untrusted: the PR must exist and have the commit the run
+  was for, and every file must be a PNG with a plain name, of limited
+  size and number. It pushes the images to the `pr-screenshots`
+  branch, under `pr-<number>/<commit>/`, and links them from the comment
+  by that branch's commit, so a later push (or the branch moving on)
+  doesn't change what an older comment shows. It skips Dependabot's
+  PRs, whose runs only get read access.
+
+The `pr-screenshots` branch only ever grows: each push of a PR that
+changes a screen adds a commit with its images (a few kilobytes; each
+commit holds only its own run's images, not the branch's past ones).
+Deleting the branch reclaims the space, but breaks the images in every
+comment so far.
+
 ## A dev kit
 
 A PineTime dev kit is a PineTime with its SWD port exposed. With a debug

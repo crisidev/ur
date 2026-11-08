@@ -130,6 +130,10 @@ compares every PNG under two directories, and writes each that changed
 `DIR/added/`, and each only `BEFORE` has to `DIR/removed/`, with a list,
 `DIR/report.tsv`.
 
+On a pull request, CI draws the screenshots for its head and for where
+it branched off, and comments on it with what changed (see
+[CONTRIBUTING.md](../CONTRIBUTING.md#approved-screenshots)).
+
 ## Recordings
 
 `record FILE.gif` starts an animated GIF of the screen, and `stop`

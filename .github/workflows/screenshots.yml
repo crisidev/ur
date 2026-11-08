@@ -1,0 +1,101 @@
+# On every PR: what it changes on the watch's screens. Draws the
+# simulator's screenshots for the PR's head and for where it branched off
+# its base, compares them (`ur-sim --diff`), and uploads the differences,
+# with the PR's number, for screenshots-comment.yml to post on the PR.
+#
+# This runs the PR's code (its simulator and scripts, maybe from a fork),
+# so it only reads, and posts nothing itself: commenting needs write
+# access, which only screenshots-comment.yml has, and that never runs
+# the PR's code.
+#
+# Against where the PR branched off (the merge base), not the base
+# branch's tip, so what main has gained since doesn't show up as the PR's
+# change; and against its head, not GitHub's merge commit, which a
+# conflict leaves out.
+permissions:
+  contents: read
+on:
+  pull_request:
+# A new push to a PR cancels its run in progress: only the newest is
+# worth posting (and screenshots-comment.yml skips cancelled runs). By
+# the PR's number, as forks' branch names can collide.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+name: screenshots
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    name: render
+    steps:
+      # All of history, for the merge base. No credentials left behind:
+      # nothing here pushes, and the PR's code runs next to them.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          path: head
+          persist-credentials: false
+      - name: check out the merge base
+        id: base
+        working-directory: head
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          base=$(git merge-base HEAD "$BASE_SHA")
+          git worktree add --detach ../base "$base"
+          echo "commit=$base" >>"$GITHUB_OUTPUT"
+      # Each checkout pins its own toolchain (rust-toolchain.toml); usually
+      # the same one.
+      - name: Install the pinned toolchains
+        run: |
+          (cd head && rustup toolchain install)
+          (cd base && rustup toolchain install)
+      # A target directory each (the default, sim/target), so each builds
+      # its dependencies. Sharing one, cargo built only the first: it took
+      # the second simulator for the same package, already up to date,
+      # and ran the first's binary for both.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
+        with:
+          workspaces: |
+            head/sim
+            base/sim
+      # Each checkout's simulator draws that checkout's scripts: the ones
+      # the tests check (sim/tests/scripts.rs), each into a directory of
+      # its own. A script the base doesn't have yet shows as all added.
+      - name: render
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/shots/base" "$GITHUB_WORKSPACE/shots/head"
+          for side in base head; do
+            cd "$GITHUB_WORKSPACE/$side/sim" || exit 1
+            for script in tour gadgetbridge readme-screenshots; do
+              if [[ -f $script.txt ]]; then
+                cargo run --locked --no-default-features -- \
+                  --out "$GITHUB_WORKSPACE/shots/$side/$script" "$script.txt"
+              fi
+            done
+          done
+      # Exits 1 for differences, which aren't a failure here; an error
+      # (which writes no report) is.
+      - name: compare
+        working-directory: head/sim
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          MERGE_BASE: ${{ steps.base.outputs.commit }}
+        run: |
+          out="$GITHUB_WORKSPACE/comment"
+          rc=0
+          cargo run --locked --no-default-features -- --diff \
+            "$GITHUB_WORKSPACE/shots/base" "$GITHUB_WORKSPACE/shots/head" \
+            --out "$out/images" || rc=$?
+          if [[ $rc -ne 0 && ! -f $out/images/report.tsv ]]; then
+            exit "$rc"
+          fi
+          echo "$PR" >"$out/pr"
+          echo "$MERGE_BASE" >"$out/base"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # tag=v7.0.2
+        with:
+          name: screenshots-comment
+          path: comment/
+          if-no-files-found: error
+          retention-days: 7
