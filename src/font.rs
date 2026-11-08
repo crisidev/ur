@@ -236,6 +236,15 @@ pub const PREVIOUS: [u8; 5] = [0b10001, 0b10011, 0b10111, 0b10011, 0b10001];
 pub const NEXT: [u8; 5] = [0b10001, 0b11001, 0b11101, 0b11001, 0b10001];
 pub const PLAY: [u8; 5] = [0b01000, 0b01100, 0b01110, 0b01100, 0b01000];
 pub const PAUSE: [u8; 5] = [0b11011, 0b11011, 0b11011, 0b11011, 0b11011];
+/// Play or pause, whichever the phone wasn't doing: a small play arrow,
+/// then a pause's two bars (▸‖), for a toggle sent without knowing whether
+/// the phone was playing. 6×5, as it needs the gaps to read (at 5 wide it
+/// looked like "HI"): media hints are drawn 6 wide (see
+/// [`MEDIA_HINT_W`]).
+pub const PLAY_PAUSE: [u8; 5] = [0b000101, 0b100101, 0b110101, 0b100101, 0b000101];
+/// How wide a media gesture's hint icon is drawn: [`PLAY_PAUSE`]'s width,
+/// so the 5×5 controls sit a pixel in from its left.
+pub const MEDIA_HINT_W: u32 = 6;
 
 /// 4×7 footprint: toes, sole, and heel.
 pub const FOOT_W: u32 = 4;

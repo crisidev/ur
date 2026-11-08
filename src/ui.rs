@@ -31,14 +31,15 @@
 //!   the content moves.
 //! - Button: back to the clock, sweeping towards it; on the clock, turn the
 //!   screen off. While a call rings: silence it.
-//! - On the clock, while the phone has media (as for the music screen):
-//!   long press to play or pause, double tap (two taps within
-//!   [`DOUBLE_TAP`]) for the next track. Each buzzes, and shows what it did
-//!   for a moment where a note shows while media plays, beside the
-//!   Bluetooth rune. Without media, neither does anything. A long press
-//!   acts (and buzzes) once the finger has been down long enough, before
-//!   it lifts (see [`crate::touch`]); that goes for every long press.
-//!   Both work with the screen off, too (see below).
+//! - On the clock, while a phone is connected: long press to play or
+//!   pause, double tap (two taps within [`DOUBLE_TAP`]) for the next
+//!   track. Each buzzes, and shows what it did for a moment where a note
+//!   shows while media plays, beside the Bluetooth rune. The phone needn't
+//!   have said it has media (see `App::media`). Without a phone, neither
+//!   does anything. A long press acts (and buzzes) once the finger has
+//!   been down long enough, before it lifts (see [`crate::touch`]); that
+//!   goes for every long press. Both work with the screen off, too (see
+//!   below).
 //! - Long press elsewhere: on the alarms screen, switch an alarm on or off;
 //!   on the info screen, offer storage mode (see [`crate::system_off`]),
 //!   which a tap then confirms, and anything else cancels. Elsewhere,
@@ -55,13 +56,13 @@
 //!   [`wake::deliberate`]), or a double tap (two taps within
 //!   [`DOUBLE_TAP`]): wake to the clock. Other touches don't, so a brush of
 //!   a sleeve doesn't light the screen. (The waking input is *only* a
-//!   wake-up; it isn't also acted on.) While the phone has media, outside
+//!   wake-up; it isn't also acted on.) While a phone is connected, outside
 //!   the quiet night, the clock's media gestures work too, without waking
 //!   the screen: a long press plays or pauses, and a double tap is the
-//!   next track. Each buzzes, and flashes the dim glance for a moment
-//!   with what it did in a corner. A deliberate tap still wakes the screen
-//!   at once, and a second within [`DOUBLE_TAP`] is the next track, as on
-//!   a glance. See [`crate::wake`] for the guards against brushes.
+//!   next track. Each buzzes, and that's all: the screen stays dark. So a
+//!   deliberate tap waits [`WAKE_WAIT`] for a second before it wakes the
+//!   screen; one that comes later is the next track on the clock face it
+//!   woke to. See [`crate::wake`] for the guards against brushes.
 //! - No input for [`SCREEN_TIMEOUT`] (longer on the music screen, for a
 //!   long title to scroll by; never while a banner shows): turn the screen
 //!   off.
@@ -69,12 +70,12 @@
 //!   off: a glance, just the time in white on black at a low backlight,
 //!   for [`GLANCE_TIME`]. While the phone navigates, the next turn instead,
 //!   with the time smaller above it. A tap or press during it (one is
-//!   enough: the wearer is looking) wakes the screen properly. While the
-//!   phone has media, outside the quiet night, the clock's media gestures
-//!   work during a glance too: a long press plays or pauses, and the
-//!   glance stays (its icon in a corner, for a moment); a tap still wakes
-//!   the screen at once, and a second within [`DOUBLE_TAP`] is the next
-//!   track, on the clock face it woke to.
+//!   enough: the wearer is looking) wakes the screen properly. While a
+//!   phone is connected, outside the quiet night, the clock's media
+//!   gestures work during a glance too, and the glance stays (with what
+//!   it did in a corner, for a moment): a long press plays or pauses, and
+//!   a double tap is the next track. A tap then wakes the screen after
+//!   [`WAKE_WAIT`], as from off.
 //!
 //! Alarms (see [`crate::alarm`] for when they ring):
 //!
@@ -156,9 +157,18 @@ const SCREEN_TIMEOUT: Duration = Duration::from_secs(10);
 const GLANCE_TIME: Duration = Duration::from_secs(5);
 /// With the screen off, a tap that isn't deliberate (see
 /// [`wake::deliberate`]) still wakes it as the second of two taps this
-/// close together; while the phone has media, that's the next track
-/// instead. On the clock, two taps this close are the next track.
+/// close together; while a phone is connected, that's the next track
+/// instead. On a glance or the clock, two taps this close are the next
+/// track.
 const DOUBLE_TAP: Duration = Duration::from_millis(500);
+/// While a phone is connected, a deliberate tap with the screen off (or on
+/// a glance) waits this long for a second, which would make it a double
+/// tap for the next track, before it wakes the screen (see
+/// [`crate::wake`]). The wearer's double taps in the field log came
+/// 126–156 ms apart: this is twice that, give or take, and a delay a
+/// single tap's wake can live with. A slower double tap wakes the screen
+/// with its first tap, and skips with its second, on the clock face.
+const WAKE_WAIT: Duration = Duration::from_millis(300);
 /// How long a notification banner shows.
 const BANNER_TIME: Duration = Duration::from_secs(4);
 /// A banner's `until` while it waits to be seen: a notification that came
@@ -475,14 +485,18 @@ pub struct App {
     /// While glancing: until when.
     glance_until: Option<Instant>,
     /// When the last tap was, as the possible first of a double tap (see
-    /// [`DOUBLE_TAP`]): with the screen off, to wake it (or, with media,
-    /// for the next track); on the clock, for the next track. One field for
-    /// both, as RAM is tight: a tap only counts while the screen is in the
-    /// same state (on or off) as for the first, as waking or any other
-    /// input clears it. (Bar a tap that wakes the screen, from a glance or,
-    /// with media, from off: that one may be the first of a double tap on
-    /// the clock face it woke to.)
+    /// [`DOUBLE_TAP`]): with the screen off, to wake it (or, with a phone
+    /// connected, for the next track); on a glance or the clock, for the
+    /// next track. One field for all, as RAM is tight: a tap only counts
+    /// while the screen is in the same state (on or off) as for the first,
+    /// as waking or any other input clears it. (Bar a tap that wakes the
+    /// screen after waiting for a second, in [`App::tap_wake`]: that one
+    /// may still be the first of a double tap on the clock face it woke
+    /// to.)
     last_tap: Option<Instant>,
+    /// Whether `last_tap` wakes the screen at [`App::tap_wake_at`], unless
+    /// a second tap (or anything else) comes first.
+    tap_wakes: bool,
     /// Whether it's the quiet night, and what decides when it ends. (8
     /// bytes, in a build with little RAM to spare.)
     night: sleep::Night,
@@ -535,6 +549,7 @@ impl App {
             local_second: None,
             glance_until: None,
             last_tap: None,
+            tap_wakes: false,
             night: sleep::Night::default(),
             brightness: brightness::Setting::default(),
             small_hours: false,
@@ -769,45 +784,62 @@ impl App {
             }
             other => other,
         };
+        // A tap waiting to wake the screen (see `tap_wake`) is settled by
+        // whatever comes next: a second tap makes it a double tap, and
+        // anything else does what it does.
+        let tap_waiting = core::mem::take(&mut self.tap_wakes);
         // Touching or pressing during a glance: wake properly (and, as
         // with any wake-up, don't also act on it). Bar the clock face's
-        // media gestures, while the phone has media: a long press plays or
-        // pauses without waking (a look at the wrist is all the wearer
-        // wanted), and a tap, though it wakes the screen at once, may be
-        // the first of a double tap for the next track, on the clock face
-        // it woke to. Not in the quiet night, when bedding presses on a
-        // wrist that turned in sleep could otherwise start the music; there
-        // any touch only wakes the screen, as before.
+        // media gestures, while a phone is connected: a long press plays
+        // or pauses, and a double tap skips, both without waking (a look
+        // at the wrist is all the wearer wanted), the glance showing what
+        // it did. So a tap waits a moment (see `tap_wake`) before it wakes
+        // the screen, in case a second follows. Not in the quiet night,
+        // when bedding presses on a wrist that turned in sleep could
+        // otherwise start the music; there any touch only wakes the
+        // screen, as before.
         if let Some(until) = self.glance_until {
-            let media = self.music.is_some() && !self.night.quiet();
+            let media = self.connected && !self.night.quiet();
             let gesture = match event {
                 InputEvent::Touch(touch) if media => Some(touch.gesture),
                 _ => None,
             };
-            if gesture == Some(Gesture::LongPress) {
-                self.media(MusicCommand::PlayPause);
-                // Long enough for what it did to show (see `render`).
-                let hint = Duration::from_secs(u64::from(MEDIA_HINT_TICKS));
-                self.glance_until = Some(until.max(now + hint));
-                return;
-            }
-            self.glance_until = None;
-            self.last_input = now;
-            self.last_tap = (gesture == Some(Gesture::Tap)).then_some(now);
+            let second_tap =
+                tap_waiting && self.last_tap.is_some_and(|tap| now - tap <= DOUBLE_TAP);
+            let command = match gesture {
+                Some(Gesture::LongPress) => MusicCommand::PlayPause,
+                Some(Gesture::Tap) if second_tap => MusicCommand::Next,
+                Some(Gesture::Tap) => {
+                    self.last_tap = Some(now);
+                    self.tap_wakes = true;
+                    return;
+                }
+                _ => {
+                    self.glance_until = None;
+                    self.last_input = now;
+                    self.last_tap = None;
+                    return;
+                }
+            };
+            self.media(command);
+            self.last_tap = None;
+            // Long enough for what it did to show (see `render`).
+            let hint = Duration::from_secs(u64::from(MEDIA_HINT_TICKS));
+            self.glance_until = Some(until.max(now + hint));
             return;
         }
         // With the screen off, a touch only wakes it if it's a deliberate
-        // tap, or the second of a double tap; while the phone has media,
+        // tap, or the second of a double tap; while a phone is connected,
         // a long press plays or pauses, and a double tap skips, without
-        // waking it. Anything else (a swipe, a short tap or one at the
-        // edge) is most likely a brush, and is ignored, bar remembering a
-        // tap. See `wake` for the rules, and the field logs behind them.
+        // waking it, and a deliberate tap waits a moment to see which it
+        // is. Anything else (a swipe, a short tap or one at the edge) is
+        // most likely a brush, and is ignored, bar remembering a tap. See
+        // `wake` for the rules, and the field logs behind them.
         //
         // In the quiet night, no touch does anything: bedding and pillows
         // make deliberate-looking taps, and pairs of them (one night, a
         // 193 ms tap mid-screen, and two taps 150 ms apart, both lit the
         // screen). The button and a glance still wake it.
-        let mut wake_tap = None;
         if !self.awake
             && let InputEvent::Touch(touch) = event
         {
@@ -817,7 +849,6 @@ impl App {
                 _ => wake::Kind::Swipe,
             };
             let recent_tap = self.last_tap.is_some_and(|tap| now - tap <= DOUBLE_TAP);
-            let media = self.music.is_some();
             let quiet = self.night.quiet();
             self.last_tap = None;
             let command = match wake::screen_off(
@@ -826,49 +857,36 @@ impl App {
                 touch.y,
                 touch.held_ms,
                 recent_tap,
-                media,
+                self.connected,
                 quiet,
             ) {
                 Action::Ignore => return,
-                Action::FirstTap => {
+                Action::FirstTap { then_wake } => {
                     self.last_tap = Some(now);
+                    self.tap_wakes = then_wake;
                     return;
                 }
-                // Waking, below; with media, the tap may also be the first
-                // of a double tap on the clock face it wakes to, as on a
-                // glance.
-                Action::Wake { first_tap: true } => {
-                    wake_tap = Some(now);
-                    None
-                }
-                Action::Wake { first_tap: false } => None,
+                // Waking, below.
+                Action::Wake => None,
                 Action::PlayPause => Some(MusicCommand::PlayPause),
                 Action::Next => Some(MusicCommand::Next),
             };
-            // A media gesture: the buzz says it took. The screen stays off,
-            // bar a flash of the dim glance with what it did in the corner
-            // (as after a long press on a glance), for the wearer who does
-            // look: play, pause, and next all buzz alike. It's not input,
-            // so it doesn't hold the screen on, and it isn't a proper
-            // wake: a tap during it wakes the screen, as on any glance.
+            // A media gesture: the buzz says it took, and the screen stays
+            // off. (It used to flash the dim glance with what it did, but
+            // the buzz was confirmation enough, and play, pause, and next
+            // are told apart by what the phone then plays.)
             if let Some(command) = command {
                 // For telling a sleeve's doing from the wearer's in a
                 // field log.
                 defmt::info!("media: {} with the screen off", command);
                 self.media(command);
-                self.awake = true;
-                self.screen = Screen::Clock;
-                // Over on the tick that ends the hint (its first comes
-                // within a second), rather than showing the bare time for
-                // a last second.
-                let flash = Duration::from_secs(u64::from(MEDIA_HINT_TICKS - 1));
-                self.glance_until = Some(now + flash);
                 return;
             }
         }
         // The first of a double tap on the clock, if this may be the
-        // second. (Never a tap from before the screen woke: waking only
-        // keeps the tap that woke it, below, for the next one.)
+        // second. (Never a tap from before the screen woke, bar the one
+        // that woke it after waiting, in `tap_wake`: a slower double tap's
+        // second tap still skips, on the clock face the first woke to.)
         let first_tap = self
             .last_tap
             .take()
@@ -887,7 +905,6 @@ impl App {
         if !self.awake {
             self.awake = true;
             self.screen = Screen::Clock;
-            self.last_tap = wake_tap;
             return;
         }
         // Pairing or an update: what's beneath doesn't show, so touches
@@ -996,8 +1013,8 @@ impl App {
                 // TODO: remove once something real uses the motor; for now
                 // this is how we check it works.
                 (Gesture::Tap, Screen::Info) => motor::buzz(Pattern::NOTIFY),
-                // Media, from the clock face, while the phone has some (see
-                // `media`): long press to play or pause, double tap for the
+                // Media, from the clock face, while a phone is connected
+                // (see `media`): long press to play or pause, double tap for the
                 // next track. A single tap does nothing, so it needn't wait
                 // to see whether a second follows.
                 (Gesture::LongPress, Screen::Clock) if !notification_shown => {
@@ -1012,17 +1029,53 @@ impl App {
         }
     }
 
-    /// Controls the phone's media from the clock face, if it has some:
-    /// buzzes, and shows what it did in the media icon's place for a
-    /// moment (see [`MEDIA_HINT_TICKS`]), so the wearer knows it took.
+    /// When a tap that's waiting to see whether a second follows (see
+    /// [`WAKE_WAIT`]) wakes the screen, if one is: for `main` to call
+    /// [`App::tap_wake`] then.
+    pub fn tap_wake_at(&self) -> Option<Instant> {
+        self.last_tap
+            .filter(|_| self.tap_wakes)
+            .map(|tap| tap + WAKE_WAIT)
+    }
+
+    /// No second tap came after a deliberate one (see [`WAKE_WAIT`]): it
+    /// wakes the screen after all, or turns a glance into a proper wake.
+    /// Keeps the tap, so that a second one on the clock face, as from a
+    /// slower double tap, still skips. Does nothing before
+    /// [`App::tap_wake_at`]. Returns whether the screen woke from off.
+    pub fn tap_wake(&mut self, now: Instant) -> bool {
+        if self.tap_wake_at().is_none_or(|at| now < at) {
+            return false;
+        }
+        self.tap_wakes = false;
+        self.last_input = now;
+        if self.glance_until.take().is_some() || self.awake {
+            return false;
+        }
+        self.awake = true;
+        self.screen = Screen::Clock;
+        true
+    }
+
+    /// Controls the phone's media from the clock face, while a phone is
+    /// connected: buzzes, and shows what it did in the media icon's place
+    /// for a moment (see [`MEDIA_HINT_TICKS`]), so the wearer knows it
+    /// took.
+    ///
+    /// The phone needn't have said it has media: Gadgetbridge only sends
+    /// what plays when it changes, so after the watch restarts there may be
+    /// no word for a whole album. Its commands act on whatever player the
+    /// phone has anyway (`playpause` toggles it, as a headset's button
+    /// does), so they're sent regardless.
     fn media(&mut self, command: MusicCommand) {
-        let Some(music) = &mut self.music else {
+        if !self.connected {
             return;
-        };
+        }
         send(Outgoing::Music(command));
-        let icon = match command {
-            // As the music screen does, the new state straight away.
-            MusicCommand::PlayPause => {
+        let icon = match (command, &mut self.music) {
+            // As the music screen does, the new state straight away, if
+            // it's known.
+            (MusicCommand::PlayPause, Some(music)) if music.playing.is_some() => {
                 music.toggle();
                 if music.playing() {
                     &font::PLAY
@@ -1030,12 +1083,19 @@ impl App {
                     &font::PAUSE
                 }
             }
-            MusicCommand::Next => {
-                music.likely_playing();
+            // Otherwise, not a guess: the toggle's own icon. The phone says
+            // which it was once its player changes.
+            (MusicCommand::PlayPause, _) => &font::PLAY_PAUSE,
+            (MusicCommand::Next, music) => {
+                if let Some(music) = music {
+                    music.likely_playing();
+                }
                 &font::NEXT
             }
-            MusicCommand::Previous => {
-                music.likely_playing();
+            (MusicCommand::Previous, music) => {
+                if let Some(music) = music {
+                    music.likely_playing();
+                }
                 &font::PREVIOUS
             }
         };
@@ -1517,10 +1577,10 @@ impl App {
                 Some(route) => render_route_glance(canvas, status, &route.step),
                 None => render_glance(canvas, status),
             }
-            // Just after a long press played or paused the media, what it
-            // did, in the top right corner, which both layouts leave free.
+            // Just after a media gesture, what it did, in the top right
+            // corner, which both layouts leave free.
             if let Some((icon, _)) = self.media_hint {
-                canvas.sprite(67, 3, 5, icon, 2, Color::TEXT);
+                canvas.sprite(65, 3, font::MEDIA_HINT_W, icon, 2, Color::TEXT);
             }
             return;
         }
@@ -1550,7 +1610,7 @@ impl App {
                 // While media plays, a note; just after a media gesture,
                 // what it did.
                 let icon = match (self.media_hint, &self.music) {
-                    (Some((icon, _)), _) => Some((5, &icon[..], 3)),
+                    (Some((icon, _)), _) => Some((font::MEDIA_HINT_W, &icon[..], 3)),
                     (None, Some(music)) if music.playing() => {
                         Some((font::NOTE_W, &font::NOTE[..], 2))
                     }

@@ -580,6 +580,11 @@ async fn main(spawner: Spawner) {
             next_battery_log = now + Duration::from_secs(10 * 60);
         }
 
+        // Every pass, not only while the screen is on: its media gestures
+        // work with it off too, and need to know there's a phone to send
+        // them to.
+        let connected = ble::CONNECTED.load(Ordering::Relaxed);
+        app.set_connected(connected);
         // Apply screen power changes. Waking renders before the backlight
         // comes on, so the old frame never flashes up.
         if app.awake {
@@ -589,7 +594,7 @@ async fn main(spawner: Spawner) {
             let status = Status {
                 uptime_secs: now.as_secs(),
                 local_time: clock::now(),
-                connected: ble::CONNECTED.load(Ordering::Relaxed),
+                connected,
                 unpaired: ble::UNPAIRED.lock(Cell::get),
                 passkey: ble::PASSKEY.lock(Cell::get),
                 update_progress: dfu::PROGRESS.lock(Cell::get),
@@ -601,7 +606,6 @@ async fn main(spawner: Spawner) {
                 battery: &battery,
             };
             app.set_daytime(geo::is_daytime());
-            app.set_connected(status.connected);
             // Into or out of the dim white-on-black look (a glance, a quiet
             // notification) with the panel lit: go dark for the redraw.
             // Otherwise the old frame (often a light theme, at full
@@ -681,17 +685,25 @@ async fn main(spawner: Spawner) {
         clock::checkpoint();
 
         // Wake for the next second, the next input, or, while text is
-        // scrolling, the next animation frame (which only redraws).
+        // scrolling, the next animation frame (which only redraws), or
+        // when a tap that waited for a second should wake the screen (see
+        // `ui::WAKE_WAIT`), whichever comes first.
+        let frame_at = app
+            .animating()
+            .then(|| Instant::now() + canvas::MARQUEE_FRAME);
         let frame = async {
-            if app.animating() {
-                Timer::after(canvas::MARQUEE_FRAME).await;
-            } else {
-                core::future::pending::<()>().await;
+            match app.tap_wake_at().into_iter().chain(frame_at).min() {
+                Some(at) => Timer::at(at).await,
+                None => core::future::pending::<()>().await,
             }
         };
         let alarms_before = app.alarms;
         match select3(ticker.next(), INPUT.receive(), frame).await {
-            Either3::Third(()) => {}
+            Either3::Third(()) => {
+                if app.tap_wake(Instant::now()) {
+                    power::count(power::Count::WakeTouch);
+                }
+            }
             Either3::First(()) => {
                 // A stir after stillness: what a smart alarm waits for.
                 let stirring = activity::movement() >= sleep::STILL_LIMIT;
