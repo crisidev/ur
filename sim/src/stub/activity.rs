@@ -53,6 +53,15 @@ pub fn asleep() -> bool {
     state().asleep
 }
 
+/// Whether the accelerometer finds the watch perfectly still: never here,
+/// as the simulated wearer has it on.
+///
+/// TODO: a command for a watch left lying on a desk, which the
+/// temperature's wear model notices (see `temperature::Wear`).
+pub fn still() -> bool {
+    false
+}
+
 pub fn movement() -> u16 {
     state().movement
 }
@@ -122,6 +131,14 @@ pub fn add_to_today(steps: u32) {
         Some((d, total)) if d == day => Some((day, total + steps)),
         _ => Some((day, steps)),
     };
+}
+
+/// As `activity::record_heart_rate`: a reading in the current minute's
+/// sample, if the time is known.
+pub fn record_heart_rate(bpm: u8) {
+    if let Some(second) = clock::now_utc_seconds() {
+        record_heart_rate_at(second.div_euclid(60), bpm);
+    }
 }
 
 /// Records a heart rate reading in a UTC minute's sample.

@@ -11,6 +11,7 @@ cd sim
 cargo run --release                          # the window
 cargo run --release -- tour.txt --out shots  # a script, headless
 cargo run --release -- --window tour.txt     # a script, then the window
+cargo run --release -- --flash my.bin        # settings kept between runs
 ```
 
 It builds for whatever computer you're on (`.cargo/config.toml` sets the
@@ -102,7 +103,8 @@ tap                               # snooze
 - **Time:** `wait 1.5s`, `until HH:MM`.
 - **Output:** `shot FILE.png [THEME]` (with a theme: in its colours, as
   `screenshot.py --theme`; with `--watch`, the whole watch, as the window
-  draws it), `record FILE.gif` … `stop` (see below), `expect`.
+  draws it), `record FILE.gif` … `stop` (see below), `expect`, and
+  `settings` (what the flash holds, decoded as the firmware does).
 
 `gb` takes a line exactly as Gadgetbridge sends it (less the `\x10`
 before it), say from Gadgetbridge's log, and runs it through the
@@ -240,24 +242,59 @@ messages the simulator can't know, and they stop the run.
 `devkit-compare.txt` goes round every screen it
 can reach (and puts back what it changes).
 
+## The flash
+
+The watch keeps its settings (themes, brightness, the button grid,
+alarms, the phone's alarms, the location, the temperature's
+calibration) in 12 KiB of its internal flash, and so does the
+simulator: the firmware's own storage (`src/storage.rs`, and the
+sequential-storage map under it) runs over a model of NOR flash with the
+chip's pages and addresses. The UI loop saves what changes, and loads it
+at boot, as on the watch. Without `--flash`, the flash starts erased and
+is forgotten at the end (so scripts and tests don't depend on what ran
+before; so does the browser's); with `--flash FILE`, it's kept in `FILE`
+from one run to the next.
+
+`FILE` is the region's 12 KiB as on the chip, so it can be a watch's own,
+dumped over SWD, to see what a release saved and boot with it:
+
+```sh
+esprobe --target nRF52832_xxAA fast-dump flash.bin --address 512000 --size 12288  # 0x7D000
+echo settings | cargo run --release -- --flash flash.bin -
+```
+
+Switching off (storage mode, an empty battery) and back on (the button, the
+charger) boots again as the watch does: the settings come from the flash,
+uptime starts from 0, the time, the heart rate and the Aranet4s heard are
+lost, and a connected phone sets the time again. Today's steps and
+history are kept, as the watch keeps them in its SPI flash.
+
 ## How it works
 
 `src/lib.rs` includes the firmware's hardware-free modules with
 `#[path]`, as the host tests do, at the crate root where their `crate::…`
-paths expect each other. Stand-ins replace the rest:
+paths expect each other. That includes the UI loop itself
+(`src/ui_loop.rs`): what the loop does on a tick, an input or its
+timer, when it renders and with what, the temperature it shows, the
+screen's power, and what it saves are the firmware's code, run by
+`watch.rs` on a clock of its own (at the watch's 32 768 Hz), which only
+moves when told: scripts are deterministic, and skip hours at no cost.
+Stand-ins replace the rest:
 
 - `display`: a fake ST7789 that collects what `Canvas::flush` and
   `Canvas::transition` push, so screenshots, recordings, and the window
   show what the panel would, transitions included. A recording
   (`src/record.rs`) looks at it each time the clock is about to move.
+- `watch::Hardware`: what `main.rs` drives for the UI loop (the panel's
+  power, the backlight, the battery and die temperature readings, the
+  button grid's advertisements, which are printed), as told by commands.
+- `flash`: the internal flash, above.
 - `activity`: steps, heart rates and sleep, as told.
-- `ble`: the queue of messages for the phone, which are printed.
+- `ble`, `dfu`, `power`: what the Bluetooth and update tasks share with
+  the UI loop (the phone's connection, a passkey, update progress, the
+  Aranet4s a scan heard, the queue of messages for the phone, which are
+  printed), and the hourly power report's counters.
 - `motor` is the real one; the simulator plays its requests on the bezel.
-
-`watch.rs` is `main.rs`'s UI loop again (ticks, inputs, frames, screen
-power), on a clock of its own (at the watch's 32 768 Hz), which only moves
-when told: scripts are deterministic, and skip hours at no cost. **It mirrors `main.rs` by hand**:
-a change to the UI loop there may need one here.
 
 The browser's build is the same library, as a WebAssembly module whose
 exports (`src/web.rs`) the page calls each animation frame and for each
@@ -271,20 +308,26 @@ log lines go to it, and files download.
 - **Sensors.** Steps, movement, heart rate, sleep and temperature are
   whatever you set: the accelerometer and heart rate processing, the
   sleep classifier, and the wrist-turn detector don't run (`asleep on`
-  says the classifier decided; `glance` that the wrist turned).
+  says the classifier decided; `glance` that the wrist turned; `heart`
+  that a measurement just finished, so it shows for half an hour, and
+  the watch is taken to be worn). `temperature` is the die's, read once a
+  minute as on the watch, and shown as the firmware would: as an
+  Aranet4's if one's fresh, else as the wrist's estimate once worn. The
+  watch is never lying still on a desk.
 - **Bluetooth.** Only the phone's messages: `gb` parses its lines as the
   watch does, but no radio, GATT, or MTU-sized pieces carry them.
   Pairing, bonds, updates, GPS requests and the activity sync don't run;
   `passkey` and `update` only show their screens.
-- **Flash.** Nothing is saved between runs. After switching off, the
-  watch reboots with its settings, and the clock and uptime keep running
-  (on the watch, uptime starts again, and the time is lost until the
-  phone sets it).
+- **Flash, in part.** Settings are saved and loaded (see
+  [The flash](#the-flash)), but a location from the phone isn't saved,
+  and Bluetooth bonds and the SPI flash (the activity record, field logs)
+  aren't simulated.
 - **Timing.** Pushing pixels takes no time (on the watch, SPI does), so
-  a transition takes only its frame timer's ~0.1 s. The backlight's
-  switching off while redrawing into or out of the dim look isn't shown.
+  a transition takes only its frame timer's ~0.1 s, and every frame is
+  whole the moment it's pushed: the panel's sleep, idle mode and refresh
+  are told what the watch tells them, but only idle mode shows.
 - **Logs.** The firmware's defmt logs go nowhere (decoding them isn't
   wired up). The simulator prints what happens instead.
 - The touch controller's quirks (missed lifts, garbage reports), the
-  watchdog, panics' breadcrumbs, the bootloader, and anything else below
-  the UI.
+  watchdog (the UI loop feeds nothing), resets that keep RAM, panics'
+  breadcrumbs, the bootloader, and anything else below the UI.

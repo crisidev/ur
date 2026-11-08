@@ -1,46 +1,49 @@
-//! The simulated watch: `main.rs`'s UI loop, against a clock we control.
+//! The simulated watch: the firmware's UI loop ([`crate::ui_loop`]),
+//! against a clock we control.
 //!
-//! On the watch, the UI loop wakes once a second (a tick), on every input,
-//! and every [`MARQUEE_FRAME`] while text scrolls; each pass renders a
-//! frame (if the screen is on) and pushes what changed to the panel. Here
-//! the same happens, in the same order, but time only moves when
-//! [`Watch::advance`] moves it (see [`crate::time`]): a script's
-//! hour passes in milliseconds, and the same script gives the same frames
-//! every time.
+//! On the watch, `main.rs` runs the UI loop: it wakes once a second (a
+//! tick), on every input, and when its timer is due (scrolling text, the
+//! button grid), has [`UiLoop::handle`] act on that, then has
+//! [`UiLoop::pass`] render a frame (if the screen is on) and push what
+//! changed to the panel. Here the same code runs, in the same order, but
+//! time only moves when [`Watch::advance`] moves it (see [`crate::time`]):
+//! a script's hour passes in milliseconds, and the same script gives the
+//! same frames every time.
 //!
-//! What this mirrors from `main.rs` has to be kept in step with it by
-//! hand: it's the part of the UI loop that isn't hardware (building
-//! [`Status`], the screen power and dim-look bookkeeping, the tick's alarm
-//! checks), and it's short. What it leaves out is listed in README.md.
+//! What's left here is what `main.rs` has instead: deciding when the next
+//! tick or timer is due (on the watch, a ticker and a timer do), and the
+//! hardware the loop drives ([`Hardware`], stand-ins for `main.rs`'s), plus
+//! what the simulator itself does: the finger, the motor, switching off
+//! and back on, and saying what happens.
 
 use std::future::Future;
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
-use embassy_time::{Duration, Instant};
+use embassy_time::{Duration, Instant, Timer};
 
-use crate::activity;
-use crate::aranet::{self, Sighting};
-use crate::battery::Battery;
-use crate::ble;
+use crate::aranet::Sighting;
 use crate::brightness;
 use crate::bthome::{self, Identity};
-use crate::canvas::{Canvas, MARQUEE_FRAME, Sweep};
+use crate::buttons::Press;
+use crate::canvas::Canvas;
 use crate::case::Pulse;
 use crate::clock;
 use crate::display::{Display, PANEL};
+use crate::flash::Flash;
 use crate::geo;
 use crate::gesture::Tracking;
+use crate::heart_reading;
 use crate::motor::{self, Pattern};
-use crate::sleep;
+use crate::storage;
 use crate::system_off::Reason;
-use crate::temperature;
 use crate::theme::Theme;
-use crate::ui::{self, App, Status, ThemeChoice, Unpaired};
-use crate::{InputEvent, alarm};
+use crate::touch;
+use crate::ui::{self, App, Unpaired};
+use crate::ui_loop::{self, Board, Settings, Stored, UiLoop, Wake};
+use crate::{InputEvent, ble, dfu};
 
-/// How often the UI loop ticks.
-const TICK: Duration = Duration::from_secs(1);
+pub use crate::ui_loop::local_second;
 
 /// How long the switching-off screen shows (`system_off::SHOW_FOR`).
 const OFF_SCREEN: Duration = Duration::from_secs(3);
@@ -60,33 +63,31 @@ pub const DEMO_IDENTITY: Identity = Identity {
 
 pub struct Watch {
     pub app: App,
+    ui: UiLoop,
     canvas: Box<Canvas>,
     display: Display,
-    battery: Battery,
 
     // What the hardware would tell the UI loop.
     pub battery_mv: u32,
     pub charging: bool,
     pub power_present: bool,
+    /// The die's temperature, in °C.
+    pub temperature: i8,
+    /// Day or night, whatever the sun says (see `theme`).
+    pub daytime: Option<bool>,
+
+    // What the Bluetooth task would tell it (see `publish`).
     pub connected: bool,
     pub unpaired: Option<Unpaired>,
     pub passkey: Option<u32>,
     pub update_progress: Option<u8>,
-    pub heart_rate: Option<u8>,
-    pub temperature: Option<i8>,
-    /// The nearest Aranet4's reading, as a scan would have left it (the
-    /// simulator doesn't scan; `aranet` sets it).
-    pub air: Option<Sighting>,
-    /// Day or night, whatever the sun says (see `theme`).
-    pub daytime: Option<bool>,
 
-    // The UI loop's own state.
-    panel_awake: bool,
-    first_frame: bool,
+    /// Whether the first pass has run (see `power_on`).
+    started: bool,
     next_tick: Instant,
-    /// When the last pass ended: the marquee's next frame is due
-    /// [`MARQUEE_FRAME`] after it.
-    last_pass: Instant,
+    /// When the UI loop's timer is next due, as the last pass left it
+    /// (see [`ui_loop::timer_at`]).
+    timer: Option<Instant>,
 
     /// The backlight, as the UI loop last set it; `OFF` with the screen off.
     pub backlight: brightness::Level,
@@ -98,6 +99,12 @@ pub struct Watch {
     /// The watch switched itself off (storage mode, or an empty battery):
     /// only the button (storage mode) or the charger wakes it.
     pub off: Option<Reason>,
+    /// The phone's time when the watch switched off, and when that was:
+    /// what it sets again when it reconnects after the watch boots.
+    phone_time: Option<(i64, i16, Instant)>,
+    /// When the clock started again from 0 (a reboot), on the old clock:
+    /// for [`Watch::advance`], to carry on for what's left of its wait.
+    restarted_at: Option<Instant>,
     /// The BTHome counter (see `bthome::send`), for the advertisements
     /// printed.
     bthome_counter: u32,
@@ -110,40 +117,37 @@ pub struct Watch {
 }
 
 impl Watch {
-    /// A watch about to boot: no time, no phone. Its first frame sweeps in
-    /// at the first command that shows anything, or once time passes, so a
-    /// script's first lines can set up what it boots into (say, the
-    /// battery's first reading).
-    pub fn boot() -> Self {
+    /// A watch about to boot, with `flash` (its settings, if any): no time,
+    /// no phone. Its first frame sweeps in at the first command that shows
+    /// anything, or once time passes, so a script's first lines can set up
+    /// what it boots into (say, the battery's first reading).
+    pub fn boot(flash: Flash) -> Self {
+        storage::init(flash);
+        let (app, ui) = start();
         let now = Instant::now();
         Self {
-            app: App::new(
-                now,
-                ThemeChoice { light: 0, dark: 0 },
-                alarm::Settings::default(),
-            ),
+            app,
+            ui,
             canvas: Box::new(Canvas::new()),
             display: Display,
-            battery: Battery::new(),
             battery_mv: DEFAULT_BATTERY_MV,
             charging: false,
             power_present: false,
+            temperature: 31,
+            daytime: None,
             connected: false,
             unpaired: None,
             passkey: None,
             update_progress: None,
-            heart_rate: None,
-            temperature: Some(31),
-            air: None,
-            daytime: None,
-            panel_awake: false,
-            first_frame: true,
-            next_tick: now + TICK,
-            last_pass: now,
+            started: false,
+            next_tick: now + ui_loop::TICK,
+            timer: None,
             backlight: brightness::Level::OFF,
             motor: None,
             finger: None,
             off: None,
+            phone_time: None,
+            restarted_at: None,
             bthome_counter: 256,
             on_frame: None,
             verbose: false,
@@ -152,61 +156,77 @@ impl Watch {
 
     /// Shows the first frame, if it hasn't been yet.
     fn power_on(&mut self) {
-        if self.first_frame {
+        if !self.started {
             self.pass();
         }
     }
 
-    /// Starts afresh after switching off, as waking from System OFF does
-    /// (the settings in flash survive; nothing else does, bar the clock,
-    /// which here keeps running: see README.md).
+    /// Boots again after switching off, as waking from System OFF does:
+    /// RAM is lost (the time, the heart rate, the Aranet4s heard, uptime),
+    /// the settings in flash are what the UI starts with, and the phone, if
+    /// it's there, reconnects and sets the time again.
+    ///
+    /// Kept, as the watch keeps them in its SPI flash: today's steps and
+    /// the activity history (`system_off`'s record). Kept as they are, as
+    /// the world outside the watch: the phone's connection, and the
+    /// location (which the watch saves in flash when the phone sends one;
+    /// the simulator doesn't yet).
+    ///
+    /// TODO: save `location`s and `gb` GPS fixes to flash as `ble` does,
+    /// and forget the location here, for a reboot that loads it.
     fn reboot(&mut self) {
-        let themes = self.app.themes;
-        let alarms = self.app.alarms;
-        let phone_alarms = self.app.phone_alarms;
-        let brightness = self.app.brightness;
-        let buttons = self.app.buttons;
-        self.app = App::new(Instant::now(), themes, alarms);
-        self.app.phone_alarms = phone_alarms;
-        self.app.brightness = brightness;
-        self.app.buttons = buttons;
-        self.battery = Battery::new();
+        let off_for = self.phone_time.map(|(_, _, at)| Instant::now() - at);
+        self.restarted_at = Some(Instant::now());
+        clock::lose();
+        heart_reading::forget();
+        ble::NEARBY.lock(|nearby| *nearby.borrow_mut() = crate::aranet::Nearby::new());
+        crate::time::restart();
+        self.passkey = None;
+        self.update_progress = None;
+        // As `main`, at boot.
+        clock::restore();
+        (self.app, self.ui) = start();
         self.off = None;
-        self.first_frame = true;
-        self.next_tick = Instant::now() + TICK;
+        self.motor = None;
+        // Its `Instant` is from before the restart.
+        crate::record::motor(None);
+        self.finger = None;
+        self.started = false;
+        self.next_tick = Instant::now() + ui_loop::TICK;
+        self.timer = None;
         self.log("booted");
+        if let (true, Some((utc, offset, _)), Some(off_for)) =
+            (self.connected, self.phone_time.take(), off_for)
+        {
+            clock::set(utc + off_for.as_secs() as i64, offset);
+            self.log("the phone reconnected, and set the time");
+        }
         self.pass();
     }
 
     pub fn log(&self, message: impl AsRef<str>) {
-        let uptime = Instant::now().as_millis();
-        let wall = clock::now()
-            .map(|t| format!(" {:02}:{:02}:{:02}", t.hour, t.minute, t.second))
-            .unwrap_or_default();
-        crate::platform::log(&format!(
-            "[{:>6}.{:03}{wall}] {}",
-            uptime / 1000,
-            uptime % 1000,
-            message.as_ref()
-        ));
+        log(message);
     }
 
     // ==========================================================================
     // Time
     // ==========================================================================
 
-    /// Lets `duration` pass: every tick, marquee frame, long press, and
-    /// button grid deadline due in it happens, in order.
+    /// Lets `duration` pass: every tick, timer, and long press due in it
+    /// happens, in order.
     pub fn advance(&mut self, duration: Duration) {
         self.power_on();
-        let end = Instant::now() + duration;
+        // A reboot before this wait (the button's) has nothing to carry on.
+        self.restarted_at = None;
+        let mut end = Instant::now() + duration;
         loop {
-            let frame = self.app.animating().then(|| self.last_pass + MARQUEE_FRAME);
+            // Rebooted (by the charger, at a tick): the clock started again
+            // from 0, and the wait goes on for what was left of it.
+            if let Some(at) = self.restarted_at.take() {
+                end = Instant::from_ticks(0) + (end - at);
+            }
             let press = self.finger.as_ref().and_then(Tracking::long_press_at);
-            // As `main.rs`: not while a finger is down.
-            let due = self.app.deadline().filter(|_| self.finger.is_none());
-            let frame = frame.into_iter().chain(due).min();
-            let next = [Some(self.next_tick), frame, press]
+            let next = [Some(self.next_tick), self.timer, press]
                 .into_iter()
                 .flatten()
                 .min()
@@ -219,10 +239,10 @@ impl Watch {
             if press == Some(next) {
                 self.long_press();
             } else if next == self.next_tick {
-                self.next_tick += TICK;
+                self.next_tick += ui_loop::TICK;
                 self.tick();
             } else {
-                self.app.on_timer(next, self.finger.is_some());
+                self.handle(Wake::Timer);
                 self.after_event();
                 self.pass();
             }
@@ -248,14 +268,8 @@ impl Watch {
         if self.off.is_some() {
             return self.off_tick();
         }
-        let now = Instant::now();
-        // A stir after stillness: what a smart alarm waits for.
-        let stirring = activity::movement() >= sleep::STILL_LIMIT;
         let night = self.app.quiet_night();
-        self.app
-            .check_alarms(now, local_second(), stirring, activity::asleep());
-        let watching = self.passkey.is_some() || self.update_progress.is_some();
-        self.app.on_tick(now, watching);
+        self.handle(Wake::Tick);
         if self.app.quiet_night() != night {
             self.log(format!("quiet night: {}", self.app.quiet_night()));
         }
@@ -285,7 +299,7 @@ impl Watch {
         let themes = self.app.themes;
         let brightness = self.app.brightness;
         let buttons = self.app.buttons;
-        self.app.on_input(event, Instant::now());
+        self.handle(Wake::Input(event));
         if self.app.themes != themes {
             self.log(format!("theme: {}", self.app.theme().name));
         }
@@ -299,17 +313,11 @@ impl Watch {
         self.pass();
     }
 
-    /// Whether the touch controller is asleep, so touches don't register
-    /// at all: with the screen off in the quiet night (see
-    /// `touch::set_asleep`).
-    fn touch_asleep(&self) -> bool {
-        self.app.quiet_night() && !self.app.awake
-    }
-
     /// A finger down at, or moved to, (`x`, `y`) in panel pixels (0–239),
-    /// as the touch controller would report it.
+    /// as the touch controller would report it: not at all while the UI
+    /// loop has it asleep (see `touch::set_asleep`).
     pub fn finger_at(&mut self, x: i32, y: i32) {
-        if self.touch_asleep() || self.off.is_some() {
+        if touch::asleep() || self.off.is_some() {
             return;
         }
         let at = (x.clamp(0, 239), y.clamp(0, 239));
@@ -342,8 +350,8 @@ impl Watch {
         self.input(InputEvent::Touch(touch));
     }
 
-    /// What every event may have set off: buzzes, messages for the phone,
-    /// and settings `main.rs` would save.
+    /// What every event may have set off: buzzes, and messages for the
+    /// phone.
     fn after_event(&mut self) {
         while let Some(pattern) = motor::take_request() {
             self.log(format!("buzz: {}", pattern_name(pattern)));
@@ -360,32 +368,6 @@ impl Watch {
             } else {
                 self.log(format!("to the phone, but not connected: {line}"));
             }
-        }
-        if self.app.take_phone_alarms_changed() {
-            self.log("phone alarms changed");
-        }
-        // What `main.rs` would hand `bthome::send`: the advertisement, as
-        // the watch would send it, with the demo key.
-        while let Some(press) = self.app.take_ha_press() {
-            let counter = self.bthome_counter;
-            self.bthome_counter += 1;
-            let battery = self.battery.percent() as u8;
-            let (data, len) = bthome::advert(press, battery, counter, &DEMO_IDENTITY);
-            let hex: String = data[..len].iter().map(|b| format!("{b:02x}")).collect();
-            // What Home Assistant fires for it (see `bthome`'s docs).
-            let dimmer = match press.gesture {
-                crate::buttons::Gesture::Tap => Some(1),
-                crate::buttons::Gesture::DoubleTap => Some(2),
-                crate::buttons::Gesture::Hold => Some(3),
-                crate::buttons::Gesture::Release => None,
-            };
-            let dimmer = dimmer.map_or(String::new(), |slot| {
-                format!(", dimmer_{slot} rotate_right steps {}", press.code)
-            });
-            self.log(format!(
-                "to Home Assistant: button {}{dimmer} (counter {counter}): {hex}",
-                press.gesture.name()
-            ));
         }
     }
 
@@ -406,138 +388,126 @@ impl Watch {
     }
 
     // ==========================================================================
-    // The pass: what the UI loop does each time it wakes
+    // The UI loop
     // ==========================================================================
 
+    /// What the Bluetooth and update tasks would have told the UI loop, in
+    /// their stand-ins, where it reads them.
+    fn publish(&self) {
+        ble::CONNECTED.store(self.connected, std::sync::atomic::Ordering::Relaxed);
+        ble::UNPAIRED.lock(|cell| cell.set(self.unpaired));
+        ble::PASSKEY.lock(|cell| cell.set(self.passkey));
+        dfu::PROGRESS.lock(|cell| cell.set(self.update_progress));
+    }
+
+    /// The stand-ins for `main.rs`'s hardware, over the watch's state; and
+    /// what the UI loop takes beside them, and `on_frame`, to run it with.
+    #[allow(clippy::type_complexity)]
+    fn hardware(
+        &mut self,
+    ) -> (
+        &mut App,
+        &mut UiLoop,
+        &mut Canvas,
+        &mut Option<Box<dyn FnMut()>>,
+        Hardware<'_>,
+    ) {
+        let Self {
+            app,
+            ui,
+            canvas,
+            display,
+            backlight,
+            on_frame,
+            battery_mv,
+            charging,
+            power_present,
+            temperature,
+            daytime,
+            finger,
+            bthome_counter,
+            ..
+        } = self;
+        let board = Hardware {
+            display,
+            backlight,
+            battery_mv: *battery_mv,
+            charger: (*charging, *power_present),
+            temperature: *temperature,
+            daytime: *daytime,
+            finger_down: finger.is_some(),
+            bthome_counter,
+        };
+        (app, ui, canvas, on_frame, board)
+    }
+
+    /// Has the UI loop act on what woke it, and save what that changed.
+    fn handle(&mut self, wake: Wake) {
+        self.publish();
+        let (app, ui, _, on_frame, mut board) = self.hardware();
+        run(ui.handle(app, &mut board, wake), on_frame);
+    }
+
+    /// A pass of the UI loop: what it does each time it wakes, after
+    /// handling what woke it.
     pub fn pass(&mut self) {
         if self.off.is_some() {
             return;
         }
-        let now = Instant::now();
-        let sample = (self.battery_mv * 4096 / (3600 * 2)) as i16;
-        self.battery
-            .update(sample, self.charging, self.power_present);
-        let off = if self.battery.critical(now.as_secs() as u32) {
-            Some(Reason::BatteryEmpty)
-        } else if self.app.storage_mode {
-            Some(Reason::Storage)
-        } else {
-            None
-        };
-        if let Some(reason) = off {
-            return self.switch_off(reason);
+        self.started = true;
+        self.publish();
+        let (app, ui, canvas, on_frame, mut board) = self.hardware();
+        if let Some(reason) = run(ui.pass(app, &mut board, canvas), on_frame) {
+            self.off = Some(reason);
+            self.finger = None;
+            self.timer = None;
+            // The clock stops while the watch is off; the phone's doesn't.
+            self.phone_time = clock::now_utc_seconds()
+                .zip(clock::utc_offset_minutes())
+                .map(|(utc, offset)| (utc, offset, Instant::now()));
+            clock::forget();
+            self.log("off");
+            return;
         }
-        if self.touch_asleep() {
+        if touch::asleep() {
             // The controller's asleep: whatever was in progress is moot.
             self.finger = None;
         }
-
-        // Every pass, not only while the screen is on: its media gestures
-        // work with it off too, and need to know there's a phone.
-        self.app.set_connected(self.connected);
-        // As `main.rs` does, less the scans: a recent Aranet4 reading has
-        // its screen, and a fresh one gives the temperature (the simulator
-        // has no wrist to estimate it on: `temperature` sets the rest).
-        let now_ms = now.as_millis();
-        self.app.set_air(
-            self.air
-                .is_some_and(|s| now_ms.saturating_sub(s.heard) < aranet::RECENT),
-        );
-        let from_aranet = self
-            .air
-            .filter(|s| s.age(now_ms) < aranet::STALE)
-            .and_then(|s| s.reading.quarters())
-            .map(|quarters| temperature::shown(None, quarters));
-        if self.app.awake {
-            let status = Status {
-                uptime_secs: now.as_secs(),
-                local_time: clock::now(),
-                connected: self.connected,
-                unpaired: self.unpaired,
-                passkey: self.passkey,
-                update_progress: self.update_progress,
-                steps: activity::steps_today(),
-                sleep: activity::last_sleep(),
-                local_second: local_second(),
-                heart_rate: self.heart_rate,
-                temperature: from_aranet.or(self.temperature),
-                temperature_from_aranet: from_aranet.is_some(),
-                air: self.air,
-                battery: &self.battery,
-                bthome: Some(DEMO_IDENTITY),
-            };
-            self.app
-                .set_daytime(self.daytime.unwrap_or_else(geo::is_daytime));
-            // Left out: the UI loop's going dark to redraw into or out of
-            // the dim look, and idle mode's timing, which are about what
-            // the backlight shows mid-redraw. Here every frame is whole.
-            self.canvas.set_theme(self.app.theme());
-            self.app.render(&mut self.canvas, &status, now);
-            let sweep = match self.app.take_transition() {
-                Some(sweep) if self.panel_awake => Some(sweep),
-                _ if self.first_frame => Some(Sweep::LeftToRight),
-                _ => None,
-            };
-            let Self {
-                canvas,
-                display,
-                on_frame,
-                ..
-            } = self;
-            match sweep {
-                Some(sweep) => run(canvas.transition(display, sweep), on_frame),
-                None => run(canvas.flush(display), on_frame),
-            }
-            self.first_frame = false;
-            PANEL.with_borrow_mut(|panel| panel.idle = self.app.dim());
-            self.backlight = self.app.backlight(Instant::now());
-            PANEL.with_borrow_mut(|panel| panel.backlight = self.backlight);
-            if !self.panel_awake {
-                self.panel_awake = true;
-                self.log("screen on");
-            }
-        } else if self.panel_awake {
-            self.backlight = brightness::Level::OFF;
-            PANEL.with_borrow_mut(|panel| panel.backlight = self.backlight);
-            self.panel_awake = false;
-            self.log("screen off");
-        }
-        self.last_pass = Instant::now();
+        self.timer = ui_loop::timer_at(&self.app, self.finger.is_some());
     }
 
-    /// As `system_off::shut_down`: says why for a few seconds, then goes
-    /// dark.
-    fn switch_off(&mut self, reason: Reason) {
-        self.log(format!("switching off: {reason:?}"));
-        ui::render_off(&mut self.canvas, reason);
-        let Self {
-            canvas,
-            display,
-            on_frame,
-            ..
-        } = self;
-        run(canvas.flush(display), on_frame);
-        PANEL.with_borrow_mut(|panel| panel.idle = false);
-        self.backlight = brightness::Level::MID;
-        PANEL.with_borrow_mut(|panel| panel.backlight = self.backlight);
-        self.panel_awake = true;
-        self.off = Some(reason);
-        self.finger = None;
-        self.next_tick = Instant::now() + OFF_SCREEN;
-    }
-
-    /// Switched off: the off screen goes dark after its few seconds, and
-    /// only the charger (or, in storage mode, the button) wakes the watch.
+    /// Switched off: only the charger (or, in storage mode, the button)
+    /// wakes the watch.
     fn off_tick(&mut self) {
-        if self.panel_awake {
-            self.backlight = brightness::Level::OFF;
-            PANEL.with_borrow_mut(|panel| panel.backlight = self.backlight);
-            self.panel_awake = false;
-            self.log("off");
-        }
         if self.power_present {
             self.reboot();
         }
+    }
+
+    /// Changes settings as the UI would (rather than through it, as a
+    /// script's `alarm` does), and saves them as the UI loop does.
+    pub fn change_settings(&mut self, change: impl FnOnce(&mut App)) {
+        let before = Settings::of(&self.app);
+        change(&mut self.app);
+        run(ui_loop::save_changes(before, &mut self.app), &mut None);
+        self.refresh();
+    }
+
+    /// An Aranet4's reading, as a scan hears it (`None`: none heard since
+    /// boot).
+    pub fn hear_aranet(&mut self, sighting: Option<Sighting>) {
+        ble::NEARBY.lock(|nearby| {
+            let mut nearby = nearby.borrow_mut();
+            let Some(sighting) = sighting else {
+                *nearby = crate::aranet::Nearby::new();
+                return;
+            };
+            let now = Instant::now().as_millis();
+            nearby.begin(now);
+            nearby.hear(sighting.address, sighting.rssi, sighting.reading, now);
+            nearby.end(now);
+        });
+        self.refresh();
     }
 
     /// Saves what the panel shows as a PNG. With `palette`, in that theme's
@@ -572,13 +542,12 @@ impl Watch {
         let theme = find_theme(name)?;
         let find = |group: &[&'static Theme]| group.iter().position(|t| core::ptr::eq(*t, theme));
         if let Some(i) = find(&crate::theme::LIGHT) {
-            self.app.themes.light = i as u8;
             self.daytime = Some(true);
+            self.change_settings(|app| app.themes.light = i as u8);
         } else if let Some(i) = find(&crate::theme::DARK) {
-            self.app.themes.dark = i as u8;
             self.daytime = Some(false);
+            self.change_settings(|app| app.themes.dark = i as u8);
         }
-        self.pass();
         Ok(())
     }
 
@@ -588,6 +557,155 @@ impl Watch {
         self.after_event();
         self.pass();
     }
+}
+
+/// What's in flash, and the UI it starts.
+fn start() -> (App, UiLoop) {
+    UiLoop::boot(run(Stored::load(), &mut None))
+}
+
+// ==============================================================================
+// The hardware
+// ==============================================================================
+
+/// Stand-ins for what `main.rs`'s `Hardware` drives: they keep what
+/// they're told, for the window, screenshots and `expect`.
+struct Hardware<'a> {
+    display: &'a mut Display,
+    backlight: &'a mut brightness::Level,
+    battery_mv: u32,
+    charger: (bool, bool),
+    temperature: i8,
+    daytime: Option<bool>,
+    finger_down: bool,
+    bthome_counter: &'a mut u32,
+}
+
+impl Hardware<'_> {
+    fn set_backlight(&mut self, level: brightness::Level) {
+        *self.backlight = level;
+        PANEL.with_borrow_mut(|panel| panel.backlight = level);
+    }
+}
+
+impl Board for Hardware<'_> {
+    fn die_temperature(&mut self) -> i32 {
+        i32::from(self.temperature) * 4
+    }
+
+    async fn sample_battery(&mut self, sample: &mut [i16; 1]) {
+        // What the SAADC reads through the 1:2 divider (as
+        // `debug::battery_sample`).
+        sample[0] = (self.battery_mv * 4096 / (3600 * 2)) as i16;
+    }
+
+    fn charger(&mut self) -> (bool, bool) {
+        self.charger
+    }
+
+    fn daytime(&mut self) -> bool {
+        self.daytime.unwrap_or_else(geo::is_daytime)
+    }
+
+    fn finger_down(&mut self) -> bool {
+        self.finger_down
+    }
+
+    fn display(&mut self) -> &mut Display {
+        self.display
+    }
+
+    // The panel keeps its frame while asleep, and here every frame is
+    // whole the moment it's pushed: waking, sleeping and showing only
+    // matter to what the backlight lights, which the window draws from
+    // `backlight`.
+    fn wake_panel(&mut self) -> impl Future<Output = ()> {
+        log("screen on");
+        async {}
+    }
+
+    fn sleep_panel(&mut self) -> impl Future<Output = ()> {
+        log("screen off");
+        async {}
+    }
+
+    async fn show_panel(&mut self) {}
+
+    fn set_idle(&mut self, idle: bool) -> impl Future<Output = ()> {
+        PANEL.with_borrow_mut(|panel| panel.idle = idle);
+        async {}
+    }
+
+    fn wait_for_refresh(&mut self) -> impl Future<Output = ()> {
+        // `display::REFRESH`.
+        Timer::after(Duration::from_millis(20))
+    }
+
+    fn backlight(&mut self, level: brightness::Level) {
+        self.set_backlight(level);
+    }
+
+    fn bthome(&mut self) -> Option<Identity> {
+        Some(DEMO_IDENTITY)
+    }
+
+    /// What `bthome::send` would advertise, with the demo key, printed.
+    fn send_press(&mut self, press: Press, battery: u8) -> impl Future<Output = ()> {
+        let counter = *self.bthome_counter;
+        *self.bthome_counter += 1;
+        let (data, len) = bthome::advert(press, battery, counter, &DEMO_IDENTITY);
+        let hex: String = data[..len].iter().map(|b| format!("{b:02x}")).collect();
+        // What Home Assistant fires for it (see `bthome`'s docs).
+        let dimmer = match press.gesture {
+            crate::buttons::Gesture::Tap => Some(1),
+            crate::buttons::Gesture::DoubleTap => Some(2),
+            crate::buttons::Gesture::Hold => Some(3),
+            crate::buttons::Gesture::Release => None,
+        };
+        let dimmer = dimmer.map_or(String::new(), |slot| {
+            format!(", dimmer_{slot} rotate_right steps {}", press.code)
+        });
+        log(format!(
+            "to Home Assistant: button {}{dimmer} (counter {counter}): {hex}",
+            press.gesture.name()
+        ));
+        async {}
+    }
+
+    /// As `system_off::shut_down`: says why for a few seconds, then goes
+    /// dark. (Saving the activity, and putting the sensors to sleep, have
+    /// nothing to simulate: the simulator's activity outlives switching
+    /// off anyway.)
+    async fn switch_off(&mut self, reason: Reason, canvas: &mut Canvas, _panel_awake: bool) {
+        log(format!("switching off: {reason:?}"));
+        ui::render_off(canvas, reason);
+        canvas.flush(self.display).await;
+        PANEL.with_borrow_mut(|panel| panel.idle = false);
+        self.set_backlight(brightness::Level::MID);
+        Timer::after(OFF_SCREEN).await;
+        self.set_backlight(brightness::Level::OFF);
+    }
+
+    /// There's no watchdog to feed.
+    fn pet_watchdog(&mut self) {}
+}
+
+// ==============================================================================
+// Odds and ends
+// ==============================================================================
+
+/// Prints what happened, with the uptime and the wall-clock time.
+pub fn log(message: impl AsRef<str>) {
+    let uptime = Instant::now().as_millis();
+    let wall = clock::now()
+        .map(|t| format!(" {:02}:{:02}:{:02}", t.hour, t.minute, t.second))
+        .unwrap_or_default();
+    crate::platform::log(&format!(
+        "[{:>6}.{:03}{wall}] {}",
+        uptime / 1000,
+        uptime % 1000,
+        message.as_ref()
+    ));
 }
 
 /// A theme by name, in any case.
@@ -600,13 +718,6 @@ pub fn find_theme(name: &str) -> Result<&'static Theme, String> {
             let names: Vec<_> = themes().map(|t| t.name).collect();
             format!("no theme {name}; there's {}", names.join(", "))
         })
-}
-
-/// Local seconds since 1970, as `main.rs`'s `local_second`.
-pub fn local_second() -> Option<i64> {
-    let utc = clock::now_utc_seconds()?;
-    let offset = i64::from(clock::utc_offset_minutes()?);
-    Some(utc + offset * 60)
 }
 
 /// Moves the clock to `at` (never backwards).
@@ -671,13 +782,17 @@ fn set_time(at: Instant) {
     }
 }
 
-/// Runs a canvas push to completion. Its awaits are the panel's (instant
-/// here) and a transition's frame timer, which this lets through by moving
-/// the clock a millisecond at a time, calling `on_frame` after each.
-pub fn run<F: Future<Output = ()>>(future: F, on_frame: &mut Option<Box<dyn FnMut()>>) {
+/// Runs a future of the firmware's to completion. Its awaits are the
+/// stand-ins' (instant here) and timers (a transition's frames, the
+/// switching-off screen), which this lets through by moving the clock a
+/// millisecond at a time, calling `on_frame` after each.
+pub fn run<F: Future>(future: F, on_frame: &mut Option<Box<dyn FnMut()>>) -> F::Output {
     let mut future = pin!(future);
     let mut context = Context::from_waker(Waker::noop());
-    while future.as_mut().poll(&mut context) == Poll::Pending {
+    loop {
+        if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
+            return output;
+        }
         crate::time::advance(Duration::from_millis(1));
         if let Some(on_frame) = on_frame {
             on_frame();

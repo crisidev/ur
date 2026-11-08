@@ -4,11 +4,13 @@ use std::io::BufRead;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use crate::flash::Flash;
 use crate::script::{self, Next, Output};
 use crate::watch::Watch;
 
 const USAGE: &str = "\
-Usage: ur-sim [--window] [--out DIR] [--speed N] [--zoom N] [SCRIPT ...]
+Usage: ur-sim [--window] [--flash FILE] [--out DIR] [--speed N] [--zoom N]
+              [SCRIPT ...]
        ur-sim --devkit ELF [--out DIR] SCRIPT ...
        ur-sim --diff BEFORE AFTER [--out DIR]
 
@@ -18,6 +20,9 @@ line a command; `-` reads commands from stdin) and exits; without, or with
 after running any scripts, and takes commands typed into the terminal.
 
   --window     open the window even with scripts
+  --flash FILE keep the watch's flash (its settings) in FILE, from one run
+               to the next; or start from a dump of a watch's (its 12 KiB
+               at 0x7D000). Without, it starts erased, and is forgotten
   --out DIR    where `shot` writes screenshots (default: .)
   --speed N    in the window, run time N times as fast (default: 1)
   --zoom N     in the window (and `shot … --watch`), draw a canvas pixel N
@@ -43,6 +48,7 @@ pub struct Options {
     pub devkit: Option<PathBuf>,
     /// `--diff BEFORE AFTER`.
     pub diff: Option<(PathBuf, PathBuf)>,
+    pub flash: Option<PathBuf>,
 }
 
 pub fn main() -> ExitCode {
@@ -76,7 +82,17 @@ pub fn main() -> ExitCode {
             }
         };
     }
-    let mut watch = Watch::boot();
+    let flash = match &options.flash {
+        Some(path) => match Flash::open(path) {
+            Ok(flash) => flash,
+            Err(e) => {
+                eprintln!("ur-sim: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => Flash::erased(),
+    };
+    let mut watch = Watch::boot(flash);
     for path in &options.scripts {
         let result = if path.as_os_str() == "-" {
             run_stdin(&mut watch, &options.output)
@@ -157,6 +173,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
         zoom: 4,
         devkit: None,
         diff: None,
+        flash: None,
     };
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -171,6 +188,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
                 options.output.zoom = options.zoom;
             }
             "--devkit" => options.devkit = Some(args.next().ok_or("--devkit needs an ELF")?.into()),
+            "--flash" => options.flash = Some(args.next().ok_or("--flash needs a FILE")?.into()),
             "--diff" => {
                 let before = args.next().ok_or("--diff needs BEFORE and AFTER")?;
                 let after = args.next().ok_or("--diff needs BEFORE and AFTER")?;

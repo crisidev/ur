@@ -6,10 +6,12 @@
 //! hardware is replaced by a stand-in with the same interface: the panel
 //! ([`display`]) collects the pixels the canvas pushes, the accelerometer's
 //! steps and sleep ([`activity`]) are whatever the simulator is told, and
-//! Bluetooth ([`ble`]) is a queue the simulator prints. [`watch`] then plays
-//! the part of `main.rs`'s UI loop: ticks, inputs, rendering, and screen
-//! power, against a clock it controls ([`time`], ticking at the watch's
-//! rate), so scripts are deterministic and can skip hours ahead.
+//! Bluetooth ([`ble`]) is a queue the simulator prints, and the internal
+//! flash ([`flash`]) a model of NOR flash under the firmware's own storage.
+//! [`watch`] then runs the firmware's UI loop ([`ui_loop`], as `main.rs`
+//! does): ticks, inputs, rendering, screen power and saving settings,
+//! against a clock it controls ([`time`], ticking at the watch's rate), so
+//! scripts are deterministic and can skip hours ahead.
 //!
 //! A library, so the browser's build (a WebAssembly module) shares all of
 //! it with the command line's (`src/main.rs`).
@@ -71,6 +73,12 @@ mod geo;
 #[path = "../../src/gesture.rs"]
 #[allow(dead_code)]
 mod gesture;
+#[path = "../../src/glance.rs"]
+#[allow(dead_code)]
+mod glance;
+#[path = "../../src/heart_reading.rs"]
+#[allow(dead_code)]
+mod heart_reading;
 #[path = "../../src/motor.rs"]
 #[allow(dead_code)]
 mod motor;
@@ -88,6 +96,9 @@ mod route;
 #[path = "../../src/sleep.rs"]
 #[allow(dead_code)]
 mod sleep;
+#[path = "../../src/storage.rs"]
+#[allow(dead_code)]
+mod storage;
 #[path = "../../src/temperature.rs"]
 #[allow(dead_code)]
 mod temperature;
@@ -97,6 +108,8 @@ mod theme;
 #[path = "../../src/ui.rs"]
 #[allow(dead_code)]
 mod ui;
+#[path = "../../src/ui_loop.rs"]
+mod ui_loop;
 #[path = "../../src/wake.rs"]
 #[allow(dead_code)]
 mod wake;
@@ -107,22 +120,27 @@ mod wake;
 
 #[path = "stub/activity.rs"]
 mod activity;
+#[path = "stub/ble.rs"]
+mod ble;
 #[path = "stub/display.rs"]
 mod display;
+#[path = "stub/power.rs"]
+mod power;
 
-/// `src/ble.rs`: only the queue of messages for the phone, which
-/// [`watch`] empties and prints.
-mod ble {
+/// `src/dfu.rs`: only how far an update has got, which `update` sets.
+mod dfu {
+    use core::cell::Cell;
+
+    use embassy_sync::blocking_mutex::Mutex;
     use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-    use embassy_sync::channel::Channel;
 
-    use crate::gb::Outgoing;
-
-    pub static OUTBOX: Channel<CriticalSectionRawMutex, Outgoing, 8> = Channel::new();
+    pub static PROGRESS: Mutex<CriticalSectionRawMutex, Cell<Option<u8>>> =
+        Mutex::new(Cell::new(None));
 }
 
 /// `src/debug.rs`: only the backdating of a test notification, which the
-/// simulator's `notify` offers too.
+/// simulator's `notify` offers too, and the injected battery voltage,
+/// which the simulator's `battery` sets as the measured one instead.
 mod debug {
     use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -135,10 +153,14 @@ mod debug {
     pub fn backdate_next(minutes: i64) {
         BACKDATE_MINUTES.store(minutes, Ordering::Relaxed);
     }
+
+    pub fn battery_sample() -> Option<i16> {
+        None
+    }
 }
 
 /// `src/system_off.rs`: only why the watch switches off, for its last
-/// screen.
+/// screen. Switching off itself is [`watch`]'s.
 mod system_off {
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     pub enum Reason {
@@ -148,20 +170,26 @@ mod system_off {
 }
 
 /// `src/touch.rs`, the touch controller's driver: only its types, which
-/// are [`crate::gesture`]'s. [`watch`] feeds the gesture recogniser itself.
+/// are [`crate::gesture`]'s, and whether the UI loop has put it to sleep.
+/// [`watch`] feeds the gesture recogniser itself.
 mod touch {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     pub use crate::gesture::{Gesture, Touch};
+
+    static ASLEEP: AtomicBool = AtomicBool::new(false);
+
+    pub fn set_asleep(asleep: bool) {
+        ASLEEP.store(asleep, Ordering::Relaxed);
+    }
+
+    /// Whether touches go unnoticed (see `set_asleep`).
+    pub fn asleep() -> bool {
+        ASLEEP.load(Ordering::Relaxed)
+    }
 }
 
-/// As `main.rs`'s: every user input, in order, for the UI loop.
-#[derive(defmt::Format)]
-pub enum InputEvent {
-    Button,
-    Touch(touch::Touch),
-    Attention,
-    Phone(ui::PhoneEvent),
-    Glance,
-}
+pub use ui_loop::InputEvent;
 
 // Some pure modules derive `defmt::Format` only for the watch
 // (`#[cfg_attr(target_os = "none", …)]`), so their host tests needn't
@@ -178,6 +206,9 @@ macro_rules! format_on_the_host {
 }
 format_on_the_host!(
     alarm::Kind,
+    aranet::Why,
+    buttons::Setting,
+    temperature::Source,
     alarm::Settings,
     alarm::Switch,
     gesture::Gesture,
@@ -225,9 +256,11 @@ fn _defmt_timestamp(_: defmt::Formatter<'_>) {}
 // ==============================================================================
 
 mod case;
+mod flash;
 mod platform;
 mod record;
 mod script;
+mod settings;
 mod shot;
 mod time;
 mod watch;

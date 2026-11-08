@@ -234,7 +234,8 @@ pub extern "C" fn ur_boot(start: bool) {
         frames: VecDeque::new(),
         since_frame: 0,
     }));
-    let mut watch = Watch::boot();
+    // Flash that starts erased, and is forgotten with the page.
+    let mut watch = Watch::boot(crate::flash::Flash::erased());
     watch.on_frame = Some(Box::new(|| with_screen(Screen::transition_frame)));
     if start && let Err(e) = script::run(&mut watch, "web/start.txt", START, &output()) {
         print(Text::Error, &e);

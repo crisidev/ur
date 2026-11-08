@@ -180,7 +180,9 @@ With a dev kit, it checks itself against the watch: flash a build with
 the `compare` feature (`cargo run --release --features compare`), and
 `ur-sim --devkit <elf> devkit-compare.txt` follows it frame for frame,
 failing if any pixel differs. See [sim/README.md] for its commands, and
-what it can't simulate (sensors, Bluetooth, flash).
+what it can't simulate (sensors, Bluetooth, the SPI flash). It runs the
+UI loop itself (`src/ui_loop.rs`) and the settings' storage, so a change
+there needs nothing in `sim/` to match.
 
 ### Approved screenshots
 

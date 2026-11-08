@@ -202,6 +202,22 @@ pub fn clock_moving(to: Instant) {
     });
 }
 
+/// Called just before the clock starts again from 0 (the watch boots
+/// after switching off): the frame on screen ends, and starts again at 0,
+/// so the recording's timeline carries on across the reboot.
+pub fn clock_restarting() {
+    RECORDING.with_borrow_mut(|recording| {
+        if let Some(recording) = recording {
+            let lasted = (Instant::now() - recording.since).as_ticks();
+            let delay = recording.timeline.frame(lasted);
+            if delay > 0 {
+                recording.show(recording.current.clone(), delay);
+            }
+            recording.since = Instant::from_ticks(0);
+        }
+    });
+}
+
 /// What the screen showed when the recorder last looked: enough to tell
 /// cheaply whether it changed, before drawing it.
 #[derive(PartialEq)]

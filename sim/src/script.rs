@@ -16,6 +16,7 @@ use crate::clock;
 use crate::gb::{self, Incoming, LineBuffer, Outgoing};
 use crate::geo;
 use crate::gesture::{Gesture, Touch};
+use crate::heart_reading;
 use crate::route;
 use crate::ui::{PhoneEvent, Unpaired};
 use crate::watch::{Watch, find_theme, local_second};
@@ -50,7 +51,10 @@ The phone:
   passkey NNNNNN|off | update PERCENT|off|refused
 The wearer and the watch:
   battery MV [charging|charged|unplugged]
-  steps N | heart BPM|off | temperature C
+  steps N | heart BPM|off    a heart rate measured now (shown for 30 min)
+  temperature C              the watch's own, its die (shown, or the
+                             wrist's estimate from it, from the next
+                             minute's reading, as on the watch)
   aranet PPM C RH% [HPA [BATTERY% [AGO]]] | aranet off
                              a nearby Aranet4's reading, as a scan hears
                              it (AGO: measured e.g. 4m ago); it gives the
@@ -80,6 +84,8 @@ Output:
   expect [not] STATE         fail unless: screen-on, dim, quiet-night,
                              buzzing, off (switched off), or clock (the
                              clock face, for someone to read)
+  settings                   what the flash holds (see --flash), as the
+                             firmware decodes it
   echo TEXT | verbose on|off | help | quit
 ";
 
@@ -322,24 +328,20 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
             watch.refresh();
         }
         "heart" => {
-            watch.heart_rate = match need(0, "BPM|off")? {
-                "off" => None,
-                bpm => {
-                    let bpm = number(bpm)?;
-                    if let Some(second) = clock::now_utc_seconds() {
-                        activity::record_heart_rate_at(second.div_euclid(60), bpm);
-                    }
-                    Some(bpm)
-                }
-            };
+            // As the heart rate task publishes a reading: shown for half
+            // an hour, and in this minute's history.
+            match need(0, "BPM|off")? {
+                "off" => heart_reading::forget(),
+                bpm => heart_reading::publish(number(bpm)?),
+            }
             watch.refresh();
         }
         "temperature" => {
-            watch.temperature = Some(number(need(0, "C")?)?);
+            watch.temperature = number(need(0, "C")?)?;
             watch.refresh();
         }
         "aranet" => {
-            watch.air = match need(0, "PPM C RH%, or off")? {
+            let sighting = match need(0, "PPM C RH%, or off")? {
                 "off" => None,
                 ppm => Some(aranet_sighting(
                     number(ppm)?,
@@ -353,7 +355,7 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
                     arg(5).map(duration).transpose()?.unwrap_or_default(),
                 )?),
             };
-            watch.refresh();
+            watch.hear_aranet(sighting);
         }
         "asleep" => {
             activity::set_asleep(on_off(need(0, "on|off")?, "on", "off")?);
@@ -375,25 +377,29 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
         "alarm" => {
             let i = index(need(0, "1|2")?, alarm::ALARMS)?;
             let (hour, minute) = hh_mm(need(1, "HH:MM")?)?;
-            watch.app.alarms.at_time[i] = u16::from(hour) * 60 + u16::from(minute);
-            watch.app.alarms.at[i] = arg(2).map_or(Ok(true), |s| on_off(s, "on", "off"))?;
-            watch.refresh();
+            let on = arg(2).map_or(Ok(true), |s| on_off(s, "on", "off"))?;
+            // As if set on the alarms screen, and saved as it would be.
+            watch.change_settings(|app| {
+                app.alarms.at_time[i] = u16::from(hour) * 60 + u16::from(minute);
+                app.alarms.at[i] = on;
+            });
         }
         "smart" => {
-            watch.app.alarms.smart = on_off(need(0, "on|off")?, "on", "off")?;
+            let mut alarms = watch.app.alarms;
+            alarms.smart = on_off(need(0, "on|off")?, "on", "off")?;
             let minutes = |s: &str| hh_mm(s).map(|(h, m)| u16::from(h) * 60 + u16::from(m));
             if let Some(weekday) = arg(1) {
-                watch.app.alarms.smart_weekday = minutes(weekday)?;
+                alarms.smart_weekday = minutes(weekday)?;
             }
             if let Some(weekend) = arg(2) {
-                watch.app.alarms.smart_weekend = minutes(weekend)?;
+                alarms.smart_weekend = minutes(weekend)?;
             }
-            watch.refresh();
+            watch.change_settings(|app| app.alarms = alarms);
         }
         "timer" => {
             let i = index(need(0, "1|2")?, alarm::TIMERS)?;
-            watch.app.alarms.timers[i] = number(need(1, "MIN")?)?;
-            watch.refresh();
+            let minutes = number(need(1, "MIN")?)?;
+            watch.change_settings(|app| app.alarms.timers[i] = minutes);
         }
         "theme" => match need(0, "NAME|auto")? {
             "auto" => {
@@ -469,6 +475,11 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
             if actual == negated {
                 let not = if negated { "not " } else { "" };
                 return Err(format!("expected {not}{what}"));
+            }
+        }
+        "settings" => {
+            for line in crate::settings::describe() {
+                watch.log(line);
             }
         }
         "echo" => watch.log(args.join(" ")),

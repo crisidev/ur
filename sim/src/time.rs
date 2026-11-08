@@ -40,3 +40,12 @@ pub fn advance(by: Duration) {
     crate::record::clock_moving(embassy_time::Instant::now() + by);
     NOW.fetch_add(by.as_ticks(), Ordering::Relaxed);
 }
+
+/// Starts the clock again from 0, as the watch's uptime does when it boots
+/// after switching off. Everything that keeps an `Instant` must have
+/// forgotten it.
+pub fn restart() {
+    crate::record::clock_moving(embassy_time::Instant::now());
+    crate::record::clock_restarting();
+    NOW.store(0, Ordering::Relaxed);
+}

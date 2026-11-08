@@ -199,6 +199,9 @@ notify 5
 expect not screen-on
 tap
 expect not screen-on
+# The heart rate's background schedule measures through the night (a
+# reading is shown for half an hour).
+heart 64
 button
 wait 1s
 expect dim
@@ -212,6 +215,7 @@ expect not quiet-night
 wait 1s
 shot 18-alarm.png
 asleep off
+heart 64
 button
 expect not buzzing
 wait 1s
