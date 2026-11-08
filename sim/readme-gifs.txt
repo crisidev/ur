@@ -7,8 +7,10 @@
 # Rerun it when a screen they show changes. Like readme-screenshots.txt,
 # everything is driven through the watch's own inputs, and every name is
 # fictional (the dev kit's test notifications, src/debug.rs). Each
-# recording starts once its scene is set, and ends after a pause, as a
-# GIF loops. See sim/README.md for how recordings time their frames:
+# recording starts on the moment it's about (its first frame is what a
+# still copy of it, or a page still loading it, shows), and any dark
+# stretch before that moment comes at its end instead, which the loop
+# then plays before it. See sim/README.md for how recordings time their frames:
 # a still screen is held 2 s at most, unless `--still` says longer (as
 # for the screens below that are meant to be read).
 
@@ -70,16 +72,18 @@ expect not screen-on
 #
 # Full-screen and dim, as the screen was off; a firm tap then wakes the
 # screen fully, to the clock face, whose top edge says there's something
-# unseen.
+# unseen; then the button puts it out again, to loop back to the arrival.
 
-record notification.gif --still 3s
-wait 0.8s
 notify 0
-wait 3s
+wait 0.1s
+record notification.gif --still 3s
+wait 2.9s
 tap
 wait 2s
+button
+wait 0.8s
 stop
-wait 15s
+expect not screen-on
 
 # ==============================================================================
 # glance.gif: a turn of the wrist
@@ -88,10 +92,12 @@ wait 15s
 # The time, dimly, for a few seconds, and dark again.
 
 until 17:45
-record glance.gif --still 6s
-wait 0.8s
 glance
+wait 0.1s
+record glance.gif --still 6s
 wait 6.5s
+expect not screen-on
+wait 0.8s
 stop
 
 # ==============================================================================
@@ -99,15 +105,18 @@ stop
 # ==============================================================================
 #
 # Overnight, an alarm at 07:30. It rings with the screen dim, brightening
-# (which the screen's colours alone don't show); a tap snoozes it.
+# (which the screen's colours alone don't show); a tap snoozes it. (The
+# dark minute before it rang isn't recorded: the loop goes straight from
+# the snoozed clock back to the ringing.)
 
 alarm 1 07:30 on
 until 07:29
 wait 58s
-record alarm.gif --still 4s
 until 07:30
 expect buzzing
-wait 3s
+wait 0.1s
+record alarm.gif --still 4s
+wait 2.9s
 tap
 expect not buzzing
 wait 2.5s
