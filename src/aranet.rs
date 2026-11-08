@@ -576,9 +576,19 @@ impl Nearby {
 
     /// The scan is over: picks the sensor to show, the strongest heard,
     /// unless the one shown was heard within [`HYSTERESIS_DB`] of it.
-    /// Returns whether anything was heard.
-    pub fn end(&mut self, now: u64) -> bool {
+    /// Returns whether anything was heard, and whether to ask the phone
+    /// where it is.
+    pub fn end(&mut self, now: u64) -> Ended {
         self.scanning = false;
+        // Whether the sensors went, or came, for `Ended::ask`: before
+        // `known` takes in this scan.
+        let awaited = self.awaited(now).next().is_some();
+        let ask = if awaited {
+            (self.heard.is_empty() && self.place.is_some()).then_some(Ask::Gone)
+        } else {
+            let regular = self.heard.iter().any(|s| s.reading.kind.patience() > 0);
+            (regular && self.place.is_none()).then_some(Ask::Found)
+        };
         // What this scan missed, the next doesn't wait for.
         for known in &mut self.known {
             known.patience = 0;
@@ -616,7 +626,7 @@ impl Nearby {
         }
         self.known.retain(|k| now.saturating_sub(k.heard) < RECENT);
         let Some(strongest) = self.heard.iter().max_by_key(|s| s.rssi).copied() else {
-            return false;
+            return Ended { heard: false, ask };
         };
         let shown = self
             .best
@@ -625,8 +635,31 @@ impl Nearby {
             Some(&shown) if shown.rssi.saturating_add(HYSTERESIS_DB) >= strongest.rssi => shown,
             _ => strongest,
         });
-        true
+        Ended { heard: true, ask }
     }
+}
+
+/// What [`Nearby::end`] says of a scan.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Ended {
+    /// Whether it heard any sensor.
+    pub heard: bool,
+    /// Whether a fix from the phone would tell something now, and why
+    /// (see [`Nearby::located`]).
+    pub ask: Option<Ask>,
+}
+
+/// Why to ask the phone where it is, after a scan.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Ask {
+    /// It heard none of the sensors the last scan heard: the wearer may
+    /// have left them, and a fix [`AWAY`] from their place says so, an
+    /// hour before the scans would give up on them.
+    Gone,
+    /// It heard a sensor after none (since booting, say), with no place
+    /// known for sensors: a fix now says where they are, which a later
+    /// [`Ask::Gone`] needs.
+    Found,
 }
 
 // ==============================================================================
@@ -642,8 +675,11 @@ impl Nearby {
 //
 // The watch only learns where it is now and then: the phone sends a fix
 // when asked (see `geo::GpsPolicy`): after it was away for two hours, at
-// a new time zone, and if the last is a day old when it connects. So this
-// acts at those moments, and otherwise everything is as it was.
+// a new time zone, and if the last is a day old when it connects. And
+// for the sensors themselves (see [`Ask`]): once the scans stop hearing
+// them, to see whether the wearer left, and once they're first heard
+// with no place known for them, to learn where they are. Those are
+// rate-limited by `geo::GpsPolicy::for_sensors`.
 
 /// A position, in millionths of a degree (as `geo::Location`, which this
 /// module can't use: it runs in host tests without the firmware's
@@ -667,10 +703,10 @@ pub struct Place {
 /// most an hour without the room's reading, until the hourly scan hears
 /// it again.
 ///
-/// Why not more: a fix soon after leaving should already count. One 0–15
-/// min after leaving (a scan's interval) on foot (5 km/h) is 0–1.25 km
-/// away: at 500 m, two walks out in five were still within it, and
-/// changed nothing; at 200 m, one in six.
+/// Why not more: the fix asked for when the sensors go unheard
+/// ([`Ask::Gone`]) comes at the first scan that misses them, 0–15 min after
+/// leaving: on foot (5 km/h), 0–1.25 km away. At 500 m, two walks out in
+/// five were still within it, and changed nothing; at 200 m, one in six.
 pub const AWAY: f32 = 200.0;
 
 /// The most a fix may be off (metres, the accuracy the phone gives with
@@ -710,21 +746,28 @@ pub fn distance_squared(a: Place, b: Place) -> f32 {
 }
 
 impl Nearby {
-    /// The phone sent where it is (`here`, a fix good to [`PRECISE`]). If a sensor was heard within
-    /// a background scan's interval, this is where the sensors are. If
-    /// not, and it's more than [`AWAY`] from where they were, the sensors
-    /// known are gone: forgotten, with the reading shown, so that scans
-    /// fall back to the hourly look for sensors at once. Back near it,
-    /// with none known, scans at once: the sensors there are likely back
-    /// in range. Returns whether it forgot them.
+    /// The phone sent where it is (`here`, a fix good to [`PRECISE`]). If
+    /// the last scan heard a sensor, within a background scan's interval,
+    /// this is where the sensors are. If not, and it's more than [`AWAY`]
+    /// from where they were, the sensors known are gone: forgotten, with
+    /// the reading shown, so that scans fall back to the hourly look for
+    /// sensors at once. Back near it, with none known, scans at once: the
+    /// sensors there are likely back in range. Returns whether it forgot
+    /// them.
+    ///
+    /// The last scan, not any within the interval: the fix asked for when
+    /// a scan hears none of them ([`Ask::Gone`]) comes minutes after the
+    /// scan before heard them, and is the one to compare.
     ///
     /// TODO: the place isn't kept in flash, so after a restart it waits
-    /// for a fix near a sensor before this does anything.
+    /// for a fix near a sensor (which [`Ask::Found`] asks for) before this
+    /// does anything.
     pub fn located(&mut self, here: Place, now: u64) -> bool {
+        let last_scan = self.last_scan.unwrap_or(u64::MAX);
         if self
             .known
             .iter()
-            .any(|k| now.saturating_sub(k.heard) <= EVERY)
+            .any(|k| k.heard >= last_scan && now.saturating_sub(k.heard) <= EVERY)
         {
             self.place = Some(here);
             return false;

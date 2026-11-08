@@ -766,6 +766,17 @@ async fn serve(
         let event = match select4(conn.next(), outgoing, deadline, idle).await {
             Either4::First(event) => event,
             Either4::Second(message) => {
+                // With no deadline set (as `request_gps` does), a request
+                // for the GPS is a room sensor scan's (see `scan`): asked
+                // for if it's not too soon, and it too ends at the
+                // deadline, if no fix does.
+                if matches!(message, Outgoing::GpsPower(true)) && gps_deadline.is_none() {
+                    if !gps.borrow_mut().for_sensors(Instant::now()) {
+                        continue;
+                    }
+                    info!("ble: asking the phone for a location, for the room sensors");
+                    gps_deadline = Some(Instant::now() + geo::FIX_TIMEOUT);
+                }
                 send(server, conn, message).await;
                 continue;
             }
@@ -1475,10 +1486,19 @@ async fn scan(stack: &BleStack) {
             }
         }
         let now = Instant::now().as_millis();
-        let best = NEARBY.lock(|nearby| {
+        let (ended, best) = NEARBY.lock(|nearby| {
             let mut nearby = nearby.borrow_mut();
-            nearby.end(now).then(|| nearby.best()).flatten()
+            let ended = nearby.end(now);
+            (ended, nearby.best().filter(|_| ended.heard))
         });
+        // The sensors went (or came): where the phone is says whether the
+        // wearer left them (see `aranet::Ask`). Through the phone's
+        // connection, which decides whether to ask (`serve`), and turns
+        // the GPS off again. Not with the phone away: it would only
+        // queue, and be dropped.
+        if ended.ask.is_some() && CONNECTED.load(Ordering::Relaxed) {
+            let _ = OUTBOX.try_send(Outgoing::GpsPower(true));
+        }
         let ms = started.elapsed().as_millis() as u32;
         let reports = REPORTS.load(Ordering::Relaxed);
         match best {

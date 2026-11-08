@@ -275,7 +275,7 @@ mod tests {
         for &(address, rssi) in heard {
             nearby.hear(address, rssi, reading(), now + 500);
         }
-        nearby.end(now + 1000)
+        nearby.end(now + 1000).heard
     }
 
     #[test]
@@ -475,6 +475,49 @@ mod tests {
         assert!(nearby.fresh(31 * MIN).is_some());
     }
 
+    #[test]
+    fn asks_where_when_the_sensors_go_or_are_first_found() {
+        let home = place(HOME.0, HOME.1);
+        let ended = |nearby: &mut Nearby, now: u64, heard: &[(Address, i8)]| {
+            nearby.begin(now);
+            for &(address, rssi) in heard {
+                nearby.hear(address, rssi, reading(), now + 500);
+            }
+            nearby.end(now + 1000).ask
+        };
+        let mut nearby = Nearby::new();
+        // Found, with no place for them: where are they?
+        assert_eq!(ended(&mut nearby, 0, &[(KITCHEN, -60)]), Some(Ask::Found));
+        // Still there: nothing to ask, place or not.
+        assert_eq!(ended(&mut nearby, 15 * MIN, &[(KITCHEN, -60)]), None);
+        nearby.located(home, 16 * MIN);
+        assert_eq!(ended(&mut nearby, 30 * MIN, &[(KITCHEN, -60)]), None);
+        // Gone: did the wearer leave?
+        assert_eq!(ended(&mut nearby, 45 * MIN, &[]), Some(Ask::Gone));
+        // Only once: the next scan waits for nobody.
+        assert_eq!(ended(&mut nearby, 60 * MIN, &[]), None);
+        // Back, with the place known: nothing to ask.
+        assert_eq!(ended(&mut nearby, 75 * MIN, &[(KITCHEN, -60)]), None);
+        // Gone below the floor is gone too.
+        assert_eq!(
+            ended(&mut nearby, 90 * MIN, &[(KITCHEN, -85)]),
+            Some(Ask::Gone)
+        );
+        // Without a place, gone asks nothing: a fix would tell nothing.
+        let mut nearby = Nearby::new();
+        ended(&mut nearby, 0, &[(KITCHEN, -60)]);
+        assert_eq!(ended(&mut nearby, 15 * MIN, &[]), None);
+        // A sensor that advertises irregularly is neither found nor gone.
+        let doorbell = Reading {
+            kind: Kind::BTHome { irregular: true },
+            ..reading()
+        };
+        let mut nearby = Nearby::new();
+        nearby.begin(0);
+        nearby.hear(KITCHEN, -60, doorbell, 500);
+        assert_eq!(nearby.end(1000).ask, None);
+    }
+
     fn worn() -> Context {
         Context::default()
     }
@@ -670,6 +713,19 @@ mod tests {
         // Four minutes' walk down the road when the next scan missed them.
         scan(&mut nearby, 15 * MIN, &[]);
         assert!(nearby.located(place(59.9169, 10.7522), 16 * MIN));
+    }
+
+    #[test]
+    fn the_fix_after_the_sensors_go_is_compared() {
+        let home = place(HOME.0, HOME.1);
+        let mut nearby = Nearby::new();
+        scan(&mut nearby, 0, &[(KITCHEN, -60)]);
+        nearby.located(home, MIN);
+        // Heard a minute ago (the Air screen was open), then not: the fix
+        // that asks for is where the wearer is now, not the sensors.
+        scan(&mut nearby, 2 * MIN, &[(KITCHEN, -60)]);
+        scan(&mut nearby, 3 * MIN, &[]);
+        assert!(nearby.located(place(59.95, 10.70), 3 * MIN + 2000));
     }
 
     #[test]

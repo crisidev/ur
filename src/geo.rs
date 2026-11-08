@@ -114,7 +114,8 @@ pub fn has_fix() -> bool {
 //   Gadgetbridge then re-sends the time with the new offset;
 // - a long Bluetooth gap: the phone was off or far away.
 //
-// Plus a daily refresh, for same-time-zone trips.
+// Plus a daily refresh, for same-time-zone trips, and now and then for
+// the room sensors (see [`GpsPolicy::for_sensors`]).
 //
 // What a request does on the phone (Gadgetbridge's Bangle.js driver,
 // `setupGPSUpdateTimer`): with "Use phone GPS data" on, it starts
@@ -143,6 +144,9 @@ pub const FIX_TIMEOUT: Duration = Duration::from_secs(120);
 /// Gadgetbridge's "GPS" notification; flaky links reconnect every few
 /// minutes. A changed time zone still asks at once.
 const RETRY_AFTER: Duration = Duration::from_secs(3600);
+/// The most requests a day for the room sensors (see
+/// [`GpsPolicy::for_sensors`]), on top of the others.
+const SENSOR_REQUESTS: u8 = 4;
 
 #[derive(Default)]
 pub struct GpsPolicy {
@@ -153,6 +157,14 @@ pub struct GpsPolicy {
     last_request: Option<Instant>,
     /// A trigger fired; ask at the next opportunity.
     wanted: bool,
+    /// Requests for the room sensors on `last_request`'s day (since
+    /// booting), for [`SENSOR_REQUESTS`]. (In what would be padding.)
+    sensor_requests: u8,
+}
+
+/// Days since booting: [`SENSOR_REQUESTS`]'s day.
+fn day(at: Instant) -> u64 {
+    at.as_secs() / (24 * 3600)
 }
 
 impl GpsPolicy {
@@ -187,9 +199,40 @@ impl GpsPolicy {
     pub fn take_request(&mut self, now: Instant) -> bool {
         let wanted = core::mem::take(&mut self.wanted);
         if wanted {
-            self.last_request = Some(now);
+            self.asked(now);
         }
         wanted
+    }
+
+    /// A scan for room sensors would like a fix (`aranet::Ask`): whether
+    /// to ask the phone now. Not if anything asked within [`RETRY_AFTER`],
+    /// or this asked [`SENSOR_REQUESTS`] times today already.
+    ///
+    /// What that comes to: with sensors at home, a request each time the
+    /// scans stop hearing them, i.e. leaving home (or a room far enough
+    /// from them, see `aranet::FLOOR_DBM`), so typically 1–3 a day, at
+    /// most four, an hour apart; and one after booting, to learn where
+    /// they are. Each runs the phone's location for a few seconds (a
+    /// Wi-Fi fix comes at once), at worst [`FIX_TIMEOUT`].
+    pub fn for_sensors(&mut self, now: Instant) -> bool {
+        let today = self.last_request.is_some_and(|at| day(at) == day(now));
+        let asked_lately = self
+            .last_request
+            .is_some_and(|at| now.saturating_duration_since(at) < RETRY_AFTER);
+        if asked_lately || (today && self.sensor_requests >= SENSOR_REQUESTS) {
+            return false;
+        }
+        self.asked(now);
+        self.sensor_requests += 1;
+        true
+    }
+
+    /// A request goes out now.
+    fn asked(&mut self, now: Instant) {
+        if self.last_request.is_none_or(|at| day(at) != day(now)) {
+            self.sensor_requests = 0;
+        }
+        self.last_request = Some(now);
     }
 }
 

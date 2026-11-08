@@ -278,7 +278,8 @@ Gadgetbridge, then add it again in Gadgetbridge and type the passkey.
 
 Without one, the themes and brightness follow the sun in Oslo. The watch
 asks Gadgetbridge for the phone's location when it connects (at most
-once an hour, and when the time zone changes), and keeps the last one.
+once an hour), when the time zone changes, and when it stops hearing a
+room sensor (at most four times a day), and keeps the last one.
 Gadgetbridge only passes on fresh locations, and only with all of these
 on:
 
