@@ -11,9 +11,10 @@
 #   release if they differ. A version with a prerelease part (0.9.0-rc.1)
 #   makes a GitHub prerelease.
 # - build: scripts/release.sh builds and packages both variants, as
-#   `<version>+<commit>`, then GitHub attests their build provenance
-#   (actions/attest): a signed statement that this workflow, at this
-#   commit, produced exactly these files. Anyone can check a download with
+#   `<version>+<commit>`, scripts/size.py checks they fit, then GitHub
+#   attests their build provenance (actions/attest): a signed statement
+#   that this workflow, at this commit, produced exactly these files.
+#   Anyone can check a download with
 #
 #       gh attestation verify ur-0.9.0-dfu.zip --repo jonhoo/ur
 #
@@ -68,6 +69,15 @@ jobs:
         run: rustup toolchain install
       - name: build and package
         run: scripts/release.sh dist
+      # test.yml's size check, on exactly what's released: a package that
+      # doesn't fit the watch must not ship.
+      - name: size
+        run: |
+          elfs=()
+          for elf in dist/*.elf; do
+            [[ $elf == *-slot.elf ]] || elfs+=("$elf")
+          done
+          python3 scripts/size.py check "${elfs[@]}"
       - name: attest build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # tag=v4.2.2
         with:

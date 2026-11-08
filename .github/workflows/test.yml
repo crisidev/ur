@@ -10,7 +10,8 @@
 # - sim: the simulator's tests (sim/), and screenshots of the UI from it
 # - firmware: builds and packages both variants exactly as a release would
 #   (scripts/release.sh), and uploads them, so every PR, and every commit on
-#   main, has a package to try on a watch
+#   main, has a package to try on a watch; and checks them, and the
+#   `compare` build, against every size constraint (scripts/size.py)
 #
 # The firmware itself has no tests that run in CI: it needs the watch. See
 # check.yml for the toolchains, concurrency cancellation and triggers.
@@ -136,3 +137,22 @@ jobs:
           path: ${{ steps.build.outputs.logging }}
           archive: false
           if-no-files-found: error
+      # Not released, but a dev kit runs it to check the simulator against
+      # (`ur-sim --devkit`), so it must fit too, and it's the tightest on
+      # RAM. In a target directory of its own: release.sh's path remapping
+      # makes for different rustflags, and sharing one would rebuild every
+      # dependency, twice, on every run.
+      - name: build compare
+        run: |
+          CARGO_TARGET_DIR=target/compare cargo build --release --locked --features compare
+          mkdir -p size
+          cp target/compare/thumbv7em-none-eabihf/release/ur size/compare.elf
+      # Every constraint on the image and on RAM, for every variant, and
+      # that the layout agrees everywhere it's written down.
+      - name: size
+        run: |
+          elfs=()
+          for elf in dist/*.elf; do
+            [[ $elf == *-slot.elf ]] || elfs+=("$elf")
+          done
+          python3 scripts/size.py check "${elfs[@]}" compare=size/compare.elf

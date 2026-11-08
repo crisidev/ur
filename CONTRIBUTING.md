@@ -73,13 +73,33 @@ The host tests run from each crate's directory, where its own
 cd host-tests/ppg && cargo test --release
 ```
 
+### Size checks
+
+`scripts/size.py check` holds built ELFs to every size constraint, with
+a table of each one's limit, use and headroom:
+
+- the MCUBoot image (header, code, hash) fits the slot, short of its
+  trailer, which is also what an update over Bluetooth may take;
+- static RAM (`.data`, `.bss`, `.uninit`) ends below memory.x's `RAM`,
+  where the retained block and the stack begin;
+- the stack region is at least as deep as the deepest stack measured on
+  a dev kit (`STACK_PEAK` in `size.py`: raise it when the hourly
+  `power:` log shows deeper);
+- the layout agrees everywhere it's written down: memory.x,
+  `package.py`, and the Rust constants for storage, the image-OK flag,
+  the retained block, the stack's end and the SPI flash's regions.
+
+CI runs it on both released variants and on `compare` (which must fit
+too, and has the least RAM to spare), and the release workflow on what it
+ships. To compare two builds locally, see the top of `size.py`.
+
 ### Flash size
 
 The image must fit the bootloader's slot; `package.py` prints how full it
-is. Only the loaded sections count (`.text`, `.rodata`, `.data`'s initial
-values): symbols, debug info and defmt's strings stay in the ELF, so
-`debug = 2` is free. `cargo bloat --release --crates` (or `-n 50`) shows
-where the rest goes. Some things cost far more than they look:
+is, and `size.py` (above) what's left. Only the loaded sections count
+(`.text`, `.rodata`, `.data`'s initial values): symbols, debug info and
+defmt's strings stay in the ELF, so `debug = 2` is free. `cargo bloat
+--release --crates` (or `-n 50`) shows where the rest goes. Some things cost far more than they look:
 
 - `str::parse::<f32>()` or `f64`: 18 KB of tables and code. Use
   `decimal::parse`.
