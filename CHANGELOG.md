@@ -15,15 +15,16 @@ missing below were test builds for the dev kit.
 ### Added
 
 - Add a button grid for Home Assistant or Tasker, the first screen below the clock once turned on in Settings: nine retro arcade buttons that make 90 codes (1–9, and pairs such as 2 then 3, code 23), each tapped, double-tapped (pairs only), or held, sent over Bluetooth as encrypted BTHome, or through Gadgetbridge as an Android intent (see docs/buttons.md); with Gadgetbridge's "Allow Intents" off, say "INTENTS OFF" / "SEE FAQ C04" (3f335fe, ff82ac9)
-- Add a Settings screen below the clock, before Info: THEME, LIGHT, BUTTONS, and HA KEY, the button grid's key for Home Assistant, as a QR code to scan and paste, or as text (3f335fe, b6cb498)
+- Add a Settings screen right of the clock, between the alarms and Info: THEME, LIGHT, BUTTONS, and HA KEY, the button grid's key for Home Assistant, as a QR code to scan and paste, or as text (3f335fe, b6cb498, 7c69c61)
 - Read a nearby Aranet4 air monitor's advertisements (with its Smart Home integrations on), listening briefly every 15 minutes while one is around and hourly otherwise, and show the strongest one's CO₂ (with its band), temperature, humidity, pressure, battery and age on a new Air screen below Music, which is there while one was heard within the hour (e1711da)
 - Say "TEXT AS BITMAPS" / "SEE FAQ N02" (once a connection) when Gadgetbridge's "Text as Bitmaps" setting is on, and show each word it sends as a picture as a `?` rather than a run of junk; the README's FAQ N02 says how to switch it off (46d43f3)
 
 ### Changed
 
 - Move Info to the right of the clock, after the alarms, from the end of the screens below it (5f5acf2)
-- Show the room's temperature on the clock face rather than the watch's own: a nearby Aranet4's (after a little house), or else, on the wrist, an estimate from the watch's own that calibrates itself against any Aranet4 it meets (roughly ±2–3 °C once calibrated), or the watch's own off the wrist (e1711da)
+- Show the room's temperature on the clock face rather than the watch's own: a nearby Aranet4's (underlined at the degree sign), or else, on the wrist, an estimate from the watch's own that calibrates itself against any Aranet4 it meets (roughly ±2–3 °C once calibrated), or the watch's own off the wrist (e1711da, 2e1f1e1)
 - Redesign the clock face's lower half: the date with small seconds under the time, the heart rate and the next alarm or timer in one row, and the day's steps as ten blocks rather than a number: 1,000 a block (×1K) towards a fixed goal of 10,000, then 10,000 a block (×10K) past it, full at 100,000 (the exact count is on Today, a swipe right) (a02d355, 718c01d)
+- Show a crossed-out Bluetooth rune on the clock face while the phone isn't connected, rather than a Bluetooth rune while it is; the note for music playing moves to the top left corner in its place (2e1f1e1)
 - Move THEME and LIGHT from Info to the new Settings screen, leaving Info to the watch's status (3f335fe)
 - Show a notification's sender big (with the screen off, and in the history) only if it fits on one line, or on two of about the same width, as a two-word name often does; anything else goes small, rather than as a big short word over a long one, or a big word broken with a hyphen (116942b)
 - Leave a column more margin either side of notification text, as for a call's (0eaa4c1)
