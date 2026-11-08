@@ -678,8 +678,12 @@ async fn serve(
                 }
                 let mut actions: Vec<Action, 4> = Vec::new();
                 // DFU writes are acted on after replying (flash work is
-                // async; this callback isn't), so keep a copy.
-                let mut dfu_write: Option<(u16, Vec<u8, 244>)> = None;
+                // async; this callback isn't), so keep a copy: which
+                // characteristic, and the data. Copied into place, rather
+                // than built and moved in as an `Option<(u16, Vec)>`,
+                // which put two more copies of its 0.25 KB on the stack.
+                let mut dfu_handle: Option<u16> = None;
+                let mut dfu_data: Vec<u8, 244> = Vec::new();
                 let mut log_request: Option<u16> = None;
                 if let GattEvent::Write(write) = &event {
                     let handle = write.handle();
@@ -703,7 +707,9 @@ async fn serve(
                         });
                     } else if handle == dfu_control || handle == dfu_packet {
                         write.with_data(|_offset, data| {
-                            dfu_write = Vec::from_slice(data).ok().map(|data| (handle, data));
+                            if dfu_data.extend_from_slice(data).is_ok() {
+                                dfu_handle = Some(handle);
+                            }
                         });
                     }
                 }
@@ -721,12 +727,12 @@ async fn serve(
                     }
                     send_log_sector(server, conn, index).await;
                 }
-                if let Some((handle, data)) = &dfu_write {
+                if let Some(handle) = dfu_handle {
                     let was_updating = update.active();
-                    let notification = if *handle == dfu_control {
-                        update.on_control(data).await
+                    let notification = if handle == dfu_control {
+                        update.on_control(&dfu_data).await
                     } else {
-                        update.on_packet(data).await
+                        update.on_packet(&dfu_data).await
                     };
                     if let Some(value) = notification
                         && let Err(e) = server
