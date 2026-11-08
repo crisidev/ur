@@ -12,6 +12,7 @@ use embassy_time::Duration;
 
 use crate::activity;
 use crate::aranet;
+use crate::bthome_sensor;
 use crate::clock;
 use crate::gb::{self, Incoming, LineBuffer, Outgoing};
 use crate::geo;
@@ -59,6 +60,9 @@ The wearer and the watch:
                              a nearby Aranet4's reading, as a scan hears
                              it (AGO: measured e.g. 4m ago); it gives the
                              clock face's temperature, and the Air screen
+  bthome-temp C [RH% [BATTERY% [AGO]]] | bthome-temp off
+                             a nearby BTHome thermometer's instead (AGO:
+                             heard e.g. 4m ago)
   asleep on|off | movement N           what sleep tracking says (smart
                                        alarms, the quiet night)
   last-night HH:MM HH:MM [deep=MIN] [rem=MIN] [awake=MIN]
@@ -357,6 +361,22 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
             };
             watch.hear_aranet(sighting);
         }
+        "bthome-temp" => {
+            let sighting = match need(0, "C, or off")? {
+                "off" => None,
+                celsius => Some(bthome_sighting(
+                    number(celsius)?,
+                    arg(1)
+                        .map(|h| number(h.trim_end_matches('%')))
+                        .transpose()?,
+                    arg(2)
+                        .map(|b| number(b.trim_end_matches('%')))
+                        .transpose()?,
+                    arg(3).map(duration).transpose()?.unwrap_or_default(),
+                )?),
+            };
+            watch.hear_aranet(sighting);
+        }
         "asleep" => {
             activity::set_asleep(on_off(need(0, "on|off")?, "on", "off")?);
             watch.refresh();
@@ -645,6 +665,42 @@ fn aranet_sighting(
     let reading = aranet::parse(&payload).map_err(|skip| format!("{skip:?}"))?;
     Ok(aranet::Sighting {
         address: [0x2a, 0x3f, 0x11, 0x22, 0x33, 0xc4],
+        rssi: -60,
+        reading,
+        heard: embassy_time::Instant::now().as_millis(),
+    })
+}
+
+/// A nearby BTHome thermometer's reading, heard `ago`: built as the
+/// service data a LYWSD03MMC on pvvx's firmware sends (packet id,
+/// battery, temperature and humidity in hundredths), and read back through
+/// the firmware's own parser.
+fn bthome_sighting(
+    celsius: f32,
+    humidity: Option<f32>,
+    battery: Option<u8>,
+    ago: Duration,
+) -> Result<aranet::Sighting, String> {
+    let mut data = vec![0x40, 0x00, 0x2A];
+    if let Some(battery) = battery {
+        data.extend_from_slice(&[0x01, battery]);
+    }
+    let hundredths = (celsius * 100.0).round();
+    if !(-32768.0..32768.0).contains(&hundredths) {
+        return Err(format!("{celsius} °C: out of BTHome's range"));
+    }
+    data.push(0x02);
+    data.extend_from_slice(&(hundredths as i16).to_le_bytes());
+    if let Some(humidity) = humidity {
+        data.push(0x03);
+        data.extend_from_slice(&((humidity * 100.0).round() as u16).to_le_bytes());
+    }
+    let mut reading = bthome_sensor::parse(&data).map_err(|skip| format!("{skip:?}"))?;
+    // Heard now, as old as if heard `ago` (the simulator's uptime may be
+    // shorter than that).
+    reading.age = u16::try_from(ago.as_secs()).map_err(|_| "AGO: under 18 h".to_owned())?;
+    Ok(aranet::Sighting {
+        address: [0xb2, 0x18, 0x8d, 0x38, 0xc1, 0xa4],
         rssi: -60,
         reading,
         heard: embassy_time::Instant::now().as_millis(),

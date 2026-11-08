@@ -43,6 +43,9 @@ mod brightness;
 #[path = "../../src/bthome.rs"]
 #[allow(dead_code)]
 mod bthome;
+#[path = "../../src/bthome_sensor.rs"]
+#[allow(dead_code)]
+mod bthome_sensor;
 #[path = "../../src/buttons.rs"]
 #[allow(dead_code)]
 mod buttons;

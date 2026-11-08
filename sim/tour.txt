@@ -178,6 +178,24 @@ nav off
 wait 6s
 expect not screen-on
 
+# Back to the Air screen, with a BTHome thermometer instead of the
+# Aranet4 (here, before the evening, so that the time it takes doesn't
+# move the screenshots above). It gives the clock face's temperature,
+# marked the same; it has no CO2, so its temperature is the big number.
+button
+bthome-temp 21.37 45.6 87 2m
+up
+up
+wait 1s
+shot 11i-air-bthome.png
+# Below zero, and only a temperature.
+bthome-temp -4.25
+wait 1s
+shot 11j-air-bthome-cold.png
+button
+wait 1s
+bthome-temp off
+
 # ==============================================================================
 # Evening and night
 # ==============================================================================

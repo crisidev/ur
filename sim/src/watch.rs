@@ -493,8 +493,8 @@ impl Watch {
         self.refresh();
     }
 
-    /// An Aranet4's reading, as a scan hears it (`None`: none heard since
-    /// boot).
+    /// A room sensor's reading (an Aranet4's, or a BTHome thermometer's),
+    /// as a scan hears it (`None`: none heard since boot).
     pub fn hear_aranet(&mut self, sighting: Option<Sighting>) {
         ble::NEARBY.lock(|nearby| {
             let mut nearby = nearby.borrow_mut();
