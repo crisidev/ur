@@ -18,10 +18,12 @@
 # A Sunday evening, on the wrist
 # ==============================================================================
 #
-# As readme-screenshots.txt sets it up: after sunset in Oslo (the Arcade
-# theme), the day so far, last night's sleep, a phone with music playing,
-# and a couple of notifications from earlier.
+# As readme-screenshots.txt sets it up: a phone connected (as a watch
+# usually is, so the status bar shows no "no phone" rune), after sunset
+# in Oslo (the Arcade theme), the day so far, last night's sleep, music
+# playing, and a couple of notifications from earlier.
 
+connect
 time 2026-11-08 17:38:20 +01:00
 location 59.91 10.75
 temperature 31
