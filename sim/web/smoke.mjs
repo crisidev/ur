@@ -108,6 +108,15 @@ async function watch({ start, files }) {
   if (files.length !== 1 || files[0][0] !== "ur-sim-1.png") {
     fail(`S downloaded ${JSON.stringify(files.map(([name]) => name))}`);
   }
+  // R records, and R again stops and downloads the GIF.
+  ur.key("r");
+  ur.key("ArrowRight");
+  ur.advance(1000);
+  ur.key("r");
+  const gif = files[1];
+  if (files.length !== 2 || gif[0] !== "ur-sim-1.gif" || new TextDecoder().decode(gif[1].slice(0, 6)) !== "GIF89a") {
+    fail(`R, R downloaded ${JSON.stringify(files.map(([name]) => name))}`);
+  }
 
   // Commands, good and bad.
   ur.command("echo hello");
@@ -149,5 +158,5 @@ for (const script of scripts) {
   const dir = join(out, basename(script, ".txt"));
   mkdirSync(dir, { recursive: true });
   for (const [name, data] of files) writeFileSync(join(dir, name), data);
-  console.log(`smoke: ${script}: ${files.length} screenshots in ${dir}`);
+  console.log(`smoke: ${script}: ${files.length} files in ${dir}`);
 }

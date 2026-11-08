@@ -47,7 +47,8 @@ The same watch, compiled to WebAssembly, on a web page: the window's
 watch, mouse (or touchscreen) and keys (bar quitting), time running with
 the browser's clock, buttons to skip a minute or an hour, a theme
 picker, and a box for commands, as typed into the terminal. Screenshots
-(`S`, or `shot`) download. A script file runs from the page too. It
+(`S`, or `shot`) and recordings (`R`, or `record` … `stop`) download. A
+script file runs from the page too. It
 starts in use, not as after a reset: the time set from the browser's
 clock, a phone connected, and a little of a day to look at
 (`web/start.txt`).
@@ -61,9 +62,9 @@ python3 -m http.server -d target/web       # then open http://localhost:8000
 It needs a web server, as browsers won't load the module into a page
 opened as a file. `web/check.sh` checks it headless (with node): it
 drives it as the page does, then runs the tour, the README's
-screenshots, `gadgetbridge.txt` and `web/compare.txt` on it and on the
-command line, and checks that every screenshot is the same, byte for
-byte.
+screenshots and GIFs, `gadgetbridge.txt` and `web/compare.txt` on it and
+on the command line, and checks that every screenshot and recording is
+the same, byte for byte.
 
 ## Scripts
 

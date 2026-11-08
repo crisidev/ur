@@ -32,6 +32,7 @@
     <button data-key="f">+1 minute</button>
     <button data-key="h">+1 hour</button>
     <button data-key="s">Screenshot</button>
+    <button data-key="r">Record / stop</button>
     <label>Theme <select id="theme"><option value="auto">auto (the sun's)</option></select></label>
     <label>Run a script <input id="script" type="file" accept=".txt,text/plain"></label>
   </div>
@@ -44,7 +45,7 @@
     <kbd>Space</kbd> the button, <kbd>G</kbd> a glance, <kbd>N</kbd> a notification,
     <kbd>M</kbd> music, <kbd>C</kbd> a call, arrows swipe, <kbd>T</kbd> tap,
     <kbd>L</kbd> long press, <kbd>F</kbd>/<kbd>H</kbd> a minute/hour on,
-    <kbd>S</kbd> a screenshot.
+    <kbd>S</kbd> a screenshot, <kbd>R</kbd> record a GIF (again to stop and download it).
     The firmware's own UI code, compiled to WebAssembly: see
     <a href="https://github.com/jonhoo/ur/tree/main/sim">sim/</a>.
   </div>
@@ -85,7 +86,8 @@ function print(kind, text) {
 
 function download(name, bytes) {
   const link = document.createElement("a");
-  link.href = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+  // No type: the download's name says what it is (a PNG or a GIF).
+  link.href = URL.createObjectURL(new Blob([bytes]));
   link.download = name;
   link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 10_000);

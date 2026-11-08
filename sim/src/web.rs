@@ -166,9 +166,12 @@ struct Hands {
     /// A finger is on the panel (the pointer went down on it).
     finger: bool,
     /// The next test notification `N` sends, and how many screenshots
-    /// `S` has taken.
+    /// `S` has taken and recordings `R` has started: their files' names
+    /// count them (the window's name recordings by the computer's clock,
+    /// which the browser's build reads only for `time now`).
     notification: u8,
     shots: u32,
+    recordings: u32,
     /// The phone is playing music (`M`), has said what (the first `M`),
     /// and is ringing (`C`).
     playing: bool,
@@ -359,6 +362,14 @@ pub extern "C" fn ur_key() -> bool {
                 hands.shots += 1;
                 format!("shot ur-sim-{}.png", hands.shots)
             }
+            // A GIF of the screen, as the window's R: on the watch's
+            // clock, so it plays at the watch's pace. It downloads when
+            // stopped.
+            "r" if crate::record::active() => "stop".to_owned(),
+            "r" => {
+                hands.recordings += 1;
+                format!("record ur-sim-{}.gif", hands.recordings)
+            }
             _ => return None,
         })
     });
@@ -431,7 +442,12 @@ pub extern "C" fn ur_status() {
             ""
         };
         let phone = if watch.connected { "" } else { ", no phone" };
-        format!("{time} · {screen}{night}{phone}")
+        let recording = if crate::record::active() {
+            " · recording (R to stop)"
+        } else {
+            ""
+        };
+        format!("{time} · {screen}{night}{phone}{recording}")
     });
     print(Text::Status, &line);
 }

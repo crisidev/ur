@@ -55,8 +55,6 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::BufWriter;
 use std::path::PathBuf;
 
 use embassy_time::{Duration, Instant, TICK_HZ};
@@ -295,15 +293,14 @@ impl Recording {
     }
 
     fn write(self) -> Result<String, String> {
-        let fail = |e: &dyn std::fmt::Display| format!("writing {}: {e}", self.path.display());
+        let fail = |e: &dyn std::fmt::Display| format!("encoding {}: {e}", self.path.display());
         let palette = Palette::new(&self.frames);
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| fail(&e))?;
-        }
-        let file = File::create(&self.path).map_err(|e| fail(&e))?;
         let dimension = |n: usize| u16::try_from(n).expect("the watch at --zoom 12 fits");
+        // In memory, then saved whole: the file is the platform's business
+        // (the browser downloads it).
+        let mut gif = Vec::new();
         let mut encoder = gif::Encoder::new(
-            BufWriter::new(file),
+            &mut gif,
             dimension(self.width),
             dimension(self.height),
             &palette.bytes(),
@@ -331,6 +328,7 @@ impl Recording {
                 .map_err(|e| fail(&e))?;
         }
         encoder.into_inner().map_err(|e| fail(&e))?;
+        crate::platform::save(&self.path, &gif)?;
         let seconds: u64 = self.frames.iter().map(|f| f.delay_cs).sum();
         let exact = if palette.exact { "" } else { ", quantised" };
         Ok(format!(

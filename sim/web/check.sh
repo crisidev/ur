@@ -13,9 +13,10 @@ cd "$sim"
 
 web/build.sh "$sim/target/web"
 
-# The scripts whose screenshots must match: the tour (every screen), the
-# README's (themes too), and the whole watch, drawn round the panel.
-scripts=(tour.txt readme-screenshots.txt gadgetbridge.txt web/compare.txt)
+# The scripts whose screenshots and recordings must match: the tour (every
+# screen), the README's (themes too, and its GIFs), and the whole watch,
+# drawn round the panel.
+scripts=(tour.txt readme-screenshots.txt readme-gifs.txt gadgetbridge.txt web/compare.txt)
 
 rm -rf "$out"
 node web/smoke.mjs target/web/ur_sim.wasm "$out/web" "${scripts[@]}"
@@ -25,7 +26,7 @@ for script in "${scripts[@]}"; do
         --out "$out/native/$name" "$script" 2>/dev/null
 done
 
-# Both made the same files, and each the same bytes: the same PNG encoder,
-# fed the same pixels.
+# Both made the same files, and each the same bytes: the same PNG and GIF
+# encoders, fed the same pixels.
 diff -r "$out/native" "$out/web"
-echo "check: the browser's $(find "$out/web" -name '*.png' | wc -l) screenshots match the command line's"
+echo "check: the browser's $(find "$out/web" -name '*.png' | wc -l) screenshots and $(find "$out/web" -name '*.gif' | wc -l) recordings match the command line's"
