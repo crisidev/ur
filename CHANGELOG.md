@@ -17,7 +17,7 @@ missing below were test builds for the dev kit.
 - Show today's steps and heart rate hour by hour, with a resting heart rate, and last night's sleep with its stages, on screens of their own left of the clock face (the Info screen's SLEEP row moves there) (0b74bd9)
 - Keep the last three notifications above the clock face, one a page with when it arrived, and a mark on the clock until you swipe down to them (0b74bd9, ea03065)
 - Show the next turn on the glance while Google Maps, OsmAnd, or CoMaps navigates on the phone (an arrow, the distance, and the street), and tap twice as a turn comes within 50 m (49f66b8)
-- Play, pause, and skip media from the clock face (long-press to play or pause, double-tap for the next track), with a note beside the Bluetooth icon while it plays (6667727)
+- Play, pause, and skip media from the clock face or a glance (long-press to play or pause, double-tap for the next track; not on a glance during a quiet night), with a double note beside the Bluetooth icon while it plays (6667727)
 - Keep notifications quiet while the wearer sleeps, without buzzing or lighting the screen, until their alarm or until they've been up a while (20b73a8)
 - Sync the alarms set in Gadgetbridge to the watch, shown on a screen of their own (c1e45cb)
 - Tell light, deep, and REM sleep apart, estimated from movement and heart rate, and sync them to Gadgetbridge and Health Connect (deep sleep used to be just long stillness, and there was no REM) (d9249b8)
@@ -36,6 +36,7 @@ missing below were test builds for the dev kit.
 - Set the screen's brightness by the time of day: full while the sun is up, dim from midnight until the wearer gets up, medium otherwise; SOFT on the Info screen turns it down a step (ec80454)
 - Start wake alarms gently, building up their vibration and the screen's brightness over about a minute (c1e45cb)
 - Wake the screen with a double tap, or a deliberate tap away from the edge, rather than any touch (ce53224)
+- Act on a long press, and buzz, as soon as it's been held for 0.6 s, rather than when the finger lifts, so there's no guessing how long to hold (65217d7)
 - Measure the heart rate in the background every 2 to 20 minutes, adapting to movement and sleep, rather than every 10 (4979861)
 - Stack the glance's hours above its minutes, in bigger digits (999279a)
 - Use less battery: lower panel voltages, a low-power mode for the dim look (now pure black and white), and sleeping touch and motion sensors while they aren't needed (ec80454)
@@ -51,6 +52,7 @@ missing below were test builds for the dev kit.
 ### Fixed
 
 - Stop the watch resetting when a heart rate reading came in while the screen was being redrawn (1bd5e6b)
+- Show music as playing once the track changes or is skipped, when the phone never said whether it plays (as after the watch restarts mid-song), rather than as paused (d5ee29a)
 - Keep today's steps, and the activity the phone hasn't fetched yet, across updates, and say in the field log when an update resets the watch (3f55661)
 - Stop reading a heart rate sensor that shifts on the skin as a slow pulse (it read 42 BPM at a desk while a Garmin said 67) (1651aa5)
 - Measure the heart rate in the background only once the wrist has kept still for a few seconds, and give up early on a wrist that keeps moving, so desk work no longer spends minutes of LED an hour on failed measurements (77be9c2)
