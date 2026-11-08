@@ -176,6 +176,15 @@ pub async fn input_task() {
                     4 => ("Signal", "Åse Kristiansen"),
                     // One line, even at 2×.
                     5 => ("Messages", "Ida"),
+                    // Every ASCII symbol, a line or two each at 2×.
+                    6 => ("Punctuation", "!\"#$%&' ()*+,-./"),
+                    7 => ("Punctuation", ":;<=>?@ [\\]^_ `{|}~"),
+                    // Curly quotes, a dash, and an ellipsis, as phones
+                    // send them.
+                    8 => (
+                        "Messages",
+                        "\u{201c}Don\u{2019}t\u{201d} \u{2013} Ida\u{2026}",
+                    ),
                     _ => ("Signal", "Jane Smith"),
                 };
                 let _ = app.push_str(from);

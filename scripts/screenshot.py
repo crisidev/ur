@@ -17,7 +17,9 @@ optionally with `:X,Y`), in canvas pixels (0–79);
 `glance` (as if the wrist turned) and `notify` (a test notification;
 `notify:1,0` has a four-line sender, `notify:2,0` a much longer one,
 `notify:3,0` a two-line one, `notify:4,0` one with an accent and a
-hyphenated word, `notify:5,0` a one-line one; `notify:X,H` arrived H
+hyphenated word, `notify:5,0` a one-line one, `notify:6,0` and `notify:7,0`
+every ASCII symbol between them, `notify:8,0` curly quotes, a dash, and an
+ellipsis; `notify:X,H` arrived H
 hours ago, for the history's arrival times). `hang`, `panic` (a `defmt::panic!`) and `fault` (a
 `core::panic!` as from a SoftDevice Controller fault, at "line" Y;
 `fault:1,Y` with a message too long to keep whole) crash the watch on

@@ -38,7 +38,7 @@ The phone:
   time YYYY-MM-DD HH:MM[:SS] [+HH:MM] | time now     the phone sets the time
   location LAT LON                                   a GPS fix
   notify APP WHO [AGO]       a notification (AGO: arrived e.g. 3h ago)
-  notify N [AGO]             the dev kit's test notification N (0-5)
+  notify N [AGO]             the dev kit's test notification N (0-8)
   call CALLER | call over
   music ARTIST TRACK [playing|paused] | music playing|paused
   find on|off                \"find my watch\"
@@ -633,6 +633,12 @@ pub fn test_notification(n: u8) -> (&'static str, &'static str) {
         3 => ("Signal", "Nora Lindqvist"),
         4 => ("Signal", "Åse Kristiansen"),
         5 => ("Messages", "Ida"),
+        6 => ("Punctuation", "!\"#$%&' ()*+,-./"),
+        7 => ("Punctuation", ":;<=>?@ [\\]^_ `{|}~"),
+        8 => (
+            "Messages",
+            "\u{201c}Don\u{2019}t\u{201d} \u{2013} Ida\u{2026}",
+        ),
         _ => ("Signal", "Jane Smith"),
     }
 }
