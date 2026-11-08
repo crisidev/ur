@@ -195,11 +195,13 @@ pub async fn input_task() {
                 let mut who = heapless::String::new();
                 // `x` picks the sender, to check how each length lays out.
                 let (from, sender) = match x {
+                    // Small, on two lines: four words.
                     1 => ("Podcasts", "Night Signals: Ida Moreau"),
                     // As long as a sender gets (`ui::PhoneEvent`'s 40).
                     2 => ("Calendar", "Quarterly planning: platform team, 4B"),
+                    // Small: a short word over a long one at 2×.
                     3 => ("Signal", "Nora Lindqvist"),
-                    // Accents, and a hyphenated word.
+                    // Accents, and a word too long for a line at 2×.
                     4 => ("Signal", "Åse Kristiansen"),
                     // One line, even at 2×.
                     5 => ("Messages", "Ida"),
@@ -212,6 +214,7 @@ pub async fn input_task() {
                         "Messages",
                         "\u{201c}Don\u{2019}t\u{201d} \u{2013} Ida\u{2026}",
                     ),
+                    // Two lines of about the same width at 2×.
                     _ => ("Signal", "Jane Smith"),
                 };
                 let _ = app.push_str(from);

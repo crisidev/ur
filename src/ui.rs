@@ -111,7 +111,8 @@
 //! - Notifications: a two-line banner (app, then sender) for
 //!   [`BANNER_TIME`] and a short buzz. If the screen was off, the
 //!   notification gets the whole (dim, white on black) screen instead, like
-//!   a glance, and the screen sleeps again after. Either way, it's kept in
+//!   a glance, the sender big if it's short (see [`quiet_layout`]), and the
+//!   screen sleeps again after. Either way, it's kept in
 //!   the history above the clock; one arriving while that's showing goes
 //!   straight to its first page instead of a banner.
 //! - Calls: take over the screen, ringing, until the phone says the call is
@@ -3185,8 +3186,9 @@ fn quiet_layout(who: &str, lines: &mut Lines) -> Option<i32> {
 
 /// `text` broken at spaces into `lines` of at most `width` pixels at
 /// `scale`; `None` if it doesn't fit in `max_lines` (at most
-/// [`QUIET_LINES`]). A word too long for a line of its own is hyphenated,
-/// keeping at least three letters for the next line ("KRISTIAN-" / "SEN").
+/// [`QUIET_LINES`]). A word too long for a line of its own (at 1×, 19
+/// letters or more) is hyphenated, keeping at least three letters for the
+/// next line.
 fn wrap(text: &str, width: i32, scale: i32, max_lines: usize, lines: &mut Lines) -> Option<()> {
     let fits = |s: &str| font::small_text_width(s) * scale <= width;
     lines.clear();
