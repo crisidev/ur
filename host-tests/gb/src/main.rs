@@ -376,6 +376,34 @@ mod tests {
         }
     }
 
+    /// Gadgetbridge sends notification text as Android hands it over:
+    /// plain text, not HTML, so `&` and `<` arrive as themselves and there
+    /// are no entities to decode (an `&amp;` would be the app's own, and
+    /// show on the phone too). Smart quotes and dashes arrive as `\u`
+    /// escapes (Gadgetbridge only swaps them for ASCII when it renders
+    /// text as images), for the font to draw as their ASCII look-alikes.
+    #[test]
+    fn symbols_arrive_as_they_are() {
+        for title in [
+            "Tom & Jerry <3",
+            "Don't \"panic\" #1 @ben?",
+            "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~",
+            "\u{201c}Don\u{2019}t\u{201d} \u{2013} Ida\u{2026}",
+            "AT&amp;T",
+        ] {
+            let line = notify_line("Mail", title, "");
+            let PhoneEvent::Notification { who, .. } = event(&line) else {
+                panic!("a notification");
+            };
+            assert_eq!(who, title, "{}", String::from_utf8_lossy(&line));
+        }
+        // As Gadgetbridge spells them (see `gadgetbridge_string`).
+        assert_eq!(
+            gadgetbridge_string("\u{201c}Don\u{2019}t\u{201d}"),
+            br#""\u201cDon\u2019t\u201d""#
+        );
+    }
+
     #[test]
     fn base64_strings() {
         // Gadgetbridge sends `atob("…")` where escaping costs more: names
