@@ -68,6 +68,24 @@ The host tests run from each crate's directory, where its own
 cd host-tests/ppg && cargo test --release
 ```
 
+### Flash size
+
+The image must fit the bootloader's slot; `package.py` prints how full it
+is. Only the loaded sections count (`.text`, `.rodata`, `.data`'s initial
+values): symbols, debug info and defmt's strings stay in the ELF, so
+`debug = 2` is free. `cargo bloat --release --crates` (or `-n 50`) shows
+where the rest goes. Some things cost far more than they look:
+
+- `str::parse::<f32>()` or `f64`: 18 KB of tables and code. Use
+  `decimal::parse`.
+- libm's `f64` `sin`, `cos`, `asin`, `acos`, `fmod`: ~7 KB on top of the
+  `f32` ones, which are already in.
+- `defmt::Debug2Format(&e)`: puts every variant name of `e`'s type in
+  flash (bt-hci's errors alone are 2 KB). Log `e` itself when it
+  implements `defmt::Format`, as trouble-host's types do.
+- A static that isn't all zeros goes in `.data`, whose initial image takes
+  as much flash as the static takes RAM.
+
 ## A dev kit
 
 A PineTime dev kit is a PineTime with its SWD port exposed. With a debug
