@@ -317,6 +317,19 @@ it](#using-it)). It ends with the morning's first alarm, or once you've
 been up for 22 minutes (7 after a nap). If you're up before either,
 double-press the button.
 
+### N02: The watch says "TEXT AS BITMAPS"
+
+Gadgetbridge's "Text as Bitmaps" setting is on. With it, Gadgetbridge
+draws each word the watch's font can't show (Chinese, say, or an emoji)
+as a picture, and sends that instead of the word, as a Bangle.js would
+want. ur can't show those pictures, so it shows a `?` for each, and says
+so once each time the phone connects. The pictures also make messages
+much longer, and a message too long for the watch never shows at all.
+
+In Gadgetbridge, open the watch's settings (the gear on its card), and
+under Notifications, switch off "Text as Bitmaps". Such words then come
+as text, with a `?` for each character the font lacks.
+
 ### P01: How do I put the watch away for a while?
 
 Use storage mode: long-press the Info screen (swipe up from the clock,

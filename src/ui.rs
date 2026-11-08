@@ -281,6 +281,10 @@ enum Shows {
     /// That a client can't connect, and why. Not a notification, so not
     /// kept: the Info screen's phone row keeps saying so meanwhile.
     Unpaired(Unpaired),
+    /// That Gadgetbridge's "Text as Bitmaps" is on (see
+    /// [`PhoneEvent::TextAsBitmaps`]), and where the README says how to
+    /// turn it off.
+    TextAsBitmaps,
 }
 
 /// How many notifications the history above the clock keeps. Each costs
@@ -443,6 +447,10 @@ pub struct App {
     media_hint: Option<(&'static [u8; 5], u8)>,
     /// The phone's directions, while it navigates (see [`crate::route`]).
     route: Option<Route>,
+    /// Whether this connection's phone has been told to turn off "Text as
+    /// Bitmaps" (see [`PhoneEvent::TextAsBitmaps`]): once is enough, when
+    /// every message may carry them.
+    told_bitmaps: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -485,6 +493,7 @@ impl App {
             takeover: false,
             media_hint: None,
             route: None,
+            told_bitmaps: false,
         }
     }
 
@@ -549,6 +558,7 @@ impl App {
         self.connected = connected;
         if !connected {
             self.music = None;
+            self.told_bitmaps = false;
             if self.screen == Screen::Music {
                 self.screen = Screen::Clock;
             }
@@ -693,6 +703,7 @@ impl App {
                 .first()
                 .map_or(("", ""), |n| (&n.app, &n.who)),
             Shows::Unpaired(why) => (why.title(), why.hint()),
+            Shows::TextAsBitmaps => ("TEXT AS BITMAPS", "SEE FAQ N02"),
         }
     }
 
@@ -1129,8 +1140,9 @@ impl App {
             }
             return;
         }
-        // Both of these show as a banner: a notification (kept in the
-        // history, too), or that a client can't connect.
+        // These show as a banner: a notification (kept in the history,
+        // too), that a client can't connect, or that the phone's text
+        // comes as images.
         let event = match event {
             PhoneEvent::Notification { app, who } => {
                 // The time as of the last tick, at most a second old. (A
@@ -1145,6 +1157,19 @@ impl App {
                 return self.show_banner(Shows::Newest, now);
             }
             PhoneEvent::Unpaired(why) => return self.show_banner(Shows::Unpaired(why), now),
+            // After the message that carried the images (see `ble`), so
+            // this replaces its banner rather than the other way round:
+            // what it said is in the history, as well as we could show it.
+            // Not over a call, whose screen and ring it would interrupt;
+            // the next message after it will do.
+            PhoneEvent::TextAsBitmaps => {
+                if !self.told_bitmaps && self.call.is_none() {
+                    defmt::info!("ui: the phone sends text as bitmaps (FAQ N02)");
+                    self.told_bitmaps = true;
+                    self.show_banner(Shows::TextAsBitmaps, now);
+                }
+                return;
+            }
             event => event,
         };
         // Anything else from the phone gets the full screen, bar media
@@ -1160,6 +1185,7 @@ impl App {
         match event {
             PhoneEvent::Notification { .. }
             | PhoneEvent::Unpaired(_)
+            | PhoneEvent::TextAsBitmaps
             | PhoneEvent::Alarms(_)
             | PhoneEvent::Route(_) => unreachable!("handled above"),
             // Calls ring and light the screen even in the quiet night: one

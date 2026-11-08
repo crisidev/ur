@@ -604,6 +604,7 @@ fn describe(event: &InputEvent) -> String {
             PhoneEvent::MusicState { playing } => format!("music playing: {playing}"),
             PhoneEvent::Find { on } => format!("find my watch: {on}"),
             PhoneEvent::Unpaired(why) => format!("unpaired: {}", why.title()),
+            PhoneEvent::TextAsBitmaps => "text as bitmaps".into(),
             PhoneEvent::Alarms(alarms) => {
                 format!("{} alarms from the phone", alarms.alarms().len())
             }

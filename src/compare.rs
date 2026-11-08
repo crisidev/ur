@@ -98,6 +98,7 @@ pub mod phone {
     pub const UNPAIRED: u8 = 8;
     pub const ALARMS: u8 = 9;
     pub const ROUTE: u8 = 10;
+    pub const TEXT_AS_BITMAPS: u8 = 11;
 }
 
 /// Tick flags: what `App::check_alarms` and `App::on_tick` were told.
@@ -394,6 +395,7 @@ pub fn input(input: &InputEvent, at: Instant) {
                 PhoneEvent::Unpaired(_) => phone::UNPAIRED,
                 PhoneEvent::Alarms(_) => phone::ALARMS,
                 PhoneEvent::Route(_) => phone::ROUTE,
+                PhoneEvent::TextAsBitmaps => phone::TEXT_AS_BITMAPS,
             },
             ..event(kind::PHONE, at)
         },

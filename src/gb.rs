@@ -117,8 +117,13 @@ pub enum Incoming<'a> {
     /// milliseconds).
     ActivityFetch { since_ms: i64 },
     /// A notification, call, music, find-my-watch, alarm, or navigation
-    /// message, translated for the UI (see [`phone_event`]).
-    Phone(PhoneEvent),
+    /// message, translated for the UI (see [`phone_event`]), and whether
+    /// its text came with Gadgetbridge's "Text as Bitmaps" images in it
+    /// (see [`Images`]), which the UI should tell the wearer to turn off.
+    Phone {
+        event: PhoneEvent,
+        text_as_bitmaps: bool,
+    },
     /// Any other `GB(…)` message (calendar, weather, …), by its `t`: we
     /// don't act on it.
     Ignored(&'a str),
@@ -142,44 +147,59 @@ pub fn parse(line: &[u8]) -> Option<Incoming<'_>> {
         "actfetch" => Incoming::ActivityFetch {
             since_ms: object.get("ts").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64,
         },
-        _ => match phone_event(kind, object) {
-            Some(event) => Incoming::Phone(event),
-            None => Incoming::Ignored(kind),
-        },
+        _ => {
+            let mut text_as_bitmaps = false;
+            match phone_event(kind, object, &mut text_as_bitmaps) {
+                Some(event) => Incoming::Phone {
+                    event,
+                    text_as_bitmaps,
+                },
+                None => Incoming::Ignored(kind),
+            }
+        }
     })
 }
 
 /// Translates the phone's notification, call, music, find-my-watch, alarm,
 /// and navigation messages for the UI. Only the fields we show are copied; in
-/// particular a notification's body never leaves this function.
-fn phone_event(kind: &str, object: Object<'_>) -> Option<PhoneEvent> {
-    fn text<const N: usize>(object: Object<'_>, key: &str) -> String<N> {
+/// particular a notification's body never leaves this function. Sets
+/// `bitmaps` if any of its text, shown or not, had images in it (see
+/// [`Images`]).
+fn phone_event(kind: &str, object: Object<'_>, bitmaps: &mut bool) -> Option<PhoneEvent> {
+    fn text<const N: usize>(object: Object<'_>, key: &str, bitmaps: &mut bool) -> String<N> {
         let mut out = String::new();
         if let Some(value) = object.get(key) {
-            let _ = value.decode_into(&mut out);
+            *bitmaps |= value.decode_into(&mut out);
         }
         out
     }
     Some(match kind {
         "notify" => {
+            // What isn't shown is still read, for images: Gadgetbridge
+            // renders the title, subject, and body the same way.
+            for key in ["title", "subject", "body"] {
+                if let Some(value) = object.get(key) {
+                    *bitmaps |= value.decode(&mut |_| {});
+                }
+            }
             // Messaging apps usually put the sender's name in the title and
             // leave `sender` empty.
-            let sender: String<40> = text(object, "sender");
+            let sender: String<40> = text(object, "sender", bitmaps);
             let who = if sender.is_empty() {
-                text(object, "title")
+                text(object, "title", bitmaps)
             } else {
                 sender
             };
             PhoneEvent::Notification {
-                app: text(object, "src"),
+                app: text(object, "src", bitmaps),
                 who,
             }
         }
         "call" => match object.get("cmd").and_then(|v| v.as_raw_str()) {
             Some("incoming") => {
-                let name: String<40> = text(object, "name");
+                let name: String<40> = text(object, "name", bitmaps);
                 let caller = if name.is_empty() {
-                    text(object, "number")
+                    text(object, "number", bitmaps)
                 } else {
                     name
                 };
@@ -189,8 +209,8 @@ fn phone_event(kind: &str, object: Object<'_>) -> Option<PhoneEvent> {
             _ => PhoneEvent::CallOver,
         },
         "musicinfo" => PhoneEvent::MusicInfo {
-            artist: text(object, "artist"),
-            track: text(object, "track"),
+            artist: text(object, "artist", bitmaps),
+            track: text(object, "track", bitmaps),
         },
         "musicstate" => PhoneEvent::MusicState {
             playing: object.get("state").and_then(|v| v.as_raw_str()) == Some("play"),
@@ -224,11 +244,15 @@ fn phone_event(kind: &str, object: Object<'_>) -> Option<PhoneEvent> {
         // field optional; `{"t":"nav"}` when navigation ends (see `route`).
         "nav" => {
             // Decoded at a size `text` is already used with (each size is
-            // a copy of the decoder, ~1 KB of flash), then copied over, with
+            // another copy of it), then copied over, with
             // Google Maps' no-break spaces (between number and unit), which
             // the font lacks, as plain ones.
-            fn spaced<const N: usize>(object: Object<'_>, key: &str) -> String<N> {
-                let decoded: String<40> = text(object, key);
+            fn spaced<const N: usize>(
+                object: Object<'_>,
+                key: &str,
+                bitmaps: &mut bool,
+            ) -> String<N> {
+                let decoded: String<40> = text(object, key, bitmaps);
                 let mut out: String<N> = String::new();
                 for c in decoded.chars() {
                     let c = if c == '\u{a0}' { ' ' } else { c };
@@ -242,8 +266,8 @@ fn phone_event(kind: &str, object: Object<'_>) -> Option<PhoneEvent> {
                 }
                 out
             }
-            let street = spaced::<{ route::STREET_LEN }>(object, "instr");
-            let distance = spaced::<{ route::DISTANCE_LEN }>(object, "distance");
+            let street = spaced::<{ route::STREET_LEN }>(object, "instr", bitmaps);
+            let distance = spaced::<{ route::DISTANCE_LEN }>(object, "distance", bitmaps);
             let action = object.get("action").and_then(|v| v.as_raw_str());
             let navigating = !street.is_empty() || !distance.is_empty() || action.is_some();
             PhoneEvent::Route(navigating.then(|| route::Step {
@@ -325,6 +349,8 @@ impl<'a> Value<'a> {
     }
 
     /// Decodes a string value into `out`, truncating if it doesn't fit.
+    /// Returns whether it carried images (see [`Images`]), which are left
+    /// out, a `?` in each one's place.
     ///
     /// Gadgetbridge's strings for a Bangle.js are JavaScript rather than
     /// strict JSON (see `jsonToStringInternal` in its driver):
@@ -336,28 +362,60 @@ impl<'a> Value<'a> {
     /// - Where escaping would cost more than base64, the "string" is instead
     ///   the expression `atob("…")`, base64 of the ISO-8859-1 bytes. Names
     ///   heavy in accented letters arrive this way.
-    pub fn decode_into<const N: usize>(&self, out: &mut String<N>) -> Option<()> {
+    pub fn decode_into<const N: usize>(&self, out: &mut String<N>) -> bool {
+        // Past the first character that doesn't fit, nothing more is
+        // shown, but the rest is still read, for images further on.
+        let mut full = false;
+        self.decode(&mut |c| {
+            if !full && out.push(c).is_err() {
+                full = true;
+            }
+        })
+    }
+
+    /// [`Value::decode_into`]'s work, handing each character to `show`:
+    /// one copy of the decoder, rather than one for each size of string
+    /// it fills (~1 KB of flash each).
+    fn decode(&self, show: &mut dyn FnMut(char)) -> bool {
+        let mut images = Images::default();
+        // Line breaks and tabs would only mess up one-line labels.
+        let mut text = |c: char| {
+            if let Some(c) = images.strip(c) {
+                show(if ('\u{8}'..='\u{d}').contains(&c) {
+                    ' '
+                } else {
+                    c
+                });
+            }
+        };
         if let Some(base64) = self
             .0
             .strip_prefix(b"atob(\"")
             .and_then(|v| v.strip_suffix(b"\")"))
         {
             for byte in decode_base64(base64) {
-                if out.push(char::from(byte)).is_err() {
-                    break;
-                }
+                text(char::from(byte));
             }
-            return Some(());
+            return images.found;
         }
 
-        let inner = self.0.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
+        let Some(inner) = self
+            .0
+            .strip_prefix(b"\"")
+            .and_then(|v| v.strip_suffix(b"\""))
+        else {
+            return false;
+        };
         let mut bytes = inner.iter().copied().peekable();
         let hex = |bytes: &mut core::iter::Peekable<_>, digits: usize| -> Option<u32> {
             let text: heapless::Vec<u8, 4> = bytes.by_ref().take(digits).collect();
             u32::from_str_radix(core::str::from_utf8(&text).ok()?, 16).ok()
         };
-        while let Some(byte) = bytes.next() {
-            let c = if byte != b'\\' {
+        // Up to the end, or to an escape that doesn't parse (a line cut
+        // short), showing what came before it.
+        let mut next = || -> Option<char> {
+            let byte = bytes.next()?;
+            Some(if byte != b'\\' {
                 // Latin-1 maps straight onto U+0000–U+00FF.
                 char::from(byte)
             } else {
@@ -399,16 +457,22 @@ impl<'a> Value<'a> {
                         }
                         char::from_u32(value)?
                     }
-                    // Line breaks and tabs would only mess up one-line labels.
-                    b'n' | b'r' | b't' | b'v' | b'f' | b'b' => ' ',
+                    // As the characters they stand for: inside an image,
+                    // they're its bytes.
+                    b'b' => '\u{8}',
+                    b't' => '\t',
+                    b'n' => '\n',
+                    b'v' => '\u{b}',
+                    b'f' => '\u{c}',
+                    b'r' => '\r',
                     other => char::from(other), // \" \\ \/
                 }
-            };
-            if out.push(c).is_err() {
-                break;
-            }
+            })
+        };
+        while let Some(c) = next() {
+            text(c);
         }
-        Some(())
+        images.found
     }
 
     /// The value as an object, if it is one.
@@ -442,6 +506,75 @@ impl<'a> Value<'a> {
 
     pub fn as_f64(&self) -> Option<f64> {
         crate::decimal::parse(self.0)
+    }
+}
+
+/// Gadgetbridge's "Text as Bitmaps" (a per-device setting for a
+/// Bangle.js, off by default; `renderUnicodeAsImage` in its driver) draws
+/// each word with characters beyond Latin-1 on the phone, and sends it as
+/// an image in the text: a `\0`, then the image as Espruino draws it
+/// (`bitmapToEspruinoArray`): its width, its height, its bits per pixel
+/// (plus 128 if one colour is transparent, then that colour), and its
+/// pixels, packed, a byte for each 8 bits. A Bangle.js draws them inline;
+/// we have no use for a picture of a word in some other font, so this
+/// leaves them out, with a `?` where each was (as for the characters the
+/// font lacks), and says it saw one, so the UI can say how to turn it off
+/// (README FAQ N02).
+#[derive(Default)]
+struct Images {
+    state: Image,
+    /// Whether the text had an image in it.
+    found: bool,
+}
+
+/// Where [`Images`] is in the text.
+#[derive(Default)]
+enum Image {
+    #[default]
+    Outside,
+    /// After the `\0`: the header's bytes read so far (width, height, bits
+    /// per pixel), and how many.
+    Header([u8; 3], usize),
+    /// The pixels' bytes still to come, after the transparent colour if
+    /// there is one.
+    Pixels { left: u32, transparent: bool },
+}
+
+impl Images {
+    /// One decoded character in; what to show of it out.
+    fn strip(&mut self, c: char) -> Option<char> {
+        // In an image, each character is a byte (Latin-1).
+        let byte = c as u32 as u8;
+        match &mut self.state {
+            Image::Outside if c == '\0' => {
+                self.found = true;
+                self.state = Image::Header([0; 3], 0);
+                return Some('?');
+            }
+            Image::Outside => return Some(c),
+            Image::Header(header, read) => {
+                header[*read] = byte;
+                *read += 1;
+                if *read == header.len() {
+                    let [width, height, bpp] = *header;
+                    let bits = u32::from(width) * u32::from(height) * u32::from(bpp & 0x7F);
+                    self.state = Image::Pixels {
+                        left: bits.div_ceil(8),
+                        transparent: bpp & 0x80 != 0,
+                    };
+                }
+            }
+            Image::Pixels { transparent, .. } if *transparent => *transparent = false,
+            Image::Pixels { left, .. } => *left -= 1,
+        }
+        if let Image::Pixels {
+            left: 0,
+            transparent: false,
+        } = self.state
+        {
+            self.state = Image::Outside;
+        }
+        None
     }
 }
 

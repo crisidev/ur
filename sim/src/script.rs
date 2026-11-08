@@ -467,7 +467,16 @@ fn gadgetbridge(watch: &mut Watch, line: &str) -> Result<(), String> {
                 "activity since {since_ms} ms asked for; not simulated"
             ));
         }
-        Some(Incoming::Phone(event)) => watch.input(InputEvent::Phone(event)),
+        // As `ble::interpret` does: the warning after the message.
+        Some(Incoming::Phone {
+            event,
+            text_as_bitmaps,
+        }) => {
+            watch.input(InputEvent::Phone(event));
+            if text_as_bitmaps {
+                watch.input(InputEvent::Phone(PhoneEvent::TextAsBitmaps));
+            }
+        }
         Some(Incoming::Ignored(kind)) => watch.log(format!("ignoring {kind} message")),
         None => watch.log("not a line the watch understands; ignored"),
     });

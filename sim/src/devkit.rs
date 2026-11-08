@@ -651,6 +651,7 @@ impl Follower {
             },
             phone::MUSIC_STATE_PAUSED => PhoneEvent::MusicState { playing: false },
             phone::MUSIC_STATE_PLAYING => PhoneEvent::MusicState { playing: true },
+            phone::TEXT_AS_BITMAPS => PhoneEvent::TextAsBitmaps,
             other => {
                 return Err(format!(
                     "the dev kit got a message from the phone (kind {other}) this can't \

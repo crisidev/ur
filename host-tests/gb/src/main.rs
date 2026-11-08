@@ -58,10 +58,22 @@ mod tests {
         gb::parse(line)
     }
 
-    /// The UI event a line becomes; panics if it becomes anything else.
+    /// The UI event a line becomes; panics if it becomes anything else,
+    /// or carries "Text as Bitmaps" images.
     fn event(line: &[u8]) -> PhoneEvent {
+        match with_bitmaps(line) {
+            (event, false) => event,
+            (_, true) => panic!("text as bitmaps: {}", String::from_utf8_lossy(line)),
+        }
+    }
+
+    /// The UI event a line becomes, and whether its text had images in it.
+    fn with_bitmaps(line: &[u8]) -> (PhoneEvent, bool) {
         match parse(line) {
-            Some(Incoming::Phone(event)) => event,
+            Some(Incoming::Phone {
+                event,
+                text_as_bitmaps,
+            }) => (event, text_as_bitmaps),
             _ => panic!("not a UI event: {}", String::from_utf8_lossy(line)),
         }
     }
@@ -361,9 +373,9 @@ mod tests {
             // Line breaks and tabs become spaces, for one-line labels.
             (br#""Ola\nKari\tNordmann""#, "Ola Kari Nordmann"),
             (br#""a\bb\vc\fd""#, "a b c d"),
-            // Octal: `\0`, Gadgetbridge's `\20` for DLE, and `\x0N` where a
-            // digit follows.
-            (br#""a\0b\20c\x035""#, "a\0b\u{10}c\u{3}5"),
+            // Octal: `\1`, Gadgetbridge's `\20` for DLE, and `\x0N` where a
+            // digit follows. (`\0` starts an image: see `text_as_bitmaps`.)
+            (br#""a\1b\20c\x035""#, "a\u{1}b\u{10}c\u{3}5"),
         ];
         for &(spelled, text) in cases {
             let mut line = br#"GB({"t":"notify","id":1,"src":"Signal","title":"#.to_vec();
@@ -442,7 +454,9 @@ mod tests {
 
     /// The decoder against Gadgetbridge's encoder (ported above), for any
     /// text: what reaches the screen is the text, but for line breaks and
-    /// tabs (spaces, unless base64 carried them), cut to the field's size.
+    /// tabs (spaces), cut to the field's size. Text with a NUL in it is
+    /// left out: that starts an image (see `text_as_bitmaps`), for a
+    /// Bangle.js too.
     #[test]
     fn any_text_survives_the_trip() {
         fn property(sender: String, src: String) -> TestResult {
@@ -454,16 +468,18 @@ mod tests {
                     .any(|(a, b)| a == '\u{10}' && ('0'..='7').contains(&b))
             };
             // An empty sender falls back to the title, tested elsewhere.
-            if sender.is_empty() || dle_digit(&sender) || dle_digit(&src) {
+            if sender.is_empty()
+                || dle_digit(&sender)
+                || dle_digit(&src)
+                || sender.contains('\0')
+                || src.contains('\0')
+            {
                 return TestResult::discard();
             }
             let shown = |text: &str| -> String {
-                if gadgetbridge_string(text).starts_with(b"atob(") {
-                    return text.into();
-                }
                 text.chars()
                     .map(|c| match c {
-                        '\u{8}' | '\t' | '\n' | '\u{b}' | '\u{c}' => ' ',
+                        '\u{8}'..='\r' => ' ',
                         c => c,
                     })
                     .collect()
@@ -817,6 +833,178 @@ mod tests {
             parse(br#"GB({"t":"actfetch"})"#),
             Some(Incoming::ActivityFetch { since_ms: 0 })
         );
+    }
+
+    // ==========================================================================
+    // Text as Bitmaps
+    // ==========================================================================
+
+    /// An image as Gadgetbridge's `bitmapToEspruinoArray` lays it out, for
+    /// a word drawn `width` × `height` with `bpp` bits a pixel (1 for
+    /// plain text, `MONOCHROME_TRANSPARENT`; 3 for a word with emoji,
+    /// `RGB_3BPP_TRANSPARENT`): width, height, bits per pixel plus 128 for
+    /// transparency, the transparent colour, then the pixels, a bit at a
+    /// time, most significant first. The pixels are a fixed jumble that
+    /// takes in every byte (NUL, quotes, backslashes, line breaks, DLE,
+    /// digits after low bytes), to exercise every escape. Bar one: a DLE
+    /// (16) before a digit, which Gadgetbridge spells so that it reads as
+    /// another byte (see `any_text_survives_the_trip`); a Bangle.js
+    /// misreads those images too. Nor does one end in a DLE, before
+    /// whatever text follows.
+    fn espruino_image(width: u8, height: u8, bpp: u8, seed: u32) -> Vec<u8> {
+        let bits = usize::from(width) * usize::from(height) * usize::from(bpp);
+        let mut image = vec![width, height, bpp + 128, 0];
+        let mut state = seed;
+        image.extend((0..bits.div_ceil(8)).map(|i| {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            // Every so often, a byte the escapes treat specially.
+            match i % 7 {
+                0 => [0, b'"', b'\\', b'\n', 16, 5, 0xC5][(state >> 16) as usize % 7],
+                1 => b'0' + (state >> 16) as u8 % 8,
+                _ => (state >> 16) as u8,
+            }
+        }));
+        for i in 4..image.len() {
+            let next = image.get(i + 1).copied().unwrap_or(b'0');
+            if image[i] == 16 && (b'0'..=b'7').contains(&next) {
+                image[i] = 17;
+            }
+        }
+        image
+    }
+
+    /// What `renderUnicodeAsImage` makes of `words`: each `Ok` as is,
+    /// each `Err` (width, height, bpp) as `\0` and an image, joined, as
+    /// the Java string (each image byte a char, as ISO-8859-1 reads it).
+    fn as_bitmaps(words: &[Result<&str, (u8, u8, u8)>]) -> String {
+        let mut text = String::new();
+        for (seed, word) in words.iter().enumerate() {
+            match *word {
+                Ok(word) => text.push_str(word),
+                Err((width, height, bpp)) => {
+                    text.push('\0');
+                    let image = espruino_image(width, height, bpp, seed as u32);
+                    text.extend(image.into_iter().map(char::from));
+                }
+            }
+        }
+        text
+    }
+
+    /// With "Text as Bitmaps" on, "Mamma 妈妈 ❤️" comes as "Mamma ", an
+    /// image of 妈妈, " ", and an image of the heart (in colour): each
+    /// image shows as a `?`, and the line says it had images, both as
+    /// escaped text and as base64 (whichever Gadgetbridge picked).
+    #[test]
+    fn text_as_bitmaps() {
+        let sender = as_bitmaps(&[Ok("Mamma "), Err((37, 21, 1)), Ok(" "), Err((19, 21, 3))]);
+        let spelled = gadgetbridge_string(&sender);
+        let line = notify_line("Signal", "", &sender);
+        assert_eq!(
+            with_bitmaps(&line),
+            (
+                PhoneEvent::Notification {
+                    app: s("Signal"),
+                    who: s("Mamma ? ?")
+                },
+                true
+            ),
+            "{}",
+            String::from_utf8_lossy(&spelled)
+        );
+        // Both of Gadgetbridge's spellings: escaped, and base64.
+        let mut spellings = [false; 2];
+        for width in 1..60 {
+            let sender = as_bitmaps(&[Ok("Kari "), Err((width, 21, 1)), Ok("!")]);
+            spellings[usize::from(gadgetbridge_string(&sender).starts_with(b"atob("))] = true;
+            let line = notify_line("Signal", "", &sender);
+            let (PhoneEvent::Notification { who, .. }, true) = with_bitmaps(&line) else {
+                panic!(
+                    "a notification with images: {}",
+                    String::from_utf8_lossy(&line)
+                );
+            };
+            assert_eq!(who, "Kari ?!", "{width}");
+        }
+        assert_eq!(spellings, [true; 2], "both spellings tried");
+        // Without, nothing is said.
+        assert_eq!(with_bitmaps(&notify_line("Signal", "", "Mamma")).1, false);
+    }
+
+    /// Images are noticed wherever Gadgetbridge puts them: in what's
+    /// shown, in a notification's title, subject, and body (which aren't,
+    /// unless the title stands in for the sender), past what fits, and in
+    /// calls, music, and directions.
+    #[test]
+    fn text_as_bitmaps_anywhere() {
+        let image = as_bitmaps(&[Err((24, 21, 1))]);
+        let image = String::from_utf8(gadgetbridge_string(&image)).expect("escapes are ASCII");
+        let long = as_bitmaps(&[Ok(&"Ola ".repeat(12)), Err((24, 21, 1))]);
+        let long = String::from_utf8(gadgetbridge_string(&long)).expect("escapes are ASCII");
+        let lines = [
+            format!(r#"GB({{"t":"notify","src":"Signal","title":{image},"sender":"Kari"}})"#),
+            format!(r#"GB({{"t":"notify","src":"Mail","subject":{image},"sender":"Kari"}})"#),
+            format!(r#"GB({{"t":"notify","src":"Signal","body":{image},"sender":"Kari"}})"#),
+            format!(r#"GB({{"t":"notify","src":{image},"sender":"Kari"}})"#),
+            format!(r#"GB({{"t":"notify","src":"Signal","sender":{long}}})"#),
+            format!(r#"GB({{"t":"call","cmd":"incoming","name":{image},"number":"+4799999999"}})"#),
+            format!(r#"GB({{"t":"musicinfo","artist":"Ida Moreau","track":{image}}})"#),
+            format!(r#"GB({{"t":"nav","instr":{image},"distance":"150 m","action":"left"}})"#),
+        ];
+        for line in lines {
+            assert!(with_bitmaps(line.as_bytes()).1, "{line}");
+        }
+        let (event, _) = with_bitmaps(
+            format!(r#"GB({{"t":"call","cmd":"incoming","name":{image},"number":"+4799999999"}})"#)
+                .as_bytes(),
+        );
+        assert_eq!(event, PhoneEvent::IncomingCall { caller: s("?") });
+    }
+
+    /// Any images in any text: each is a `?`, and the rest is as sent.
+    #[test]
+    fn text_as_bitmaps_survive_the_trip() {
+        fn property(words: Vec<(String, u8, u8, bool)>) -> TestResult {
+            // A few words, and images of the size of one or two words of
+            // text (`PREF_BANGLEJS_TEXT_BITMAP_SIZE` is 18 px by default),
+            // so that most lines fit.
+            let words: Vec<(String, u8, u8, bool)> = words
+                .into_iter()
+                .take(3)
+                .map(|(word, width, height, colour)| {
+                    // Latin-1 words, without NULs or controls (tested
+                    // above), as `renderUnicodeAsImage` leaves them.
+                    let word = word
+                        .chars()
+                        .filter(|&c| (' '..='\u{ff}').contains(&c) && c != '\u{10}')
+                        .collect();
+                    (word, width % 40 + 1, height % 24 + 1, colour)
+                })
+                .collect();
+            let mut parts = Vec::new();
+            let mut shown = String::new();
+            for (word, width, height, colour) in &words {
+                parts.push(Ok(word.as_str()));
+                parts.push(Err((*width, *height, if *colour { 3 } else { 1 })));
+                shown.push_str(word);
+                shown.push('?');
+            }
+            if words.is_empty() {
+                return TestResult::discard();
+            }
+            let line = notify_line("Signal", "", &as_bitmaps(&parts));
+            // Lines too long for the watch are dropped whole anyway.
+            if line.len() > 1024 {
+                return TestResult::discard();
+            }
+            let (PhoneEvent::Notification { who, .. }, true) = with_bitmaps(&line) else {
+                return TestResult::failed();
+            };
+            TestResult::from_bool(who.as_str() == fit::<40>(&shown))
+        }
+        QuickCheck::new()
+            .tests(2000)
+            .quickcheck(property as fn(Vec<(String, u8, u8, bool)>) -> TestResult);
     }
 
     // ==========================================================================

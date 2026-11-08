@@ -16,6 +16,14 @@ expect screen-on
 expect buzzing
 shot notification.png
 
+# With Gadgetbridge's "Text as Bitmaps" on, each word beyond Latin-1 comes
+# as an image: here "Mamma 妈妈", the second word drawn by the phone (in
+# base64, as Gadgetbridge picks it when that's shorter). The watch shows a
+# `?` for it, and, once a connection, a banner saying how to turn it off.
+gb GB({"t":"notify","id":1762436802,"src":"Signal","title":"","subject":"","body":"Dinner on Sunday?","sender":atob("TWFtbWEgACUVgQAAAAAAAAAAAAAAAAAAAP//H//mABjAAygBRQApIBIkAkiBERAiQhCIQhIJBEEgkDAiBgSBgRAwJBIIgkEhCEQhCRAiIgRJAJEgElACigBTAAxgAZ//4//8AAAAAAAAAAAAAA=="),"tel":"","reply":true})
+expect buzzing
+shot text-as-bitmaps.png
+
 # Music, while the screen times out.
 wait 30s
 gb GB({"t":"musicinfo","artist":"Ida Moreau","album":"Late Trains","track":"Night Signals","dur":215,"c":12,"n":3})

@@ -152,12 +152,14 @@ fn gadgetbridge_lines() {
     let dir = out("gadgetbridge");
     let (ok, log) = run("gadgetbridge.txt", &["--out", dir.to_str().expect("UTF-8")]);
     assert!(ok, "{log}");
-    assert_eq!(pngs(&dir), 3, "{log}");
+    assert_eq!(pngs(&dir), 4, "{log}");
     for line in [
         "time set (UTC offset 60 min)",
         r#"to the phone: {"t":"gps_power","status":false}"#,
         "location set: 59.9127, 10.7461",
         "notification: Signal: Åse Nordmann",
+        "notification: Signal: Mamma ?",
+        "text as bitmaps",
         "music: Ida Moreau: Night Signals",
         "incoming call: Kari Nordmann",
         "call over",

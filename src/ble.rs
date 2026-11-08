@@ -921,11 +921,19 @@ fn interpret(line: &[u8], actions: &mut Vec<Action, 4>) {
         },
         Some(Incoming::IsGpsActive) => Action::ReportGps,
         Some(Incoming::ActivityFetch { since_ms }) => Action::ActivityFetch { since_ms },
-        Some(Incoming::Phone(event)) => {
-            if let Err(TrySendError::Full(event)) =
-                crate::INPUT.try_send(crate::InputEvent::Phone(event))
-            {
-                warn!("ble: UI busy; dropped {}", event);
+        Some(Incoming::Phone {
+            event,
+            text_as_bitmaps,
+        }) => {
+            // The warning goes after the message, to take over its banner
+            // (the UI shows it once a connection).
+            let warning = text_as_bitmaps.then_some(PhoneEvent::TextAsBitmaps);
+            for event in [Some(event), warning].into_iter().flatten() {
+                if let Err(TrySendError::Full(event)) =
+                    crate::INPUT.try_send(crate::InputEvent::Phone(event))
+                {
+                    warn!("ble: UI busy; dropped {}", event);
+                }
             }
             return;
         }

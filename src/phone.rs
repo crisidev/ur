@@ -38,6 +38,10 @@ pub enum PhoneEvent {
     /// A client connected but never secured the link (see
     /// `ble::not_paired`). Shown like a notification.
     Unpaired(Unpaired),
+    /// The phone sent text with Gadgetbridge's "Text as Bitmaps" images in
+    /// it (see `gb::Images`), which we can't show: tell the wearer how to
+    /// turn it off. Shown like a notification, once a connection.
+    TextAsBitmaps,
     /// The alarms set in Gadgetbridge, all of them.
     Alarms(alarm::Phone),
     /// The next turn while the phone navigates; `None` once it stops.
@@ -84,6 +88,7 @@ impl defmt::Format for PhoneEvent {
             Self::MusicState { .. } => "MusicState",
             Self::Find { .. } => "Find",
             Self::Unpaired(_) => "Unpaired",
+            Self::TextAsBitmaps => "TextAsBitmaps",
             Self::Alarms(_) => "Alarms",
             Self::Route(_) => "Route",
         };
