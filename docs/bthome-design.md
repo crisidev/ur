@@ -1,7 +1,7 @@
 # Design sketch: watch taps → Home Assistant via BTHome v2
 
 Status: built for 0.10 (2026-11-08), as the button grid, with the
-changes below; the rest of this document is the original plan, kept for
+changes below (and a second layout, six buttons, on 2026-11-09); the rest of this document is the original plan, kept for
 its research (the radio, Home Assistant's parser, encryption). Written
 2026-11-07 against the tree at `23ed848`; line references have drifted.
 
@@ -11,8 +11,8 @@ User documentation: [buttons.md](buttons.md). Code: `src/buttons.rs`
 (gestures), `src/bthome.rs` (payload, encryption, key and counter),
 `ble::burst` (the radio).
 
-- **Trigger:** not a 2×2 Home screen of labelled tiles, but a 3×3 grid
-  of unlabelled buttons, the first screen below the clock (turned on in
+- **Trigger:** not a 2×2 Home screen of labelled tiles, but (besides
+  the six buttons below) a 3×3 grid of unlabelled buttons, the first screen below the clock (turned on in
   a new Settings screen), making 90 codes: 1–9, and pairs a→b as 10a+b,
   each tapped or held, and pairs double-tapped too (261 events; see
   `buttons.rs`). No swipe dimmer, no labels, no setup page on the title:
@@ -143,6 +143,50 @@ under `tmp/research/` in the worktree that made the change.
 [core#188847]: https://github.com/home-assistant/core/pull/188847
 
 ---
+
+## Six buttons, one layer (2026-11-09)
+
+The owner asked for the grid's layout to be a setting: "single-layer
+six-button or double-layer 99-button". The two layers are the grid
+above, its codes "going to 99", but never with a trailing 0 (or 0
+itself): the first button is the tens digit, the second the ones (81
+pairs and 9 singles). With six buttons, BTHome should carry standard
+button events, not dimmers; with two layers, nothing changes, but
+Settings shows FAQ B04 by the GRID row (`2 LAYERS  B04`), which
+explains the dimmers and why. Gadgetbridge's intent stays the same
+(`button` 1–6).
+
+Option (a) above, rejected for nine buttons, fits six: the packet id
+(2 B) and six button objects (12 B) are **14 B** of the 15. So a
+six-button advertisement is `00 <id>` then `3A <event>` six times, in
+button order, the pressed one's event `01`, `02`, `80` or `81`, the
+rest `00` ("none", which `bthome-ble` fires nothing for). With six
+objects of a kind, Home Assistant names them `button_1` to `button_6`
+by position; every advertisement has all six, so the names never move.
+Their device triggers are typed by the full class (`button_2`, with
+subtype `double_press`; `device_trigger.py`), and their event entities
+are "Button 1" to "Button 6" (`strings.json`'s `button_numbered`).
+`host-tests/bthome/check.py` runs every button and gesture through
+`bthome-ble`'s parser: each fires exactly `button_N` with the gesture,
+and nothing else.
+
+**The battery** (2 B) doesn't fit beside them. The owner asked for it
+as "another occasional separate broadcast", at each 5% step: an
+advertisement of the packet id and the battery alone (4 B of objects,
+20 B on the air), same key and counter, which `bthome-ble` reads as a
+battery update and no event. It goes a minute after boot (the reading
+settled), and when BUTTONS turns Home Assistant on with six buttons, so
+Home Assistant has a value; then when the reading leaves the 5% step it
+was last sent in by 2 points, either way (`bthome::battery_due`, host
+tested), so a reading wobbling across a step's edge doesn't resend.
+Nothing time-based beyond that. A battery burst can hold up a press
+that comes during its first 0.8 s (`ble::BURST_FIRST`), as two presses
+do each other; at a burst per 5%, that's rare. With two layers, the
+battery still rides in each press's advertisement.
+
+A double tap in this layout is unambiguous (no sequences), so a first
+tap waits only `WAIT_DOUBLE` (0.4 s) for the same button again, and
+another button, or a hold, sends it at once.
 
 ## 0. Decisions at a glance
 

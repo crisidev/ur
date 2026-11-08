@@ -1,15 +1,41 @@
 # The button grid
 
-Nine unlabelled buttons on the screen below the clock face, for Home
+Unlabelled buttons on the screen below the clock face, for Home
 Assistant, or for Tasker (or any Android automation app) through
-Gadgetbridge.
+Gadgetbridge. Two layouts, picked in Settings:
+
+- **Six buttons** (the default): each tapped, double-tapped, or held.
+  Home Assistant offers each button and gesture as a trigger in its
+  automation editor, no YAML needed.
+- **Two layers**: nine buttons, tapped alone or two in a row, for codes
+  1–99. More to choose from, but Home Assistant automations for them
+  are written by hand.
 
 <p align="center">
-  <img src="screenshots/buttons.png" width="150" alt="The button grid: nine chunky grey keycaps with red sides, like an arcade cabinet's, in three rows of three; the top right one is pressed in and white, showing 23 and 2X: 2, then 3 double-tapped, just sent">
-  <img src="screenshots/settings.png" width="150" alt="The Settings screen: THEME, LIGHT, BUTTONS (set to HA), and HA KEY, a row each">
+  <img src="screenshots/buttons.png" width="150" alt="Six buttons: chunky grey keycaps with red sides, like an arcade cabinet's, in two rows of three; the top middle one is pressed in and white, showing 2 and 2X: 2, double-tapped, just sent">
+  <img src="screenshots/buttons-layers.png" width="150" alt="Two layers: nine smaller keycaps in three rows of three; the top right one is pressed in and white, showing 23 and 2X: 2, then 3 double-tapped, just sent">
+  <img src="screenshots/settings.png" width="150" alt="The Settings screen: THEME, LIGHT, BUTTONS (set to HA), GRID (set to 6 BUTTONS), and HA KEY, a row each">
 </p>
 
-They're numbered like a phone's keypad:
+## Six buttons
+
+Numbered in reading order:
+
+```text
+1 2 3
+4 5 6
+```
+
+Each button is a **code**, 1–6, and has three **gestures**: tap, double
+tap, and hold. That's 18 events.
+
+A tap waits 0.4 s to see whether a double tap follows (a tap on another
+button sends it at once), lit while it waits; once sent, the button
+shows its number and the gesture, and buzzes.
+
+## Two layers
+
+Nine buttons, numbered like a phone's keypad:
 
 ```text
 1 2 3
@@ -19,7 +45,8 @@ They're numbered like a phone's keypad:
 
 Tap one button, or two in a row, and the watch sends a **code** that
 reads as what you pressed, with a **gesture** for what the last button
-did:
+did. The first button is the tens digit, the second the ones, so codes
+run 1–99, and none ends in 0 (10, 20, … 90 never occur):
 
 | You press                      | Code                    | Gestures              |
 |--------------------------------|-------------------------|-----------------------|
@@ -27,25 +54,29 @@ did:
 | one, then another (or itself)  | 11–99: 2, then 3 is 23  | tap, double tap, hold |
 
 So 2, then 3 twice, is 23 double-tapped; 1 three times is 11
-double-tapped; 4, then holding 7, is 47 held. That's 90 codes, and 261
-code-and-gesture pairs. What each does is up to Home Assistant or your
-phone.
+double-tapped; 4, then holding 7, is 47 held. That's 261
+code-and-gesture pairs.
 
 A tap waits briefly to see whether more follows: 0.8 s for a second
 button to start, then 0.4 s for a double tap. The buttons it's waiting on
-stay lit; once sent, the last one shows the code and buzzes. A hold goes
+stay lit; once sent, the last one shows the code and buzzes.
+
+## Either way
+
+What each press does is up to Home Assistant or your phone. A hold goes
 at once (after 0.6 s, finger still down), and lifting the finger then
 sends a **release**, for what should last while you hold, like dimming a
-light. To cancel, swipe away or press the button. Two buzzes, and the
-code in red, mean it had nowhere to go (only the phone, which isn't
-connected).
+light. To cancel a tap that's waiting, swipe away or press the button.
+Two buzzes, and the code in red, mean it had nowhere to go (only the
+phone, which isn't connected).
 
 ## Turning it on
 
 Swipe left from the clock, past the alarms, to **Settings**, and tap
 **BUTTONS** until it says where presses go: **HA** (Home Assistant),
-**PHONE** (Gadgetbridge), or **HA+PHONE**. The grid is then the first
-screen up from the clock.
+**PHONE** (Gadgetbridge), or **HA+PHONE**. Tap **GRID** for the layout:
+**6 BUTTONS** or **2 LAYERS**. The grid is then the first screen up from
+the clock.
 
 ## Home Assistant
 
@@ -61,31 +92,71 @@ Presses are encrypted with a key the watch made for itself.
 2. Press any grid button. Home Assistant discovers a BTHome device with
    that address (Settings → Devices & services); add it, and paste (or
    type) the key.
-3. Press each gesture once (tap, double tap, hold): Home Assistant
-   only lists a device's events once it has seen them.
+3. Make each event once: Home Assistant only lists a device's events
+   once it has seen them. With six buttons, tap, double-tap, and hold
+   each button; with two layers, tap, double-tap, and hold any one.
 
-Each press fires two events, `bthome_ble_event`s with the watch's
-`address`, for two kinds of automation:
+Each press fires a `bthome_ble_event` with the watch's `address`, an
+`event_class`, and an `event_type`. The gestures' event types are
+BTHome's:
 
-| Gesture             | `button` event (any code) | Dimmer event, by the code   |
-|---------------------|---------------------------|-----------------------------|
-| tap                 | `press`                   | `dimmer_1` `rotate_right`   |
-| double tap          | `double_press`            | `dimmer_2` `rotate_right`   |
-| hold                | `hold_press`              | `dimmer_3` `rotate_right`   |
-| lifting after a hold | `hold_release`           | none                        |
+| Gesture              | `event_type`   |
+|----------------------|----------------|
+| tap                  | `press`        |
+| double tap           | `double_press` |
+| hold                 | `hold_press`   |
+| lifting after a hold | `hold_release` |
+
+"Hold release" needs Home Assistant 2026.11 or later.
+
+### With six buttons
+
+Each button is a BTHome button of its own, its event class `button_1` to
+`button_6`: on the device's page, six event entities, **Button 1** to
+**Button 6**, and in the automation editor, a **Device** trigger for
+each button and gesture (the watch, then `button_2` "Double press", say).
+No YAML needed; in YAML, 2 double-tapped is:
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: bthome_ble_event
+    event_data:
+      address: "E5:12:34:56:78:9A"   # from HA KEY
+      event_class: button_2
+      event_type: double_press
+actions:
+  - action: light.toggle
+    target: { entity_id: light.kitchen }
+```
+
+Six buttons leave no room in a press's advertisement for the battery,
+so the watch advertises it on its own: a minute after it starts, when
+BUTTONS turns Home Assistant on, and then each time it moves by a 5%
+step. The device's battery sensor updates then, with no event.
+
+### With two layers
+
+A button can't carry a number, and an encrypted advertisement has room
+for six buttons, not one per code (Home Assistant names them by their
+place in it). So each press fires two events (FAQ B04 on the watch, by
+the GRID row, points here), for two kinds of automation:
+
+| Gesture              | `button` event (any code) | Dimmer event, by the code   |
+|----------------------|---------------------------|-----------------------------|
+| tap                  | `press`                   | `dimmer_1` `rotate_right`   |
+| double tap           | `double_press`            | `dimmer_2` `rotate_right`   |
+| hold                 | `hold_press`              | `dimmer_3` `rotate_right`   |
+| lifting after a hold | `hold_release`            | none                        |
 
 - **The button** is the gesture alone, whichever code it was: the device
   page's **Button** entity, and device triggers in the automation
-  editor ("Press" button, "Hold release" button, …). The release needs
-  Home Assistant 2026.11 or later.
+  editor ("Press" button, "Hold release" button, …).
 - **The dimmer** for the gesture turns right by the code (`steps: 23` for
   2, then 3), so one event says both: what most automations want.
 
-(Home Assistant names BTHome's buttons by their place in the
-advertisement, `button_1` to `button_9`, and an encrypted advertisement
-has room for six; nor can a button carry a number. So the code rides on
-dimmers, which can: see [bthome-design.md](bthome-design.md).) The
-device also gets a battery sensor, which updates with each press.
+(See [bthome-design.md](bthome-design.md) for why.) The device also
+gets a battery sensor, which updates with each press.
 
 An automation for 2, then 3, double-tapped:
 
@@ -134,6 +205,11 @@ actions:
             - "{{ repeat.index >= 20 }}"
 ```
 
+With six buttons, the same works with a `button_5` `hold_press` trigger,
+and the condition on button 5's own entity.
+
+### Releases, the key, and replays
+
 A release goes once its hold has been on the air for 0.8 s, so a quick
 hold's release can come that late.
 
@@ -155,12 +231,15 @@ use the grid for lights and scenes, not locks.
 ## Gadgetbridge and Tasker
 
 Each press goes to Gadgetbridge, which sends it on as an Android
-broadcast intent, for [Tasker], MacroDroid, Automate, and the like:
+broadcast intent, for [Tasker], MacroDroid, Automate, and the like, the
+same with either layout:
 
 - action `ur.watch.BUTTON`
-- extra `button`: the code, a number (`23`)
-- extra `gesture`: `press` (a tap), `double_press`, `hold_press`, or
-  `hold_release` (lifting after a hold), as BTHome names them
+- extra `button`: the code, a number: 1–6 with six buttons; 1–99, none
+  ending in 0 (`23`), with two layers
+- extra `gesture`: `press` (a tap), `double_press` (any of the six
+  buttons, or a pair with two layers), `hold_press`, or `hold_release`
+  (lifting after a hold), as BTHome names them
 
 1. In Gadgetbridge, in the watch's settings, turn on **Allow Intents**.
    Without it, Gadgetbridge drops presses, and the watch says "INTENTS

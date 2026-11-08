@@ -43,10 +43,11 @@ heart rate, alarms, timers, music control), and these on top:
   says it took.
 - **Screens in four directions** around the clock: the past to one side,
   alarms and settings to the other, notifications above, music below.
-- **A button grid** for Home Assistant or Tasker: nine buttons that make
-  90 codes (1–9, and pairs like 2 then 3), each tapped, double-tapped,
-  or held (and released, for hold-to-dim), sent over Bluetooth as BTHome
-  button events or through Gadgetbridge. See
+- **A button grid** for Home Assistant or Tasker: six buttons, each
+  tapped, double-tapped, or held (and released, for hold-to-dim), or
+  two layers of nine for codes 1–99 (2, then 3, is 23). Sent over
+  Bluetooth as BTHome button events, a trigger each in Home Assistant's
+  automation editor, or through Gadgetbridge. See
   [docs/buttons.md](docs/buttons.md).
 - **The room's air:** a nearby [Aranet4] (with Smart Home integrations
   on) gives the clock face the room's temperature, and its CO₂ gets a
@@ -141,7 +142,8 @@ bar on an edge means there's more that way.
 
 On Settings, tap **THEME** for the next theme, **LIGHT** to switch
 brightness from AUTO to SOFT, a step dimmer, for a longer battery, and
-**BUTTONS** to turn on the [button grid](docs/buttons.md). To set
+**BUTTONS** to turn on the [button grid](docs/buttons.md), and **GRID**
+for its layout: six buttons, or two layers. To set
 an alarm or timer, tap it, then swipe the hours and minutes. Alarms set
 in Gadgetbridge are read-only on the watch; a one-off one switches
 itself off once it has rung, without Gadgetbridge hearing of it, so
@@ -242,16 +244,15 @@ number.
 
 ### B01: Home Assistant fires two events for each grid press
 
-That's by design: a `button` event for the gesture alone (press, double
-press, hold press), and a `dimmer_1`, `_2` or `_3` event that turns by
-the press's code. Trigger on whichever your automation needs; see
-[docs/buttons.md](docs/buttons.md#home-assistant).
+With **GRID** on **2 LAYERS**, that's by design: see
+[B04](#b04-with-two-layers-presses-reach-home-assistant-as-dimmers).
 
 ### B02: Home Assistant has no trigger for a grid gesture
 
 It lists a BTHome device's events only once it has seen each: tap,
-double-tap and hold a grid button once. "Hold release" needs Home
-Assistant 2026.11 or later; older versions ignore it.
+double-tap and hold each grid button once (with two layers, any one).
+"Hold release" needs Home Assistant 2026.11 or later; older versions
+ignore it.
 
 ### B03: Home Assistant asks for the watch's key again
 
@@ -259,6 +260,38 @@ The watch made a new key: it lost track of how many presses it had
 encrypted with the old one, and reusing that count would let anyone
 listening decode them. Give Home Assistant the new key from **Settings →
 HA KEY**, as when you [set it up](docs/buttons.md#home-assistant).
+
+### B04: With two layers, presses reach Home Assistant as dimmers
+
+The watch shows B04 by **GRID** when it's on **2 LAYERS** and
+**BUTTONS** sends to Home Assistant. Two layers make codes 1–99 (none
+ends in 0: the first button is the tens digit, the second the ones),
+and BTHome can't send each as a button of its own. Its buttons carry no
+number, so Home Assistant tells them apart only by their place in the
+advertisement, and an encrypted advertisement has room for about 15
+bytes of data: six buttons, not one per code. So each press fires two
+events instead: a `button` event for the gesture (`press`,
+`double_press`, `hold_press`, then `hold_release` on lifting after a
+hold), and a dimmer event, which can carry a number, turning right by
+the code: `dimmer_1` for a tap, `dimmer_2` for a double tap,
+`dimmer_3` for a hold. To act on one code, trigger on its dimmer, in
+YAML (a **Manual event** trigger in the automation editor). For 2,
+then 3, double-tapped:
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: bthome_ble_event
+    event_data:
+      address: "E5:12:34:56:78:9A"   # from HA KEY
+      event_class: dimmer_2          # double tap
+      event_properties: { steps: 23 }
+```
+
+With **6 BUTTONS** instead, each button is its own BTHome button
+(`button_1` to `button_6`), with a trigger in the automation editor for
+each button and gesture, no YAML needed. See
+[docs/buttons.md](docs/buttons.md#home-assistant).
 
 ### C01: The watch says "NOT PAIRED"
 
