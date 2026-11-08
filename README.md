@@ -226,6 +226,8 @@ Send a newer zip with the nRF Device Firmware Update app or
 `scripts/dfu.py`. The watch shows a progress bar, resets into the new
 version, and keeps it once Gadgetbridge reconnects and syncs the time. If
 the watch resets before that, it goes back to the previous version.
+Today's steps, and the activity Gadgetbridge hasn't fetched yet, carry
+over.
 
 ### Rolling back
 

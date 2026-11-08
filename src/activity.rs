@@ -1158,6 +1158,23 @@ pub async fn activity_task(i2c: Device) {
 /// `Today::day` before the clock is known.
 const UNKNOWN_DAY: i64 = i64::MIN;
 
+/// Counts `steps` as walked now, in today's total and this minute's
+/// history: for [`crate::debug`], to test what keeps them across resets and
+/// updates on a watch that can't walk.
+pub fn walk(steps: u32) {
+    add_steps_today(steps);
+    if let Some(utc_minute) = clock::now_utc_seconds().map(|s| s.div_euclid(60)) {
+        HISTORY.lock(|history| {
+            let mut history = history.borrow_mut();
+            let sample = history.at(utc_minute);
+            sample.steps = sample
+                .steps
+                .saturating_add(steps.min(u32::from(u16::MAX)) as u16);
+            sample.set_seen(Some(true));
+        });
+    }
+}
+
 /// Adds steps to today's total, starting a new day at local midnight.
 fn add_steps_today(steps: u32) {
     let day = clock::now().map(|now| now.days_since_epoch());
@@ -1299,8 +1316,8 @@ fn save_today(today: &Today) {
         day: today.day,
         check: check(today),
     };
-    // SAFETY: Reserved, aligned RAM (see `memory.x`), only touched from
-    // this task (and `restore_today` before the loop).
+    // SAFETY: Reserved, aligned RAM (see `memory.x`), only touched within
+    // `TODAY`'s lock (and by `restore_today` before anything else runs).
     unsafe { (RETAINED_ADDRESS as *mut Retained).write_volatile(value) };
 }
 

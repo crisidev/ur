@@ -23,8 +23,9 @@
 //!    receipt (`11 <bytes so far>`) every N packets and a response once all
 //!    of it is in.
 //! 5. Validate (`04`): we read the slot back and check its CRC.
-//! 6. Activate (`05`): we mark the slot for the bootloader and reset. The
-//!    bootloader swaps the slots and boots the update on probation (see
+//! 6. Activate (`05`): we mark the slot for the bootloader, save what a
+//!    reset would lose (see [`reset`]), and reset. The bootloader swaps the
+//!    slots and boots the update on probation (see
 //!    [`crate::firmware::confirm`]).
 //!
 //! Only bonded, authenticated (passkey-paired) connections may use the
@@ -191,10 +192,7 @@ impl Session {
                 self.activate().await;
                 Some(response(op, status::OPERATION_FAILED))
             }
-            (opcode::RESET, _) => {
-                info!("dfu: reset requested");
-                reset().await
-            }
+            (opcode::RESET, _) => reset("requested by the update client").await,
             (opcode::REPORT_SIZE, _) => {
                 let mut reply = response(op, status::SUCCESS);
                 reply
@@ -405,27 +403,46 @@ impl Session {
 
     /// Asks the bootloader to swap in the new image, and resets into it.
     async fn activate(&mut self) {
-        let mut flash = FLASH.lock().await;
-        let flash = flash.as_mut().expect("set at boot");
-        let magic: [u8; 16] = BOOT_MAGIC
-            .map(u32::to_le_bytes)
-            .as_flattened()
-            .try_into()
-            .expect("16 bytes");
-        if let Err(e) = flash.program(SLOT_START + SLOT_SIZE - 16, &magic).await {
-            warn!("dfu: writing the swap request failed: {}", e);
-            self.fail();
-            return;
+        // In a block of its own, so the flash is free for `reset`'s saving
+        // and flushing.
+        {
+            let mut flash = FLASH.lock().await;
+            let flash = flash.as_mut().expect("set at boot");
+            let magic: [u8; 16] = BOOT_MAGIC
+                .map(u32::to_le_bytes)
+                .as_flattened()
+                .try_into()
+                .expect("16 bytes");
+            if let Err(e) = flash.program(SLOT_START + SLOT_SIZE - 16, &magic).await {
+                warn!("dfu: writing the swap request failed: {}", e);
+                self.fail();
+                return;
+            }
+            flash.sleep().await;
         }
-        flash.sleep().await;
-        info!("dfu: activating; resetting into the bootloader");
-        reset().await
+        reset("installing an update").await
     }
 }
 
-/// Resets the chip, after a moment for the last Bluetooth packets (and log
-/// lines) to get out.
-async fn reset() -> ! {
+/// Resets the chip on purpose, having said why, and saved what a reset
+/// would lose, and then waits a moment for the last Bluetooth packets to
+/// get out.
+///
+/// - The field log is paused during an update, and its backlog fills the
+///   log's buffer, after which new lines are dropped: so it's flushed
+///   first to make room for the reason, and again after, so that the
+///   reason is in the field log before the reset. Otherwise the next boot's
+///   reset reason ("soft") is all there is to explain it.
+/// - Today's steps, and the activity the phone hasn't fetched yet, go into
+///   the record that otherwise carries them across System OFF (see
+///   [`crate::system_off::save_before_reset`]), for the next boot to
+///   restore. The history doesn't survive any reset, and the bootloader's
+///   swap can overwrite the RAM that today's steps survive resets in.
+async fn reset(why: &'static str) -> ! {
+    crate::field_log::flush().await;
+    info!("reset: {=str}", why);
+    crate::system_off::save_before_reset().await;
+    crate::field_log::flush().await;
     embassy_time::Timer::after_millis(500).await;
     cortex_m::peripheral::SCB::sys_reset()
 }

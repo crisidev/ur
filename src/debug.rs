@@ -29,9 +29,9 @@ static UR_CANVAS: AtomicPtr<Canvas> = AtomicPtr::new(core::ptr::null_mut());
 /// one (0 for the measured one again; to test what a critically low battery
 /// does, see [`crate::system_off`]), 14 media from the phone, playing if
 /// `x` is 1, paused otherwise (for screenshots of the music screen and the
-/// clock's media icon; gone once the phone disconnects)) and the next two
-/// the canvas x and y.
-/// Cleared once taken.
+/// clock's media icon; gone once the phone disconnects), 15 `x` + 256 × `y`
+/// steps, as if walked now (to test what keeps them across resets and
+/// updates)) and the next two the canvas x and y. Cleared once taken.
 #[unsafe(no_mangle)]
 static UR_INPUT: AtomicU32 = AtomicU32::new(0);
 
@@ -85,6 +85,12 @@ pub async fn input_task() {
                 };
                 // SAFETY: A NUL-terminated string, as the handler needs.
                 unsafe { crate::field_log::sdc_fault(file.as_ptr(), u32::from(y)) };
+                continue;
+            }
+            15 => {
+                let steps = u16::from_le_bytes([x, y]);
+                defmt::warn!("debug: {} steps", steps);
+                crate::activity::walk(u32::from(steps));
                 continue;
             }
             13 => {

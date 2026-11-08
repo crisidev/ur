@@ -25,6 +25,8 @@ minute later the watch saves its activity and switches itself off.
 `media:1,0` makes the phone seem to be playing something (`media` alone:
 paused), until it disconnects, for the music screen and the clock's media
 icon; it only shows while the phone is connected.
+`steps:N` counts N steps as walked now (up to 65535), to test what keeps
+them across resets and updates.
 
 `--theme` renders the frame in another theme's colours (e.g. HANDHELD, for
 the day look at night): the canvas holds colour roles, not colours.
@@ -57,6 +59,7 @@ KINDS = {
     "fault": 12,
     "battery": 13,
     "media": 14,
+    "steps": 15,
 }
 
 
@@ -95,10 +98,10 @@ def inject(elf: Path, step: str) -> None:
     name, _, where = step.partition(":")
     if name not in KINDS:
         sys.exit(f"unknown input {step!r}")
-    if name == "battery":
-        # Millivolts, little endian, in the two coordinate bytes.
-        mv = int(where)
-        x, y = mv & 0xFF, mv >> 8
+    if name in ("battery", "steps"):
+        # Millivolts or steps, little endian, in the two coordinate bytes.
+        value = int(where)
+        x, y = value & 0xFF, value >> 8
     else:
         x, y = (int(v) for v in where.split(",")) if where else (40, 40)
     write_word(symbol(elf, "UR_INPUT"), KINDS[name] | x << 8 | y << 16)

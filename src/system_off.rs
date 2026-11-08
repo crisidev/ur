@@ -27,6 +27,12 @@
 //! while off, so the time is unknown until the phone sets it (see
 //! [`crate::clock::forget`]).
 //!
+//! The same record carries the activity across a deliberate reset, such
+//! as installing an update ([`save_before_reset`]): the history lives in
+//! RAM that every reset loses, and today's steps in RAM that survives an
+//! ordinary reset but not, it turns out, the bootloader swapping in an
+//! update (a field log's update lost the day's 202 steps).
+//!
 //! What the watch draws while off, roughly (E: estimate, D: datasheet,
 //! M: measured by others; nothing here is measured on this watch):
 //!
@@ -162,7 +168,7 @@ async fn save() {
             };
             header.checksum = header.expected_checksum(hash);
             info!(
-                "system off: saving {} minutes of activity from minute {}, and {} steps",
+                "snapshot: saving {} minutes of activity from minute {}, and {} steps",
                 minutes, first, steps
             );
             // Last, so that a save cut short leaves no record at all.
@@ -173,7 +179,7 @@ async fn save() {
     .await;
     flash.sleep().await;
     if let Err(e) = written {
-        warn!("system off: saving failed: {}", e);
+        warn!("snapshot: saving failed: {}", e);
     }
 }
 
@@ -217,11 +223,11 @@ pub async fn restore() {
             activity::restore_steps(day, header.steps);
             RECORD_STATE.store(RESTORED, Ordering::Relaxed);
             info!(
-                "system off: restored {} minutes of activity from minute {}, and {} steps",
+                "snapshot: restored {} minutes of activity from minute {}, and {} steps",
                 header.minutes, first, header.steps
             );
         } else {
-            warn!("system off: the saved activity is corrupt; dropped");
+            warn!("snapshot: the saved activity is corrupt; dropped");
             consume(flash).await;
         }
     }
@@ -267,7 +273,7 @@ async fn retire() {
     if flash.wake().await.is_ok() {
         consume(flash).await;
         flash.sleep().await;
-        info!("system off: the phone has the saved activity; record retired");
+        info!("snapshot: the phone has the saved activity; record retired");
     }
 }
 
@@ -276,8 +282,29 @@ async fn consume(flash: &mut spi_flash::SpiFlash) {
     let consumed = snapshot::CONSUMED.to_le_bytes();
     let address = RECORD.start + snapshot::CONSUMED_OFFSET;
     if let Err(e) = flash.program(address, &consumed).await {
-        warn!("system off: retiring the record failed: {}", e);
+        warn!("snapshot: retiring the record failed: {}", e);
     }
+}
+
+/// Has the activity task save the record (see [`serve`]), and waits until
+/// it has, or for 5 s; `pet` runs every 100 ms meanwhile.
+async fn save_and_wait(mut pet: impl FnMut()) {
+    SAVE.store(SAVE_ASKED, Ordering::Relaxed);
+    for _ in 0..50 {
+        Timer::after_millis(100).await;
+        pet();
+        if SAVE.load(Ordering::Relaxed) == SAVE_DONE {
+            return;
+        }
+    }
+    warn!("snapshot: saving timed out");
+}
+
+/// Saves the history the phone hasn't fetched, and today's steps, for the
+/// next boot to [`restore`]: call right before a deliberate reset. Takes
+/// about a second (the activity task saves at its next poll), up to 5 s.
+pub async fn save_before_reset() {
+    save_and_wait(|| ()).await;
 }
 
 // ==============================================================================
@@ -316,14 +343,7 @@ pub async fn shut_down(
     pet(watchdog);
 
     // The activity task saves (see `serve`), within a poll or two.
-    SAVE.store(SAVE_ASKED, Ordering::Relaxed);
-    for _ in 0..50 {
-        Timer::after_millis(100).await;
-        pet(watchdog);
-        if SAVE.load(Ordering::Relaxed) == SAVE_DONE {
-            break;
-        }
-    }
+    save_and_wait(|| pet(watchdog)).await;
     let button = reason == Reason::Storage;
     info!(
         "system off: switching off; waking on {}",
