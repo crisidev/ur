@@ -16,6 +16,7 @@ missing below were test builds for the dev kit.
 
 - Keep notifications quiet while the wearer sleeps, without buzzing or lighting the screen, until their alarm or until they've been up a while (20b73a8)
 - Sync the alarms set in Gadgetbridge to the watch, shown on a screen of their own (c1e45cb)
+- Tell light, deep, and REM sleep apart, estimated from movement and heart rate, and sync them to Gadgetbridge and Health Connect (deep sleep used to be just long stillness, and there was no REM) (d9249b8)
 - Save the activity the phone hasn't fetched and switch off before the battery runs flat, keeping it until the phone syncs after charging (9d067b6)
 - Show the temperature on the clock face (7874b05)
 - Warn on screen when a connected phone isn't paired, or has lost its pairing (d7ca4d1)
