@@ -14,16 +14,16 @@ missing below were test builds for the dev kit.
 
 ### Added
 
-- Add a button grid for Home Assistant or Tasker, the first screen below the clock once turned on in Settings: nine retro arcade buttons that make 90 codes (1–9, and pairs such as 2 then 3, code 23), each tapped, double-tapped (pairs only), or held, sent over Bluetooth as encrypted BTHome, or through Gadgetbridge as an Android intent (see docs/buttons.md); with Gadgetbridge's "Allow Intents" off, say "INTENTS OFF" / "SEE FAQ C04" (e7624ff, fcf11ff)
-- Add a Settings screen below the clock, before Info: THEME, LIGHT, BUTTONS, and HA KEY, the button grid's key for Home Assistant, as a QR code to scan and paste, or as text (e7624ff, deaa3cd)
-- Say "TEXT AS BITMAPS" / "SEE FAQ N02" (once a connection) when Gadgetbridge's "Text as Bitmaps" setting is on, and show each word it sends as a picture as a `?` rather than a run of junk; the README's FAQ N02 says how to switch it off (718ad96)
+- Add a button grid for Home Assistant or Tasker, the first screen below the clock once turned on in Settings: nine retro arcade buttons that make 90 codes (1–9, and pairs such as 2 then 3, code 23), each tapped, double-tapped (pairs only), or held, sent over Bluetooth as encrypted BTHome, or through Gadgetbridge as an Android intent (see docs/buttons.md); with Gadgetbridge's "Allow Intents" off, say "INTENTS OFF" / "SEE FAQ C04" (3f335fe, ff82ac9)
+- Add a Settings screen below the clock, before Info: THEME, LIGHT, BUTTONS, and HA KEY, the button grid's key for Home Assistant, as a QR code to scan and paste, or as text (3f335fe, b6cb498)
+- Say "TEXT AS BITMAPS" / "SEE FAQ N02" (once a connection) when Gadgetbridge's "Text as Bitmaps" setting is on, and show each word it sends as a picture as a `?` rather than a run of junk; the README's FAQ N02 says how to switch it off (46d43f3)
 
 ### Changed
 
-- Redesign the clock face's lower half: the date with small seconds under the time, the heart rate and the next alarm or timer in one row, and the day's steps as ten blocks rather than a number: 1,000 a block (×1K) towards a fixed goal of 10,000, then 10,000 a block (×10K) past it, full at 100,000 (the exact count is on Today, a swipe right) (a02d355, e268ba3)
-- Move THEME and LIGHT from Info to the new Settings screen, leaving Info to the watch's status (e7624ff)
-- Show a notification's sender big (with the screen off, and in the history) only if it fits on one line, or on two of about the same width, as a two-word name often does; anything else goes small, rather than as a big short word over a long one, or a big word broken with a hyphen (6ae6eb4)
-- Leave a column more margin either side of notification text, as for a call's (023438b)
+- Redesign the clock face's lower half: the date with small seconds under the time, the heart rate and the next alarm or timer in one row, and the day's steps as ten blocks rather than a number: 1,000 a block (×1K) towards a fixed goal of 10,000, then 10,000 a block (×10K) past it, full at 100,000 (the exact count is on Today, a swipe right) (a02d355, 718c01d)
+- Move THEME and LIGHT from Info to the new Settings screen, leaving Info to the watch's status (3f335fe)
+- Show a notification's sender big (with the screen off, and in the history) only if it fits on one line, or on two of about the same width, as a two-word name often does; anything else goes small, rather than as a big short word over a long one, or a big word broken with a hyphen (116942b)
+- Leave a column more margin either side of notification text, as for a call's (0eaa4c1)
 
 ### Deprecated
 
@@ -33,7 +33,7 @@ missing below were test builds for the dev kit.
 
 - Show `&`, `#`, `@`, `"`, `*` and the rest of ASCII's symbols (and `×`) in notifications, and curly quotes, dashes and ellipses as their plain look-alikes, instead of `?` (929a956)
 - Make releases rebuild byte for byte whether or not the builder already has the dependencies downloaded; 0.9.0 only reproduces from an empty cargo home (introduced in 0.9.0) (e49cb26)
-- Draw deep, REM, and light sleep on Last night in three distinct colours in every theme; deep and REM were the same red in Arcade and Parchment (introduced in 0.9.0) (3e3de95)
+- Draw deep, REM, and light sleep on Last night in three distinct colours in every theme; deep and REM were the same red in Arcade and Parchment (introduced in 0.9.0) (a1f642d)
 
 ### Security
 
