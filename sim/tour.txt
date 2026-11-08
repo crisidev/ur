@@ -69,26 +69,24 @@ lift
 wait 200ms
 shot 09-paused.png
 
-# Below the music, the settings; tapping THEME switches theme. Then the
-# info screen, right of the alarms (and the phone's alarms).
-press 40,40
+# Right of the alarms (and the phone's alarms), the settings: a finger
+# swiping left (through the touch task's recogniser), then two more.
+# Tapping THEME switches theme. Then the info screen, last on the right.
+press 60,40
 wait 50ms
-press 40,10
+press 20,40
 wait 50ms
 lift
 wait 1s
-up
+left
+left
 wait 1s
 shot 10-settings.png
 tap 40,20
 wait 1s
 shot 11-settings-theme.png
 tap 40,20
-wait 1s
-button
-wait 1s
-left
-left
+wait 2s
 left
 wait 1s
 shot 11a-info.png
@@ -97,8 +95,9 @@ wait 1s
 
 # The button grid: off until the settings' BUTTONS row says where its
 # presses go; then it's first below the clock.
-up
-up
+left
+left
+left
 wait 1s
 tap 40,54
 wait 1s
@@ -222,8 +221,9 @@ shot 19-morning.png
 # Switching off
 # ==============================================================================
 
-# Storage mode: a long press on the info screen (right of the alarms and
-# the phone's alarms) offers it, a tap confirms.
+# Storage mode: a long press on the info screen (right of the alarms,
+# the phone's alarms, and the settings) offers it, a tap confirms.
+left
 left
 left
 left

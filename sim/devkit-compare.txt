@@ -49,9 +49,11 @@ compare 08-alarm-off
 button
 wait 500ms
 
-# Below: the settings; their THEME row, tapped twice, goes round. Then
-# the info screen.
-up
+# Right again, past the alarms: the settings; their THEME row, tapped
+# twice, goes round. Then the info screen. (On a dev kit that has
+# alarms from a phone, their screen comes between: one more swipe.)
+left
+left
 wait 1s
 compare 09-settings
 tap 40,20
@@ -60,7 +62,7 @@ compare 10-settings-next-theme
 tap 40,20
 wait 1s
 compare 11-settings-theme-back
-up
+left
 wait 1s
 compare 11a-info
 long 40,40

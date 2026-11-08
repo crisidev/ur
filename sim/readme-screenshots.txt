@@ -17,8 +17,9 @@
 
 battery 4040
 connect
-up
-up
+left
+left
+left
 wait 6.8s
 shot info.png
 
@@ -100,10 +101,11 @@ shot alarms.png handheld
 button
 wait 1s
 
-# Below: the button grid (docs/buttons.md), turned on in the settings,
-# just after 2, then 3 double-tapped.
-up
-up
+# Right, past the alarms: the settings, turning on the button grid
+# (docs/buttons.md). Then below: the grid, just after 2, then 3
+# double-tapped.
+left
+left
 wait 1s
 tap 40,54
 wait 1s

@@ -11,12 +11,12 @@
 //! - Left, the past: Today (steps, and the heart rate, by the hour), then
 //!   Last night (sleep).
 //! - Right, what's next: Alarms, then the phone's alarms, once it has sent
-//!   some.
+//!   some; then Settings, and Info.
 //! - Above: the last [`HISTORY`] notifications, newest nearest, one a page,
 //!   with when each arrived (see [`crate::arrival`]).
 //! - Below: the button grid (see [`buttons`]), if it's on; Music, while
 //!   the phone has media; Air, while a nearby Aranet4 has been heard
-//!   within the hour (see [`crate::aranet`]); then Settings, and Info.
+//!   within the hour (see [`crate::aranet`]). Possibly none of them.
 //!
 //! Screens away from the clock show a short bar, a handle, in the middle of
 //! each edge a swipe leads somewhere from: the one facing the clock (home),
@@ -701,10 +701,13 @@ impl App {
                 if !self.phone_alarms.alarms().is_empty() {
                     add(Screen::PhoneAlarms);
                 }
-                // Info sits here, a swipe or two away, rather than at the
-                // end of the line below, behind the grid, music, the air
-                // and settings; after the phone's alarms, so the two kinds
-                // of alarm stay together.
+                // Settings and Info sit here, a few swipes away, rather
+                // than at the end of the line below, behind the grid,
+                // music, and the air, which come and go (so the way to
+                // them would change); after the phone's alarms, so the two
+                // kinds of alarm stay together. Settings first, as it's
+                // the one that's used.
+                add(Screen::Settings);
                 add(Screen::Info);
             }
             Side::Above => {
@@ -719,10 +722,12 @@ impl App {
                 if self.music.is_some() {
                     add(Screen::Music);
                 }
+                // Possibly none of them, like the notifications above:
+                // then there's nothing below, and a swipe up does
+                // nothing (see `nav::swipe`).
                 if self.air {
                     add(Screen::Air);
                 }
-                add(Screen::Settings);
             }
         }
         line

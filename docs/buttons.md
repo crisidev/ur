@@ -40,9 +40,10 @@ connected).
 
 ## Turning it on
 
-Swipe up from the clock to **Settings**, and tap **BUTTONS** until it
-says where presses go: **HA** (Home Assistant), **PHONE** (Gadgetbridge),
-or **HA+PHONE**. The grid is then the first screen up from the clock.
+Swipe left from the clock, past the alarms, to **Settings**, and tap
+**BUTTONS** until it says where presses go: **HA** (Home Assistant),
+**PHONE** (Gadgetbridge), or **HA+PHONE**. The grid is then the first
+screen up from the clock.
 
 ## Home Assistant
 

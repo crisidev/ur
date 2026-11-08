@@ -12,8 +12,8 @@ fn main() {
 mod tests {
     use super::nav::*;
 
-    /// The lines as they are with everything present: two screens left
-    /// and right, three notifications above, music and info below.
+    /// Lines with something in each: two screens left, right, and below,
+    /// and three notifications above.
     fn full(side: Side) -> usize {
         match side {
             Side::Left | Side::Right | Side::Below => 2,
@@ -109,6 +109,10 @@ mod tests {
         let len = |side| if side == Side::Above { 0 } else { full(side) };
         assert_eq!(swipe(Place::Clock, Swipe::Down, len), None);
         assert!(swipe(Place::Clock, Swipe::Up, len).is_some());
+        // Nothing below: no grid, no music, no air.
+        let len = |side| if side == Side::Below { 0 } else { full(side) };
+        assert_eq!(swipe(Place::Clock, Swipe::Up, len), None);
+        assert!(swipe(Place::Clock, Swipe::Down, len).is_some());
     }
 
     #[test]

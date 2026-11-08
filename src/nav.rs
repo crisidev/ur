@@ -5,8 +5,8 @@
 //!
 //! ```text
 //!                      above (notifications)
-//!   left (the past) <-  CLOCK  -> right (alarms, then info)
-//!                      below (buttons, music, air, settings)
+//!   left (the past) <-  CLOCK  -> right (alarms, settings, info)
+//!                      below (buttons, music, air)
 //! ```
 //!
 //! A swipe brings in the screen on the side opposite the finger's travel:
@@ -15,7 +15,9 @@
 //! one comes back, to the clock at the end. Nothing else moves: no
 //! wrapping round at a line's end (with four lines, "back" would become
 //! ambiguous), and no sideways step from one line into another (from
-//! Alarms to Settings, say), so the way back is always the reverse swipe.
+//! Music to Alarms, say), so the way back is always the reverse swipe. A
+//! line may be empty (no notifications; nothing below): then there's
+//! nothing that way, and the swipe does nothing.
 //!
 //! Hardware-free, so it runs in host tests (`host-tests/nav`).
 

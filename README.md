@@ -42,7 +42,7 @@ heart rate, alarms, timers, music control), and these on top:
   double-tap to skip, on a glance or with the screen off too; a buzz
   says it took.
 - **Screens in four directions** around the clock: the past to one side,
-  alarms to the other, notifications above, music and settings below.
+  alarms and settings to the other, notifications above, music below.
 - **A button grid** for Home Assistant or Tasker: nine buttons that make
   90 codes (1–9, and pairs like 2 then 3), each tapped, double-tapped,
   or held, sent over Bluetooth (BTHome) or through Gadgetbridge. See
@@ -107,10 +107,10 @@ music is playing; a crossed-out Bluetooth rune there, that the phone
 isn't connected.
 
 **Screens:** swipe right for Today (steps and heart rate by the hour),
-then Last night; left for Alarms, the alarms set in Gadgetbridge, then
-Info; down for the last three notifications; up for the button grid (if
-on), Music, Air (while an Aranet4 is near: its CO₂, temperature,
-humidity and pressure), then Settings. A short bar on an edge means
+then Last night; left for Alarms, the alarms set in Gadgetbridge,
+Settings, then Info; down for the last three notifications; up for the
+button grid (if on), Music, and Air (while an Aranet4 is near: its CO₂,
+temperature, humidity and pressure). A short bar on an edge means
 there's more that way.
 
 **Touch and button:**
@@ -283,11 +283,11 @@ Gadgetbridge, under Notifications.
 ### P01: How do I put the watch away for a while?
 
 Use storage mode: long-press the Info screen (swipe left from the clock,
-past Alarms and any alarms from Gadgetbridge), then tap to confirm. The watch saves the activity the phone
-hasn't fetched and switches itself off, using roughly 40% of a full
-charge in six weeks. Press the button or plug in the charger to wake
-it; the phone sets the time when it reconnects, and gets the saved
-activity with its next sync.
+past Alarms, any alarms from Gadgetbridge, and Settings), then tap to
+confirm. The watch saves the activity the phone hasn't fetched and
+switches itself off, using roughly 40% of a full charge in six weeks.
+Press the button or plug in the charger to wake it; the phone sets the
+time when it reconnects, and gets the saved activity with its next sync.
 
 ### U01: A phone update fails at "Enabling bootloader" or with "GATT CONN TIMEOUT"
 
