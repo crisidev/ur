@@ -79,10 +79,11 @@ now landed on, and am daily driving this in real life :)
 ## Using it
 
 - **Waking the screen:** press the button, or tap the middle of the
-  screen firmly (or twice). Brief touches and touches at the edge don't
-  wake it, so brushing against something doesn't either. Turning your
-  wrist to look shows the time on its own; tap then to wake the screen
-  fully. During a quiet night, taps don't wake it at all: use the button.
+  screen firmly (or twice, unless the phone has music: see below). Brief
+  touches and touches at the edge don't wake it, so brushing against
+  something doesn't either. Turning your wrist to look shows the time on
+  its own; tap then to wake the screen fully. During a quiet night, taps
+  don't wake it at all: use the button.
 - **Button:** with the screen on, back to the clock, or off from the
   clock. Also silences a call, and stops a ringing alarm.
 - **Screens:** around the clock face. Swipe right for today (steps and
@@ -95,9 +96,11 @@ now landed on, and am daily driving this in real life :)
   swipe down to them.
 - **Media, from the clock:** while the phone is playing (a note shows
   beside the Bluetooth icon) or paused, long-press to play or pause, and
-  double-tap for the next track. These work on a glance too (bar during a
-  quiet night): a long-press plays or pauses and leaves the glance be,
-  while a double-tap wakes the screen and skips.
+  double-tap for the next track, in the middle of the screen. These work
+  with the screen off or on a glance too (bar during a quiet night): with
+  the screen off, the watch buzzes, and shows what it did for a moment,
+  dimly; on a glance, a long-press leaves the glance be. A firm first tap
+  wakes the screen, and the second skips.
 - **Long-press:** on the alarms screen, an alarm or timer to switch it on
   or off; on the info screen, for storage mode. The watch acts, and
   buzzes, once you've held for 0.6 s, so let go when you feel it.

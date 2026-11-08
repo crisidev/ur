@@ -38,6 +38,7 @@
 //!   Bluetooth rune. Without media, neither does anything. A long press
 //!   acts (and buzzes) once the finger has been down long enough, before
 //!   it lifts (see [`crate::touch`]); that goes for every long press.
+//!   Both work with the screen off, too (see below).
 //! - Long press elsewhere: on the alarms screen, switch an alarm on or off;
 //!   on the info screen, offer storage mode (see [`crate::system_off`]),
 //!   which a tap then confirms, and anything else cancels. Elsewhere,
@@ -51,10 +52,16 @@
 //!   pairing, an update, the storage prompt) get every touch: swipes there
 //!   don't navigate.
 //! - While the screen is off, a button press, a deliberate tap (see
-//!   [`deliberate`]), or a double tap (two taps within [`DOUBLE_TAP`]):
-//!   wake to the clock. Other touches don't, so a brush of a sleeve
-//!   doesn't light the screen. (The waking input is *only* a wake-up; it
-//!   isn't also acted on.)
+//!   [`wake::deliberate`]), or a double tap (two taps within
+//!   [`DOUBLE_TAP`]): wake to the clock. Other touches don't, so a brush of
+//!   a sleeve doesn't light the screen. (The waking input is *only* a
+//!   wake-up; it isn't also acted on.) While the phone has media, outside
+//!   the quiet night, the clock's media gestures work too, without waking
+//!   the screen: a long press plays or pauses, and a double tap is the
+//!   next track. Each buzzes, and flashes the dim glance for a moment
+//!   with what it did in a corner. A deliberate tap still wakes the screen
+//!   at once, and a second within [`DOUBLE_TAP`] is the next track, as on
+//!   a glance. See [`crate::wake`] for the guards against brushes.
 //! - No input for [`SCREEN_TIMEOUT`] (longer on the music screen, for a
 //!   long title to scroll by; never while a banner shows): turn the screen
 //!   off.
@@ -136,7 +143,8 @@ use crate::nav::{self, Place, Side};
 use crate::route::{self, Route, Turn};
 use crate::sleep::{self, Change, Over};
 use crate::theme::{self, Theme};
-use crate::touch::{Gesture, Touch};
+use crate::touch::Gesture;
+use crate::wake::{self, Action};
 
 /// How long the screen stays on after the last input (see
 /// [`App::screen_timeout`] for when it's longer). Glances by button
@@ -146,30 +154,11 @@ use crate::touch::{Gesture, Touch};
 const SCREEN_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a glance shows the time.
 const GLANCE_TIME: Duration = Duration::from_secs(5);
-/// With the screen off, a tap that isn't [`deliberate`] still wakes it as
-/// the second of two taps this close together.
+/// With the screen off, a tap that isn't deliberate (see
+/// [`wake::deliberate`]) still wakes it as the second of two taps this
+/// close together; while the phone has media, that's the next track
+/// instead. On the clock, two taps this close are the next track.
 const DOUBLE_TAP: Duration = Duration::from_millis(500);
-
-/// Whether a touch looks meant, rather than a brush: what, with the screen
-/// off, a single tap needs to be to wake it. Any touch used to wake it, and
-/// brushes against a sleeve or a blanket did.
-///
-/// From the sealed watch's field logs: brushes were short (8–37 ms), and
-/// all started at the screen's edge, within ~20 panel pixels (one, at
-/// 146 ms, too). Deliberate taps lasted 41–135 ms, and the ones that
-/// woke the screen landed well inside. So: a tap of at least
-/// [`DELIBERATE_TAP`] that starts outside the outer tenth of the screen
-/// ([`TAP_MARGIN`]).
-fn deliberate(touch: &Touch) -> bool {
-    let inside = |v: i32| (TAP_MARGIN..80 - TAP_MARGIN).contains(&v);
-    touch.gesture == Gesture::Tap
-        && u64::from(touch.held_ms) >= DELIBERATE_TAP.as_millis()
-        && inside(touch.x)
-        && inside(touch.y)
-}
-const DELIBERATE_TAP: Duration = Duration::from_millis(40);
-/// Canvas pixels (24 panel pixels).
-const TAP_MARGIN: i32 = 8;
 /// How long a notification banner shows.
 const BANNER_TIME: Duration = Duration::from_secs(4);
 /// A banner's `until` while it waits to be seen: a notification that came
@@ -486,12 +475,13 @@ pub struct App {
     /// While glancing: until when.
     glance_until: Option<Instant>,
     /// When the last tap was, as the possible first of a double tap (see
-    /// [`DOUBLE_TAP`]): with the screen off, to wake it; on the clock, for
-    /// the next track. One field for both, as RAM is tight: a tap only
-    /// counts while the screen is in the same state (on or off) as for
-    /// the first, as waking or any other input clears it. (Bar a tap that
-    /// wakes the screen from a glance: that one may be the first of a
-    /// double tap on the clock face it woke to.)
+    /// [`DOUBLE_TAP`]): with the screen off, to wake it (or, with media,
+    /// for the next track); on the clock, for the next track. One field for
+    /// both, as RAM is tight: a tap only counts while the screen is in the
+    /// same state (on or off) as for the first, as waking or any other
+    /// input clears it. (Bar a tap that wakes the screen, from a glance or,
+    /// with media, from off: that one may be the first of a double tap on
+    /// the clock face it woke to.)
     last_tap: Option<Instant>,
     /// Whether it's the quiet night, and what decides when it ends. (8
     /// bytes, in a build with little RAM to spare.)
@@ -807,27 +797,78 @@ impl App {
             return;
         }
         // With the screen off, a touch only wakes it if it's a deliberate
-        // tap, or the second of a double tap. Anything else (a swipe, a
-        // long press, a short tap or one at the edge) is most likely a
-        // brush, and is ignored, bar remembering a tap.
+        // tap, or the second of a double tap; while the phone has media,
+        // a long press plays or pauses, and a double tap skips, without
+        // waking it. Anything else (a swipe, a short tap or one at the
+        // edge) is most likely a brush, and is ignored, bar remembering a
+        // tap. See `wake` for the rules, and the field logs behind them.
+        //
+        // In the quiet night, no touch does anything: bedding and pillows
+        // make deliberate-looking taps, and pairs of them (one night, a
+        // 193 ms tap mid-screen, and two taps 150 ms apart, both lit the
+        // screen). The button and a glance still wake it.
+        let mut wake_tap = None;
         if !self.awake
             && let InputEvent::Touch(touch) = event
         {
-            // In the quiet night, none does: bedding and pillows make
-            // deliberate-looking taps, and pairs of them (one night, a
-            // 193 ms tap mid-screen, and two taps 150 ms apart, both lit
-            // the screen). The button and a glance still wake it.
-            if self.night.quiet() {
-                return;
-            }
-            let second = self.last_tap.is_some_and(|tap| now - tap <= DOUBLE_TAP);
-            if !(deliberate(&touch) || touch.gesture == Gesture::Tap && second) {
-                self.last_tap = (touch.gesture == Gesture::Tap).then_some(now);
+            let kind = match touch.gesture {
+                Gesture::Tap => wake::Kind::Tap,
+                Gesture::LongPress => wake::Kind::LongPress,
+                _ => wake::Kind::Swipe,
+            };
+            let recent_tap = self.last_tap.is_some_and(|tap| now - tap <= DOUBLE_TAP);
+            let media = self.music.is_some();
+            let quiet = self.night.quiet();
+            self.last_tap = None;
+            let command = match wake::screen_off(
+                kind,
+                touch.x,
+                touch.y,
+                touch.held_ms,
+                recent_tap,
+                media,
+                quiet,
+            ) {
+                Action::Ignore => return,
+                Action::FirstTap => {
+                    self.last_tap = Some(now);
+                    return;
+                }
+                // Waking, below; with media, the tap may also be the first
+                // of a double tap on the clock face it wakes to, as on a
+                // glance.
+                Action::Wake { first_tap: true } => {
+                    wake_tap = Some(now);
+                    None
+                }
+                Action::Wake { first_tap: false } => None,
+                Action::PlayPause => Some(MusicCommand::PlayPause),
+                Action::Next => Some(MusicCommand::Next),
+            };
+            // A media gesture: the buzz says it took. The screen stays off,
+            // bar a flash of the dim glance with what it did in the corner
+            // (as after a long press on a glance), for the wearer who does
+            // look: play, pause, and next all buzz alike. It's not input,
+            // so it doesn't hold the screen on, and it isn't a proper
+            // wake: a tap during it wakes the screen, as on any glance.
+            if let Some(command) = command {
+                // For telling a sleeve's doing from the wearer's in a
+                // field log.
+                defmt::info!("media: {} with the screen off", command);
+                self.media(command);
+                self.awake = true;
+                self.screen = Screen::Clock;
+                // Over on the tick that ends the hint (its first comes
+                // within a second), rather than showing the bare time for
+                // a last second.
+                let flash = Duration::from_secs(u64::from(MEDIA_HINT_TICKS - 1));
+                self.glance_until = Some(now + flash);
                 return;
             }
         }
         // The first of a double tap on the clock, if this may be the
-        // second. (Never the tap that woke the screen: waking clears it.)
+        // second. (Never a tap from before the screen woke: waking only
+        // keeps the tap that woke it, below, for the next one.)
         let first_tap = self
             .last_tap
             .take()
@@ -846,6 +887,7 @@ impl App {
         if !self.awake {
             self.awake = true;
             self.screen = Screen::Clock;
+            self.last_tap = wake_tap;
             return;
         }
         // Pairing or an update: what's beneath doesn't show, so touches

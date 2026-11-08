@@ -75,6 +75,7 @@ mod temperature;
 mod theme;
 mod touch;
 mod ui;
+mod wake;
 
 use core::cell::Cell;
 use core::sync::atomic::{AtomicBool, Ordering};

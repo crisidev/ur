@@ -1,0 +1,11 @@
+[package]
+name = "wake-test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Host-side tests for `src/wake.rs` (included via `#[path]`). Not part of
+# the firmware workspace: run `cargo test` from this directory.
+[workspace]
+
+[dependencies]
