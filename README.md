@@ -21,9 +21,8 @@ timepiece.)
 
 - **Clock face:** time with seconds, date, battery, heart rate, the next
   alarm or timer, temperature, and steps, as ten blocks of 1,000 (×1K)
-  towards a fixed goal of 10,000 (Gadgetbridge doesn't send yours). Past
-  the goal, each block counts 10,000 (×10K), full at 100,000. The exact
-  count is on Today, a swipe right. In four themes: two dark for after
+  towards 10,000, then of 10,000 (×10K); the exact count is on Today, a
+  swipe right. In four themes: two dark for after
   sunset (Arcade and Terminal), and two light for the day (Handheld and
   Parchment), switching by themselves at your location's sunset and
   sunrise. The temperature is the watch's own (it has no other sensor):
@@ -319,16 +318,10 @@ double-press the button.
 
 ### N02: The watch says "TEXT AS BITMAPS"
 
-Gadgetbridge's "Text as Bitmaps" setting is on. With it, Gadgetbridge
-draws each word the watch's font can't show (Chinese, say, or an emoji)
-as a picture, and sends that instead of the word, as a Bangle.js would
-want. ur can't show those pictures, so it shows a `?` for each, and says
-so once each time the phone connects. The pictures also make messages
-much longer, and a message too long for the watch never shows at all.
-
-In Gadgetbridge, open the watch's settings (the gear on its card), and
-under Notifications, switch off "Text as Bitmaps". Such words then come
-as text, with a `?` for each character the font lacks.
+Gadgetbridge's "Text as Bitmaps" is on: it sends words the watch's font
+can't show as pictures, which ur shows as `?` (and long messages full of
+them never arrive). Switch it off in the watch's settings in Gadgetbridge,
+under Notifications.
 
 ### P01: How do I put the watch away for a while?
 
