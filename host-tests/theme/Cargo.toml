@@ -1,0 +1,14 @@
+[package]
+name = "theme-test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Host-side tests for `src/theme.rs` (included via `#[path]`): that colours
+# with different meanings stay apart in every theme. Not part of the
+# firmware workspace: run `cargo test` from this directory.
+[workspace]
+
+[dependencies]
+# `Color` derives `defmt::Format` for the watch's logs.
+defmt = "1.2.0"
