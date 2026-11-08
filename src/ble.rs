@@ -242,7 +242,7 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
         if let Some(bond) = storage::load(slot).await.as_ref().and_then(decode_bond) {
             info!("ble: restored bond with {}", bond.identity.addr);
             if let Err(e) = stack.add_bond_information(bond) {
-                warn!("ble: restoring bond failed: {}", defmt::Debug2Format(&e));
+                warn!("ble: restoring bond failed: {}", e);
             }
         }
     }
@@ -253,7 +253,7 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
     let host = async {
         loop {
             if let Err(e) = runner.run().await {
-                warn!("ble: host runner failed: {}", defmt::Debug2Format(&e));
+                warn!("ble: host runner failed: {}", e);
             }
         }
     };
@@ -285,7 +285,7 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
                     // Time to review the interval (see `ADVERTISING_REVIEW`).
                     Ok(None) => continue,
                     Err(e) => {
-                        warn!("ble: advertising failed: {}", defmt::Debug2Format(&e));
+                        warn!("ble: advertising failed: {}", e);
                         Timer::after_secs(5).await;
                         continue;
                     }
@@ -293,7 +293,7 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
             };
             info!("ble: connected");
             if let Err(e) = conn.raw().set_bondable(true) {
-                warn!("ble: enabling bonding failed: {}", defmt::Debug2Format(&e));
+                warn!("ble: enabling bonding failed: {}", e);
             }
             // Ask the client to secure the link (an SMP Security Request):
             // one with our bond encrypts with it at once, one without pairs,
@@ -301,10 +301,7 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
             // that (see `UartService`), and some clients never ask on their
             // own: Gadgetbridge's Bangle.js support doesn't.
             if let Err(e) = conn.raw().request_security() {
-                warn!(
-                    "ble: requesting security failed: {}",
-                    defmt::Debug2Format(&e)
-                );
+                warn!("ble: requesting security failed: {}", e);
             }
             // Whether this is the phone; see `serve`. The status reporter
             // waits for that, and never finishes on its own.
@@ -412,10 +409,7 @@ async fn send_log_sector(
 ) {
     let notify = async |bytes: &[u8]| {
         if let Err(e) = server.log.data.notify_raw(conn, bytes, false).await {
-            warn!(
-                "ble: sending the field log failed: {}",
-                defmt::Debug2Format(&e)
-            );
+            warn!("ble: sending the field log failed: {}", e);
         }
     };
     let info = crate::field_log::sector_info(u32::from(index)).await;
@@ -480,10 +474,7 @@ async fn speed_up(
         ..Default::default()
     };
     if let Err(e) = conn.raw().update_connection_params(stack, &params).await {
-        warn!(
-            "dfu: asking for a faster connection failed: {}",
-            defmt::Debug2Format(&e)
-        );
+        warn!("dfu: asking for a faster connection failed: {}", e);
     }
 }
 
@@ -510,10 +501,7 @@ async fn slow_down(
         ..Default::default()
     };
     if let Err(e) = conn.raw().update_connection_params(stack, &params).await {
-        warn!(
-            "ble: asking for a slower connection failed: {}",
-            defmt::Debug2Format(&e)
-        );
+        warn!("ble: asking for a slower connection failed: {}", e);
     }
 }
 
@@ -673,7 +661,7 @@ async fn serve(
                 // refuses what the attribute's permissions don't allow.
                 match event.accept() {
                     Ok(reply) => reply.send().await,
-                    Err(e) => warn!("ble: failed to reply: {}", defmt::Debug2Format(&e)),
+                    Err(e) => warn!("ble: failed to reply: {}", e),
                 }
                 if let Some(index) = log_request {
                     // A fetch is hundreds of requests; make them quick.
@@ -697,7 +685,7 @@ async fn serve(
                             .notify_raw(conn, &value, false)
                             .await
                     {
-                        warn!("dfu: notifying failed: {}", defmt::Debug2Format(&e));
+                        warn!("dfu: notifying failed: {}", e);
                     }
                     if update.active() && !was_updating {
                         speed_up(stack, conn).await;
@@ -767,7 +755,7 @@ async fn serve(
                 }
             }
             GattConnectionEvent::PairingFailed(e) => {
-                warn!("ble: pairing failed: {}", defmt::Debug2Format(&e));
+                warn!("ble: pairing failed: {}", e);
                 show_passkey(None);
                 not_paired(conn, &mut security);
             }
@@ -805,7 +793,7 @@ async fn serve(
     if security == Security::Told {
         UNPAIRED.lock(|cell| cell.set(None));
     }
-    info!("ble: disconnected: {}", defmt::Debug2Format(&reason));
+    info!("ble: disconnected: {}", reason);
 }
 
 /// Where a connection stands on [`not_paired`].
@@ -1103,7 +1091,7 @@ fn make_room_for_bond(
     };
     match stack.remove_bond_information(victim) {
         Ok(()) => info!("ble: dropped the bond with {} to make room", victim.addr),
-        Err(e) => warn!("ble: dropping a bond failed: {}", defmt::Debug2Format(&e)),
+        Err(e) => warn!("ble: dropping a bond failed: {}", e),
     }
 }
 
@@ -1121,7 +1109,7 @@ async fn send(
     // which then sat in every future that sends.
     for piece in line.as_bytes().chunks(chunk) {
         if let Err(e) = server.uart.tx.notify_raw(conn, piece, false).await {
-            warn!("ble: send failed: {}", defmt::Debug2Format(&e));
+            warn!("ble: send failed: {}", e);
             return false;
         }
     }
