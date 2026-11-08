@@ -90,6 +90,19 @@ changes from the plan below, which was written 2026-11-07 against
   - **Not done:** a minimum RSSI, so a neighbour's thermometer through
     a wall isn't taken for the room when nothing nearer is heard;
     BTHome v1; a sensor's 1-byte temperatures (`0x57`, `0x58`).
+- **Forgotten when far away** (same branch): sensors don't move, so a
+  fix from the phone more than 500 m from where sensors were near
+  (`aranet::Nearby::located`; the place is the phone's location at a
+  fix within 15 min of hearing one) forgets the sensors known, and the
+  scans drop to hourly at once rather than after an hour; a fix back
+  near the place scans at once. The distance is equirectangular, with
+  a series for the cosine (within 2% to 70° N). 500 m is well beyond a
+  sensor's range and a Wi-Fi fix's error; a cell-only fix can be
+  further off, at worst an hour without the room's reading. +8 B RAM,
+  ~0.5 KB flash. The catch: the watch only gets a fix after a 2 h
+  Bluetooth gap, at a new time zone, or on connecting with a day-old
+  fix, so most departures (with the phone along) still take the hour.
+  Each one caught saves ~3–6 scans of 3 s, ~15–30 µAh.
 
 Sources:
 
