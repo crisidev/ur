@@ -59,7 +59,7 @@ TARGET = ["esprobe", "--target", "nRF52832_xxAA"]
 WIDTH = HEIGHT = 80
 BYTES = WIDTH * HEIGHT // 2
 # Colour roles in a theme's palette: `Color::COUNT` in src/theme.rs.
-ROLES = 15
+ROLES = 16
 SCALE = 3
 # `qr::SIZE`, and the panel pixels a module takes (see `Canvas::qr`).
 QR_SIZE = 25
@@ -184,10 +184,13 @@ def screenshot(elf: Path, out: Path, theme_name: str | None = None) -> None:
     if theme_name is not None:
         theme = theme_symbol(elf, theme_name.upper())
     # `Theme` is repr(C): name (&str: pointer, length), then a big-endian
-    # RGB565 colour per role.
-    palette_bytes = b"".join(
-        struct.pack("<I", w) for w in read_words(theme + 8, (2 * ROLES + 3) // 4)
-    )[: 2 * ROLES]
+    # RGB565 colour per role, then the half-toned roles, a bit each (see
+    # `Theme::columns`): every other panel column of those is background.
+    theme_bytes = b"".join(
+        struct.pack("<I", w) for w in read_words(theme + 8, (2 * ROLES + 2 + 3) // 4)
+    )
+    palette_bytes = theme_bytes[: 2 * ROLES]
+    (halftone,) = struct.unpack("<H", theme_bytes[2 * ROLES : 2 * ROLES + 2])
     palette = []
     for i in range(ROLES):
         (rgb565,) = struct.unpack(">H", palette_bytes[2 * i : 2 * i + 2])
@@ -212,6 +215,8 @@ def screenshot(elf: Path, out: Path, theme_name: str | None = None) -> None:
                 continue
             i = (y // SCALE) * WIDTH + x // SCALE
             role = front[i // 2] >> 4 if i % 2 else front[i // 2] & 0x0F
+            if halftone >> role & 1 and x % 2:
+                role = 0
             pixels.append(palette[role] if role < len(palette) else (255, 0, 255))
     png(out, pixels, WIDTH * SCALE, HEIGHT * SCALE)
 

@@ -89,7 +89,7 @@ struct DevKit {
     canvas: std::cell::Cell<Option<u32>>,
     export: u32,
     /// The last theme's palette, by its address: they don't change.
-    palette: std::cell::RefCell<Option<(u32, Vec<u16>)>>,
+    palette: std::cell::RefCell<Option<(u32, Palette)>>,
 }
 
 impl DevKit {
@@ -263,20 +263,25 @@ impl DevKit {
     }
 
     /// A theme's colours, as the panel gets them.
-    fn palette(&self, theme: u32) -> Result<Vec<u16>, String> {
+    fn palette(&self, theme: u32) -> Result<Palette, String> {
         if let Some((at, palette)) = &*self.palette.borrow()
             && *at == theme
         {
             return Ok(palette.clone());
         }
         // `Theme` is `repr(C)`: the name (`&str`: pointer, length), then
-        // a big-endian RGB565 colour per role. (The dev kit's firmware has
-        // to be this tree's, for the count to match.)
-        let bytes = self.read_bytes(theme + 8, 2 * crate::theme::Color::COUNT)?;
-        let palette: Vec<u16> = bytes
-            .chunks(2)
-            .map(|c| u16::from_be_bytes([c[0], c[1]]))
-            .collect();
+        // a big-endian RGB565 colour per role, then the half-toned roles
+        // (a bit each). (The dev kit's firmware has to be this tree's, for
+        // the count to match.)
+        let count = crate::theme::Color::COUNT;
+        let bytes = self.read_bytes(theme + 8, 2 * count + 2)?;
+        let palette = Palette {
+            colors: bytes[..2 * count]
+                .chunks(2)
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect(),
+            halftone: u16::from_le_bytes([bytes[2 * count], bytes[2 * count + 1]]),
+        };
         *self.palette.borrow_mut() = Some((theme, palette.clone()));
         Ok(palette)
     }
@@ -381,7 +386,15 @@ impl DevKit {
 struct Frame {
     head: Head,
     front: Vec<u8>,
-    palette: Vec<u16>,
+    palette: Palette,
+}
+
+/// A theme's colours (RGB565, a role each), and which roles it half-tones
+/// (a bit each; see `Theme::columns`).
+#[derive(Clone)]
+struct Palette {
+    colors: Vec<u16>,
+    halftone: u16,
 }
 
 // ==============================================================================
@@ -734,12 +747,20 @@ impl Follower {
         self.render(&pass);
         let devkit: Vec<u16> = (0..WIDTH * HEIGHT)
             .map(|i| {
-                let role = if i % 2 == 0 {
+                let mut role = if i % 2 == 0 {
                     front[i / 2] & 0x0F
                 } else {
                     front[i / 2] >> 4
                 };
-                palette.get(usize::from(role)).copied().unwrap_or(0xF81F)
+                // As the simulator's panel shows it at the pixel compared
+                // below, the middle of the canvas pixel's three columns.
+                if palette.halftone >> role & 1 != 0 && (i % WIDTH * 3 + 1) % 2 == 1 {
+                    role = 0;
+                }
+                (palette.colors)
+                    .get(usize::from(role))
+                    .copied()
+                    .unwrap_or(0xF81F)
             })
             .collect();
         let sim: Vec<u16> = PANEL.with_borrow(|panel| {

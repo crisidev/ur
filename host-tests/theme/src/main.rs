@@ -80,8 +80,8 @@ mod tests {
     }
 
     /// The themes a screen can be in when it's not dim. The dim look
-    /// (`theme::GLANCE`) is black and white by necessity, so everything in it
-    /// is white: it's left out on purpose.
+    /// (`theme::GLANCE`) has only idle mode's colours, so distances mean
+    /// little there: it has its own test below.
     fn themes() -> impl Iterator<Item = &'static Theme> {
         theme::DARK.iter().chain(&theme::LIGHT).copied()
     }
@@ -95,7 +95,7 @@ mod tests {
     const STAGES: [(&str, Color); 3] = [
         ("deep", Color::DEEP),
         ("REM", Color::REM),
-        ("light", Color::TEXT_DIM),
+        ("light", Color::GREY),
     ];
 
     /// Side by side in a 4 px bar (and as each one's name in the legend), the
@@ -165,6 +165,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// In the dim look, the stages are red, white and grey, as the panel
+    /// shows them in idle mode (the top bit of each channel): no two of
+    /// them the same on both the panel's even and odd columns.
+    #[test]
+    fn sleep_stages_differ_in_the_dim_look() {
+        let idle = |color| {
+            theme::GLANCE.columns(color).map(|bytes| {
+                let rgb565 = u16::from_be_bytes(bytes);
+                rgb565 & 0b10000_100000_10000
+            })
+        };
+        for (i, &(a_name, a)) in STAGES.iter().enumerate() {
+            for &(b_name, b) in &STAGES[i + 1..] {
+                assert_ne!(idle(a), idle(b), "dim: {a_name} and {b_name} look the same");
+            }
+        }
+        // And the grey is half lit, half the background.
+        let [lit, unlit] = idle(Color::GREY);
+        assert_eq!(lit, idle(Color::DEEP)[0]);
+        assert_eq!(unlit, idle(Color::BACKGROUND)[0]);
     }
 
     /// The measure itself: the colours Last night first drew deep and REM in

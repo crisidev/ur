@@ -461,7 +461,7 @@ impl Canvas {
             let i = row * WIDTH + x;
             let color = nibble(back, i);
             set_nibble(front, i, color);
-            theme.bytes(Color(color))
+            theme.columns(Color(color))
         })
         .await;
     }
@@ -476,8 +476,8 @@ impl Canvas {
         columns: Range<usize>,
     ) {
         let (a, b) = (
-            self.theme.bytes(Color::DITHER_A),
-            self.theme.bytes(Color::DITHER_B),
+            self.theme.columns(Color::DITHER_A),
+            self.theme.columns(Color::DITHER_B),
         );
         stream(display, &mut self.batch, rows, columns, |row, x| {
             if (x + row).is_multiple_of(2) { a } else { b }
@@ -487,7 +487,8 @@ impl Canvas {
 }
 
 /// Streams a canvas rectangle to the panel at [`SCALE`]×, with `color(row, x)`
-/// giving each canvas pixel's bytes.
+/// giving each canvas pixel's bytes on the panel's even and odd columns
+/// (see [`Theme::columns`]).
 ///
 /// Rows are accumulated in `batch` and sent in as few DMA transfers as
 /// possible. Each transfer has a fixed cost (setup, the nRF52832 anomaly-109
@@ -499,7 +500,7 @@ async fn stream(
     batch: &mut [u8; BATCH],
     rows: Range<usize>,
     columns: Range<usize>,
-    mut color: impl FnMut(usize, usize) -> [u8; 2],
+    mut color: impl FnMut(usize, usize) -> [[u8; 2]; 2],
 ) {
     start_pixels(display, rows.clone(), columns.clone()).await;
     let line_len = columns.len() * SCALE * 2;
@@ -514,8 +515,13 @@ async fn stream(
         for x in columns.clone() {
             let bytes = color(row, x);
             let at = (x - columns.start) * SCALE * 2;
-            for px in line[at..at + SCALE * 2].as_chunks_mut::<2>().0 {
-                *px = bytes;
+            for (i, px) in line[at..at + SCALE * 2]
+                .as_chunks_mut::<2>()
+                .0
+                .iter_mut()
+                .enumerate()
+            {
+                *px = bytes[(x * SCALE + i) % 2];
             }
         }
         // The vertical half of the 3× scale: repeat the line.

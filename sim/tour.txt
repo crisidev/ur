@@ -283,3 +283,23 @@ disconnect
 wait 1s
 expect clock
 shot 22-no-phone.png
+
+# ==============================================================================
+# Last night, dimly
+# ==============================================================================
+
+# In the quiet night, Last night's stages are red, white and grey: deep
+# sleep white, REM red, and light sleep grey, which idle mode can only
+# show as alternate columns of white and black.
+until 23:40
+asleep on
+wait 2m
+expect quiet-night
+button
+wait 1s
+right
+wait 1s
+right
+wait 1s
+expect dim
+shot 23-quiet-last-night.png

@@ -2471,7 +2471,7 @@ fn render_last_night(canvas: &mut Canvas, sleep: Option<crate::activity::Sleep>)
     let stages = [
         ("DEEP", sleep.deep_minutes, Color::DEEP),
         ("REM", sleep.rem_minutes, Color::REM),
-        ("LIGHT", light, Color::TEXT_DIM),
+        ("LIGHT", light, Color::GREY),
     ];
     const BAR: i32 = 72;
     let total = i32::from(sleep.asleep_minutes.max(1));
