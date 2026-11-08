@@ -97,16 +97,42 @@ fn check_shots(shots: Shots) -> String {
 
     if updating() {
         std::fs::create_dir_all(&approved).expect("the approved directory can be created");
+        let mut changes = Vec::new();
         for gone in old.difference(&new) {
             std::fs::remove_file(approved.join(gone)).expect("approved images can be deleted");
+            changes.push(format!("removed {gone}"));
         }
         for shot in &new {
             let (from, to) = (rendered.join(shot), approved.join(shot));
             // Only what changed, so the rest keep their timestamps.
             if std::fs::read(&from).ok() != std::fs::read(&to).ok() {
                 std::fs::copy(&from, &to).expect("approved images can be written");
+                let kind = if old.contains(shot) {
+                    "changed"
+                } else {
+                    "added"
+                };
+                changes.push(format!("{kind} {shot}"));
             }
         }
+        // A test that approves passes, and cargo test shows nothing of a
+        // passing test's output, so an approval would look exactly like a
+        // clean check. It says so, then, on stderr itself: libtest
+        // captures only `print!`/`eprint!`, not writes to the handle.
+        // (It still passes, so that approving can be scripted.)
+        use std::io::Write as _;
+        let mut stderr = std::io::stderr().lock();
+        let _ = writeln!(
+            stderr,
+            "\nUPDATE_SHOTS: approving {}'s screenshots in sim/{}, not checking them: {}",
+            shots.script,
+            shots.approved,
+            if changes.is_empty() {
+                "none changed".to_string()
+            } else {
+                changes.join(", ")
+            }
+        );
         return log;
     }
 
