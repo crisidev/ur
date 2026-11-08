@@ -12,12 +12,12 @@ sealed watch, and how releases are made.
   each module's documentation explains its part. The hardware-free ones
   (`ppg`, `sleep`, `stages`, `alarm`, `glance`, `heart_schedule`,
   `brightness`, `temperature`, `battery`, `snapshot`, `nav`, `day`,
-  `route`, `arrival`, `decimal`, `gesture`, `wake`) are pure logic, tested
-  on the computer.
+  `route`, `arrival`, `decimal`, `gesture`, `wake`, `gb`, `phone`) are pure
+  logic, tested on the computer.
 - `host-tests/<module>/`: one crate per hardware-free module (`sleep`'s
-  covers `stages` too), which includes the firmware's source file with
-  `#[path]` and tests it on the host. Some also replay real data (see
-  [Field logs](#field-logs)).
+  covers `stages` too, and `gb`'s `phone`), which includes the firmware's
+  source file with `#[path]` and tests it on the host. Some also replay
+  real data (see [Field logs](#field-logs)).
 - `sim/`: a simulator that runs the UI on the computer; see
   [The simulator](#the-simulator).
 - `scripts/`: packaging (`package.py`, `release.sh`), flashing and

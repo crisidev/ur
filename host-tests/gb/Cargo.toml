@@ -1,0 +1,23 @@
+[package]
+name = "gb-test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Host-side tests for `src/gb.rs` (included via `#[path]`, with the modules
+# it uses), fed Gadgetbridge's lines as it sends them. Not part of the
+# firmware workspace: run `cargo test` from this directory.
+[workspace]
+
+[dependencies]
+defmt = "1.2.0"
+heapless = "0.9.3"
+libm = "0.2.16"
+
+[dev-dependencies]
+quickcheck = { version = "1.1.0", default-features = false }
+
+# CI runs the host tests with `--release`; keep the arithmetic checks, so
+# that a line that would wrap a number round fails a test here.
+[profile.release]
+overflow-checks = true

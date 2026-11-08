@@ -371,7 +371,15 @@ impl<'a> Value<'a> {
                             bytes.next();
                             bytes.next(); // 'u'
                             let low = hex(&mut bytes, 4)?;
-                            char::from_u32(0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00))
+                            // A high half without its low half (a corrupt
+                            // line) is just another character we can't show,
+                            // rather than arithmetic that wraps round (or
+                            // panics, in the simulator's debug builds).
+                            low.checked_sub(0xDC00)
+                                .filter(|low| *low < 0x400)
+                                .and_then(|low| {
+                                    char::from_u32(0x10000 + ((unit - 0xD800) << 10) + low)
+                                })
                                 .unwrap_or('?')
                         } else {
                             char::from_u32(unit).unwrap_or('?')
