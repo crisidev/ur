@@ -100,9 +100,19 @@ command -v llvm-objcopy >/dev/null ||
 # with fixed paths, so where the build ran doesn't change its output. (On
 # the command line, `--config` adds to any rustflags in .cargo/config.toml
 # rather than replacing them, as RUSTFLAGS would.)
-cargo_home=${CARGO_HOME:-$HOME/.cargo}
+#
+# A registry's sources (`registry/src/index.crates.io-1949cf8c6b5b557f/`)
+# become plain `/crates`: that's 46 bytes less per path, of which the image
+# holds some sixty (3 KB). rustc applies the last remap that matches, so
+# these come after the one for all of cargo's home.
+cargo_home=$(realpath "${CARGO_HOME:-$HOME/.cargo}")
 remap="target.thumbv7em-none-eabihf.rustflags = [
-  '--remap-path-prefix=$(realpath "$cargo_home")=/cargo',
+  '--remap-path-prefix=$cargo_home=/cargo',"
+for registry in "$cargo_home"/registry/src/*/; do
+  remap+="
+  '--remap-path-prefix=${registry%/}=/crates',"
+done
+remap+="
   '--remap-path-prefix=$PWD=/ur',
 ]"
 
