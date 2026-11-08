@@ -362,6 +362,27 @@ mod tests {
     }
 
     #[test]
+    fn now_and_then_a_scan_looks_for_new_sensors() {
+        let mut nearby = Nearby::new();
+        let mut at = 0;
+        for i in 1..=2 * LOOK_EVERY as u64 {
+            at += 15 * MIN;
+            nearby.begin(at);
+            nearby.hear(KITCHEN, -60, reading(), at + 100);
+            // The kitchen alone is known (after the first, which knows
+            // nothing yet, and looks around), and heard: done, but for
+            // every eighth scan, which listens to its limit.
+            let stops = nearby.heard_everyone(at + 100);
+            assert_eq!(
+                stops,
+                i != 1 && !i.is_multiple_of(u64::from(LOOK_EVERY)),
+                "scan {i}"
+            );
+            nearby.end(at + 200);
+        }
+    }
+
+    #[test]
     fn a_scan_waits_longer_for_a_bthome_thermometer() {
         let thermometer = |irregular| Reading {
             kind: Kind::BTHome { irregular },

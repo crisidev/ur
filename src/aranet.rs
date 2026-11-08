@@ -297,6 +297,9 @@ pub struct Nearby {
     last_scan: Option<u64>,
     /// Whether a scan is under way.
     scanning: bool,
+    /// Scans begun, wrapping, for [`LOOK_EVERY`]. (In what would be
+    /// padding.)
+    scans: u8,
     /// Where the phone was when sensors were last near (see
     /// [`Nearby::located`]).
     place: Option<Place>,
@@ -357,6 +360,17 @@ pub const SLOW_SCAN_LIMIT: u64 = 6_000;
 /// before stopping at the first it hears (see [`Nearby::heard_everyone`]).
 pub const LOOK_AROUND: u64 = 1_200;
 
+/// Every this many scans, one listens to its limit ([`Nearby::limit`])
+/// whatever it hears, to find sensors it doesn't know yet. The others stop
+/// once they've heard the known ones, often within a fraction of a second
+/// (an Aranet4 advertises every ~0.57 s), which leaves a new sensor beside
+/// them little chance to be heard: on a dev kit, a laptop advertising a
+/// BTHome thermometer every second went unheard by scans that stopped at
+/// 131 and 214 ms. At the quarter-hour pace, this is every two hours; a
+/// new sensor is rare, and finding it sooner isn't worth more: each costs
+/// ~2 s of listening more than a scan that stops early, ~1 µA in all.
+pub const LOOK_EVERY: u8 = 8;
+
 /// What a scan is for, for the log.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(target_os = "none", derive(defmt::Format))]
@@ -395,6 +409,7 @@ impl Nearby {
             known: heapless::Vec::new(),
             last_scan: None,
             scanning: false,
+            scans: 0,
             place: None,
         }
     }
@@ -448,6 +463,7 @@ impl Nearby {
         self.heard.clear();
         self.last_scan = Some(now);
         self.scanning = true;
+        self.scans = self.scans.wrapping_add(1);
     }
 
     /// A sensor was heard, with its signal strength.
@@ -508,11 +524,16 @@ impl Nearby {
 
     /// Whether the scan has heard every sensor it waits for ([`Self::awaited`])
     /// (and at least one), so listening longer would only cost power.
+    /// Never, in one scan of every [`LOOK_EVERY`] (the eighth, the
+    /// sixteenth, …), which looks for new sensors.
     ///
     /// Waiting for none, the first one heard isn't enough: a nearer one
     /// may not have advertised yet, so it listens for at least
     /// [`LOOK_AROUND`], two of an Aranet4's advertising periods.
     pub fn heard_everyone(&self, now: u64) -> bool {
+        if self.scans.is_multiple_of(LOOK_EVERY) {
+            return false;
+        }
         let mut recent = self.awaited(now).peekable();
         let looked_around = recent.peek().is_some()
             || self
