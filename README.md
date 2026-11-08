@@ -16,7 +16,7 @@ ur, named after an archaic Norwegian word for a timepiece, runs on the
 
 <p align="center">
   <img src="docs/screenshots/swipe.gif" width="150" alt="Swiping around the clock face, each screen sweeping in as a wave of red dithered blocks: right to Today's steps and heart rate, right again to last night's sleep, back to the clock, left to the alarms, back, and down to the latest notification">
-  <img src="docs/screenshots/notification.gif" width="150" alt="A notification arriving with the screen off: the dim screen shows SIGNAL and the time in red, a dashed rule, and the sender's name, JANE SMITH, in bold white; a tap wakes it to the clock face, with the notification along the bottom for a moment">
+  <img src="docs/screenshots/notification.gif" width="150" alt="A notification arriving with the screen off: the dim screen shows SIGNAL in red over a dashed rule, and the sender's name, JANE SMITH, large and centred in white; a tap wakes it to the clock face, with the notification along the bottom for a moment">
   <img src="docs/screenshots/glance.gif" width="150" alt="A glance: from a dark screen, the time shows large and dim, 17 above 45, for five seconds, then the screen goes dark again">
   <img src="docs/screenshots/alarm.gif" width="150" alt="An alarm ringing at 07:30, the screen saying TAP: SNOOZE, BUTTON: STOP; a tap snoozes it, and the clock face shows when it rings again, 07:39">
 </p>
@@ -112,10 +112,11 @@ along the top means unseen notifications; a note in the top left, that
 music is playing; a faded Bluetooth rune struck through in red there,
 that the phone isn't connected.
 
-**Notifications** show the app and the notification's title (in a
-chat, who it's from), never what it says, and without emoji. One that
+**Notifications** show the app and who it's from (the sender, or the
+title without one), never what it says, and without emoji. One that
 comes with the screen on shows along the bottom for 4 seconds; with the
-screen off, it gets the whole screen, dimly, with the time.
+screen off, it gets the whole screen, dimly, the name large and centred
+if it's short.
 
 **Screens:** swipe right for Today (steps and heart rate by the hour),
 then Last night; left for Alarms, the alarms set in Gadgetbridge,

@@ -222,7 +222,7 @@ pub async fn input_task() {
                         "Messages",
                         "\u{201c}Don\u{2019}t\u{201d} \u{2013} Ida\u{2026}",
                     ),
-                    // One line in the medium face.
+                    // Two lines at 2×, about as wide as each other.
                     _ => ("Signal", "Jane Smith"),
                 };
                 let (app, who) = (from.into(), title.into());

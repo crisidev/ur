@@ -326,6 +326,27 @@ mod tests {
         }
     }
 
+    /// A line's width is its text's and its tail's, as drawn: what it's
+    /// centred by.
+    #[test]
+    fn line_width_includes_the_tail() {
+        for face in [Face::Small, Face::Medium] {
+            for (text, most) in [
+                ("NORSK BIBLIOTEKFORENING", 1),
+                ("VELFERDSTEKNOLOGIAVDELINGEN", 3),
+                ("ADA LOVELACE", 1),
+                ("", 1),
+            ] {
+                let mut lines = vec![Line::default(); most];
+                let count = wrap(text, face, 72, &mut lines);
+                for line in &lines[..count] {
+                    let drawn = format!("{}{}", &text[line.start..line.end], line.tail.as_str());
+                    assert_eq!(line.width(text, face), face.width(&drawn), "{drawn}");
+                }
+            }
+        }
+    }
+
     /// Every line fits, and the lines together are the text, for anything.
     #[test]
     fn lines_fit_and_keep_everything() {

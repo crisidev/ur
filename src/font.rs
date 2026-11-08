@@ -483,6 +483,18 @@ pub struct Line {
     pub tail: Tail,
 }
 
+impl Line {
+    /// Width in pixels of the line of `text` as drawn in `face`, its tail
+    /// and the column before it included.
+    pub fn width(self, text: &str, face: Face) -> i32 {
+        let tail = match self.tail {
+            Tail::None => 0,
+            tail => 1 + face.width(tail.as_str()),
+        };
+        face.width(&text[self.start..self.end]) + tail
+    }
+}
+
 /// `text` (trimmed, its spaces single, as [`crate::phone::Text`] keeps
 /// it) in `face`, in as many `lines` as it takes, each at most `room`
 /// pixels wide; returns how many it used. If it doesn't fit in that many,

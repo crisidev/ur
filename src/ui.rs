@@ -1745,16 +1745,11 @@ impl App {
         if self.quiet_notification()
             && let Some(banner) = &self.banner
         {
-            // The time now in its corner: a wrist raised for a buzz
-            // usually wants that too.
+            // Without the time now: the screen is the notification's
+            // alone. A tap wakes it to the clock, with the notification as
+            // a banner, for the time.
             self.banner_text(banner.shows, &mut app, &mut who);
-            let mut time = String::<{ arrival::MAX_LEN }>::new();
-            if let Some(second) = status.local_second {
-                // Arriving now: "HH:MM", as the history's are written.
-                let minute = second.div_euclid(60);
-                arrival::write(&mut time, minute, minute).expect("fits in MAX_LEN");
-            }
-            render_card(canvas, &app, &who, &time);
+            render_card(canvas, &app, &who, "");
             return;
         }
         if let Some(editing) = self.editing {
@@ -3262,19 +3257,22 @@ fn render_update(canvas: &mut Canvas, percent: u8, now: Instant) {
 // ==============================================================================
 
 // Notifications look like the watch's other screens: their app is the
-// title, top left in the accent colour, as TODAY's or ALARMS' is, with the
-// time top right, as MUSIC's state is. Then a rule, and who it's from,
-// in a face that makes it the most important thing on the screen. The
-// banner is the same in short, over the bottom of whatever shows.
+// title, top left in the accent colour, as TODAY's or ALARMS' is, with
+// when it arrived top right in the history, as MUSIC's state is. Then a
+// rule, and who it's from, centred below, in a face that makes it the
+// most important thing on the screen. The banner is the same in short,
+// over the bottom of whatever shows.
 //
 // Who it's from is the 3×5 at 2× if it fits on one line (up to about 9
-// letters): a poster, the size the watch's other big text is. Anything
-// longer is in the medium face (see `font::medium_glyph`), balanced over
-// as few lines as it takes (see `font::wrap`), never the small 1×, which
-// is too small to read at a glance. That's two sizes, chosen by one rule,
-// rather than the three there were: the 2× split over two lines when they
-// came out about equal, and 1× otherwise, so a name's size depended more
-// on how its words fell than on what it was.
+// letters), or on two of about the same width (see `large`): a poster,
+// the size the watch's other big text is. Anything longer is in the
+// medium face (see `font::medium_glyph`), balanced over as few lines as
+// it takes (see `font::wrap`), never the small 1×, which is too small to
+// read at a glance. Either way it's centred, as a name on a screen of its
+// own is expected to be, and as it was before the medium face: the
+// balanced lines read as a block, and a short name doesn't sit in a
+// corner. (The banner, which has to be compact, is the exception: see
+// `render_banner`.)
 
 /// Text columns of the banner and the notification card, as of a call:
 /// four columns (12 of the panel's pixels) clear of each edge, for a
@@ -3297,15 +3295,53 @@ const MEDIUM_PITCH: i32 = font::MEDIUM_HEIGHT + font::ACCENT_ROWS + 1;
 /// a line, with room to spare for long words.
 const CARD_LINES: usize = 5;
 
-/// Where who it's from starts on the card: two rows below the rule, plus
-/// the accents' rows.
-const CARD_WHO_Y: i32 = 12 + 2 + font::ACCENT_ROWS;
+/// How unequal two lines at 2× may be: the shorter at least 7/10 of the
+/// longer, in pixels. In this all but monospaced font, a 5- and a 5-letter
+/// word are equal, 4 and 5 make 79%, 5 and 7 just make it at 70%, and 4
+/// and 6 (65%) or 3 and 8 (35%) don't. Below about this, the pair reads
+/// as a long line with a stub hanging off it rather than as a block.
+const BALANCE_TENTHS: i32 = 7;
+
+/// Who it's from at 2×, as `lines` of the small font: how many (one or
+/// two), or 0 if it's not short enough. Two only split at a space, about
+/// equal (see [`BALANCE_TENTHS`]): a first name and a surname, typically.
+/// Never hyphenated: a broken word in large type is harder to read than
+/// the same word whole in the medium face, and so is a big first line
+/// over a one-word second.
+fn large(who: &str, lines: &mut [font::Line; CARD_LINES]) -> usize {
+    // `wrap` balances the lines already: what's left is to check how it
+    // broke them. A break at a space is neither a hyphen nor a joint in a
+    // link; an ellipsis at the end means it needed more than two.
+    let count = font::wrap(
+        who,
+        font::Face::Small,
+        BANNER_TEXT_WIDTH / 2,
+        &mut lines[..2],
+    );
+    let [top, bottom, ..] = *lines;
+    match count {
+        1 => 1,
+        2 if bottom.tail == font::Tail::None && who.as_bytes().get(top.end) == Some(&b' ') => {
+            let (a, b) = (
+                top.width(who, font::Face::Small),
+                bottom.width(who, font::Face::Small),
+            );
+            if a.min(b) * 10 >= a.max(b) * BALANCE_TENTHS {
+                2
+            } else {
+                0
+            }
+        }
+        _ => 0,
+    }
+}
 
 /// A notification, with the whole screen (one that arrived with the screen
 /// off, in the dim look, or a page of the history): the app top left in
-/// the accent colour, and `time` top right (the time now, or when it
-/// arrived), a rule under them, as on Today, and who it's from below,
-/// left-aligned, big if it's short.
+/// the accent colour, and `time` top right (when it arrived, in the
+/// history; nothing on a notification that has just come, as that's now),
+/// a rule under them, as on Today, and who it's from below, centred, big
+/// if it's short (see [`large`]).
 fn render_card(canvas: &mut Canvas, app: &str, who: &str, time: &str) {
     canvas.clear(BACKGROUND);
     // The app gives way to the time: 4 px between them, and an ellipsis.
@@ -3326,24 +3362,41 @@ fn render_card(canvas: &mut Canvas, app: &str, who: &str, time: &str) {
         canvas.fill_rect(x, 11, 2, 1, Color::TEXT_FAINT);
     }
 
-    if font::small_text_width(who) * 2 <= BANNER_TEXT_WIDTH {
-        // The 2× accents are four rows tall, two more than the medium's.
-        let y = CARD_WHO_Y + font::ACCENT_ROWS;
-        canvas.text_scaled(BANNER_TEXT.start, y, who, Color::TEXT, 2);
-        return;
-    }
+    // At 2× (pitch, capitals' height, and accents' rows, all doubled),
+    // or in the medium face.
     let mut lines = [font::Line::default(); CARD_LINES];
-    let count = font::wrap(who, font::Face::Medium, BANNER_TEXT_WIDTH, &mut lines);
-    for (i, &line) in lines[..count].iter().enumerate() {
-        let y = CARD_WHO_Y + MEDIUM_PITCH * i as i32;
-        canvas.line(
-            BANNER_TEXT.start,
-            y,
-            who,
-            line,
+    let (count, face, scale, pitch, height) = match large(who, &mut lines) {
+        0 => (
+            font::wrap(who, font::Face::Medium, BANNER_TEXT_WIDTH, &mut lines),
             font::Face::Medium,
-            Color::TEXT,
-        );
+            1,
+            MEDIUM_PITCH,
+            font::MEDIUM_HEIGHT,
+        ),
+        count => (
+            count,
+            font::Face::Small,
+            2,
+            2 * (5 + font::ACCENT_ROWS + 2),
+            2 * 5,
+        ),
+    };
+    // The capitals centred on the screen, which is where the eye expects
+    // a name (centring the space below the rule put them 6 px low), but
+    // no nearer the rule than two clear rows above the accents. Accents
+    // above the first line are left out of the centring, as most names
+    // have none.
+    let block = pitch * (count as i32 - 1) + height;
+    let top = (40 - block / 2).max(12 + 2 + font::ACCENT_ROWS * scale);
+    for (i, &line) in lines[..count].iter().enumerate() {
+        let y = top + pitch * i as i32;
+        // The tail (an ellipsis or a hyphen) is part of the width.
+        let x = 40 - line.width(who, face) * scale / 2;
+        if scale == 2 {
+            canvas.text_scaled(x, y, &who[line.start..line.end], Color::TEXT, 2);
+        } else {
+            canvas.line(x, y, who, line, face, Color::TEXT);
+        }
     }
 }
 
@@ -3356,40 +3409,48 @@ fn small_fitted(canvas: &mut Canvas, x: i32, y: i32, text: &str, room: i32, colo
     }
 }
 
-/// Where the banner's box starts with who it's from on one line, and on
-/// two (see [`render_banner`]).
-const BANNER_TOP: [i32; 2] = [56, 46];
+/// Line pitch of the small font in the banner: 5 px capitals, 2 accent
+/// rows, and a row's gap, so an accent never touches the line above.
+const SMALL_PITCH: i32 = 5 + font::ACCENT_ROWS + 1;
 
-/// Over the bottom of the screen: the app (or what happened) small in the
-/// accent colour, and who it's from (or what to do) in the medium face,
-/// on one line or two, ending in an ellipsis if even two won't do. The
-/// history has the rest. One line covers the clock face's heart rate and
-/// steps; two, from just under the seconds, the alarm too, which a 4 s
-/// banner can afford; the time and date always show. Who it's from ends
-/// 4 px above the bottom edge, as the text clears the sides.
+/// Over the bottom of the screen, as compact as it was before the
+/// redesign: an accent rule, the app (or what happened) small in the
+/// accent colour, and who it's from (or what to do) small too, on one
+/// line or two, ending in an ellipsis if even two won't do. The history
+/// has the rest. One line is 17 px, over the clock face's steps, leaving
+/// the heart rate and the next alarm in view; two, 25, from just under
+/// the date and the seconds, which a 4 s banner can afford; the time
+/// always shows.
+///
+/// Small, not in the medium face that names are given on a screen of
+/// their own: its 7 px capitals, their accents, and a row clear of the
+/// app above them make 9 rows to the small font's 7, and the 17 px can't
+/// spare them without the app crowding the rule or the text the bottom
+/// edge. Rows, from the rule: 1 clear, the app's 5, 1 clear (so Å's ring
+/// never touches it), 2 for accents, 5 for the capitals, and 2 clear at
+/// the bottom.
 fn render_banner(canvas: &mut Canvas, app: &str, who: &str) {
     let mut lines = [font::Line::default(); 2];
-    let count = font::wrap(who, font::Face::Medium, BANNER_TEXT_WIDTH, &mut lines).max(1);
-    let top = BANNER_TOP[count - 1];
+    let count = font::wrap(who, font::Face::Small, BANNER_TEXT_WIDTH, &mut lines).max(1);
+    let top = 63 - SMALL_PITCH * (count as i32 - 1);
     canvas.fill_rect(0, top, 80, 80 - top, BACKGROUND);
     canvas.fill_rect(0, top, 80, 1, Color::ACCENT);
     small_fitted(
         canvas,
         BANNER_TEXT.start,
-        top + 4,
+        top + 2,
         app,
         BANNER_TEXT_WIDTH,
         Color::ACCENT,
     );
     for (i, &line) in lines[..count].iter().enumerate() {
-        // The app's 5 rows, then 2 clear above the accents.
-        let y = top + 4 + 5 + 2 + font::ACCENT_ROWS + MEDIUM_PITCH * i as i32;
+        let y = top + 2 + 5 + 1 + font::ACCENT_ROWS + SMALL_PITCH * i as i32;
         canvas.line(
             BANNER_TEXT.start,
             y,
             who,
             line,
-            font::Face::Medium,
+            font::Face::Small,
             Color::TEXT,
         );
     }

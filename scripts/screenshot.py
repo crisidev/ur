@@ -16,9 +16,10 @@ apart), `tap:X,Y` (`tap:X,Y,MS` held for MS milliseconds, up to 255,
 rather than 80), `long:X,Y`, or `up`, `down`, `left`, `right` (swipes,
 optionally with `:X,Y`), in canvas pixels (0–79);
 `glance` (as if the wrist turned) and `notify` (a test notification;
-`notify` alone has a two-word title on one line in the medium face,
+`notify` alone has a two-word name, big on two lines,
 `notify:1,0` a four-word one, `notify:2,0` a much longer one,
-`notify:3,0` and `notify:4,0` (with accents) two-word ones on two lines,
+`notify:3,0` and `notify:4,0` (with accents) two-word ones on two lines
+in the medium face,
 `notify:5,0` a short one, big, `notify:6,0` and `notify:7,0`
 every ASCII symbol between them, `notify:8,0` curly quotes, a dash, and an
 ellipsis; `notify:X,H` arrived H
