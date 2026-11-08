@@ -91,6 +91,13 @@ fn reads_shelly_thermometers() {
 }
 
 #[test]
+fn humidity_stays_a_percentage() {
+    // 655.35 %, as a u16 of hundredths can say: 100, not wrapped.
+    let reading = parse(&[0x40, 0x02, 0xCA, 0x09, 0x03, 0xFF, 0xFF]).expect("a temperature");
+    assert_eq!(reading.humidity, Some(100));
+}
+
+#[test]
 fn reads_below_zero() {
     // -5.25 °C (0x02), and -12.3 °C (0x45).
     let reading = parse(&[0x40, 0x02, 0xF3, 0xFD]).expect("a temperature");

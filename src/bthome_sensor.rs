@@ -130,9 +130,10 @@ pub fn parse(data: &[u8]) -> Result<Reading, Skip> {
                 let tenths = signed();
                 _ = reading.hundredths.get_or_insert(tenths.saturating_mul(10));
             }
-            // Hundredths of a percent, to the nearest percent.
+            // Hundredths of a percent, to the nearest percent (and no
+            // more than 100, which a u16 could exceed).
             0x03 => {
-                let percent = (le(2) + 50) / 100;
+                let percent = ((le(2) + 50) / 100).min(100);
                 _ = reading.humidity.get_or_insert(percent as u8);
             }
             0x2E => _ = reading.humidity.get_or_insert(value[0]),
