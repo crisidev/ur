@@ -1665,7 +1665,8 @@ fn render_hint(canvas: &mut Canvas, side: Side, index: usize, count: usize) {
 //   38..44   date, YYYY-MM-DD, under the hours (left); seconds, small and
 //            in the accent colour, under the minutes (right)
 //   56..62   heart rate (left); the next alarm or timer (right)
-//   68..74   a foot, then ten blocks for the day's steps (x 17..75)
+//   68..74   a foot, then ten blocks for the day's steps (x 10..58),
+//            and their scale, ×1K or ×10K (from x = 61)
 //
 // Everything below the status bar lines up with the time's outer edges
 // (x = 4 and 75). The top half is the time; the bottom half is the
@@ -1675,7 +1676,8 @@ fn render_hint(canvas: &mut Canvas, side: Side, index: usize, count: usize) {
 
 const BACKGROUND: Color = Color::BACKGROUND;
 
-/// The day's steps that fill the clock face's ten blocks, 1,000 a block.
+/// The day's steps that fill the clock face's ten blocks at 1,000 a
+/// block; from there, the blocks count 10,000 each (see `render_clock`).
 ///
 /// Fixed, because there's nowhere to learn the wearer's own: Gadgetbridge
 /// keeps a step goal (its "fitness_goal" setting, 8,000 by default) for its
@@ -1686,7 +1688,8 @@ const BACKGROUND: Color = Color::BACKGROUND;
 /// 10,000 is the round number most people know.
 ///
 /// TODO: a goal set on the watch: a tap-to-cycle row on Info, like THEME
-/// and LIGHT (say 6k, 8k, 10k, 12k), kept with the settings in flash.
+/// and LIGHT (say 6k, 8k, 10k, 12k), kept with the settings in flash. The
+/// meter's scales ("×1K", "×10K") would then follow the goal.
 const STEP_GOAL: u32 = 10_000;
 
 /// `media` is an icon for the status bar, beside the Bluetooth rune: its
@@ -1847,15 +1850,28 @@ fn render_clock(
         canvas.sprite(icon_x, READING_Y - 1, width, icon, 1, Color::ACCENT);
     }
 
-    // The day's steps, as ten 5×5 blocks of 1,000 each towards
-    // [`STEP_GOAL`], like an old game's health bar: "six of ten" can be
-    // counted at a glance, where a number has to be read. Each block is a
-    // whole thousand (999 steps fill none), and past the goal the bar
-    // stays full. Before the time is known there's no day to count, so
-    // it's an empty track.
-    // TODO: a different look past the goal, so reaching it shows.
+    // The day's steps, as ten blocks, like an old game's health bar: "six
+    // of ten" can be counted at a glance, where a number has to be read.
+    // Up to [`STEP_GOAL`], each block is 1,000 steps; from the goal on,
+    // the bar starts again at 10,000 a block, so a long day keeps
+    // filling it, and the change of scale is what says the goal was
+    // reached. The scale stands to the bar's right, "×1K" or "×10K".
+    // Each block is a whole multiple (999 steps fill none; 19,999 one
+    // block of 10,000), and from 100,000 the bar stays full. Before the
+    // time is known there's no day to count, so it's an empty track, at
+    // 1,000 a block.
+    //
+    // Foot, 2 px, the bar, 2 px, and the widest scale ("×10K", 15 px)
+    // take exactly the row's 72 px (x = 4..75), with the blocks 4 px wide
+    // and 1 px apart: 5 px wide, they'd leave the scale no room. The
+    // scale starts where the bar ends, so it reads as the bar's, and the
+    // bar never moves as it changes.
     const STEPS_Y: i32 = 69;
     const BLOCKS: u32 = 10;
+    const BLOCK_W: i32 = 4;
+    const BAR_X: i32 = 4 + font::FOOT_W as i32 + 2;
+    const SCALE_X: i32 = BAR_X + BLOCKS as i32 * (BLOCK_W + 1) - 1 + 2;
+    const _: () = assert!(STEP_GOAL == 10_000, "the scales say 1K and 10K");
     canvas.sprite(
         4,
         STEPS_Y - 1,
@@ -1864,17 +1880,23 @@ fn render_clock(
         1,
         Color::TEXT_DIM,
     );
-    let full = status.steps.unwrap_or(0).min(STEP_GOAL) / (STEP_GOAL / BLOCKS);
+    let steps = status.steps.unwrap_or(0);
+    let (per_block, scale) = if steps < STEP_GOAL {
+        (STEP_GOAL / BLOCKS, "×1K")
+    } else {
+        (STEP_GOAL, "×10K")
+    };
+    let full = (steps / per_block).min(BLOCKS);
     for i in 0..BLOCKS {
         let color = if i < full {
             Color::ACCENT
         } else {
             Color::TRACK
         };
-        // Right-aligned, 1 px apart: the last ends at x = 75.
-        let x = 76 - 6 * (BLOCKS - i) as i32 + 1;
-        canvas.fill_rect(x, STEPS_Y, 5, 5, color);
+        let x = BAR_X + i as i32 * (BLOCK_W + 1);
+        canvas.fill_rect(x, STEPS_Y, BLOCK_W, 5, color);
     }
+    canvas.text(SCALE_X, STEPS_Y, scale, Color::TEXT_DIM);
 }
 
 /// The glance: the hours above the minutes, as big as fits with room

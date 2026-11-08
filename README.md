@@ -6,7 +6,7 @@ integration through [Gadgetbridge]. ("Ur" is an older Norwegian word for a
 timepiece.)
 
 <p align="center">
-  <img src="docs/screenshots/clock-arcade.png" width="150" alt="The clock face in the Arcade theme, white and red on black: Bluetooth, a note for music playing, and 31° along the top, with the battery; then the time, with the date and the seconds under it; the heart rate; and ten red blocks for the day's steps, all full, as it's past the 10,000-step goal; a short red bar on the top edge means unseen notifications">
+  <img src="docs/screenshots/clock-arcade.png" width="150" alt="The clock face in the Arcade theme, white and red on black: Bluetooth, a note for music playing, and 31° along the top, with the battery; then the time, with the date and the seconds under it; the heart rate; and ten blocks for the day's steps, six of them red, then ×1K: 6,000 steps so far, towards 10,000; a short red bar on the top edge means unseen notifications">
   <img src="docs/screenshots/clock-terminal.png" width="150" alt="The same clock face in the Terminal theme: green on black">
   <img src="docs/screenshots/clock-handheld.png" width="150" alt="The same clock face in the Handheld theme, for the day: dark green on pale green, like an old handheld">
   <img src="docs/screenshots/clock-parchment.png" width="150" alt="The same clock face in the Parchment theme, for the day: brown on cream">
@@ -20,8 +20,9 @@ timepiece.)
 </p>
 
 - **Clock face:** time with seconds, date, battery, heart rate, the next
-  alarm or timer, temperature, and steps, as ten blocks of 1,000 towards
-  a fixed goal of 10,000 (Gadgetbridge doesn't send yours); the exact
+  alarm or timer, temperature, and steps, as ten blocks of 1,000 (×1K)
+  towards a fixed goal of 10,000 (Gadgetbridge doesn't send yours). Past
+  the goal, each block counts 10,000 (×10K), full at 100,000. The exact
   count is on Today, a swipe right. In four themes: two dark for after
   sunset (Arcade and Terminal), and two light for the day (Handheld and
   Parchment), switching by themselves at your location's sunset and

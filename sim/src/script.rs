@@ -689,7 +689,10 @@ fn last_night(args: &[&str]) -> Result<activity::Sleep, String> {
 
 /// Fills today's history, from midnight to now, with a plausible day:
 /// asleep until 7 with a low heart rate, a walk to work and back, an
-/// evening run. The same day every time.
+/// evening run. The same day every time. By 17:42 (the README's clock
+/// face), that's about 6,500 steps, so its meter shows six of ten blocks
+/// rather than the bar past the goal; the run takes the day to about
+/// 16,700.
 fn demo_day() -> Result<(), String> {
     let now = local_second().ok_or("demo-day: the time isn't set (see `time`)")?;
     let offset = i64::from(clock::utc_offset_minutes().expect("set with the time"));
@@ -703,12 +706,12 @@ fn demo_day() -> Result<(), String> {
         let wobble = (minute * 37 % 11) as u16;
         let (steps, heart) = match hour {
             0..7 => (0, (52 + wobble % 5) as u8),
-            7 => (20 + wobble * 3, 64 + wobble as u8),
-            8 => (60 + wobble * 4, 88 + wobble as u8),
-            12 => (25 + wobble * 2, 74 + wobble as u8),
-            17 => (70 + wobble * 3, 92 + wobble as u8),
+            7 => (5 + wobble, 64 + wobble as u8),
+            8 => (30 + wobble * 2, 88 + wobble as u8),
+            12 => (8 + wobble, 74 + wobble as u8),
+            17 => (30 + wobble * 2, 92 + wobble as u8),
             19 => (140 + wobble * 2, 145 + wobble as u8 * 2),
-            9..23 => (4 + wobble, 66 + wobble as u8),
+            9..23 => (1 + wobble / 3, 66 + wobble as u8),
             _ => (0, 58 + wobble as u8 % 4),
         };
         let utc = local - offset;

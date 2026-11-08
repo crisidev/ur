@@ -115,6 +115,10 @@ pub fn glyph(c: char) -> Glyph {
         // A little ring at the top, for the clock face's temperature (and
         // any notification that mentions one).
         '°' => plain([0b010, 0b101, 0b010, 0b000, 0b000]),
+        // A small x in the middle three rows, as in print, so it isn't
+        // taken for an X: the clock face's step scale ("×1K"), and any
+        // dimensions or "2×" in a notification.
+        '×' => plain([0b000, 0b101, 0b010, 0b101, 0b000]),
         // Typographic punctuation, which phones (and keyboards' smart
         // quotes) put in names and titles, as the ASCII it stands in for.
         // The same table as Gadgetbridge's own (`renderUnicodeAsImage`),
@@ -131,7 +135,7 @@ pub fn glyph(c: char) -> Glyph {
             width: 5,
             rows: [0, 0, 0, 0, 0, 0, 0b10101],
         },
-        // TODO: other common symbols beyond ASCII (•, ·, «, », ×, €, …)
+        // TODO: other common symbols beyond ASCII (•, ·, «, », €, …)
         // still show as `?`; add them as notifications turn them up.
         _ => plain(small_glyph('?')),
     }
