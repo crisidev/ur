@@ -328,11 +328,17 @@ pub const BLUETOOTH_W: u32 = 5;
 pub const BLUETOOTH: [u8; 7] = [
     0b00100, 0b00110, 0b10101, 0b01110, 0b10101, 0b00110, 0b00100,
 ];
+/// 3×3 cross, drawn a pixel after [`BLUETOOTH`], level with its foot, for
+/// "no phone": the rune with a small ×, like a subscript. A slash through
+/// the rune itself, the usual "Bluetooth off" icon, doesn't survive 5×7:
+/// the rune is diagonals already, so the slash merges into them (and with
+/// pixels cut back around it, what's left of the rune is unrecognisable).
+pub const CROSS_W: u32 = 3;
+pub const CROSS: [u8; 3] = [0b101, 0b010, 0b101];
 
 /// 6×7 beamed pair of eighth notes (♫), for the clock face while media
 /// plays: a beam two pixels thick, as a printed one is heavier than the
-/// stems, two stems, and 2×2 heads, as tall as the Bluetooth rune beside
-/// it.
+/// stems, two stems, and 2×2 heads, as tall as the Bluetooth rune.
 pub const NOTE_W: u32 = 6;
 pub const NOTE: [u8; 7] = [
     0b011111, 0b011111, 0b010001, 0b010001, 0b010001, 0b110011, 0b110011,
@@ -370,11 +376,6 @@ pub const HOURGLASS: [u8; 7] = [
 ];
 
 /// 4×5 lightning bolt, for charging.
-/// A little house: the room's own temperature, from a nearby Aranet4,
-/// before the clock face's temperature. A roof over a doorway.
-pub const HOUSE_W: u32 = 5;
-pub const HOUSE: [u8; 5] = [0b00100, 0b01110, 0b11111, 0b01010, 0b01010];
-
 pub const BOLT_W: u32 = 4;
 pub const BOLT: [u8; 5] = [0b0011, 0b0110, 0b1111, 0b0110, 0b1100];
 

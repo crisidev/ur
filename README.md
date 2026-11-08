@@ -7,7 +7,7 @@ ur, named after an archaic Norwegian word for a timepiece, runs on the
 [PineTime] and syncs with [Gadgetbridge] on Android.
 
 <p align="center">
-  <img src="docs/screenshots/clock-arcade.png" width="150" alt="The clock face in the Arcade theme, white and red on black: Bluetooth, a note for music playing, and 31° along the top, with the battery; then the time, with the date and the seconds under it; the heart rate; and ten blocks for the day's steps, six of them red, then ×1K: 6,000 steps so far, towards 10,000; a short red bar on the top edge means unseen notifications">
+  <img src="docs/screenshots/clock-arcade.png" width="150" alt="The clock face in the Arcade theme, white and red on black: a note for music playing, and 31° along the top, with the battery; then the time, with the date and the seconds under it; the heart rate; and ten blocks for the day's steps, six of them red, then ×1K: 6,000 steps so far, towards 10,000; a short red bar on the top edge means unseen notifications">
   <img src="docs/screenshots/clock-parchment.png" width="150" alt="The same clock face in the Parchment theme, for the day: brown on cream">
   <img src="docs/screenshots/last-night.png" width="150" alt="The Last night screen: 7:20 asleep, from 23:20 to 06:55, and a bar of deep, REM, and light sleep with each one's time">
   <img src="docs/screenshots/alarms.png" width="150" alt="The Alarms screen, in the Handheld theme: smart wake on, for 06:30 on weekdays and 08:30 at weekends, then two alarms and two timers">
@@ -98,12 +98,13 @@ Oslo's, the phone has to share its location: see
 [C03](#c03-the-watch-never-gets-a-location-from-the-phone).
 
 **The clock face** shows the time, date, battery, heart rate, the next
-alarm or timer, and the room's temperature: a nearby Aranet4's (after a
-little house), or else estimated from the watch's own on the wrist, or
-the watch's own off it. Steps fill ten blocks of 1,000 (×1K) towards
-10,000, then of 10,000 (×10K); Today has the exact count. A bar along the
-top means unseen notifications; a note beside Bluetooth, that music is
-playing.
+alarm or timer, and the room's temperature: a nearby Aranet4's
+(underlined at the °), or else estimated from the watch's own on the
+wrist, or the watch's own off it. Steps fill ten blocks of 1,000 (×1K)
+towards 10,000, then of 10,000 (×10K); Today has the exact count. A bar
+along the top means unseen notifications; a note in the top left, that
+music is playing; a crossed-out Bluetooth rune there, that the phone
+isn't connected.
 
 **Screens:** swipe right for Today (steps and heart rate by the hour),
 then Last night; left for Alarms, the alarms set in Gadgetbridge, then

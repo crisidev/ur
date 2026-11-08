@@ -6,8 +6,8 @@
 //! the temperature shown comes from the best of three sources ([`pick`]):
 //!
 //! 1. **A nearby Aranet4** ([`crate::aranet`]), the strongest heard, if
-//!    its reading is recent: a real air temperature, to 0.3 °C. Marked
-//!    with a little house on the clock face.
+//!    its reading is recent: a real air temperature, to 0.3 °C.
+//!    Underlined, at the degree sign, on the clock face.
 //! 2. **On the wrist, an estimate** from the die temperature
 //!    ([`Calibration`]). The watch sits between the skin (32–34 °C) and
 //!    the air, so the die reads well above the room (27–28 °C on the

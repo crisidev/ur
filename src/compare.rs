@@ -482,7 +482,7 @@ pub fn rendering(now: Instant, status: &Status, daytime: bool, today: Option<Day
             update_progress: status.update_progress.unwrap_or(255),
             heart_rate: status.heart_rate.unwrap_or(0),
             temperature: status.temperature.unwrap_or(0),
-            // 2: from a nearby Aranet4 (the clock face's little house).
+            // 2: from a nearby Aranet4 (underlined on the clock face).
             has_temperature: match (status.temperature, status.temperature_from_aranet) {
                 (None, _) => 0,
                 (Some(_), false) => 1,

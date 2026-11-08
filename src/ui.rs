@@ -37,12 +37,12 @@
 //! - On the clock, while a phone is connected: long press to play or
 //!   pause, double tap (two taps within [`DOUBLE_TAP`]) for the next
 //!   track. Each buzzes, and shows what it did for a moment where a note
-//!   shows while media plays, beside the Bluetooth rune. The phone needn't
-//!   have said it has media (see `App::media`). Without a phone, neither
-//!   does anything. A long press acts (and buzzes) once the finger has
-//!   been down long enough, before it lifts (see [`crate::touch`]); that
-//!   goes for every long press. Both work with the screen off, too (see
-//!   below).
+//!   shows while media plays, at the status bar's left end. The phone
+//!   needn't have said it has media (see `App::media`). Without a phone,
+//!   neither does anything. A long press acts (and buzzes) once the
+//!   finger has been down long enough, before it lifts (see
+//!   [`crate::touch`]); that goes for every long press. Both work with
+//!   the screen off, too (see below).
 //! - Long press elsewhere: on the alarms screen, switch an alarm on or off;
 //!   on the info screen, offer storage mode (see [`crate::system_off`]),
 //!   which a tap then confirms, and anything else cancels. Elsewhere,
@@ -1882,7 +1882,7 @@ fn render_hint(canvas: &mut Canvas, side: Side, index: usize, count: usize) {
 //
 // Canvas layout (80×80), y ranges inclusive:
 //
-//    3..7    status bar: Bluetooth or time-sync state, then the watch's
+//    3..7    status bar: media, or no phone and time-sync state, then the
 //            temperature (left); battery % and icon (right)
 //   13..34   HH:MM in 5×7 digits at 3× (15×21 each), with a drop shadow
 //   38..44   date, YYYY-MM-DD, under the hours (left); seconds, small and
@@ -1915,8 +1915,8 @@ const BACKGROUND: Color = Color::BACKGROUND;
 /// meter's scales ("×1K", "×10K") would then follow the goal.
 const STEP_GOAL: u32 = 10_000;
 
-/// `media` is an icon for the status bar, beside the Bluetooth rune: its
-/// width, rows, and top.
+/// `media` is an icon for the status bar's left end, while a phone is
+/// connected: its width, rows, and top.
 fn render_clock(
     canvas: &mut Canvas,
     status: &Status,
@@ -1928,53 +1928,74 @@ fn render_clock(
     canvas.clear(BACKGROUND);
     render_battery(canvas, status.battery, status.uptime_secs);
 
-    // Status bar, left: Bluetooth when connected, and then the media icon
-    // (media comes from the phone, so only while connected); a note if we
-    // don't know the time (in which case the clock shows time since boot).
+    // Status bar, left: the media icon while a phone is connected (media
+    // comes from the phone); without one, a crossed-out Bluetooth rune,
+    // and "NO TIME" if we don't know the time (in which case the clock
+    // shows time since boot). A connected phone is the usual state, so it
+    // gets no icon: what's worth a look is its absence.
+    //
+    // "Connected" is the phone's link (`ble::CONNECTED`): a client that
+    // never authenticated (see `Status::unpaired`), or a bonded phone
+    // that's out of range, both get the cross, as neither delivers
+    // anything.
     let temperature_x = if status.connected {
-        canvas.sprite(3, 2, font::BLUETOOTH_W, &font::BLUETOOTH, 1, Color::ACCENT);
-        let x = 3 + font::BLUETOOTH_W as i32 + 3;
         // One width for every media icon (the widest, the note's), each
         // centred in it, so nothing after it moves as the icon changes.
         const MEDIA_SLOT: u32 = font::NOTE_W;
         match media {
             Some(icon) => {
                 if let Some((width, rows, y)) = icon {
-                    let left = x + (MEDIA_SLOT.saturating_sub(width) / 2) as i32;
+                    let left = 3 + (MEDIA_SLOT.saturating_sub(width) / 2) as i32;
                     canvas.sprite(left, y, width, rows, 1, Color::ACCENT);
                 }
-                Some(x + MEDIA_SLOT as i32 + 3)
+                Some(3 + MEDIA_SLOT as i32 + 3)
             }
-            None => Some(x),
+            None => Some(3),
         }
-    } else if status.local_time.is_none() {
-        canvas.text(3, 3, "NO TIME", Color::TEXT_FAINT);
-        None
     } else {
-        Some(3)
+        canvas.sprite(3, 2, font::BLUETOOTH_W, &font::BLUETOOTH, 1, Color::ACCENT);
+        let cross_x = 3 + font::BLUETOOTH_W as i32 + 1;
+        canvas.sprite(cross_x, 6, font::CROSS_W, &font::CROSS, 1, Color::ACCENT);
+        let x = cross_x + font::CROSS_W as i32;
+        if status.local_time.is_none() {
+            // 2 px rather than the usual 3, so "NO TIME" (27 px) ends at
+            // x = 40, clear of the battery's widest (charging at 100%: the
+            // bolt starts at x = 43).
+            canvas.text(x + 2, 3, "NO TIME", Color::TEXT_FAINT);
+            None
+        } else {
+            Some(x + 3)
+        }
     };
 
-    // Then the watch's own temperature, in whole °C, packed against the
-    // left. The widest ("-10°", 15 px; nothing in the sensor's -40 to
-    // 85 °C is wider) after the Bluetooth icon and the widest media icon
-    // (the note, 6 px) ends at x = 34, clear of the battery's widest (charging at
-    // 100%: the bolt starts at x = 43). "NO TIME" (27 px) and a temperature can't both fit beside
-    // that, so until the phone sets the clock (just after a cold boot),
-    // the note wins.
+    // Then the temperature, in whole °C, packed against the left. The
+    // widest ("-10°", 15 px; nothing in the sensor's -40 to 85 °C is
+    // wider) ends at x = 29 after the crossed-out rune, and x = 26 after
+    // the widest media icon (the note, 6 px), clear of the battery's
+    // widest (charging at 100%: the bolt starts at x = 43). "NO TIME" and
+    // a temperature can't both fit beside that, so until the phone sets
+    // the clock (just after a cold boot), "NO TIME" wins.
     //
-    // From a nearby Aranet4 (see `crate::temperature`), a little house
-    // goes first: the room's own temperature, not the watch's guess. With
-    // it, the widest still ends at x = 42 (house 5, 2 px, "-10°"), clear
-    // of the battery, and indoors it's two digits anyway.
+    // A reading from a room sensor (a nearby Aranet4; see
+    // `crate::temperature`), rather than the watch's own or an estimate
+    // from it, is underlined at the degree sign: a short line a pixel
+    // below it, like a ground line under the reading, in the labels'
+    // colour, so it's a mark on the reading rather than part of it. (A
+    // little house before the reading said the same, but read as one more
+    // status icon. Also tried: a dot under the degree sign, which read as
+    // "?"; a line on the baseline under it, as "±"; a dot after the
+    // reading, as a full stop; and underlining the whole reading, which
+    // is louder than a mark needs to be.)
     // TODO: °F, for those who'd want it.
-    if let (Some(degrees), Some(mut x)) = (status.temperature, temperature_x) {
-        if status.temperature_from_aranet {
-            canvas.sprite(x, 3, font::HOUSE_W, &font::HOUSE, 1, Color::TEXT_DIM);
-            x += font::HOUSE_W as i32 + 2;
-        }
+    if let (Some(degrees), Some(x)) = (status.temperature, temperature_x) {
         let mut text = heapless::String::<6>::new();
         write!(text, "{degrees}°").expect("an i8 is at most 4 chars, and ° is 2 bytes");
-        canvas.text(x, 3, &text, Color::TEXT);
+        let end = canvas.text(x, 3, &text, Color::TEXT);
+        if status.temperature_from_aranet {
+            // `end` is past the degree sign's spacing column: the sign
+            // itself is the 3 columns before that.
+            canvas.fill_rect(end - 4, 9, 3, 1, Color::TEXT_DIM);
+        }
     }
 
     let (hours, minutes, seconds) = match &status.local_time {
