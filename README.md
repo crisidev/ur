@@ -300,6 +300,16 @@ Phones without Google Play services may have no network location: then
 nothing comes indoors, until the watch happens to ask while the phone is
 outside.
 
+### P01: How do I put the watch away for a while?
+
+Use storage mode: long-press the Info screen (swipe up from the clock,
+past Music if something's playing), then tap to confirm. The watch saves the activity the phone hasn't fetched yet and
+switches itself off almost completely, using roughly 40% of a full
+charge in six weeks. Press the button or plug in the charger to wake it;
+the phone sets the time again when it reconnects, and gets the saved
+activity with its next sync. (When the battery runs nearly flat, the
+watch does the same by itself, then wakes only on the charger.)
+
 ### U01: A phone update fails at "Enabling bootloader" or with "GATT CONN TIMEOUT"
 
 The nRF Device Firmware Update app only works over a paired link: if the
