@@ -474,8 +474,14 @@ impl Session {
     async fn validate(&mut self) -> Notification {
         let mut flash = FLASH.lock().await;
         let flash = flash.as_mut().expect("set at boot");
-        let mut chunk = [0u8; 256];
-        let header = &mut chunk[..mcuboot::HEADER_LEN];
+        // Read into the page buffer, idle now that the image is in flash,
+        // rather than a buffer of our own: this future is in RAM once per
+        // connection slot, and the check's state already adds to it.
+        self.page.clear();
+        self.page
+            .resize_default(spi_flash::PAGE as usize)
+            .expect("the page's own size");
+        let header = &mut self.page[..mcuboot::HEADER_LEN];
         flash.read(SLOT_START, header).await;
         let header = match mcuboot::Header::parse(header, self.image_size, CAPACITY) {
             Ok(header) => header,
@@ -486,7 +492,7 @@ impl Session {
         let mut address = SLOT_START;
         let end = SLOT_START + self.image_size;
         while address < end {
-            let chunk = &mut chunk[..(end - address).min(256) as usize];
+            let chunk = &mut self.page[..(end - address).min(spi_flash::PAGE) as usize];
             flash.read(address, chunk).await;
             crc.update(chunk);
             check.update(chunk);
