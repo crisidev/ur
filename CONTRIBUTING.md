@@ -89,6 +89,40 @@ where the rest goes. Some things cost far more than they look:
 - A static that isn't all zeros goes in `.data`, whose initial image takes
   as much flash as the static takes RAM.
 
+### Stack
+
+Every task and interrupt shares one 11 KiB stack (see `memory.x`), and
+the hourly `power:` log line reports each hour's deepest use. Pairing and
+booting go deepest: both run trouble-host's P-256 maths, ~4 KB of it,
+under the Bluetooth host's task. rustc can say how big each function's
+frame is (nightly only, so this borrows the pinned compiler with
+`RUSTC_BOOTSTRAP`; it changes no code):
+
+```sh
+RUSTC_BOOTSTRAP=1 CARGO_TARGET_DIR=target/stack-sizes cargo build --release \
+  --config "target.thumbv7em-none-eabihf.rustflags=['-Zemit-stack-sizes']"
+llvm-readobj --stack-sizes target/stack-sizes/thumbv7em-none-eabihf/release/ur
+```
+
+Summing them along call chains takes the call graph from the
+disassembly, and that includes `blx rN`: to save flash, LLVM calls many
+functions through a register loaded from a literal pool (p256's field
+maths, for one). On a dev kit, the painted stack is the ground truth:
+read 0x2000D520 up to 0x20010000 over SWD (`esprobe core read --words`),
+and the lowest word that isn't 0xCCCCCCCC is the peak. After a reset,
+give the bootloader a few seconds before reading: until our startup
+code repaints, what's there is the previous run's.
+
+With `opt-level = "z"`, what makes frames big:
+
+- Big values returned or moved by value: each function on the way may
+  build its own copy, in its own frame. Fill a `&mut` the caller keeps
+  instead (as `ui::wrap` does), or copy into place.
+- A task's `async` body is polled by one function with everything it
+  awaits or joins inlined, so its frame holds all their locals at once,
+  under every poll. A future beside a deep path can be polled in a frame
+  of its own (`ble::OwnFrame`); a scope of its own isn't enough.
+
 ## The simulator
 
 `sim/` runs the firmware's UI on the computer, in a window (the watch drawn
