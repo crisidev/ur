@@ -97,7 +97,7 @@ Notes:
   on. For example, the watch would receive:
   `GB({"t":"ur_home","l1":"LIGHTS","l2":"TV","l3":"FAN","l4":"SCENE"})`.
   The flat keys `l1`…`l4` avoid needing array support in `gb::Object`.
-  `ble::phone_event` would map the message to `PhoneEvent::HomeLabels` and
+  `gb::phone_event` would map the message to `PhoneEvent::HomeLabels` and
   save it under a new storage key, 4 × ≤18 B (two lines of 9).
 
 ---
@@ -525,7 +525,7 @@ and dropped, so "SENT" is all the watch ever knows.
 | File | Change |
 |---|---|
 | `src/bthome.rs` (new) | `Event`, `HOME_TILES`, `encode(event, battery, counter) -> ([u8; 31], usize)`, `seal(key, mac_display, counter, &mut buf)` (non-async, on the stack), `Counter` (reservation logic), `init(rng)` (load or create the key, load the counter), the KAT. Pure logic, literate-style comments. |
-| `src/ble.rs` | `BTHOME` channel; burst state machine in both the disconnected and connected loops; `try_accept` race; DFU guard; pass `&mut peripheral` to `serve`; `phone_event` gains `ur_ha` / `ur_home`. |
+| `src/ble.rs` | `BTHOME` channel; burst state machine in both the disconnected and connected loops; `try_accept` race; DFU guard; pass `&mut peripheral` to `serve`; `gb::phone_event` (in `src/gb.rs`) gains `ur_ha` / `ur_home`. |
 | `src/ui.rs` | `Screen::Home` in `screens()`; `render_home`, `render_bthome_setup`; Home-specific gesture arms *before* the global long-press arm; ack state (`Option<(tile, Instant, AckKind)>`). |
 | `src/main.rs` | `bthome::init(rng).await` between `storage::init` and the SDC `build`; `Status` gets `bthome_ready`. |
 | `src/storage.rs` | New keys; maybe a bigger `BUFFER` for labels. |
