@@ -89,22 +89,45 @@ fn a_held_finger_is_a_long_press_while_still_down() {
 }
 
 #[test]
-fn a_deliberate_tap_wakes_the_screen_once_no_second_follows() {
+fn a_deliberate_tap_wakes_the_screen_at_once() {
     let dir = out("tap-wake");
     let script = dir.join("script.txt");
     std::fs::create_dir_all(&dir).expect("the target dir is writable");
-    // A brief one (a brush) doesn't; a deliberate one does, once it's
-    // clear it isn't the first of a double tap (`ui::WAKE_WAIT`), which
-    // with a phone connected would be the next track.
+    // A light one (a brush) doesn't; a deliberate one does, at once, even
+    // with a phone connected, where a second would be the next track.
     std::fs::write(
         &script,
         "connect\nwait 11s\nexpect not screen-on\ntap 40,40 20\nwait 1s\n\
-         expect not screen-on\ntap 40,40\nexpect not screen-on\n\
-         wait 400ms\nexpect screen-on\n",
+         expect not screen-on\ntap 40,40\nexpect screen-on\n",
     )
     .expect("the target dir is writable");
     let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
     assert!(ok, "{log}");
+}
+
+/// With a phone connected, a double tap skips without waking the screen
+/// (or ending a glance) only if its first tap is light. A deliberate first
+/// tap wakes it at once, and the second skips on the clock face.
+#[test]
+fn a_double_tap_skips_without_waking_only_after_a_light_first_tap() {
+    let dir = out("double-tap");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    std::fs::write(
+        &script,
+        "connect\nwait 11s\n\
+         tap 40,40 30\nwait 150ms\ntap 40,40 50\nexpect not screen-on\nexpect buzzing\n\
+         wait 2s\ntap 40,40 60\nexpect screen-on\nwait 150ms\ntap 40,40 50\n\
+         expect screen-on\nexpect not dim\nexpect buzzing\n\
+         wait 11s\nglance\ntap 40,40 30\nwait 150ms\ntap 40,40 50\nexpect dim\n\
+         expect buzzing\n\
+         wait 6s\nglance\ntap 40,40 60\nexpect not dim\nwait 150ms\ntap 40,40 50\n\
+         expect not dim\nexpect buzzing\n",
+    )
+    .expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+    assert_eq!(log.matches(r#""n":"next""#).count(), 4, "{log}");
 }
 
 #[test]

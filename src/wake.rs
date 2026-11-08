@@ -1,14 +1,13 @@
-//! What a touch does while the screen is off: wake it, control the
-//! phone's media, or nothing.
+//! What a touch does while the screen is off (or glancing): wake it,
+//! control the phone's media, or nothing.
 //!
 //! A touch on a dark screen is as likely a sleeve, a pocket, or bedding as
 //! a finger, so most do nothing. What does something:
 //!
-//! - A deliberate tap (see [`deliberate`]) wakes the screen. While a phone
-//!   is connected, not at once: it waits (the UI's `WAKE_WAIT`) to see
-//!   whether a second tap follows, which makes it a double tap.
-//! - A double tap (two taps within the UI's `DOUBLE_TAP`) wakes it too; while a phone is connected, it skips to
-//!   the next track instead, without waking it.
+//! - A deliberate tap (see [`deliberate`]) wakes the screen, at once.
+//! - A double tap (two taps within the UI's `DOUBLE_TAP`) wakes it too;
+//!   while a phone is connected, it skips to the next track instead,
+//!   without waking it.
 //! - While a phone is connected, a long press plays or pauses, also
 //!   without waking it. The touch task reports it while the finger is
 //!   still down, once it's been still for long enough, and the buzz then
@@ -19,18 +18,20 @@
 //! without looking. They need only a connected phone, not word from it of
 //! what plays: Gadgetbridge only says when that changes, so after the
 //! watch restarts there may be none for a long while, and its commands
-//! act on the phone's player regardless. So with a phone connected, a
-//! double tap is always the next track, and waking takes a single
-//! deliberate tap, the button, or a glance and a tap.
+//! act on the phone's player regardless.
 //!
-//! Why the wait: double taps are quick, but not light. The sealed watch's
-//! field log (0.9.0-m3.1) has the wearer's double taps from off at
-//! 126–156 ms from one lift to the next, with the first tap held 47–67 ms:
-//! deliberate, all of them. Waking at once on such a tap, as this did, lit
-//! the screen for every double tap, and the second then skipped on the
-//! clock face it woke to. The wait is short, to keep a single tap's wake
-//! prompt, so a slower double tap still wakes the screen with its first
-//! tap; its second, on the clock face, still skips.
+//! A deliberate tap wakes the screen at once, so for a double tap to skip
+//! without waking it, its first tap must be light (under
+//! [`DELIBERATE_TAP_MS`]). If it isn't, the second tap still skips, on the
+//! clock face the first woke to. The sealed watch's field log (0.9.0-m3.1)
+//! has the wearer's double taps from off with their first tap held
+//! 47–67 ms, so all of them woke the screen; 0.9.0's milestones tried waiting 300 ms after a
+//! deliberate tap for a second before waking, but the wearer would rather
+//! have a single tap's wake prompt, and tap lighter to skip in the dark.
+//!
+//! The same goes on a glance (see [`glance`]), where the screen is already
+//! lit and the wearer looking: a deliberate tap wakes it properly at once,
+//! and a light double tap skips, leaving the glance be.
 //!
 //! Guards against brushes, from the field logs (see [`deliberate`]):
 //!
@@ -68,12 +69,12 @@ pub enum Kind {
 pub enum Action {
     /// Nothing. It isn't the first of a double tap either.
     Ignore,
-    /// Nothing yet, but it may be the first of a double tap. `then_wake`:
-    /// unless a second tap comes within the UI's `WAKE_WAIT`, wake the
-    /// screen then (a deliberate tap while a phone is connected).
-    FirstTap { then_wake: bool },
-    /// Wake the screen, to the clock.
-    Wake,
+    /// Nothing yet, but it may be the first of a double tap.
+    FirstTap,
+    /// Wake the screen, to the clock. `first_tap`: the tap may also be the
+    /// first of a double tap on the clock face it woke to (while a phone is
+    /// connected, for the next track).
+    Wake { first_tap: bool },
     /// Play or pause the phone's media, leaving the screen off.
     PlayPause,
     /// Skip to the next track, leaving the screen off.
@@ -129,16 +130,28 @@ pub fn screen_off(
     match kind {
         Kind::LongPress if phone => Action::PlayPause,
         Kind::Tap if recent_tap && phone => Action::Next,
-        Kind::Tap if recent_tap => Action::Wake,
-        Kind::Tap if deliberate(kind, x, y, held_ms) => {
-            // With nothing a second tap could do but wake it too, at once.
-            if phone {
-                Action::FirstTap { then_wake: true }
-            } else {
-                Action::Wake
-            }
-        }
-        Kind::Tap => Action::FirstTap { then_wake: false },
+        Kind::Tap if recent_tap => Action::Wake { first_tap: false },
+        Kind::Tap if deliberate(kind, x, y, held_ms) => Action::Wake { first_tap: phone },
+        Kind::Tap => Action::FirstTap,
         Kind::LongPress | Kind::Swipe => Action::Ignore,
+    }
+}
+
+/// What a tap held `held_ms` does on a glance, while a phone is connected
+/// (otherwise, and in the quiet night, any touch there wakes the screen
+/// properly). `recent_tap`: as for [`screen_off`].
+///
+/// Only [`Action::Wake`], [`Action::FirstTap`], or [`Action::Next`]. Unlike
+/// with the screen off, a tap at the edge counts, and only how long it was
+/// held tells a light tap from a deliberate one: the wearer is looking, so
+/// it's unlikely a brush, and before the media gestures, any touch woke a
+/// glance.
+pub fn glance(held_ms: u16, recent_tap: bool) -> Action {
+    if recent_tap {
+        Action::Next
+    } else if held_ms >= DELIBERATE_TAP_MS {
+        Action::Wake { first_tap: true }
+    } else {
+        Action::FirstTap
     }
 }

@@ -687,25 +687,17 @@ async fn main(spawner: Spawner) {
         clock::checkpoint();
 
         // Wake for the next second, the next input, or, while text is
-        // scrolling, the next animation frame (which only redraws), or
-        // when a tap that waited for a second should wake the screen (see
-        // `ui::WAKE_WAIT`), whichever comes first.
-        let frame_at = app
-            .animating()
-            .then(|| Instant::now() + canvas::MARQUEE_FRAME);
+        // scrolling, the next animation frame (which only redraws).
         let frame = async {
-            match app.tap_wake_at().into_iter().chain(frame_at).min() {
-                Some(at) => Timer::at(at).await,
-                None => core::future::pending::<()>().await,
+            if app.animating() {
+                Timer::after(canvas::MARQUEE_FRAME).await;
+            } else {
+                core::future::pending::<()>().await;
             }
         };
         let alarms_before = app.alarms;
         match select3(ticker.next(), INPUT.receive(), frame).await {
-            Either3::Third(()) => {
-                if app.tap_wake(Instant::now()) {
-                    power::count(power::Count::WakeTouch);
-                }
-            }
+            Either3::Third(()) => {}
             Either3::First(()) => {
                 // A stir after stillness: what a smart alarm waits for.
                 let stirring = activity::movement() >= sleep::STILL_LIMIT;

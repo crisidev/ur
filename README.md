@@ -97,17 +97,17 @@ now landed on, and am daily driving this in real life :)
 - **Waking the screen:** press the button, or tap firmly, away from the
   screen's edge. Brief touches and touches near the edge don't wake it,
   so brushing against something doesn't either. Turning your wrist to
-  look shows a glance; tap then to wake the screen fully. With a phone
-  connected, a tap takes 0.3 s to wake the screen, in case a second
-  follows (a double tap is the next track); without one, a double tap
-  wakes it too. During a quiet night, touches don't wake it: use the
-  button.
+  look shows a glance; tap firmly then to wake the screen fully. Without a
+  phone connected, a double tap wakes it too. During a quiet night,
+  touches don't wake it: use the button.
 - **Button:** back to the clock, or off from the clock. Also silences a
   call, and stops a ringing alarm.
 - **Media:** with a phone connected, on the clock face, long-press to play
   or pause, and double-tap for the next track. These work on a glance and
   with the screen off too, leaving it be (but not during a quiet night):
-  the watch buzzes to say it took. A note beside the Bluetooth icon means
+  the watch buzzes to say it took. To skip without waking the screen,
+  tap twice quickly and lightly: a firm first tap wakes it, and the second
+  then skips on the clock face. A note beside the Bluetooth icon means
   something's playing. The music screen has previous, play/pause, and
   next along the bottom.
 - **Long-press:** on the alarms screen, an alarm or timer to switch it on

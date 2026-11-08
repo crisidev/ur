@@ -178,10 +178,8 @@ impl Watch {
         let end = Instant::now() + duration;
         loop {
             let frame = self.app.animating().then(|| self.last_pass + MARQUEE_FRAME);
-            // A tap waiting to see whether a second follows (`ui::WAKE_WAIT`).
-            let tap_wake = self.app.tap_wake_at();
             let press = self.finger.as_ref().and_then(Tracking::long_press_at);
-            let next = [Some(self.next_tick), frame, tap_wake, press]
+            let next = [Some(self.next_tick), frame, press]
                 .into_iter()
                 .flatten()
                 .min()
@@ -197,9 +195,6 @@ impl Watch {
                 self.next_tick += TICK;
                 self.tick();
             } else {
-                if self.app.tap_wake(next) {
-                    self.log("the tap woke the screen");
-                }
                 self.after_event();
                 self.pass();
             }
