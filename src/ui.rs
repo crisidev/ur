@@ -404,7 +404,11 @@ struct Call {
 struct Music {
     artist: String<40>,
     track: String<40>,
-    playing: bool,
+    /// Whether it's playing: as the phone last said, or as guessed (see
+    /// [`Music::likely_playing`]); `None` while there's nothing to go on.
+    /// Gadgetbridge only sends the state when it changes, so after the
+    /// watch restarts mid-song, it may never come.
+    playing: Option<bool>,
     /// When the track last changed, for scrolling long names.
     since: Instant,
 }
@@ -414,9 +418,27 @@ impl Music {
         Self {
             artist: String::new(),
             track: String::new(),
-            playing: false,
+            playing: None,
             since: now,
         }
+    }
+
+    fn playing(&self) -> bool {
+        self.playing == Some(true)
+    }
+
+    /// Something that most likely means it's playing happened (the track
+    /// changed, or the wearer skipped to the next): believe so, unless the
+    /// phone has said otherwise, which it will again if it changes.
+    fn likely_playing(&mut self) {
+        self.playing.get_or_insert(true);
+    }
+
+    /// Play or pause was asked for: show the new state straight away; the
+    /// phone confirms (or corrects) it shortly after. Not knowing counts as
+    /// paused, as it shows.
+    fn toggle(&mut self) {
+        self.playing = Some(!self.playing());
     }
 }
 
@@ -897,10 +919,11 @@ impl App {
                         _ => MusicCommand::Next,
                     };
                     send(Outgoing::Music(command));
-                    // Show the new state straight away; the phone confirms
-                    // (or corrects) it shortly after.
-                    if let (MusicCommand::PlayPause, Some(music)) = (command, &mut self.music) {
-                        music.playing = !music.playing;
+                    if let Some(music) = &mut self.music {
+                        match command {
+                            MusicCommand::PlayPause => music.toggle(),
+                            MusicCommand::Next | MusicCommand::Previous => music.likely_playing(),
+                        }
                     }
                 }
                 (Gesture::Tap, Screen::Alarms) => {
@@ -951,15 +974,21 @@ impl App {
         let icon = match command {
             // As the music screen does, the new state straight away.
             MusicCommand::PlayPause => {
-                music.playing = !music.playing;
-                if music.playing {
+                music.toggle();
+                if music.playing() {
                     &font::PLAY
                 } else {
                     &font::PAUSE
                 }
             }
-            MusicCommand::Next => &font::NEXT,
-            MusicCommand::Previous => &font::PREVIOUS,
+            MusicCommand::Next => {
+                music.likely_playing();
+                &font::NEXT
+            }
+            MusicCommand::Previous => {
+                music.likely_playing();
+                &font::PREVIOUS
+            }
         };
         self.media_hint = Some((icon, MEDIA_HINT_TICKS));
         motor::buzz(Pattern::NOTIFY);
@@ -1114,12 +1143,13 @@ impl App {
                 let music = self.music.get_or_insert_with(|| Music::new(now));
                 if music.track != track || music.artist != artist {
                     music.since = now;
+                    music.likely_playing();
                 }
                 music.artist = artist;
                 music.track = track;
             }
             PhoneEvent::MusicState { playing } => {
-                self.music.get_or_insert_with(|| Music::new(now)).playing = playing
+                self.music.get_or_insert_with(|| Music::new(now)).playing = Some(playing)
             }
             PhoneEvent::Find { on } => {
                 motor::buzz(if on { Pattern::RING } else { Pattern::STOP });
@@ -1444,7 +1474,7 @@ impl App {
                 // what it did.
                 let media = match (self.media_hint, &self.music) {
                     (Some((icon, _)), _) => Some((5, &icon[..], 3)),
-                    (None, Some(music)) if music.playing => {
+                    (None, Some(music)) if music.playing() => {
                         Some((font::NOTE_W, &font::NOTE[..], 2))
                     }
                     _ => None,
@@ -2749,7 +2779,11 @@ fn render_music(canvas: &mut Canvas, music: &Music, now: Instant) {
     canvas.text_right(
         77,
         4,
-        if music.playing { "PLAYING" } else { "PAUSED" },
+        match music.playing {
+            Some(true) => "PLAYING",
+            Some(false) => "PAUSED",
+            None => "",
+        },
         Color::TEXT_DIM,
     );
 
@@ -2771,7 +2805,7 @@ fn render_music(canvas: &mut Canvas, music: &Music, now: Instant) {
     );
 
     // Previous, play/pause, next: 5×5 icons at 3×, centred in thirds.
-    let play_pause = if music.playing {
+    let play_pause = if music.playing() {
         &font::PAUSE
     } else {
         &font::PLAY

@@ -29,8 +29,9 @@ static UR_CANVAS: AtomicPtr<Canvas> = AtomicPtr::new(core::ptr::null_mut());
 /// voltage, `x` + 256 × `y` millivolts, from now on instead of the measured
 /// one (0 for the measured one again; to test what a critically low battery
 /// does, see [`crate::system_off`]), 14 media from the phone, playing if
-/// `x` is 1, paused otherwise (for screenshots of the music screen and the
-/// clock's media icon; gone once the phone disconnects), 15 `x` + 256 × `y`
+/// `x` is 1, paused if 0, and with no word on whether it plays if 2 (as
+/// after the watch restarts mid-song; for screenshots of the music screen
+/// and the clock's media icon; gone once the phone disconnects), 15 `x` + 256 × `y`
 /// steps, as if walked now (to test what keeps them across resets and
 /// updates), 16 a simulated finger down at, or moved to, (`x`, `y`), held
 /// there until 17 lifts it (see [`input_task`])) and the next two the
@@ -141,11 +142,13 @@ pub async fn input_task() {
                 // Not awaiting room in the queue: holding the two events
                 // across an await would grow this task's static future by
                 // 200 bytes, all for a debugging aid.
-                for event in [
-                    crate::ui::PhoneEvent::MusicInfo { artist, track },
-                    crate::ui::PhoneEvent::MusicState { playing: x == 1 },
-                ] {
-                    let _ = INPUT.try_send(InputEvent::Phone(event));
+                let _ = INPUT.try_send(InputEvent::Phone(crate::ui::PhoneEvent::MusicInfo {
+                    artist,
+                    track,
+                }));
+                if x != 2 {
+                    let state = crate::ui::PhoneEvent::MusicState { playing: x == 1 };
+                    let _ = INPUT.try_send(InputEvent::Phone(state));
                 }
                 continue;
             }

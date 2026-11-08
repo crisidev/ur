@@ -24,8 +24,9 @@ battery as MV millivolts from then on (`battery:0` for the real reading
 again), e.g. `battery:3300` to test what a critically low battery does: a
 minute later the watch saves its activity and switches itself off.
 `media:1,0` makes the phone seem to be playing something (`media` alone:
-paused), until it disconnects, for the music screen and the clock's media
-icon; it only shows while the phone is connected.
+paused; `media:2,0` the track alone, with no word on whether it plays),
+until it disconnects, for the music screen and the clock's media icon; it
+only shows while the phone is connected.
 `steps:N` counts N steps as walked now (up to 65535), to test what keeps
 them across resets and updates.
 `press:X,Y` puts a simulated finger down at X,Y (or moves it there, if
