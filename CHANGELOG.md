@@ -194,7 +194,13 @@ Built from changes that weren't committed until 0.4.3, so it has no tag.
 
 ## [0.4.0] - 2026-11-07
 
-The first build for a sealed PineTime.
+The first build for a sealed PineTime, and so the first release. Until
+that morning, ur only ran on a dev kit: it was flashed straight onto
+the chip over a debug probe, and couldn't run under the PineTime's
+bootloader, which is the only way onto a sealed watch. The version
+numbers before this one (0.1 to 0.3) were test images for that dev kit,
+never packaged for anyone to install. This release gathers everything
+built up to that point, below.
 
 ### Added
 
