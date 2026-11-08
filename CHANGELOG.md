@@ -41,6 +41,10 @@ missing below were test builds for the dev kit.
 
 ### Security
 
+- Check a firmware update before installing it, and refuse one that's damaged, cut short, or not firmware for this watch, saying "UPDATE REFUSED" / "SEE FAQ U02" and keeping the running firmware; also give up on an update whose sender goes quiet for a minute, and take one update at a time (c569ee4)
+- Keep pairings from outside meddling with the phone's bond: a pairing without the passkey no longer leaves a bond (one claiming the phone's address replaced the phone's), a failed one no longer drops the phone's bond until the next reboot, and after each failed pairing the next waits longer, up to a minute, so a passkey can't be guessed at speed or the screen kept lit (1700f15)
+- Stop a malformed alarm list from the phone hanging the watch until the watchdog reset it, and ignore a time set before 2020 or after 2100 (e24a3bb)
+
 ## [0.9.0] - 2026-11-08
 
 The first release published on GitHub. The new ideas in it:
