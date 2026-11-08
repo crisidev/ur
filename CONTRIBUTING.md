@@ -91,7 +91,10 @@ a table of each one's limit, use and headroom:
 
 CI runs it on both released variants and on `compare` (which must fit
 too, and has the least RAM to spare), and the release workflow on what it
-ships. To compare two builds locally, see the top of `size.py`.
+ships. On a PR, CI also builds where it branched off, and one bot
+comment, updated on each push, shows how each variant's sections and
+headroom changed. To compare two builds locally, see the top of
+`size.py`.
 
 ### Flash size
 

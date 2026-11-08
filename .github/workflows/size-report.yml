@@ -1,0 +1,90 @@
+# Posts the firmware size report (see test.yml's firmware job) on its PR,
+# as one comment that later pushes update in place.
+#
+# Split from test.yml because a PR from a fork can't be given a token that
+# writes to this repository while it runs the fork's code. So test.yml
+# builds the PR with a read-only token and uploads the report as an
+# artifact, with the PR's number, and this workflow, which `workflow_run`
+# runs in this repository's context with write access, posts it. It must
+# never check out or run anything from the PR: it only downloads the
+# artifact and passes its text to GitHub's API. The artifact is the fork's
+# to write, so the PR number in it is checked against the run that made it,
+# and the text only ever goes into a comment on that PR.
+#
+# `workflow_run` only runs workflows as they are on the default branch, so
+# changes to this file take effect once merged.
+permissions: {}
+on:
+  workflow_run:
+    workflows: [test]
+    types: [completed]
+# One at a time per PR branch, so that two runs finishing together can't
+# both find no comment and post one each.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+name: size report
+jobs:
+  comment:
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      # To download the other run's artifact.
+      actions: read
+      # To create and edit the comment.
+      pull-requests: write
+    steps:
+      - name: post
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN: ${{ github.event.workflow_run.id }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          # No report if the firmware didn't build, or the run was cancelled
+          # (by a newer push, whose own run will report).
+          found=$(gh api "repos/$REPO/actions/runs/$RUN/artifacts" \
+            --jq '.artifacts[] | select(.name == "size-report") | .id')
+          if [[ -z $found ]]; then
+            echo "run $RUN has no size report"
+            exit 0
+          fi
+          gh run download "$RUN" --repo "$REPO" --name size-report --dir "$RUNNER_TEMP/report"
+          report=$RUNNER_TEMP/report/report.md
+
+          # The PR must be one whose head is the commit the run built: this
+          # stops an artifact naming some other PR, and a run that finished
+          # late (for a commit since replaced) overwriting a newer report.
+          pr=$(<"$RUNNER_TEMP/report/pr")
+          if [[ ! $pr =~ ^[0-9]+$ ]]; then
+            echo "::error::not a PR number: $pr"
+            exit 1
+          fi
+          pr_head=$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)
+          if [[ $pr_head != "$HEAD_SHA" ]]; then
+            echo "PR #$pr is at $pr_head now, not $HEAD_SHA; not reporting"
+            exit 0
+          fi
+          marker='<!-- ur:size-report -->'
+          if [[ $(head -n 1 "$report") != "$marker" ]]; then
+            echo "::error::the report doesn't start with $marker"
+            exit 1
+          fi
+          # GitHub's limit for a comment is 65536 characters; a real report
+          # is a few hundred.
+          if (($(wc -c <"$report") > 60000)); then
+            echo "::error::the report is too long to be a size report"
+            exit 1
+          fi
+
+          # Our earlier comment, if any, is the one by this workflow's bot
+          # that starts with the marker (size.py puts it first).
+          comment=$(gh api --paginate "repos/$REPO/issues/$pr/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" |
+            head -n 1)
+          if [[ -n $comment ]]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$comment" -F "body=@$report" >/dev/null
+            echo "updated the size report on #$pr"
+          else
+            gh api --method POST "repos/$REPO/issues/$pr/comments" -F "body=@$report" >/dev/null
+            echo "posted a size report on #$pr"
+          fi

@@ -10,8 +10,9 @@
 # - sim: the simulator's tests (sim/), and screenshots of the UI from it
 # - firmware: builds and packages both variants exactly as a release would
 #   (scripts/release.sh), and uploads them, so every PR, and every commit on
-#   main, has a package to try on a watch; and checks them, and the
-#   `compare` build, against every size constraint (scripts/size.py)
+#   main, has a package to try on a watch; checks them, and the `compare`
+#   build, against every size constraint (scripts/size.py); and on a PR,
+#   reports how their sizes changed, which size-report.yml then posts
 #
 # The firmware itself has no tests that run in CI: it needs the watch. See
 # check.yml for the toolchains, concurrency cancellation and triggers.
@@ -155,4 +156,82 @@ jobs:
           for elf in dist/*.elf; do
             [[ $elf == *-slot.elf ]] || elfs+=("$elf")
           done
-          python3 scripts/size.py check "${elfs[@]}" compare=size/compare.elf
+          python3 scripts/size.py check "${elfs[@]}" compare=size/compare.elf --json size/head.json
+
+      # The size report, on PRs: the same builds of where the PR branched
+      # off (the merge base, so that what has changed on the base branch
+      # since doesn't show up as the PR's doing), measured by the PR's
+      # size.py, and the difference as Markdown. This job can't comment
+      # itself (a PR from a fork gets a read-only token, rightly, since this
+      # runs the fork's code): it uploads the report, and size-report.yml,
+      # which runs none of the PR's code, posts it. These steps run even if
+      # the size check failed, as that's when the report matters most.
+      - name: base
+        id: base
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && hashFiles('size/head.json') != '' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          echo "sha=$(git merge-base "$BASE_SHA" HEAD)" >>"$GITHUB_OUTPUT"
+          echo "script=$(sha256sum scripts/size.py | cut -c1-16)" >>"$GITHUB_OUTPUT"
+      # Every push to a PR has the same merge base until it's rebased, so
+      # the base's sizes are cached. The key has size.py's hash too, since a
+      # change to it may measure differently.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # tag=v6.1.0
+        id: base-cache
+        if: ${{ !cancelled() && steps.base.outcome == 'success' }}
+        with:
+          path: size/base.json
+          key: size-base-${{ steps.base.outputs.sha }}-${{ steps.base.outputs.script }}
+      # In a worktree outside the checkout (one inside would see this
+      # checkout's .cargo/config.toml too), sharing its target directory, so
+      # only the firmware crate itself is rebuilt. With the same `--pre`, so
+      # the version strings baked in are the same length. If the base
+      # doesn't build, the report says so, rather than the job failing.
+      - name: build base
+        if: ${{ !cancelled() && steps.base.outcome == 'success' && steps.base-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        env:
+          MERGE_BASE: ${{ steps.base.outputs.sha }}
+          PRE: ${{ steps.version.outputs.pre }}
+        run: |
+          worktree=$RUNNER_TEMP/base
+          git worktree add --detach "$worktree" "$MERGE_BASE"
+          ln -s "$PWD/target" "$worktree/target"
+          (cd "$worktree" && rustup toolchain install)
+          "$worktree/scripts/release.sh" --pre "$PRE" "$worktree/dist"
+          (cd "$worktree" && CARGO_TARGET_DIR=target/compare cargo build --release --locked --features compare)
+          cp target/compare/thumbv7em-none-eabihf/release/ur "$worktree/compare.elf"
+          elfs=()
+          for elf in "$worktree"/dist/*.elf; do
+            [[ $elf == *-slot.elf ]] || elfs+=("$elf")
+          done
+          python3 scripts/size.py measure "${elfs[@]}" compare="$worktree/compare.elf" --json size/base.json
+      - name: size report
+        if: ${{ !cancelled() && steps.base.outcome == 'success' }}
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          MERGE_BASE: ${{ steps.base.outputs.sha }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          base=size/base.json
+          base_label="\`${MERGE_BASE:0:7}\`, where it branched off \`$BASE_REF\`"
+          # Not into base.json, which would be cached.
+          if [[ ! -s $base ]]; then
+            base=size/none.json
+            echo '{}' >"$base"
+            base_label="nothing: \`${MERGE_BASE:0:7}\` (on \`$BASE_REF\`) didn't build"
+          fi
+          python3 scripts/size.py diff "$base" size/head.json \
+            --head-label "\`${HEAD_SHA:0:7}\`" --base-label "$base_label" >size/report.md
+          echo "$PR" >size/pr
+          cat size/report.md >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # tag=v7.0.2
+        if: ${{ !cancelled() && steps.base.outcome == 'success' }}
+        with:
+          name: size-report
+          path: |
+            size/report.md
+            size/pr
+          if-no-files-found: error
