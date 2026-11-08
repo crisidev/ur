@@ -1,9 +1,10 @@
 # ur
 
-Firmware for the [PineTime] smartwatch that's built around your sleep:
-it tracks it, keeps quiet through it, and wakes you gently from it, and
-syncs with [Gadgetbridge] on Android. ("Ur" is an older Norwegian word
-for a timepiece.)
+Finally, a smartwatch firmware for the 90s: as subtle as a retro watch,
+but with modern conveniences.
+
+ur runs on the [PineTime], and syncs with [Gadgetbridge] on Android.
+("Ur" is an older Norwegian word for a timepiece.)
 
 <p align="center">
   <img src="docs/screenshots/clock-arcade.png" width="150" alt="The clock face in the Arcade theme, white and red on black: Bluetooth, a note for music playing, and 31° along the top, with the battery; then the time, with the date and the seconds under it; the heart rate; and ten blocks for the day's steps, six of them red, then ×1K: 6,000 steps so far, towards 10,000; a short red bar on the top edge means unseen notifications">
@@ -148,10 +149,6 @@ Send the zip over Bluetooth with either of these:
   python3 scripts/dfu.py ur-<version>-dfu.zip --address <MAC> --packet-size 240
   ```
 
-Gadgetbridge can also send the first install (untried so far): add the
-watch, still on InfiniTime, as a new device, then open the zip from a
-file manager with Gadgetbridge, and tap Install.
-
 [releases]: https://github.com/jonhoo/ur/releases
 [nrf-dfu-android]: https://play.google.com/store/apps/details?id=no.nordicsemi.android.dfu
 [nrf-dfu-ios]: https://apps.apple.com/app/nrf-device-firmware-update/id1624454660
@@ -162,8 +159,8 @@ file manager with Gadgetbridge, and tap Install.
    you're sending with the nRF app and Gadgetbridge is connected to
    InfiniTime, disconnect it there: InfiniTime takes one connection at a
    time, so the app wouldn't find the watch.
-2. Send the zip. (On Android, the nRF app stopped at 14% with "GATT CONN
-   TIMEOUT" every time we tried; a computer worked.)
+2. Send the zip. If the nRF app stalls at 14% with "GATT CONN TIMEOUT"
+   (InfiniTime's side of the transfer), send it from a computer instead.
 3. The watch shows the PINE64 logo for about a minute while the
    bootloader swaps the images. Leave it be until ur's clock face
    appears.
