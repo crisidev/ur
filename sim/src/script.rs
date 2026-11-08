@@ -47,7 +47,7 @@ The phone:
                              (Monday 1 ... Sunday 64; 0 or none: once)
   nav ACTION [DISTANCE [STREET]] | nav off    e.g. nav left \"150 m\" Storgata
   unpaired not-paired|pairing-lost|off
-  passkey NNNNNN|off | update PERCENT|off
+  passkey NNNNNN|off | update PERCENT|off|refused
 The wearer and the watch:
   battery MV [charging|charged|unplugged]
   steps N | heart BPM|off | temperature C
@@ -288,13 +288,20 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
                 watch.refresh();
             }
         }
-        "update" => {
-            watch.update_progress = match need(0, "PERCENT|off")? {
-                "off" => None,
-                percent => Some(percent.parse().map_err(|_| format!("update: {percent}?"))?),
-            };
-            watch.refresh();
-        }
+        "update" => match need(0, "PERCENT|off|refused")? {
+            // As `dfu` does when it won't install what arrived.
+            "refused" => {
+                watch.update_progress = None;
+                watch.input(InputEvent::Phone(PhoneEvent::UpdateRefused));
+            }
+            progress => {
+                watch.update_progress = match progress {
+                    "off" => None,
+                    percent => Some(percent.parse().map_err(|_| format!("update: {percent}?"))?),
+                };
+                watch.refresh();
+            }
+        },
 
         // ======================================================================
         // The wearer and the watch

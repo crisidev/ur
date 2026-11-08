@@ -323,6 +323,8 @@ enum Shows {
     /// That Gadgetbridge didn't pass a grid press on (see
     /// [`PhoneEvent::IntentsOff`]).
     IntentsOff,
+    /// That an update was refused (see [`PhoneEvent::UpdateRefused`]).
+    UpdateRefused,
 }
 
 /// How many notifications the history above the clock keeps. Each costs
@@ -797,6 +799,7 @@ impl App {
             Shows::Unpaired(why) => (why.title(), why.hint()),
             Shows::TextAsBitmaps => ("TEXT AS BITMAPS", "SEE FAQ N02"),
             Shows::IntentsOff => ("INTENTS OFF", "SEE FAQ C04"),
+            Shows::UpdateRefused => ("UPDATE REFUSED", "SEE FAQ U02"),
         }
     }
 
@@ -1346,6 +1349,7 @@ impl App {
                 return;
             }
             PhoneEvent::IntentsOff => return self.show_banner(Shows::IntentsOff, now),
+            PhoneEvent::UpdateRefused => return self.show_banner(Shows::UpdateRefused, now),
             event => event,
         };
         // Anything else from the phone gets the full screen, bar media
@@ -1363,6 +1367,7 @@ impl App {
             | PhoneEvent::Unpaired(_)
             | PhoneEvent::TextAsBitmaps
             | PhoneEvent::IntentsOff
+            | PhoneEvent::UpdateRefused
             | PhoneEvent::Alarms(_)
             | PhoneEvent::Route(_) => unreachable!("handled above"),
             // Calls ring and light the screen even in the quiet night: one

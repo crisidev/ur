@@ -696,12 +696,13 @@ async fn serve(
                 core::future::pending().await
             }
         };
-        // The GPS and security deadlines share a branch (`select4` has
-        // only four); which one passed is sorted out below.
+        // The GPS, security, and update deadlines share a branch
+        // (`select4` has only four); which one passed is sorted out below.
         let deadline = async {
             let security_deadline =
                 (security == Security::Pending).then_some(last_traffic + SECURITY_GRACE);
-            match gps_deadline.into_iter().chain(security_deadline).min() {
+            let deadlines = gps_deadline.into_iter().chain(security_deadline);
+            match deadlines.chain(update.stalls_at()).min() {
                 Some(deadline) => Timer::at(deadline).await,
                 None => core::future::pending().await,
             }
@@ -740,6 +741,9 @@ async fn serve(
                     if !authenticated && PASSKEY.lock(Cell::get).is_none() {
                         not_paired(conn, &mut security);
                     }
+                }
+                if update.stalls_at().is_some_and(|at| at <= now) {
+                    update.abandon("stalled").await;
                 }
                 if gps_deadline.is_some_and(|at| at <= now) {
                     warn!("ble: no location from the phone (see FAQ C03)");
@@ -924,7 +928,7 @@ async fn serve(
             _ => {}
         }
     };
-    update.abandon().await;
+    update.abandon("left").await;
     if security == Security::Told {
         UNPAIRED.lock(|cell| cell.set(None));
     }

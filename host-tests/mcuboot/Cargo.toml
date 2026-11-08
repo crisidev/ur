@@ -1,0 +1,22 @@
+[package]
+name = "mcuboot-test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Host-side tests for `src/mcuboot.rs` (included via `#[path]`): checking
+# firmware updates before they're installed. Not part of the firmware
+# workspace: run `cargo test` from this directory.
+[workspace]
+
+[dependencies]
+defmt = "1.2.0"
+
+[dev-dependencies]
+quickcheck = { version = "1.1.0", default-features = false }
+sha2 = "0.10"
+
+# CI runs the host tests with `--release`; keep the arithmetic checks, so
+# that an image that would wrap a number round fails a test here.
+[profile.release]
+overflow-checks = true

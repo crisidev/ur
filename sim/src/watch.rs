@@ -685,6 +685,7 @@ fn describe(event: &InputEvent) -> String {
             }
             PhoneEvent::Route(None) => "navigation over".into(),
             PhoneEvent::IntentsOff => "Gadgetbridge: intents not allowed".into(),
+            PhoneEvent::UpdateRefused => "update refused".into(),
         },
     }
 }

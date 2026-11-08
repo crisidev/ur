@@ -295,6 +295,14 @@ phone hasn't paired with the watch, the app tries a different kind of
 update, and fails. Pair first (see [C01](#c01-the-watch-says-not-paired)
 and [C02](#c02-the-watch-says-pairing-lost)), then send the update again.
 
+### U02: The watch says "UPDATE REFUSED"
+
+The update arrived, but the watch checked it before installing it and
+found something wrong: it was damaged or cut short on the way, or it
+isn't firmware for this watch (a zip for another device, say). The watch
+keeps the firmware it has. Send the zip again; if it's refused again,
+download it again, and [verify](#verifying) it.
+
 ## Contributing
 
 [CONTRIBUTING.md](CONTRIBUTING.md) covers building, iterating on a dev

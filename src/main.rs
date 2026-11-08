@@ -30,8 +30,8 @@
 //!   face, from a nearby Aranet4 air monitor (whose CO₂ and other readings
 //!   get a screen of their own) or estimated from the watch's own.
 //! - [`storage`]: settings and Bluetooth bonds in flash.
-//! - [`firmware`] / [`dfu`]: cooperating with the bootloader, and receiving
-//!   updates over Bluetooth.
+//! - [`firmware`] / [`dfu`] / [`mcuboot`]: cooperating with the bootloader,
+//!   and receiving updates over Bluetooth, checked before they're installed.
 //! - [`field_log`]: logs kept in flash on watches without a debug probe.
 //! - [`debug`]: screenshots and injected input over the debug probe; and
 //!   with the `compare` feature, `compare`: what the UI does and renders
@@ -71,6 +71,7 @@ mod glance;
 mod heart;
 mod heart_schedule;
 mod i2c;
+mod mcuboot;
 mod motor;
 mod nav;
 mod packet_pool;

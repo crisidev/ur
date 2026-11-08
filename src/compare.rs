@@ -103,6 +103,7 @@ pub mod phone {
     pub const ROUTE: u8 = 10;
     pub const TEXT_AS_BITMAPS: u8 = 11;
     pub const INTENTS_OFF: u8 = 12;
+    pub const UPDATE_REFUSED: u8 = 13;
 }
 
 /// Tick flags: what `App::check_alarms` and `App::on_tick` were told;
@@ -414,6 +415,7 @@ pub fn input(input: &InputEvent, at: Instant) {
                 PhoneEvent::Route(_) => phone::ROUTE,
                 PhoneEvent::TextAsBitmaps => phone::TEXT_AS_BITMAPS,
                 PhoneEvent::IntentsOff => phone::INTENTS_OFF,
+                PhoneEvent::UpdateRefused => phone::UPDATE_REFUSED,
             },
             ..event(kind::PHONE, at)
         },

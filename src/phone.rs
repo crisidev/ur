@@ -49,6 +49,10 @@ pub enum PhoneEvent {
     /// Gadgetbridge didn't pass a button grid press on, as its "Allow
     /// Intents" setting is off. Shown like a notification.
     IntentsOff,
+    /// A firmware update arrived, but the watch refused to install it (see
+    /// `crate::mcuboot`), and keeps the firmware it has. Not from the phone
+    /// as such, but shown the same way: like a notification.
+    UpdateRefused,
 }
 
 /// Why a connected client can't use the watch: its link never became
@@ -95,6 +99,7 @@ impl defmt::Format for PhoneEvent {
             Self::Alarms(_) => "Alarms",
             Self::Route(_) => "Route",
             Self::IntentsOff => "IntentsOff",
+            Self::UpdateRefused => "UpdateRefused",
         };
         defmt::write!(f, "{=str}", kind)
     }
