@@ -15,10 +15,11 @@
 //! - Above: the last [`HISTORY`] notifications, newest nearest, one a page.
 //! - Below: Music, while the phone has media, then Info.
 //!
-//! Screens away from the clock show a dot for each screen in their line on
-//! the edge facing the clock, the one showing lit: the way home, and how far
-//! out it is. On the clock, a dot on the top edge means notifications came
-//! in that haven't been seen (see [`Notifications::unseen`]).
+//! Screens away from the clock show a short bar, a handle, in the middle of
+//! each edge a swipe leads somewhere from: the one facing the clock (home),
+//! and the far one if the line goes on. On the clock, an accent-coloured
+//! handle on the top edge means notifications came in that haven't been
+//! seen (see [`Notifications::unseen`]).
 //!
 //! Navigation:
 //!
@@ -1353,7 +1354,7 @@ impl App {
             // Like a notification that arrived with the screen off, its
             // text scrolling from when the page opened (the swipe there),
             // but a line short at 2×, to leave the bottom edge for the
-            // dots.
+            // handle (see `edge_bar`).
             Screen::Notification(i) => match self.notifications.list.get(usize::from(i)) {
                 Some(n) => render_quiet_notification(
                     canvas,
@@ -1372,10 +1373,12 @@ impl App {
             Screen::Storage => render_storage_prompt(canvas),
         }
         match self.place() {
-            // Notifications nobody has seen: a dot on the edge that leads
-            // to them, like the dots that lead home from there.
+            // Notifications nobody has seen: an accent-coloured handle on
+            // the edge they're behind. The clock face has no other hints:
+            // its edges are full, and it's where the wearer learns the
+            // layout from.
             Place::Clock if self.notifications.unseen => {
-                canvas.fill_rect(40 - DOT / 2, 0, DOT, DOT, Color::ACCENT);
+                edge_bar(canvas, Side::Above, Color::ACCENT);
             }
             Place::Line { side, index } if self.screen != Screen::Storage => {
                 render_hint(canvas, side, index, self.line(side).len());
@@ -1406,31 +1409,29 @@ fn sweep(towards: Side) -> Sweep {
     }
 }
 
-/// The side of the hint dots, and the unseen notifications' dot.
-const DOT: i32 = 2;
+/// A short bar along `edge` of the screen, in the middle: a handle, as on
+/// a drawer, saying there's a screen that way to swipe to. (Dots, one a
+/// screen, read as specks on the screen; chevrons, as part of the text
+/// beside them.) It takes the outer 2 pixels, and screens keep one more
+/// clear: their text starts 3 or 4 in.
+fn edge_bar(canvas: &mut Canvas, edge: Side, color: Color) {
+    const LENGTH: i32 = 12;
+    const MIDDLE: i32 = 40 - LENGTH / 2;
+    let (x, y, w, h) = match edge {
+        Side::Left => (0, MIDDLE, 2, LENGTH),
+        Side::Right => (78, MIDDLE, 2, LENGTH),
+        Side::Above => (MIDDLE, 0, LENGTH, 2),
+        Side::Below => (MIDDLE, 78, LENGTH, 2),
+    };
+    canvas.fill_rect(x, y, w, h, color);
+}
 
-/// Dots on the edge facing the clock, one for each of the `count` screens
-/// in the line on `side`, nearest the clock first (from the top, or the
-/// left), with the one showing (`index`) lit: which way home is, and how
-/// far out this is. They take the outer [`DOT`] pixels of the edge, and
-/// screens keep one more clear (text starts 3 pixels in).
+/// Where a swipe leads from a screen `index` out along the line on `side`,
+/// of `count`: home, always, and further out if there's more.
 fn render_hint(canvas: &mut Canvas, side: Side, index: usize, count: usize) {
-    const PITCH: i32 = DOT + 2;
-    let start = 40 - (PITCH * count as i32 - (PITCH - DOT)) / 2;
-    for i in 0..count {
-        let along = start + PITCH * i as i32;
-        let (x, y) = match side {
-            Side::Right => (0, along),
-            Side::Left => (80 - DOT, along),
-            Side::Above => (along, 80 - DOT),
-            Side::Below => (along, 0),
-        };
-        let color = if i == index {
-            Color::ACCENT
-        } else {
-            Color::TEXT_FAINT
-        };
-        canvas.fill_rect(x, y, DOT, DOT, color);
+    edge_bar(canvas, side.opposite(), Color::TEXT_DIM);
+    if index + 1 < count {
+        edge_bar(canvas, side, Color::TEXT_DIM);
     }
 }
 
@@ -1669,6 +1670,7 @@ const CHART_BAR: i32 = 2;
 fn render_today(canvas: &mut Canvas, day: Option<&Day>, steps: Option<u32>) {
     canvas.clear(BACKGROUND);
     canvas.text(4, 3, "TODAY", Color::ACCENT);
+    // Figures end at x = 74, leaving the right edge to the hint.
     let day = day.copied().unwrap_or_default();
     let column = |hour: usize| CHART_LEFT + CHART_PITCH * hour as i32;
 
@@ -1684,7 +1686,7 @@ fn render_today(canvas: &mut Canvas, day: Option<&Day>, steps: Option<u32>) {
         Some(steps) => write!(text, "{steps}").expect("a u32 is at most 10 digits"),
         None => text.push_str("--").expect("fits"),
     }
-    canvas.text_right(77, 12, &text, Color::TEXT);
+    canvas.text_right(75, 12, &text, Color::TEXT);
     let most = u32::from(day.most_steps()).max(500);
     for (i, hour) in day.hours.iter().enumerate() {
         let height = (u32::from(hour.steps) * STEPS_HEIGHT).div_ceil(most) as i32;
@@ -1720,7 +1722,7 @@ fn render_today(canvas: &mut Canvas, day: Option<&Day>, steps: Option<u32>) {
         Some(bpm) => write!(text, "{bpm}").expect("a u8 is at most 3 digits"),
         None => text.push_str("--").expect("fits"),
     }
-    canvas.text_right(77, 36, &text, Color::TEXT);
+    canvas.text_right(75, 36, &text, Color::TEXT);
     if let Some((low, high)) = day.heart_range() {
         let floor = i32::from(low) / 10 * 10;
         let ceiling = ((i32::from(high) + 9) / 10 * 10).max(floor + 40);
