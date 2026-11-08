@@ -194,7 +194,10 @@ fn distance(x: f32, y: f32, (left, top, right, bottom, radius): Shape) -> f32 {
     let (cx, cy) = ((left + right) / 2.0, (top + bottom) / 2.0);
     let (hx, hy) = ((right - left) / 2.0 - radius, (bottom - top) / 2.0 - radius);
     let (dx, dy) = ((x - cx).abs() - hx, (y - cy).abs() - hy);
-    dx.max(0.0).hypot(dy.max(0.0)) + dx.max(dy).min(0.0) - radius
+    // `libm`'s, not `f32::hypot`, which is the C library's: the browser's
+    // build has another, whose last bit can differ, and so a pixel or two
+    // of the edges' shading (see `web/check.sh`).
+    libm::hypotf(dx.max(0.0), dy.max(0.0)) + dx.max(dy).min(0.0) - radius
 }
 
 /// How much of a pixel a shape covers, from the distance in pixels from
