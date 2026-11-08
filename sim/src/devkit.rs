@@ -31,7 +31,7 @@ use crate::battery::Battery;
 use crate::brightness;
 use crate::canvas::{Canvas, HEIGHT, WIDTH};
 use crate::clock::{self, DateTime};
-use crate::compare::{self, Event, Export, Head, Pass, kind, phone};
+use crate::compare::{self, Event, Export, Head, Music, Pass, kind, phone};
 use crate::display::{Display, PANEL, SIZE, rgb888};
 use crate::gesture::{Gesture, Touch};
 use crate::script;
@@ -40,6 +40,8 @@ use crate::ui::{App, PhoneEvent, Status, ThemeChoice, Unpaired};
 use crate::{InputEvent, activity, debug, time};
 
 const TARGET: [&str; 2] = ["--target", "nRF52832_xxAA"];
+/// A music info's artist or track, as `PhoneEvent::MusicInfo` holds it.
+type MusicText = heapless::String<{ compare::MUSIC_TEXT }>;
 /// How long the dev kit may take to take an input (its input task looks
 /// every 100 ms) and log it.
 const INPUT_TIMEOUT: StdDuration = StdDuration::from_secs(3);
@@ -232,6 +234,32 @@ impl DevKit {
             next = next.wrapping_add(count as u32);
         }
         Ok(events)
+    }
+
+    /// The text of music info number `number` (see `compare::Music`).
+    fn music(&self, number: u16) -> Result<(MusicText, MusicText), String> {
+        let address = self.export + std::mem::offset_of!(Export, music) as u32;
+        let bytes = self.read_bytes(address, size_of::<Music>())?;
+        // SAFETY: As for `head`.
+        let music = unsafe { bytes.as_ptr().cast::<Music>().read_unaligned() };
+        if music.number != number {
+            return Err(
+                "the dev kit's music changed again before this read what it \
+                        was; can't tell what it showed"
+                    .into(),
+            );
+        }
+        let text = |bytes: &[u8], len: u8| -> Result<MusicText, String> {
+            let text = bytes
+                .get(..usize::from(len))
+                .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                .ok_or("the dev kit's music text is garbled")?;
+            MusicText::try_from(text).map_err(|_| "the dev kit's music text is too long".into())
+        };
+        Ok((
+            text(&music.artist, music.artist_len)?,
+            text(&music.track, music.track_len)?,
+        ))
     }
 
     /// A theme's colours, as the panel gets them.
@@ -610,7 +638,7 @@ impl Follower {
                 y: i32::from(event.y),
                 held_ms: event.held_ms,
             })),
-            kind::PHONE => Some(InputEvent::Phone(self.phone(event.phone)?)),
+            kind::PHONE => Some(InputEvent::Phone(self.phone(event)?)),
             kind::TIMER => {
                 let finger_down = event.flags & compare::flag::FINGER_DOWN != 0;
                 self.app.on_timer(at, finger_down);
@@ -631,8 +659,8 @@ impl Follower {
     }
 
     /// What the phone sent, by the kind the dev kit logged.
-    fn phone(&mut self, kind: u8) -> Result<PhoneEvent, String> {
-        Ok(match kind {
+    fn phone(&mut self, event: &Event) -> Result<PhoneEvent, String> {
+        Ok(match event.phone {
             phone::NOTIFICATION => match self.sent.pop_front() {
                 Some(Sent::Notification {
                     app,
@@ -651,11 +679,12 @@ impl Follower {
                         .into());
                 }
             },
-            // The dev kit's `media` input's (see `src/debug.rs`).
-            phone::MUSIC_INFO => PhoneEvent::MusicInfo {
-                artist: script::truncated("Ida Moreau"),
-                track: script::truncated("Night Signals"),
-            },
+            // The `media` input's (see `src/debug.rs`), or a connected
+            // phone's own: what the dev kit got, either way.
+            phone::MUSIC_INFO => {
+                let (artist, track) = self.devkit.music(event.held_ms)?;
+                PhoneEvent::MusicInfo { artist, track }
+            }
             phone::MUSIC_STATE_PAUSED => PhoneEvent::MusicState { playing: false },
             phone::MUSIC_STATE_PLAYING => PhoneEvent::MusicState { playing: true },
             phone::TEXT_AS_BITMAPS => PhoneEvent::TextAsBitmaps,
@@ -859,11 +888,14 @@ mod tests {
     /// on a `compare` build gives `UR_COMPARE`'s size.)
     #[test]
     fn the_export_is_laid_out_as_on_the_watch() {
-        assert_eq!(size_of::<Export>(), 0x950);
+        assert_eq!(size_of::<Export>(), 0x928);
         assert_eq!(size_of::<Event>(), 32);
+        assert_eq!(size_of::<Music>(), 84);
+        let music = std::mem::offset_of!(Export, music);
         assert_eq!(
             std::mem::offset_of!(Export, events),
-            0x950 - compare::EVENTS * size_of::<Event>()
+            music - compare::EVENTS * size_of::<Event>()
         );
+        assert_eq!(music + size_of::<Music>(), 0x928 - 4, "and padding");
     }
 }

@@ -234,8 +234,10 @@ inputs: `button`, `glance`, gestures, `press`/`lift`, `notify N [HOURS]`,
 `media`, `steps`, `battery`), plus `wait`, `compare`, and `expect` (of
 `screen-on`, `dim`, `quiet-night`). With the screen
 off, the dev kit's panel keeps an old frame, and `compare` skips it. A
-phone connected to the dev kit would send messages the simulator can't
-know, and stops the run. `devkit-compare.txt` goes round every screen it
+phone connected to the dev kit may play music: the dev kit exports the
+artist and track it gets, so the simulator shows the same. Its other
+messages the simulator can't know, and they stop the run.
+`devkit-compare.txt` goes round every screen it
 can reach (and puts back what it changes).
 
 ## How it works

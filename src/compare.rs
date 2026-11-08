@@ -16,14 +16,18 @@
 //! - [`Pass`]: what the last frame was rendered with (`ui::Status`, and
 //!   today's activity), and a seqlock around it, so a reader can tell a
 //!   frame whose canvas it read whole.
+//! - [`Music`]: the text of the latest music info (artist and track),
+//!   the one message whose content the simulator can't know in advance:
+//!   a phone connected to the dev kit sends its own as it plays.
 //!
 //! Everything is `repr(C)` plain integers, so the simulator, which
 //! includes this file too, reads the bytes straight into the same types.
-//! It costs ~2.6 KB of RAM, so it isn't in releases.
+//! It costs ~2.3 KB of RAM, so it isn't in releases.
 
 use core::cell::UnsafeCell;
 
 use embassy_time::Instant;
+use heapless::String;
 
 use crate::day::{Day, HOURS};
 use crate::gesture::Gesture;
@@ -35,18 +39,42 @@ pub const MAGIC: u32 = 0x7572_4350; // "urCP"
 
 /// How many events the ring keeps: a tick a second, plus inputs, so the
 /// reader must look about once a minute. (The probe's bridge sometimes
-/// stalls for many seconds.)
-pub const EVENTS: usize = 64;
+/// stalls for many seconds.) 60 rather than 64 pays for [`Export::music`]:
+/// this build has little RAM to spare.
+pub const EVENTS: usize = 60;
 
-/// The events come last, so a reader can read everything else in one go
-/// (the [`Head`]), and only the events it hasn't seen: the probe's reads
+/// The capacity of `PhoneEvent::MusicInfo`'s artist and track (checked
+/// where they're copied: see [`music`]).
+pub const MUSIC_TEXT: usize = 40;
+
+/// The events come after the [`Head`], so a reader can read everything
+/// else in one go, and only the events it hasn't seen: the probe's reads
 /// slow the CPU, and saving to flash, in a radio timeslot, has no time to
-/// spare.
+/// spare. The music comes last, read only to replay a music info.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Export {
     pub head: Head,
     pub events: [Event; EVENTS],
+    /// The latest music info.
+    pub music: Music,
+}
+
+/// A music info's text, as the UI got it.
+///
+/// Only the latest is kept (RAM is short): a phone sends one per track, so
+/// a reader that keeps up with the events reads each before the next.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Music {
+    /// Which music info this is, counting from 1 at boot (wrapping): its
+    /// event's [`Event::held_ms`]. A reader that finds a later number has
+    /// missed this one's text.
+    pub number: u16,
+    pub artist_len: u8,
+    pub track_len: u8,
+    pub artist: [u8; MUSIC_TEXT],
+    pub track: [u8; MUSIC_TEXT],
 }
 
 #[repr(C)]
@@ -89,7 +117,8 @@ pub mod kind {
 }
 
 /// What [`Event::phone`] says the phone sent: the content isn't kept (the
-/// simulator knows what it injected), only which message it was.
+/// simulator knows what it injected), only which message it was; bar a
+/// music info's, which is in [`Export::music`].
 pub mod phone {
     pub const NOTIFICATION: u8 = 1;
     pub const INCOMING_CALL: u8 = 2;
@@ -134,6 +163,8 @@ pub struct Event {
     pub y: u8,
     /// Which [`phone`] message.
     pub phone: u8,
+    /// How long a touch was held; for a music info, its number (see
+    /// [`Music::number`]).
     pub held_ms: u16,
 }
 
@@ -317,6 +348,13 @@ pub static UR_COMPARE: Shared = Shared(UnsafeCell::new(Export {
         phone: 0,
         held_ms: 0,
     }; EVENTS],
+    music: Music {
+        number: 0,
+        artist_len: 0,
+        track_len: 0,
+        artist: [0; MUSIC_TEXT],
+        track: [0; MUSIC_TEXT],
+    },
 }));
 
 fn with<R>(f: impl FnOnce(&mut Export) -> R) -> R {
@@ -347,6 +385,25 @@ fn push(event: Event) {
         export.events[head.written as usize % EVENTS] = event;
         head.written = head.written.wrapping_add(1);
     });
+}
+
+/// Keeps a music info's text, in place of the last, before its event is
+/// pushed (so a reader that sees the event finds the text); returns its
+/// number.
+///
+/// The parameters' types are `PhoneEvent::MusicInfo`'s fields': if their
+/// capacity changes, this stops compiling, rather than cutting text short.
+fn music(artist: &String<MUSIC_TEXT>, track: &String<MUSIC_TEXT>) -> u16 {
+    with(|export| {
+        let entry = &mut export.music;
+        let number = entry.number.wrapping_add(1);
+        entry.number = number;
+        entry.artist[..artist.len()].copy_from_slice(artist.as_bytes());
+        entry.artist_len = artist.len() as u8;
+        entry.track[..track.len()].copy_from_slice(track.as_bytes());
+        entry.track_len = track.len() as u8;
+        number
+    })
 }
 
 fn event(kind: u8, at: Instant) -> Event {
@@ -418,6 +475,10 @@ pub fn input(input: &InputEvent, at: Instant) {
                 PhoneEvent::TextAsBitmaps => phone::TEXT_AS_BITMAPS,
                 PhoneEvent::IntentsOff => phone::INTENTS_OFF,
                 PhoneEvent::UpdateRefused => phone::UPDATE_REFUSED,
+            },
+            held_ms: match message {
+                PhoneEvent::MusicInfo { artist, track } => music(artist, track),
+                _ => 0,
             },
             ..event(kind::PHONE, at)
         },

@@ -56,6 +56,6 @@ opt-level = 1
 # `src/field_log.rs`. Not for builds read through a probe.
 field-log = []
 # Export what the UI loop does and renders with, for checking the simulator
-# against a dev kit (`ur-sim --devkit`); see `src/compare.rs`. Costs ~2.6 KB
+# against a dev kit (`ur-sim --devkit`); see `src/compare.rs`. Costs ~2.3 KB
 # of RAM, so not for releases.
 compare = []
