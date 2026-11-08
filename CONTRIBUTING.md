@@ -231,11 +231,20 @@ Some host-test crates replay decoded logs, to tune against real wrists:
 
 ## Releasing
 
+[CHANGELOG.md]'s `[Unreleased]` section is kept up to date as changes
+land: add an entry with each user-visible change (`/append-to-changelog`
+in Claude Code does this). Releases are cut now and then, when there's
+something worth having, not for every build tried on a watch; CI's
+snapshot packages cover those.
+
 Cargo.toml's version is the source of truth. To release:
 
-1. Set the version in Cargo.toml, and run any cargo build without
+1. Finalise `[Unreleased]` (`/populate-changelog` audits it against the
+   commits since the last tag), then move its entries under a heading
+   for the new version and update the compare links at the bottom.
+2. Set the version in Cargo.toml, and run any cargo build without
    `--locked` (e.g. `cargo check`) to update Cargo.lock to match.
-2. Commit, then tag and push:
+3. Commit, then tag and push:
 
    ```sh
    git tag v0.9.0
@@ -245,7 +254,9 @@ Cargo.toml's version is the source of truth. To release:
 The release workflow refuses a tag that doesn't match Cargo.toml. It
 builds with `scripts/release.sh`, attests every file's build provenance
 ([artifact attestations]), and publishes them as a GitHub release; a
-version like `0.9.0-rc.1` makes a prerelease.
+version like `0.9.0-rc.1` makes a prerelease. The tags before v0.9.0
+mark development builds from before Cargo.toml carried the version, so
+they have no GitHub release.
 
 Releases are [reproducible][reproducible builds]: the same commit gives
 the same files, byte for byte, wherever it's built. The toolchain is
@@ -295,4 +306,5 @@ toolchain quarterly.
 [Health Connect]: https://developer.android.com/health-and-fitness/guides/health-connect
 [artifact attestations]: https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds
 [reproducible builds]: https://reproducible-builds.org
+[CHANGELOG.md]: CHANGELOG.md
 [shellcheck]: https://www.shellcheck.net
