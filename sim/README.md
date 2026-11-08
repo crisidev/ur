@@ -219,7 +219,7 @@ no theme: pick one with `theme NAME` first.
 
 `readme-gifs.txt` makes the README's GIFs, in one command (see its top);
 rerun it when a screen they show changes. `cargo test` runs it too, and
-fails if one grows past 100 KB.
+fails if one grows past 130 KB.
 
 ## Against a dev kit
 

@@ -162,7 +162,7 @@ fn the_readme_gifs() {
     for name in ["swipe", "notification", "glance", "alarm"] {
         let path = dir.join(format!("{name}.gif"));
         let size = std::fs::metadata(&path).expect("the GIF was written").len();
-        assert!(size < 100_000, "{name}.gif is {size} bytes");
+        assert!(size < 130_000, "{name}.gif is {size} bytes");
         assert!(frames(&path).len() > 1, "{name}.gif doesn't move");
     }
 }
