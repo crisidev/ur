@@ -306,6 +306,8 @@ pub struct UiLoop {
     /// When the room sensor's reading last looked at was heard, so each is
     /// looked at once.
     sighting_seen: Option<u64>,
+    /// [`geo::times_set`] as last looked at, to notice a new location.
+    location_seen: u8,
 }
 
 impl UiLoop {
@@ -334,6 +336,7 @@ impl UiLoop {
             calibration_unsaved: false,
             calibration_saved: now,
             sighting_seen: None,
+            location_seen: 0,
         };
         (app, ui)
     }
@@ -519,6 +522,21 @@ impl UiLoop {
         let fresh = heart::latest()
             .is_some_and(|(_, at)| now.saturating_duration_since(at) < Duration::from_secs(5 * 60));
         heart::set_watching(app.showing_clock() && !fresh);
+        // A new location from the phone: room sensors stay put, so if
+        // it's far from where they were heard, stop looking for them (see
+        // `aranet::Nearby::located`).
+        let set = geo::times_set();
+        if set != self.location_seen {
+            self.location_seen = set;
+            let here = geo::location();
+            let here = aranet::Place {
+                latitude_micro: here.latitude_micro,
+                longitude_micro: here.longitude_micro,
+            };
+            if ble::NEARBY.lock(|nearby| nearby.borrow_mut().located(here, now_ms)) {
+                info!("aranet: far from the sensors; forgot them");
+            }
+        }
         // Listen for room sensors, when it's time (see `aranet::Nearby::due`).
         let context = aranet::Context {
             quiet_night: app.quiet_night(),

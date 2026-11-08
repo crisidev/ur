@@ -513,4 +513,110 @@ mod tests {
         assert_eq!(best.age(500), 16);
         assert_eq!(best.age(60_500), 76);
     }
+
+    // ==========================================================================
+    // Where the sensors are
+    // ==========================================================================
+
+    fn place(latitude: f64, longitude: f64) -> Place {
+        Place {
+            latitude_micro: (latitude * 1e6).round() as i32,
+            longitude_micro: (longitude * 1e6).round() as i32,
+        }
+    }
+
+    /// Metres, against the haversine's (on a sphere of 6371 km), within
+    /// `percent`.
+    fn about(a: Place, b: Place, haversine: f32, percent: f32) {
+        let metres = distance_squared(a, b).sqrt();
+        assert!(
+            (metres - haversine).abs() <= haversine * percent / 100.0,
+            "{metres} m, not {haversine}"
+        );
+    }
+
+    const HOME: (f64, f64) = (59.9139, 10.7522);
+
+    #[test]
+    fn distances_are_near_enough() {
+        let home = place(HOME.0, HOME.1);
+        // 0.009° east in Oslo, 0.01° in Tromsø (where a degree east is
+        // shortest of any Norwegian town), the short way across 180°, and
+        // Oslo to Bergen: far beyond what it's for, but still near.
+        about(home, place(59.9139, 10.7612), 501.7, 1.0);
+        about(place(69.6492, 18.9553), place(69.6492, 18.9653), 386.7, 2.0);
+        about(place(0.0, 179.999), place(0.0, -179.999), 222.4, 1.0);
+        about(home, place(60.3913, 5.3221), 305_067.0, 1.0);
+        // North is the same everywhere: 500 m is 0.0045°.
+        about(home, place(59.9184, 10.7522), 500.4, 0.5);
+        assert_eq!(distance_squared(home, home), 0.0);
+    }
+
+    #[test]
+    fn far_from_the_sensors_forgets_them() {
+        let home = place(HOME.0, HOME.1);
+        let across_town = place(59.9439, 10.7522);
+        let next_door = place(59.9142, 10.7522);
+        let mut nearby = Nearby::new();
+        // Heard at home, and the phone there too: the sensors' place.
+        scan(&mut nearby, 0, &[(KITCHEN, -60)]);
+        nearby.located(home, 5 * MIN);
+        // Left, unheard since; the phone, an hour later, is across town.
+        scan(&mut nearby, 15 * MIN, &[]);
+        assert!(nearby.around(20 * MIN));
+        assert!(nearby.located(across_town, 20 * MIN));
+        assert!(!nearby.around(20 * MIN));
+        // Nothing more to forget.
+        assert!(!nearby.located(across_town, 25 * MIN));
+        assert!(nearby.best().is_none());
+        // So the scans go hourly at once, and wait for nobody.
+        assert_eq!(nearby.due(30 * MIN, worn()), None);
+        assert_eq!(nearby.due(75 * MIN, worn()), Some(Why::Background));
+        nearby.begin(75 * MIN);
+        assert_eq!(nearby.limit(75 * MIN), SCAN_LIMIT);
+        nearby.end(75 * MIN + SCAN_LIMIT);
+        // Back home, a fix there scans at once.
+        nearby.located(next_door, 80 * MIN);
+        assert_eq!(nearby.due(80 * MIN, worn()), Some(Why::Background));
+    }
+
+    #[test]
+    fn a_fix_near_them_changes_nothing() {
+        let home = place(HOME.0, HOME.1);
+        let mut nearby = Nearby::new();
+        scan(&mut nearby, 0, &[(KITCHEN, -60)]);
+        nearby.located(home, 5 * MIN);
+        scan(&mut nearby, 15 * MIN, &[]);
+        // Within the threshold (a Wi-Fi fix's error): still around.
+        nearby.located(place(59.9175, 10.7522), 20 * MIN);
+        assert!(nearby.around(20 * MIN));
+        assert!(nearby.best().is_some());
+        // And not a scan brought forward, with a sensor known.
+        assert_eq!(nearby.due(25 * MIN, worn()), None);
+    }
+
+    #[test]
+    fn without_a_place_a_fix_changes_nothing() {
+        let mut nearby = Nearby::new();
+        // Heard, but no fix while it was near.
+        scan(&mut nearby, 0, &[(KITCHEN, -60)]);
+        nearby.located(place(HOME.0, HOME.1), 40 * MIN);
+        nearby.located(place(48.8566, 2.3522), 50 * MIN);
+        assert!(nearby.around(50 * MIN));
+    }
+
+    #[test]
+    fn a_fix_near_a_sensor_heard_moves_the_place() {
+        let mut nearby = Nearby::new();
+        scan(&mut nearby, 0, &[(KITCHEN, -60)]);
+        nearby.located(place(HOME.0, HOME.1), 5 * MIN);
+        // At work, with a sensor there, and a fix (a new time zone, say).
+        let work = place(59.95, 10.70);
+        scan(&mut nearby, 15 * MIN, &[(BEDROOM, -60)]);
+        nearby.located(work, 20 * MIN);
+        scan(&mut nearby, 30 * MIN, &[]);
+        // A fix at work again: the sensors are still around.
+        nearby.located(work, 40 * MIN);
+        assert!(nearby.around(40 * MIN));
+    }
 }

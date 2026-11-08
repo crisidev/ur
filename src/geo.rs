@@ -6,6 +6,7 @@
 //! and date, and the theme switches between dark and light with them.
 
 use core::cell::Cell;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -70,8 +71,20 @@ impl Location {
 static LOCATION: Mutex<CriticalSectionRawMutex, Cell<Option<Location>>> =
     Mutex::new(Cell::new(None));
 
+/// How many times the location has been set, wrapping: once at boot if
+/// one was saved, then for each fix from the phone. So the UI loop
+/// notices a new one (see `aranet::Nearby::located`) by a byte, rather
+/// than keeping a copy of the last.
+static SET: AtomicU8 = AtomicU8::new(0);
+
 pub fn set_location(location: Location) {
     LOCATION.lock(|cell| cell.set(Some(location)));
+    SET.fetch_add(1, Ordering::Relaxed);
+}
+
+/// See [`SET`].
+pub fn times_set() -> u8 {
+    SET.load(Ordering::Relaxed)
 }
 
 pub fn location() -> Location {

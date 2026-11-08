@@ -297,6 +297,9 @@ pub struct Nearby {
     last_scan: Option<u64>,
     /// Whether a scan is under way.
     scanning: bool,
+    /// Where the phone was when sensors were last near (see
+    /// [`Nearby::located`]).
+    place: Option<Place>,
 }
 
 /// When two sensors' signals are this close (dB), the one shown stays:
@@ -392,6 +395,7 @@ impl Nearby {
             known: heapless::Vec::new(),
             last_scan: None,
             scanning: false,
+            place: None,
         }
     }
 
@@ -571,6 +575,96 @@ impl Nearby {
             _ => strongest,
         });
         true
+    }
+}
+
+// ==============================================================================
+// Where the sensors are
+// ==============================================================================
+//
+// Room sensors stay put. So once the phone says the wearer is well away
+// from where they were heard, the sensors known can be forgotten at once,
+// rather than looked for every quarter of an hour (and waited for, and
+// looked for at every glance at the clock) until an hour has passed
+// without them. The hourly scan for sensors goes on, and finds those of
+// wherever the wearer is now.
+//
+// The watch only learns where it is now and then: the phone sends a fix
+// when asked (see `geo::GpsPolicy`): after it was away for two hours, at
+// a new time zone, and if the last is a day old when it connects. So this
+// acts at those moments, and otherwise everything is as it was.
+
+/// A position, in millionths of a degree (as `geo::Location`, which this
+/// module can't use: it runs in host tests without the firmware's
+/// dependencies).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Place {
+    pub latitude_micro: i32,
+    /// East positive.
+    pub longitude_micro: i32,
+}
+
+/// How far from where sensors were near a fix must be (metres) for them
+/// to count as away. A room sensor is heard across a flat or a house, a
+/// few tens of metres; a phone's first fix, which is what the watch keeps,
+/// is often from Wi-Fi (tens of metres off) rather than GPS. Half a
+/// kilometre is well beyond both, and a fix from cell towers alone (which
+/// can be a kilometre or more off) at home costs at most an hour without
+/// the room's sensor, until the hourly scan hears it again.
+pub const AWAY: f32 = 500.0;
+
+/// The square of the distance between two places, in m², near enough
+/// for a few kilometres: the earth as flat around them (equirectangular),
+/// with a degree of longitude shrunk by the cosine of the latitude, from
+/// the start of its series (within 2% to 70° north, and 6% at 80°).
+pub fn distance_squared(a: Place, b: Place) -> f32 {
+    // Metres in a millionth of a degree of latitude.
+    const METRES: f32 = 0.111_195;
+    let latitude =
+        (a.latitude_micro as f32 + b.latitude_micro as f32) / 2.0 * (core::f32::consts::PI / 180e6);
+    let squared = latitude * latitude;
+    let cos = 1.0 - squared / 2.0 + squared * squared / 24.0;
+    // Differences as integers first: a float can't hold a whole latitude
+    // to the micro-degree. Longitudes the short way round, across 180°.
+    let north = (i64::from(b.latitude_micro) - i64::from(a.latitude_micro)) as f32;
+    let mut east = (i64::from(b.longitude_micro) - i64::from(a.longitude_micro)).abs();
+    east = east.min(360_000_000 - east);
+    let east = east as f32 * cos;
+    (north * north + east * east) * (METRES * METRES)
+}
+
+impl Nearby {
+    /// The phone sent where it is (`here`). If a sensor was heard within
+    /// a background scan's interval, this is where the sensors are. If
+    /// not, and it's more than [`AWAY`] from where they were, the sensors
+    /// known are gone: forgotten, with the reading shown, so that scans
+    /// fall back to the hourly look for sensors at once. Back near it,
+    /// with none known, scans at once: the sensors there are likely back
+    /// in range. Returns whether it forgot them.
+    ///
+    /// TODO: the place isn't kept in flash, so after a restart it waits
+    /// for a fix near a sensor before this does anything.
+    pub fn located(&mut self, here: Place, now: u64) -> bool {
+        if self
+            .known
+            .iter()
+            .any(|k| now.saturating_sub(k.heard) <= EVERY)
+        {
+            self.place = Some(here);
+            return false;
+        }
+        let Some(place) = self.place else {
+            return false;
+        };
+        let away = distance_squared(place, here) > AWAY * AWAY;
+        let forgot = away && (!self.known.is_empty() || self.best.is_some());
+        if away {
+            self.known.clear();
+            self.best = None;
+        } else if self.known.is_empty() && !self.scanning {
+            self.last_scan = None;
+        }
+        forgot
     }
 }
 
