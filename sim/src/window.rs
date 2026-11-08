@@ -16,14 +16,13 @@ use std::time::{Duration as StdDuration, Instant as StdInstant};
 use embassy_time::{Duration, Instant};
 use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Window, WindowOptions};
 
-use crate::brightness;
+use crate::InputEvent;
 use crate::case::Case;
 use crate::cli::Options;
 use crate::gesture::{Gesture, Touch};
 use crate::script::{self, Next};
 use crate::ui::PhoneEvent;
 use crate::watch::Watch;
-use crate::{InputEvent, clock};
 
 /// How often to show a frame.
 const FRAME: StdDuration = StdDuration::from_millis(16);
@@ -241,7 +240,7 @@ pub fn run(mut watch: Watch, options: &Options) -> Result<(), String> {
             screen.light = crate::case::light(watch.backlight);
             screen.shake = screen.case.shake(watch.motor_pulse(), Instant::now());
             screen.show()?;
-            let now = status(&watch);
+            let now = status(&watch, options.speed);
             if now != title {
                 screen.window.set_title(&now);
                 title = now;
@@ -294,27 +293,12 @@ fn call(watch: &mut Watch) {
     watch.input(InputEvent::Phone(event));
 }
 
-/// The title bar: the watch's time, and what's on.
-fn status(watch: &Watch) -> String {
-    let time = clock::now().map_or("--:--".to_owned(), |t| {
-        format!("{:02}:{:02}", t.hour, t.minute)
-    });
-    let screen = match (watch.off, watch.backlight == brightness::Level::OFF) {
-        (Some(_), _) => "switched off",
-        (None, true) => "screen off",
-        (None, false) if watch.app.dim() => "dim",
-        (None, false) => "screen on",
-    };
-    let night = if watch.app.quiet_night() {
-        ", quiet night"
-    } else {
-        ""
-    };
-    let phone = if watch.connected { "" } else { ", no phone" };
+/// The title bar: the status line (see [`crate::status`]).
+fn status(watch: &Watch, speed: f64) -> String {
     let recording = if crate::record::active() {
         " · recording"
     } else {
         ""
     };
-    format!("ur · {time} · {screen}{night}{phone}{recording}")
+    format!("ur · {}{recording}", crate::status::line(watch, speed))
 }

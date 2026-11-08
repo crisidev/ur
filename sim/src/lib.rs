@@ -266,6 +266,8 @@ mod record;
 mod script;
 mod settings;
 mod shot;
+#[cfg(any(feature = "window", target_arch = "wasm32"))]
+mod status;
 mod time;
 mod watch;
 

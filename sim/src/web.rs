@@ -24,9 +24,7 @@ use std::path::PathBuf;
 
 use embassy_time::{Duration, Instant};
 
-use crate::brightness;
 use crate::case::{self, Case};
-use crate::clock;
 use crate::script::{self, Next, Output};
 use crate::watch::Watch;
 use crate::{InputEvent, theme};
@@ -426,33 +424,17 @@ pub extern "C" fn ur_frame() -> *const u8 {
     })
 }
 
-/// Prints the status line: the watch's time, and what's on, as the
-/// window's title bar shows them.
+/// Prints the status line, as the window's title bar shows it (see
+/// [`crate::status`]).
 #[unsafe(no_mangle)]
 pub extern "C" fn ur_status() {
-    // As `window.rs`'s `status`, which needs the window to build.
     let line = with_watch(|watch| {
-        let time = clock::now().map_or("--:--".to_owned(), |t| {
-            format!("{:02}:{:02}", t.hour, t.minute)
-        });
-        let screen = match (watch.off, watch.backlight == brightness::Level::OFF) {
-            (Some(_), _) => "switched off",
-            (None, true) => "screen off",
-            (None, false) if watch.app.dim() => "dim",
-            (None, false) => "screen on",
-        };
-        let night = if watch.app.quiet_night() {
-            ", quiet night"
-        } else {
-            ""
-        };
-        let phone = if watch.connected { "" } else { ", no phone" };
         let recording = if crate::record::active() {
             " · recording (R to stop)"
         } else {
             ""
         };
-        format!("{time} · {screen}{night}{phone}{recording}")
+        format!("{}{recording}", crate::status::line(watch, 1.0))
     });
     print(Text::Status, &line);
 }

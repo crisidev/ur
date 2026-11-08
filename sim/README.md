@@ -26,8 +26,10 @@ mouse is a finger: click to tap, hold still for 0.6 s to long press, drag
 to swipe, all through the firmware's gesture recogniser
 (`src/gesture.rs`). Click the button to press it. The screen dims with
 the backlight and goes black when it's off, and the watch shakes while
-the motor buzzes. `--zoom N` sets its size: N pixels a canvas pixel (4,
-a 320-pixel screen, by default).
+the motor buzzes. The title bar has the rest: the backlight's level (1–7),
+the phone, the battery and charger, and the time since boot (and
+`--speed`). `--zoom N` sets its size: N pixels a canvas pixel (4, a
+320-pixel screen, by default).
 
 The screen's colours are the real panel's, as near as a model can make
 them (`src/panel.rs`): less saturated than a monitor's, and black

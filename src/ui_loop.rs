@@ -274,7 +274,8 @@ pub fn local_second() -> Option<i64> {
 /// What the loop keeps between passes, besides the UI's own state (the
 /// [`App`]).
 pub struct UiLoop {
-    battery: Battery,
+    /// Public for the simulator's status line.
+    pub battery: Battery,
     /// Whether the panel (and backlight) are on. It starts "asleep" so the
     /// first pass goes through the wake path: render the first frame, then
     /// turn the backlight on. (Waking an already-awake ST7789 is harmless.)

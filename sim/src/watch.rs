@@ -373,6 +373,16 @@ impl Watch {
 
     /// Whether the motor is playing a pattern: one that repeats until
     /// stopped, or one that hasn't finished.
+    /// The battery, as the UI loop last measured it (smoothed, as the UI
+    /// shows it): for the status line.
+    #[cfg_attr(
+        not(any(feature = "window", target_arch = "wasm32")),
+        allow(dead_code, reason = "for the status line")
+    )]
+    pub fn battery(&self) -> &crate::battery::Battery {
+        &self.ui.battery
+    }
+
     pub fn buzzing(&self) -> bool {
         self.motor.is_some_and(|(pattern, since)| {
             let length: u64 = pattern.steps().iter().map(|&ms| u64::from(ms)).sum();
