@@ -53,6 +53,7 @@ missing below were test builds for the dev kit.
 
 ### Fixed
 
+- Let the phone's link idle at its slowest pace, instead of asking for a faster one after 30 s without traffic (introduced in 0.6.1) (0e8ec77)
 - Stop the watch resetting when a heart rate reading came in while the screen was being redrawn (1bd5e6b)
 - Show music as playing once the track changes or is skipped, when the phone never said whether it plays (as after the watch restarts mid-song), rather than as paused (d5ee29a)
 - Keep today's steps, and the activity the phone hasn't fetched yet, across updates, and say in the field log when an update resets the watch (3f55661)
