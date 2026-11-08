@@ -24,6 +24,8 @@ missing below were test builds for the dev kit.
 
 ### Fixed
 
+- Show `&`, `#`, `@`, `"`, `*` and the rest of ASCII's symbols in notifications, and curly quotes, dashes and ellipses as their plain look-alikes, instead of `?` (929a956)
+
 ### Security
 
 ## [0.9.0] - 2026-11-08
