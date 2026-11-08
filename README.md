@@ -42,7 +42,15 @@ timepiece.)
   work out.
 
 Gadgetbridge sees the watch as a Bangle.js: ur speaks the [Bangle.js
-protocol], so stock Gadgetbridge works without patches.
+protocol], so stock Gadgetbridge works without patches. ur uses it rather
+than [InfiniTime]'s because, for an InfiniTime watch, Gadgetbridge records
+steps and heart rate only while the phone is connected, and gets no sleep
+at all. With the Bangle.js protocol, Gadgetbridge syncs the watch's
+minute-by-minute steps, heart rate, and sleep whenever it reconnects, and
+shares the phone's location for the sun-based themes; the protocol also
+leaves room for more, like weather and calendar. The catch is that
+Gadgetbridge doesn't install updates on a Bangle.js, so those go through
+another app (see [Installing](#installing)).
 
 **Status:** experimental and personal. It's tested on two watches, and
 heart rate and sleep are still being tuned against a Garmin. It was
