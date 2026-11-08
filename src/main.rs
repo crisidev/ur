@@ -26,7 +26,9 @@
 //! - [`ble`] / [`gb`]: Bluetooth, speaking Gadgetbridge's Bangle.js protocol.
 //! - [`clock`] / [`geo`]: wall-clock time and location, both from the phone,
 //!   and the sunrise/sunset derived from them.
-//! - [`temperature`]: the watch's own temperature, for the clock face.
+//! - [`temperature`] / [`aranet`]: the room's temperature for the clock
+//!   face, from a nearby Aranet4 air monitor (whose CO₂ and other readings
+//!   get a screen of their own) or estimated from the watch's own.
 //! - [`storage`]: settings and Bluetooth bonds in flash.
 //! - [`firmware`] / [`dfu`]: cooperating with the bootloader, and receiving
 //!   updates over Bluetooth.
@@ -43,6 +45,7 @@
 
 mod activity;
 mod alarm;
+mod aranet;
 mod arrival;
 mod battery;
 mod ble;
@@ -92,7 +95,7 @@ mod wake;
 use core::cell::Cell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use defmt::{info, warn};
+use defmt::{debug, info, warn};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either3, select3};
@@ -435,7 +438,9 @@ async fn main(spawner: Spawner) {
 
     // The controller's memory needs depend on its configuration; `build`
     // logs the required size if this is wrong (and fails if it's too small).
-    static SDC_MEM: StaticCell<nrf_sdc::Mem<5184>> = StaticCell::new();
+    // Scanning (the multirole library, and the scanner's own buffers) took
+    // it from 5184 to 6064 bytes.
+    static SDC_MEM: StaticCell<nrf_sdc::Mem<6064>> = StaticCell::new();
     let sdc_mem = SDC_MEM.init(nrf_sdc::Mem::new());
     let sdc_peripherals = nrf_sdc::Peripherals::new(
         p.PPI_CH17, p.PPI_CH18, p.PPI_CH20, p.PPI_CH21, p.PPI_CH22, p.PPI_CH23, p.PPI_CH24,
@@ -446,8 +451,18 @@ async fn main(spawner: Spawner) {
         .and_then(|b| {
             b.support_adv()
                 .support_peripheral()
+                // Passive scanning for Aranet4s (see `ble::scan`), which
+                // takes the multirole library.
+                .support_scan()
                 .peripheral_count(ble::CONNECTIONS as u8)
         })
+        // Scanning only: no connections of our own as a central, which
+        // would reserve a link's buffers (~2.3 KB).
+        .and_then(|b| b.central_count(0))
+        // The fewest report buffers the scanner takes (104 bytes each,
+        // default 3). Too few only loses scan responses, which a passive
+        // scan never asks for.
+        .and_then(|b| b.scan_buffer_cfg(2))
         // Data length extension, so 251-byte packets go out as one radio
         // packet instead of ten 27-byte ones.
         .map(|b| b.support_dle_peripheral())
@@ -531,23 +546,90 @@ async fn main(spawner: Spawner) {
     let mut panel_since = Instant::now();
     // Whether the last frame was in the dim look; see below.
     let mut was_dim = false;
-    // The clock face's temperature, once read.
-    let mut temperature = None;
+    // The clock face's temperature, once read, and where from; and what
+    // goes into it (see `temperature`): the die's own, in quarter degrees,
+    // whether the watch is worn, and the estimate's calibration, which a
+    // nearby Aranet4 teaches.
+    let mut temperature: Option<(i8, temperature::Source)> = None;
+    let mut die = None;
+    let mut wear = temperature::Wear::new(booted.as_millis());
+    let mut calibration = storage::load(storage::key::CALIBRATION)
+        .await
+        .map(temperature::Calibration::from_bytes)
+        .unwrap_or_default();
+    let mut pairing = temperature::Pairing::new();
+    // Whether the calibration has learnt since it was last saved, and
+    // when that was: saved at most hourly, as it may learn every quarter
+    // hour, and a reset only loses what was learnt since.
+    let mut calibration_unsaved = false;
+    let mut calibration_saved = booted;
+    // When the Aranet4 reading last looked at was heard, so each is
+    // looked at once.
+    let mut sighting_seen = None;
     loop {
         let now = Instant::now();
+        let now_ms = now.as_millis();
+        wear.update(
+            now_ms,
+            heart::worn() == Some(false),
+            activity::still(),
+            heart::latest().map(|(_, at)| at.as_millis()),
+        );
         // At the top of each minute of uptime, rather than at a stored
         // time, to save the RAM. A pass delayed past that second just
         // waits for the next minute, and an extra pass within it (an input)
         // reads again, which is harmless.
-        if temperature.is_none() || now.as_secs().is_multiple_of(temperature::SAMPLE_EVERY) {
+        let sample = die.is_none() || now.as_secs().is_multiple_of(temperature::SAMPLE_EVERY);
+        if sample {
             // From thread mode, as MPSL requires: the same priority as its
             // `mpsl_task`. This blocks for ~50 µs.
-            let quarters = mpsl.get_temperature().raw();
-            let shown = temperature::shown(temperature, quarters);
+            die = Some(mpsl.get_temperature().raw());
+        }
+        let (best, fresh) = ble::NEARBY.lock(|nearby| {
+            let nearby = nearby.borrow();
+            (nearby.best(), nearby.fresh(now_ms))
+        });
+        let heard = best.map(|s| s.heard);
+        let new_sighting = heard != sighting_seen;
+        sighting_seen = heard;
+        if let Some(die) = die
+            && (sample || new_sighting)
+        {
+            // A new Aranet4 reading, recent enough to pair with the die's
+            // temperature now, on a settled wrist: learn from it.
+            if new_sighting
+                && let Some(sighting) = best
+                && sighting.age(now_ms) <= temperature::PAIR_AGE
+                && let Some(air) = sighting.reading.quarters()
+                && pairing.offer(now_ms, die, air, wear.worn_for(now_ms))
+            {
+                calibration.learn(die, air);
+                calibration_unsaved = true;
+                let (k, c) = calibration.line();
+                info!(
+                    "temperature: learnt die {}/4 C, air {}/4 C; slope {}, height {}, {} pairs",
+                    die,
+                    air,
+                    k,
+                    c,
+                    calibration.pairs()
+                );
+            }
+            let aranet = fresh.and_then(|s| s.reading.quarters());
+            let (quarters, source) = temperature::pick(aranet, wear.worn(), die, &calibration);
+            // A change of source shows the new value at once, rather than
+            // holding the old within a degree.
+            let previous = temperature.filter(|&(_, s)| s == source).map(|(d, _)| d);
+            let shown = (temperature::shown(previous, quarters), source);
             if temperature != Some(shown) {
-                info!("temperature: {} C", shown);
+                info!("temperature: {} C ({}), die {}/4 C", shown.0, source, die);
             }
             temperature = Some(shown);
+        }
+        if calibration_unsaved && calibration_saved.elapsed() >= Duration::from_secs(60 * 60) {
+            storage::save(storage::key::CALIBRATION, &calibration.to_bytes()).await;
+            calibration_unsaved = false;
+            calibration_saved = Instant::now();
         }
         let mut samples = [0i16; 1];
         adc.sample(&mut samples).await;
@@ -604,6 +686,13 @@ async fn main(spawner: Spawner) {
         // them to.
         let connected = ble::CONNECTED.load(Ordering::Relaxed);
         app.set_connected(connected);
+        let air = ble::NEARBY.lock(|nearby| {
+            nearby
+                .borrow()
+                .best()
+                .is_some_and(|s| now_ms.saturating_sub(s.heard) < aranet::RECENT)
+        });
+        app.set_air(air);
         // Apply screen power changes. Waking renders before the backlight
         // comes on, so the old frame never flashes up.
         if app.awake {
@@ -621,7 +710,12 @@ async fn main(spawner: Spawner) {
                 sleep: activity::last_sleep(),
                 local_second: local_second(),
                 heart_rate: heart::current(now),
-                temperature,
+                temperature: temperature.map(|(degrees, _)| degrees),
+                temperature_from_aranet: temperature
+                    .is_some_and(|(_, source)| source == temperature::Source::Aranet),
+                // Read again rather than kept from above: kept, it would
+                // sit in this task's future across every await between.
+                air: ble::NEARBY.lock(|nearby| nearby.borrow().best()),
                 battery: &battery,
                 bthome: bthome::identity(),
             };
@@ -697,6 +791,26 @@ async fn main(spawner: Spawner) {
         let fresh = heart::latest()
             .is_some_and(|(_, at)| now.saturating_duration_since(at) < Duration::from_secs(5 * 60));
         heart::set_watching(app.showing_clock() && !fresh);
+        // Listen for Aranet4s, when it's time (see `aranet::Nearby::due`).
+        let context = aranet::Context {
+            quiet_night: app.quiet_night(),
+            off_wrist: !wear.worn(),
+            showing_clock: app.showing_clock(),
+            showing_air: app.showing_air(),
+            updating: dfu::PROGRESS.lock(Cell::get).is_some(),
+        };
+        let due = ble::NEARBY.lock(|nearby| {
+            let mut nearby = nearby.borrow_mut();
+            let due = nearby.due(now_ms, context);
+            if due.is_some() {
+                nearby.begin(now_ms);
+            }
+            due
+        });
+        if let Some(why) = due {
+            debug!("aranet: scanning ({})", why);
+            ble::SCAN.signal(());
+        }
         glance::set_screen_on(app.awake);
         // Taps don't wake the screen in the quiet night (see `ui`), so the
         // touch controller can sleep while it's off.

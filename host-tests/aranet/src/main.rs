@@ -56,6 +56,60 @@ mod tests {
         assert_eq!(reading.age, 16);
     }
 
+    /// Whole advertisements (`ADV_IND`, from static random addresses) as a
+    /// dev kit heard them on 2026-11-08 from two Aranet4s on firmware
+    /// v2.0.7, one measuring every 2 minutes, one every 5; each advertised
+    /// every ~0.57 s.
+    const HEARD: [(&[u8], Reading); 2] = [
+        (
+            &[
+                0x02, 0x01, 0x06, 0x19, 0xff, 0x02, 0x07, 0x21, 0x07, 0x00, 0x02, 0x00, 0x0c, 0x0f,
+                0x01, 0xa5, 0x02, 0xe1, 0x01, 0xc6, 0x27, 0x1c, 0x1b, 0x01, 0x78, 0x00, 0x60, 0x00,
+                0xaa,
+            ],
+            Reading {
+                co2: Some(677),
+                twentieths: Some(481),
+                pressure: Some(10182),
+                humidity: 28,
+                battery: 27,
+                band: Some(Band::Good),
+                interval: 120,
+                age: 96,
+            },
+        ),
+        (
+            &[
+                0x02, 0x01, 0x06, 0x19, 0xff, 0x02, 0x07, 0x21, 0x07, 0x00, 0x02, 0x00, 0x09, 0x0f,
+                0x01, 0x89, 0x02, 0xbb, 0x01, 0xb9, 0x27, 0x20, 0x17, 0x01, 0x2c, 0x01, 0x01, 0x00,
+                0xb9,
+            ],
+            Reading {
+                co2: Some(649),
+                twentieths: Some(443),
+                pressure: Some(10169),
+                humidity: 32,
+                battery: 23,
+                band: Some(Band::Good),
+                interval: 300,
+                age: 1,
+            },
+        ),
+    ];
+
+    #[test]
+    fn reads_what_a_dev_kit_heard() {
+        for (ad, expected) in HEARD {
+            let payload = manufacturer_payload(ad).expect("Aranet's data");
+            assert_eq!(parse(payload), Ok(expected));
+        }
+        // 24.05 and 22.15 °C, to the tenth (rounded half up) and quarter.
+        assert_eq!(HEARD[0].1.tenths(), Some(241));
+        assert_eq!(HEARD[1].1.tenths(), Some(222));
+        assert_eq!(HEARD[0].1.quarters(), Some(96));
+        assert_eq!(HEARD[1].1.quarters(), Some(89));
+    }
+
     #[test]
     fn finds_the_payload_in_an_advertisement() {
         let ad = advertisement(&ARANET4);
@@ -316,13 +370,17 @@ mod tests {
 
     #[test]
     fn no_background_scans_at_night_off_the_wrist_or_updating() {
-        let nearby = Nearby::new();
-        let quiet = Context {
-            quiet_night: true,
-            ..worn()
-        };
+        let mut nearby = Nearby::new();
+        // Off the wrist, one at boot, to find out what's around.
         let off = Context {
             off_wrist: true,
+            ..worn()
+        };
+        assert_eq!(nearby.due(0, off), Some(Why::Background));
+        scan(&mut nearby, 0, &[(KITCHEN, -60)]);
+        let later = 2 * SELDOM;
+        let quiet = Context {
+            quiet_night: true,
             ..worn()
         };
         let updating = Context {
@@ -331,8 +389,9 @@ mod tests {
             ..worn()
         };
         for context in [quiet, off, updating] {
-            assert_eq!(nearby.due(0, context), None);
+            assert_eq!(nearby.due(later, context), None);
         }
+        assert_eq!(nearby.due(later, worn()), Some(Why::Background));
     }
 
     #[test]

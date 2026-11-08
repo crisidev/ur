@@ -9,3 +9,4 @@ publish = false
 [workspace]
 
 [dependencies]
+libm = "0.2.16"

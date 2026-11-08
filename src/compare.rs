@@ -177,6 +177,7 @@ pub struct Pass {
     /// Or 0 for none.
     pub heart_rate: u8,
     pub temperature: i8,
+    /// 0 none, 1 the watch's (or estimated from it), 2 a nearby Aranet4's.
     pub has_temperature: u8,
     /// What the App was told it is (`App::set_daytime`).
     pub daytime: u8,
@@ -479,7 +480,12 @@ pub fn rendering(now: Instant, status: &Status, daytime: bool, today: Option<Day
             update_progress: status.update_progress.unwrap_or(255),
             heart_rate: status.heart_rate.unwrap_or(0),
             temperature: status.temperature.unwrap_or(0),
-            has_temperature: u8::from(status.temperature.is_some()),
+            // 2: from a nearby Aranet4 (the clock face's little house).
+            has_temperature: match (status.temperature, status.temperature_from_aranet) {
+                (None, _) => 0,
+                (Some(_), false) => 1,
+                (Some(_), true) => 2,
+            },
             daytime: u8::from(daytime),
             has_today: u8::from(today.is_some()),
             today: bytes,

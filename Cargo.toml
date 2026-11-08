@@ -23,10 +23,10 @@ embedded-hal-async = "1"
 heapless = "0.9.3"
 libm = "0.2.16"
 nrf-mpsl = { version = "0.4.0", features = ["nrf52832", "defmt", "critical-section-impl"] }
-nrf-sdc = { version = "0.4.0", features = ["nrf52832", "peripheral", "defmt"] }
+nrf-sdc = { version = "0.4.0", features = ["nrf52832", "peripheral", "central", "defmt"] }
 sequential-storage = { version = "8.0.2", features = ["defmt"] }
 static_cell = "2.1.1"
-trouble-host = { version = "0.8.0", default-features = false, features = ["peripheral", "gatt", "derive", "default-packet-pool-mtu-251", "defmt", "security"] }
+trouble-host = { version = "0.8.0", default-features = false, features = ["peripheral", "scan", "gatt", "derive", "default-packet-pool-mtu-251", "defmt", "security"] }
 
 [[bin]]
 name = "ur"

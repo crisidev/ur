@@ -56,6 +56,10 @@ pub mod key {
     pub const BTHOME_KEY: u8 = 31;
     /// How far the BTHome counter is reserved (see `bthome::send`).
     pub const BTHOME_COUNTER: u8 = 32;
+    /// How to estimate the room's temperature on the wrist; see
+    /// [`crate::temperature::Calibration`]. (Not 33–39: kept clear for
+    /// what other branches add.)
+    pub const CALIBRATION: u8 = 40;
 }
 
 /// Big enough for the largest item (a 43-byte bond) plus its key, rounded up

@@ -3,10 +3,10 @@
 //!
 //! An Aranet4 with "Smart Home integrations" switched on (in the Aranet
 //! Home app; firmware 1.2.0 or later) puts its latest measurement in every
-//! advertisement it sends, a few seconds apart: CO₂, temperature,
+//! advertisement it sends, about twice a second: CO₂, temperature,
 //! humidity, pressure, its battery, and how long ago it measured. So the
-//! watch only has to listen (a passive scan, sending nothing), without
-//! connecting or pairing. `docs/aranet-design.md` has the byte layout's
+//! watch only has to listen (a passive scan, sending nothing, for a second
+//! or so), without connecting or pairing. `docs/aranet-design.md` has the byte layout's
 //! sources and the radio's side; [`crate::ble`] does the listening.
 //!
 //! Listening costs the radio's receive current (~5.5 mA), so it happens
@@ -266,7 +266,8 @@ pub const STALE: u64 = 35 * 60;
 
 /// How often to scan in the background, while a sensor is around: often
 /// enough that a reading is at most a quarter of an hour old, and rare
-/// enough to cost little (see `docs/aranet-design.md`'s energy section).
+/// enough to cost little (see `docs/aranet-design.md`'s status: a few
+/// µA).
 pub const EVERY: u64 = 15 * 60 * 1000;
 /// How often to scan in the background once nothing has been heard for
 /// [`RECENT`]: enough to notice an Aranet4 within the hour of coming home.
@@ -277,12 +278,12 @@ pub const LOOKED_AT: u64 = 10 * 60 * 1000;
 /// Opening the Air screen scans if the last scan is this old.
 pub const OPENED: u64 = 60 * 1000;
 
-/// How long a scan listens, at most, in ms. An Aranet4 advertises every
-/// few seconds (about 4 s by the sources in `docs/aranet-design.md`; not
-/// yet measured), so this hears each sensor around at least once, unless
-/// a report is lost; most scans stop well before (see
-/// [`Nearby::heard_everyone`]).
-pub const SCAN_LIMIT: u64 = 5_000;
+/// How long a scan listens, at most, in ms. Two Aranet4s (firmware 2.0.7)
+/// advertised every ~0.57 s, and a dev kit, scanning while connected to a
+/// phone, heard them at most 2.3 s apart (90% within 1.2 s): this hears
+/// every sensor around, with room for a slower one; most scans stop well
+/// before (see [`Nearby::heard_everyone`]).
+pub const SCAN_LIMIT: u64 = 3_000;
 
 /// What a scan is for, for the log.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -344,7 +345,7 @@ impl Nearby {
     }
 
     /// Why to scan now, if it's time. The background pace stops in the
-    /// quiet night, off the wrist, and during updates; a look at the clock
+    /// quiet night, off the wrist (after a first scan), and during updates; a look at the clock
     /// face with a sensor around, or opening the Air screen, can bring a
     /// scan forward.
     pub fn due(&self, now: u64, context: Context) -> Option<Why> {
@@ -358,7 +359,10 @@ impl Nearby {
         if context.showing_clock && self.around(now) && since >= LOOKED_AT {
             return Some(Why::Clock);
         }
-        if context.quiet_night || context.off_wrist {
+        // Off the wrist, not at all, bar once after booting: that's on a
+        // desk (where the watch can't yet tell it isn't worn) as often as
+        // on a wrist, and finds out whether there's a sensor around.
+        if context.quiet_night || (context.off_wrist && self.last_scan.is_some()) {
             return None;
         }
         let pace = if self.around(now) { EVERY } else { SELDOM };

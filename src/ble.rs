@@ -19,6 +19,12 @@
 //! wrapped by `nrf-sdc`) under TrouBLE (host, in Rust), with Nordic's MPSL
 //! scheduling the radio. MPSL owns RTC0, TIMER0, the RADIO, TEMP, some PPI
 //! channels, and interrupt priority 0; see `main` for the setup.
+//!
+//! Besides serving the phone, the watch now and then listens for nearby
+//! Aranet4 air monitors' advertisements (see [`scan`], and
+//! [`crate::aranet`] for what they say and when to listen). That takes the
+//! controller's multirole library (peripheral and scanner) rather than the
+//! peripheral-only one.
 
 use core::cell::{Cell, RefCell};
 use core::pin::Pin;
@@ -26,7 +32,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll};
 
 use defmt::{debug, info, warn};
-use embassy_futures::join::join3;
+use embassy_futures::join::join4;
 use embassy_futures::select::{Either, Either3, Either4, select, select3, select4};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
@@ -38,6 +44,7 @@ use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
+use crate::aranet::{self, Nearby};
 use crate::gb::{self, Incoming, LineBuffer, Outgoing};
 use crate::geo::{self, GpsPolicy, Location};
 use crate::packet_pool::Pool;
@@ -336,7 +343,7 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
             let (Either3::First(result) | Either3::Second(result) | Either3::Third(result)) =
                 select3(
                     OwnFrame(tx.run()),
-                    OwnFrame(rx.run()),
+                    OwnFrame(rx.run_with_handler(&Reports)),
                     OwnFrame(control.run()),
                 )
                 .await;
@@ -420,8 +427,15 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
             }
         }
     };
-    // The slots poll in frames of their own too, off the host's path.
-    join3(host, OwnFrame(slot()), OwnFrame(slot())).await;
+    // The slots poll in frames of their own too, off the host's path, and
+    // so does the scanner.
+    join4(
+        host,
+        OwnFrame(slot()),
+        OwnFrame(slot()),
+        OwnFrame(scan(stack)),
+    )
+    .await;
 }
 
 /// Gives the host the bonds kept in flash.
@@ -1258,4 +1272,123 @@ fn decode_bond(data: &[u8; BOND_LEN]) -> Option<BondInformation> {
         security_level,
         data[41] == 1,
     ))
+}
+
+// ==============================================================================
+// Listening for Aranet4s
+// ==============================================================================
+
+/// What the scans have heard, and when the next is due; see
+/// [`aranet::Nearby`]. The UI loop asks for scans (with [`SCAN`]) and reads
+/// the readings; [`Reports`] fills it in.
+pub static NEARBY: Mutex<CriticalSectionRawMutex, RefCell<Nearby>> =
+    Mutex::new(RefCell::new(Nearby::new()));
+
+/// Starts a scan. The asker calls [`Nearby::begin`] first, so that it
+/// doesn't ask again while this one runs.
+pub static SCAN: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Raised when a scan has heard every sensor it waits for, to stop early.
+static HEARD_EVERYONE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Advertising reports seen by the scan under way, of any device, for
+/// its log line: what the radio heard, Aranet4 or not.
+static REPORTS: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::new(0);
+
+/// Runs a scan for each [`SCAN`]: passive (the readings are in the
+/// advertisements themselves, so we never ask for more, and never
+/// transmit), for at most [`aranet::SCAN_LIMIT`].
+///
+/// The scanner listens with its window as long as its interval, which
+/// makes it the controller's lowest-priority radio activity: the phone's
+/// connection events, the free slot's advertising, and flash writes all
+/// pre-empt it, and it picks up again after (Nordic's "SoftDevice
+/// Controller scheduling"). So listening can't disturb the phone; it only
+/// misses a few percent of what it could hear, which the Aranet4's next
+/// advertisement, a few seconds later, makes up for. A firmware update is
+/// the exception, at a connection interval fast enough to starve the
+/// scanner: it doesn't scan then at all.
+async fn scan(stack: &BleStack) {
+    let mut central = stack.central();
+    let config = ScanConfig {
+        active: false,
+        interval: Duration::from_millis(100),
+        window: Duration::from_millis(100),
+        // `timeout` is ignored for legacy scans: we time it ourselves.
+        ..Default::default()
+    };
+    loop {
+        SCAN.wait().await;
+        let started = Instant::now();
+        if dfu::PROGRESS.lock(Cell::get).is_none() {
+            HEARD_EVERYONE.reset();
+            REPORTS.store(0, Ordering::Relaxed);
+            match Scanner::new(&mut central).scan(&config).await {
+                Ok(session) => {
+                    let limit = Duration::from_millis(aranet::SCAN_LIMIT);
+                    let _ = with_timeout(limit, HEARD_EVERYONE.wait()).await;
+                    session.stop().await;
+                    crate::power::add(crate::power::Meter::Scanning, started);
+                    crate::power::count(crate::power::Count::Scans);
+                }
+                Err(e) => warn!("aranet: scanning failed: {}", e),
+            }
+        }
+        let now = Instant::now().as_millis();
+        let best = NEARBY.lock(|nearby| {
+            let mut nearby = nearby.borrow_mut();
+            nearby.end(now).then(|| nearby.best()).flatten()
+        });
+        let ms = started.elapsed().as_millis() as u32;
+        let reports = REPORTS.load(Ordering::Relaxed);
+        match best {
+            Some(s) => info!(
+                "aranet: {} ms, {} reports; nearest {=[u8]:x} at {} dBm: {} ppm, {} dC, {}%, {} s old",
+                ms,
+                reports,
+                s.address,
+                s.rssi,
+                s.reading.co2,
+                s.reading.tenths(),
+                s.reading.humidity,
+                s.reading.age
+            ),
+            None => info!("aranet: {} ms, {} reports; none heard", ms, reports),
+        }
+    }
+}
+
+/// Takes the scans' advertising reports, as the host's receive loop gets
+/// them: keeps what Aranet4s say, and drops everything else at once (in
+/// a busy place, there are hundreds a second).
+struct Reports;
+
+impl EventHandler for Reports {
+    fn on_adv_reports(&self, reports: LeAdvReportsIter<'_>) {
+        for report in reports.flatten() {
+            REPORTS.fetch_add(1, Ordering::Relaxed);
+            let Some(payload) = aranet::manufacturer_payload(report.data) else {
+                continue;
+            };
+            let Ok(address) = <aranet::Address>::try_from(report.addr.raw()) else {
+                continue;
+            };
+            match aranet::parse(payload) {
+                Ok(reading) => {
+                    let now = Instant::now().as_millis();
+                    let everyone = NEARBY.lock(|nearby| {
+                        let mut nearby = nearby.borrow_mut();
+                        nearby.hear(address, report.rssi, reading, now);
+                        nearby.heard_everyone(now)
+                    });
+                    if everyone {
+                        HEARD_EVERYONE.signal(());
+                    }
+                }
+                // Once or twice a scan, and only from an Aranet: worth
+                // knowing why it's not shown.
+                Err(skip) => info!("aranet: {=[u8]:x} has no reading: {}", address, skip),
+            }
+        }
+    }
 }

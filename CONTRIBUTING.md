@@ -121,6 +121,9 @@ defmt's strings stay in the ELF, so `debug = 2` is free. `cargo bloat
   implements `defmt::Format`, as trouble-host's types do.
 - A static that isn't all zeros goes in `.data`, whose initial image takes
   as much flash as the static takes RAM.
+- `f32::clamp` (or `f64`'s) with bounds that aren't constants: its
+  check of the bounds formats floats into its panic message, ~12 KB.
+  Use `.max(low).min(high)`.
 
 ### Stack
 

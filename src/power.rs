@@ -82,9 +82,12 @@ pub enum Meter {
     /// `activity::still`); the rest of the time, it's read every 0.2 s
     /// (screen off, awake) or every second.
     Still,
+    /// Listening for Aranet4s (radio receiving, ~5.5 mA; see
+    /// [`crate::aranet`]).
+    Scanning,
 }
 
-const METERS: usize = 9;
+const METERS: usize = 10;
 static MILLIS: [AtomicU32; METERS] = [const { AtomicU32::new(0) }; METERS];
 
 /// Adds time spent in `meter`'s state.
@@ -103,9 +106,11 @@ pub enum Count {
     WakeGlance,
     HeartSessions,
     Disconnects,
+    /// Scans for Aranet4s.
+    Scans,
 }
 
-const COUNTS: usize = 7;
+const COUNTS: usize = 8;
 static EVENTS: [AtomicU32; COUNTS] = [const { AtomicU32::new(0) }; COUNTS];
 
 pub fn count(event: Count) {
@@ -120,9 +125,9 @@ pub fn report(period: embassy_time::Duration) {
     let take = |a: &AtomicU32| a.swap(0, Ordering::Relaxed);
     info!(
         "power: awake {=u64}‰, {=u32} wakeups; ms: panel {=u32}, backlight {=u32}, \
-         led {=u32}/{=u32}/{=u32}/{=u32}, connected {=u32}, flash {=u32}, still {=u32}; \
+         led {=u32}/{=u32}/{=u32}/{=u32}, connected {=u32}, flash {=u32}, still {=u32}, scanning {=u32}; \
          wakes: button {=u32}, touch {=u32}, phone {=u32}, attention {=u32}, glance {=u32}; \
-         hr sessions {=u32}, disconnects {=u32}; stack {=u32} B",
+         hr sessions {=u32}, disconnects {=u32}, scans {=u32}; stack {=u32} B",
         1000 - asleep.min(total) * 1000 / total,
         WAKEUPS.swap(0, Ordering::Relaxed),
         take(&MILLIS[Meter::Panel as usize]),
@@ -134,6 +139,7 @@ pub fn report(period: embassy_time::Duration) {
         take(&MILLIS[Meter::Connected as usize]),
         take(&MILLIS[Meter::SpiFlash as usize]),
         take(&MILLIS[Meter::Still as usize]),
+        take(&MILLIS[Meter::Scanning as usize]),
         take(&EVENTS[Count::WakeButton as usize]),
         take(&EVENTS[Count::WakeTouch as usize]),
         take(&EVENTS[Count::WakePhone as usize]),
@@ -141,6 +147,7 @@ pub fn report(period: embassy_time::Duration) {
         take(&EVENTS[Count::WakeGlance as usize]),
         take(&EVENTS[Count::HeartSessions as usize]),
         take(&EVENTS[Count::Disconnects as usize]),
+        take(&EVENTS[Count::Scans as usize]),
         stack_peak(),
     );
 }

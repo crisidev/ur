@@ -370,6 +370,11 @@ pub const HOURGLASS: [u8; 7] = [
 ];
 
 /// 4×5 lightning bolt, for charging.
+/// A little house: the room's own temperature, from a nearby Aranet4,
+/// before the clock face's temperature. A roof over a doorway.
+pub const HOUSE_W: u32 = 5;
+pub const HOUSE: [u8; 5] = [0b00100, 0b01110, 0b11111, 0b01010, 0b01010];
+
 pub const BOLT_W: u32 = 4;
 pub const BOLT: [u8; 5] = [0b0011, 0b0110, 0b1111, 0b0110, 0b1100];
 

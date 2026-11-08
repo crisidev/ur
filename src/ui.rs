@@ -15,7 +15,8 @@
 //! - Above: the last [`HISTORY`] notifications, newest nearest, one a page,
 //!   with when each arrived (see [`crate::arrival`]).
 //! - Below: the button grid (see [`buttons`]), if it's on; Music, while
-//!   the phone has media; then Settings, and Info.
+//!   the phone has media; Air, while a nearby Aranet4 has been heard
+//!   within the hour (see [`crate::aranet`]); then Settings, and Info.
 //!
 //! Screens away from the clock show a short bar, a handle, in the middle of
 //! each edge a swipe leads somewhere from: the one facing the clock (home),
@@ -149,6 +150,7 @@ use heapless::String;
 
 use crate::InputEvent;
 use crate::alarm;
+use crate::aranet::{self, Band, Sighting};
 use crate::arrival;
 use crate::battery::Battery;
 use crate::ble;
@@ -220,9 +222,14 @@ pub struct Status<'a> {
     pub steps: Option<u32>,
     /// The latest heart rate, unless there's none recent enough to show.
     pub heart_rate: Option<u8>,
-    /// The watch's own temperature in °C (see [`crate::temperature`]),
-    /// once it's been read.
+    /// The temperature in °C (see [`crate::temperature`]), once it's been
+    /// read.
     pub temperature: Option<i8>,
+    /// Whether that's a nearby Aranet4's, rather than the watch's own (or
+    /// an estimate from it).
+    pub temperature_from_aranet: bool,
+    /// The nearest Aranet4's latest reading, for the Air screen.
+    pub air: Option<Sighting>,
     /// The most recent sleep within the last day.
     pub sleep: Option<crate::activity::Sleep>,
     /// Local seconds since 1970 (see [`crate::alarm`]), once the time is
@@ -247,6 +254,8 @@ enum Screen {
     /// The button grid (see [`buttons`]).
     Buttons,
     Settings,
+    /// A nearby Aranet4's readings.
+    Air,
     Info,
     /// Asking whether to switch to storage mode: in no line, only reached
     /// by a long press on the info screen.
@@ -492,6 +501,8 @@ pub struct App {
     /// [`App::take_ha_press`]): sealing them needs flash, which is async.
     /// Two, as one touch can complete two (see [`buttons::Grid::touch`]).
     ha_presses: heapless::Vec<Press, 2>,
+    /// Whether there's an Aranet4 reading to show (see [`App::set_air`]).
+    air: bool,
 }
 
 /// How long the grid shows a press it sent.
@@ -520,6 +531,7 @@ impl App {
             brief_wake: false,
             call: None,
             music: None,
+            air: false,
             alarms,
             phone_alarms: alarm::Phone::default(),
             phone_alarms_changed: false,
@@ -598,6 +610,21 @@ impl App {
 
     pub fn set_daytime(&mut self, daytime: bool) {
         self.daytime = daytime;
+    }
+
+    /// Whether a nearby Aranet4 has been heard recently enough for its
+    /// screen to be there ([`aranet::RECENT`]). It goes away when not,
+    /// leaving the clock if it was showing.
+    pub fn set_air(&mut self, air: bool) {
+        self.air = air;
+        if !air && self.screen == Screen::Air {
+            self.screen = Screen::Clock;
+        }
+    }
+
+    /// Whether the Air screen is on screen, for a scan to refresh it.
+    pub fn showing_air(&self) -> bool {
+        self.awake && self.screen == Screen::Air && self.call.is_none() && self.ringing.is_none()
     }
 
     /// Media info is only meaningful while connected: forget it on
@@ -684,6 +711,9 @@ impl App {
                 }
                 if self.music.is_some() {
                     add(Screen::Music);
+                }
+                if self.air {
+                    add(Screen::Air);
                 }
                 add(Screen::Settings);
                 add(Screen::Info);
@@ -1753,6 +1783,10 @@ impl App {
                 Some(music) => render_music(canvas, music, now),
                 None => render_clock(canvas, status, next_alarm, None),
             },
+            Screen::Air => match &status.air {
+                Some(sighting) => render_air(canvas, sighting, now),
+                None => render_clock(canvas, status, next_alarm, None),
+            },
             Screen::Buttons => {
                 let sent = self.sent.filter(|&(_, until, _)| now < until);
                 // The dim look is white on black: dark.
@@ -1918,8 +1952,17 @@ fn render_clock(
     // 100%: the bolt starts at x = 43). "NO TIME" (27 px) and a temperature can't both fit beside
     // that, so until the phone sets the clock (just after a cold boot),
     // the note wins.
+    //
+    // From a nearby Aranet4 (see `crate::temperature`), a little house
+    // goes first: the room's own temperature, not the watch's guess. With
+    // it, the widest still ends at x = 42 (house 5, 2 px, "-10°"), clear
+    // of the battery, and indoors it's two digits anyway.
     // TODO: °F, for those who'd want it.
-    if let (Some(degrees), Some(x)) = (status.temperature, temperature_x) {
+    if let (Some(degrees), Some(mut x)) = (status.temperature, temperature_x) {
+        if status.temperature_from_aranet {
+            canvas.sprite(x, 3, font::HOUSE_W, &font::HOUSE, 1, Color::TEXT_DIM);
+            x += font::HOUSE_W as i32 + 2;
+        }
         let mut text = heapless::String::<6>::new();
         write!(text, "{degrees}°").expect("an i8 is at most 4 chars, and ° is 2 bytes");
         canvas.text(x, 3, &text, Color::TEXT);
@@ -3345,6 +3388,120 @@ fn render_call(canvas: &mut Canvas, call: &Call, now: Instant) {
 const MUSIC_CONTROLS_Y: i32 = 52;
 /// Artist and track scroll within columns 3..77.
 const MUSIC_TEXT_WIDTH: i32 = 74;
+
+// ==============================================================================
+// Air
+// ==============================================================================
+//
+// Canvas layout (80×80), y ranges inclusive:
+//
+//    3..7    AIR (left); how old the reading is (right)
+//   13..33   CO₂ in ppm, in the time's digits at 3×, centred
+//   38..42   "PPM CO2" (left); the band, GOOD/FAIR/POOR (right)
+//   46..48   three segments, the band's lit: it reads without colour
+//   54..63   temperature and humidity at 2×
+//   69..73   pressure (left); the Aranet4's battery (right)
+
+/// A nearby Aranet4's latest reading (see [`crate::aranet`]): the CO₂
+/// big, since that's what the watch can't otherwise know and what to act
+/// on (open a window), then what else it measures.
+///
+/// Not on the clock face: CO₂ changes over tens of minutes, and its number
+/// would crowd a face that's read at a glance, many times a day. The
+/// temperature there comes from the same reading (see
+/// `crate::temperature`).
+///
+/// The readings are as old as the last scan, at most a quarter of an hour
+/// with a sensor around (opening this screen scans again if the last is a
+/// minute old), so the age is always shown; past [`aranet::STALE`], the
+/// numbers go faint.
+fn render_air(canvas: &mut Canvas, sighting: &Sighting, now: Instant) {
+    canvas.clear(BACKGROUND);
+    canvas.text(4, 3, "AIR", Color::ACCENT);
+    let reading = &sighting.reading;
+    let age = sighting.age(now.as_millis());
+    let mut text = heapless::String::<12>::new();
+    match age {
+        0..60 => text.push_str("NOW").expect("fits"),
+        60..3600 => write!(text, "{} MIN", age / 60).expect("fits"),
+        _ => write!(text, "{} H", age / 3600).expect("fits"),
+    }
+    let stale = age >= aranet::STALE;
+    canvas.text_right(76, 3, &text, Color::TEXT_DIM);
+    let value = if stale {
+        Color::TEXT_FAINT
+    } else {
+        Color::TEXT
+    };
+
+    // CO₂: up to four digits of 15 px with 2 px gaps, centred; dashes
+    // while the sensor calibrates.
+    const CO2_Y: i32 = 13;
+    match reading.co2 {
+        Some(ppm) => {
+            let ppm = u64::from(ppm.min(9999));
+            let digits = ppm.max(1).ilog10() as i32 + 1;
+            let mut x = 40 - (digits * 17 - 2) / 2;
+            for place in (0..digits).rev() {
+                draw_digit(
+                    canvas,
+                    x,
+                    CO2_Y,
+                    ppm / 10u64.pow(place as u32) % 10,
+                    3,
+                    value,
+                );
+                x += 17;
+            }
+        }
+        None => {
+            for x in [6, 23, 40, 57] {
+                canvas.fill_rect(x, CO2_Y + 9, 15, 3, value);
+            }
+        }
+    }
+    canvas.text(4, 38, "PPM CO2", Color::TEXT_DIM);
+    // The band: the word, and which third of the bar is lit, so it reads
+    // in every theme, even those of one hue.
+    if let Some(band) = reading.band {
+        let color = match band {
+            Band::Good => Color::GOOD,
+            Band::Fair => Color::TEXT,
+            Band::Poor => Color::BAD,
+        };
+        canvas.text_right(76, 38, band.word(), color);
+        for (i, segment) in [Band::Good, Band::Fair, Band::Poor].into_iter().enumerate() {
+            let lit = if segment == band { color } else { Color::TRACK };
+            canvas.fill_rect(4 + 25 * i as i32, 46, 22, 3, lit);
+        }
+    }
+
+    // Temperature and humidity, at 2×.
+    let mut text = heapless::String::<8>::new();
+    match reading.tenths() {
+        Some(tenths) => write!(text, "{}.{}°", tenths / 10, tenths % 10).expect("fits"),
+        None => text.push_str("--.-°").expect("fits"),
+    }
+    canvas.text_scaled(4, 54, &text, value, 2);
+    let mut text = heapless::String::<4>::new();
+    write!(text, "{}%", reading.humidity.min(100)).expect("fits");
+    canvas.text_scaled(76 - 2 * font::small_text_width(&text), 54, &text, value, 2);
+
+    // Pressure, and the Aranet4's own battery, red when it wants changing.
+    let mut text = heapless::String::<10>::new();
+    if let Some(pressure) = reading.pressure {
+        write!(text, "{} HPA", (pressure + 5) / 10).expect("fits");
+    }
+    canvas.text(4, 69, &text, Color::TEXT_DIM);
+    let mut text = heapless::String::<8>::new();
+    write!(text, "BAT {}%", reading.battery.min(100)).expect("fits");
+    let color = if reading.battery <= 15 {
+        Color::BAD
+    } else {
+        Color::TEXT_DIM
+    };
+    canvas.text_right(76, 69, &text, color);
+}
 
 fn render_music(canvas: &mut Canvas, music: &Music, now: Instant) {
     let elapsed = now - music.since;

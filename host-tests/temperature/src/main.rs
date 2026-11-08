@@ -82,4 +82,172 @@ mod tests {
         }
         assert_eq!(degrees, 22);
     }
+
+    // ==========================================================================
+    // Which source, on the wrist or not, and the estimate
+    // ==========================================================================
+
+    const MIN: u64 = 60 * 1000;
+
+    #[test]
+    fn a_nearby_aranet_wins_then_the_wrist_then_the_watch() {
+        let calibration = Calibration::new();
+        let die = q(27.5);
+        assert_eq!(
+            pick(Some(q(20.0)), true, die, &calibration),
+            (q(20.0), Source::Aranet)
+        );
+        assert_eq!(
+            pick(Some(q(20.0)), false, die, &calibration),
+            (q(20.0), Source::Aranet)
+        );
+        assert_eq!(
+            pick(None, true, die, &calibration),
+            (q(21.5), Source::Wrist)
+        );
+        assert_eq!(pick(None, false, die, &calibration), (die, Source::Watch));
+    }
+
+    #[test]
+    fn worn_takes_a_pulse() {
+        let mut wear = Wear::new(0);
+        assert!(!wear.worn());
+        // A session without a verdict (a busy wrist): still not known.
+        wear.update(MIN, false, false, None);
+        assert!(!wear.worn());
+        wear.update(2 * MIN, false, false, Some(90 * 1000));
+        assert!(wear.worn());
+        assert_eq!(wear.worn_for(2 * MIN + 30 * 1000), Some(MIN));
+    }
+
+    #[test]
+    fn no_skin_or_lying_still_is_off() {
+        let mut wear = Wear::new(0);
+        wear.update(MIN, false, false, Some(MIN));
+        assert!(wear.worn());
+        wear.update(2 * MIN, true, false, Some(MIN));
+        assert!(!wear.worn());
+        // That old pulse doesn't put it back on; a new one does.
+        wear.update(3 * MIN, false, false, Some(MIN));
+        assert!(!wear.worn());
+        wear.update(4 * MIN, false, false, Some(4 * MIN));
+        assert!(wear.worn());
+        // Still, but not for long: a wrist at a desk.
+        let mut at = 4 * MIN;
+        while at < 18 * MIN {
+            at += MIN;
+            wear.update(at, false, true, Some(4 * MIN));
+            assert!(wear.worn(), "at {at}");
+        }
+        // A moment's movement starts the count again.
+        wear.update(at + 1000, false, false, Some(4 * MIN));
+        for _ in 0..14 {
+            at += MIN;
+            wear.update(at, false, true, Some(4 * MIN));
+            assert!(wear.worn(), "at {at}");
+        }
+        // Fifteen minutes still: lying on a table.
+        wear.update(at + 2 * MIN, false, true, Some(4 * MIN));
+        assert!(!wear.worn());
+    }
+
+    #[test]
+    fn the_prior_alone_takes_off_the_skin() {
+        let calibration = Calibration::new();
+        // 27.5 °C on a wrist is a 21.5 °C room; each degree of die is 1.6
+        // degrees of air.
+        assert_eq!(calibration.estimate(q(27.5)), q(21.5));
+        assert_eq!(calibration.estimate(q(30.0)), q(25.5));
+        assert_eq!(calibration.estimate(q(25.0)), q(17.5));
+        // Never more than 15 °C below the die, nor 5 above.
+        assert_eq!(calibration.estimate(q(10.0)), q(-5.0));
+    }
+
+    #[test]
+    fn learns_this_watch_s_offset_quickly() {
+        // A watch whose die reads a degree and a half warmer than the
+        // defaults expect, in a 21 °C room.
+        let mut calibration = Calibration::new();
+        let die = q(29.0);
+        // 23.9 °C, to the nearest quarter.
+        assert_eq!(calibration.estimate(die), q(24.0));
+        for _ in 0..10 {
+            calibration.learn(die, q(21.0));
+        }
+        let error = (calibration.estimate(die) - q(21.0)).abs();
+        assert!(error <= 2, "{} quarters off after 10 pairs", error);
+        // And the slope held: one room's pairs can't tell it.
+        let (k, _) = calibration.line();
+        assert!((k - 1.6).abs() < 0.1, "slope {k}");
+    }
+
+    #[test]
+    fn learns_the_slope_from_a_spread_of_rooms() {
+        // A watch whose truth is air = 2.0 · (die − 27.5) + 21.0, seen
+        // over a few days in rooms from 17 to 25 °C.
+        let truth = |die: f32| 2.0 * (die - 27.5) + 21.0;
+        let mut calibration = Calibration::new();
+        for i in 0..200 {
+            let die = 25.5 + (i % 9) as f32 * 0.5;
+            calibration.learn(q(die), q(truth(die)));
+        }
+        let (k, _) = calibration.line();
+        assert!((k - 2.0).abs() < 0.15, "slope {k}");
+        for die in [26.0, 27.5, 29.0] {
+            let error = (calibration.estimate(q(die)) - q(truth(die))).abs();
+            assert!(error <= 2, "{error} quarters off at {die}");
+        }
+    }
+
+    #[test]
+    fn the_slope_stays_physical() {
+        // Nonsense pairs (the air moving opposite to the die) can't turn
+        // the line around.
+        let mut calibration = Calibration::new();
+        for i in 0..100 {
+            let die = 25.0 + (i % 5) as f32;
+            calibration.learn(q(die), q(40.0 - die));
+        }
+        let (k, _) = calibration.line();
+        assert!((1.0..=3.0).contains(&k), "slope {k}");
+    }
+
+    #[test]
+    fn calibration_survives_flash() {
+        let mut calibration = Calibration::new();
+        calibration.learn(q(28.0), q(20.0));
+        calibration.learn(q(29.0), q(22.0));
+        assert_eq!(Calibration::from_bytes(calibration.to_bytes()), calibration);
+        // Anything else is the prior.
+        assert_eq!(
+            Calibration::from_bytes([0; CALIBRATION_BYTES]),
+            Calibration::new()
+        );
+        let mut nan = calibration.to_bytes();
+        nan[1..5].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert_eq!(Calibration::from_bytes(nan), Calibration::new());
+    }
+
+    #[test]
+    fn pairs_only_from_a_settled_wrist_in_one_room() {
+        let mut pairing = Pairing::new();
+        let worn = Some(30 * MIN);
+        // The first pair has nothing to compare with.
+        assert!(!pairing.offer(0, q(28.0), q(21.0), worn));
+        assert!(pairing.offer(15 * MIN, q(28.25), q(21.5), worn));
+        // A different room: the air jumped.
+        assert!(!pairing.offer(30 * MIN, q(28.25), q(18.0), worn));
+        // Then settled there.
+        assert!(pairing.offer(45 * MIN, q(27.5), q(18.0), worn));
+        // Too long since the last one to know what happened between.
+        assert!(!pairing.offer(90 * MIN, q(27.5), q(18.0), worn));
+        // Just put on: the watch is still warming up.
+        let mut pairing = Pairing::new();
+        assert!(!pairing.offer(0, q(25.0), q(21.0), Some(5 * MIN)));
+        assert!(!pairing.offer(15 * MIN, q(25.0), q(21.0), Some(20 * MIN - 1)));
+        assert!(!pairing.offer(30 * MIN, q(25.0), q(21.0), Some(35 * MIN)));
+        assert!(pairing.offer(45 * MIN, q(25.0), q(21.0), Some(50 * MIN)));
+        // Off the wrist: never.
+        assert!(!pairing.offer(60 * MIN, q(25.0), q(21.0), None));
+    }
 }
