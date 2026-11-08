@@ -26,6 +26,9 @@
 #[path = "../../src/alarm.rs"]
 #[allow(dead_code)]
 mod alarm;
+#[path = "../../src/aranet.rs"]
+#[allow(dead_code)]
+mod aranet;
 #[path = "../../src/arrival.rs"]
 #[allow(dead_code)]
 mod arrival;
@@ -85,6 +88,9 @@ mod route;
 #[path = "../../src/sleep.rs"]
 #[allow(dead_code)]
 mod sleep;
+#[path = "../../src/temperature.rs"]
+#[allow(dead_code)]
+mod temperature;
 #[path = "../../src/theme.rs"]
 #[allow(dead_code)]
 mod theme;

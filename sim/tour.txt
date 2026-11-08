@@ -127,6 +127,20 @@ wait 2s
 expect not buzzing
 buttons off
 
+# A nearby Aranet4 (as a scan would hear it): its temperature on the
+# clock face, after a little house, and its CO2 on a screen of its own,
+# below the music, for an hour after it was last heard.
+aranet 1091 20.75 53 1012.3 87 3m
+wait 1s
+shot 11g-clock-aranet.png
+up
+up
+wait 1s
+shot 11h-air.png
+button
+wait 1s
+aranet off
+
 # ==============================================================================
 # The phone wants attention
 # ==============================================================================

@@ -778,6 +778,11 @@ impl Follower {
             steps: (pass.steps != compare::NONE_U32).then_some(pass.steps),
             heart_rate: (pass.heart_rate != 0).then_some(pass.heart_rate),
             temperature: (pass.has_temperature != 0).then_some(pass.temperature),
+            temperature_from_aranet: pass.has_temperature == 2,
+            // TODO: the Aranet4 reading itself, for the Air screen, should a
+            // dev kit ever have one near (it's not exported: the screen
+            // only exists with one).
+            air: None,
             sleep: (pass.has_sleep != 0).then_some(activity::Sleep {
                 start_utc_minute: pass.sleep_start_utc_minute,
                 end_utc_minute: pass.sleep_end_utc_minute,

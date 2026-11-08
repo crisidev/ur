@@ -20,6 +20,7 @@ use std::task::{Context, Poll, Waker};
 use embassy_time::{Duration, Instant};
 
 use crate::activity;
+use crate::aranet::{self, Sighting};
 use crate::battery::Battery;
 use crate::ble;
 use crate::brightness;
@@ -32,6 +33,7 @@ use crate::gesture::Tracking;
 use crate::motor::{self, Pattern};
 use crate::sleep;
 use crate::system_off::Reason;
+use crate::temperature;
 use crate::theme::Theme;
 use crate::ui::{self, App, Status, ThemeChoice, Unpaired};
 use crate::{InputEvent, alarm};
@@ -71,6 +73,9 @@ pub struct Watch {
     pub update_progress: Option<u8>,
     pub heart_rate: Option<u8>,
     pub temperature: Option<i8>,
+    /// The nearest Aranet4's reading, as a scan would have left it (the
+    /// simulator doesn't scan; `aranet` sets it).
+    pub air: Option<Sighting>,
     /// Day or night, whatever the sun says (see `theme`).
     pub daytime: Option<bool>,
 
@@ -128,6 +133,7 @@ impl Watch {
             update_progress: None,
             heart_rate: None,
             temperature: Some(31),
+            air: None,
             daytime: None,
             panel_awake: false,
             first_frame: true,
@@ -436,6 +442,19 @@ impl Watch {
         // Every pass, not only while the screen is on: its media gestures
         // work with it off too, and need to know there's a phone.
         self.app.set_connected(self.connected);
+        // As `main.rs` does, less the scans: a recent Aranet4 reading has
+        // its screen, and a fresh one gives the temperature (the simulator
+        // has no wrist to estimate it on: `temperature` sets the rest).
+        let now_ms = now.as_millis();
+        self.app.set_air(
+            self.air
+                .is_some_and(|s| now_ms.saturating_sub(s.heard) < aranet::RECENT),
+        );
+        let from_aranet = self
+            .air
+            .filter(|s| s.age(now_ms) < aranet::STALE)
+            .and_then(|s| s.reading.quarters())
+            .map(|quarters| temperature::shown(None, quarters));
         if self.app.awake {
             let status = Status {
                 uptime_secs: now.as_secs(),
@@ -448,7 +467,9 @@ impl Watch {
                 sleep: activity::last_sleep(),
                 local_second: local_second(),
                 heart_rate: self.heart_rate,
-                temperature: self.temperature,
+                temperature: from_aranet.or(self.temperature),
+                temperature_from_aranet: from_aranet.is_some(),
+                air: self.air,
                 battery: &self.battery,
                 bthome: Some(DEMO_IDENTITY),
             };

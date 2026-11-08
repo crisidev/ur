@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use embassy_time::Duration;
 
 use crate::activity;
+use crate::aranet;
 use crate::clock;
 use crate::gb::{self, Incoming, LineBuffer, Outgoing};
 use crate::geo;
@@ -50,6 +51,10 @@ The phone:
 The wearer and the watch:
   battery MV [charging|charged|unplugged]
   steps N | heart BPM|off | temperature C
+  aranet PPM C RH% [HPA [BATTERY% [AGO]]] | aranet off
+                             a nearby Aranet4's reading, as a scan hears
+                             it (AGO: measured e.g. 4m ago); it gives the
+                             clock face's temperature, and the Air screen
   asleep on|off | movement N           what sleep tracking says (smart
                                        alarms, the quiet night)
   last-night HH:MM HH:MM [deep=MIN] [rem=MIN] [awake=MIN]
@@ -326,6 +331,23 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
             watch.temperature = Some(number(need(0, "C")?)?);
             watch.refresh();
         }
+        "aranet" => {
+            watch.air = match need(0, "PPM C RH%, or off")? {
+                "off" => None,
+                ppm => Some(aranet_sighting(
+                    number(ppm)?,
+                    number(need(1, "C")?)?,
+                    number(need(2, "RH%")?.trim_end_matches('%'))?,
+                    arg(3).map(number).transpose()?.unwrap_or(1013.0),
+                    arg(4)
+                        .map(|b| number(b.trim_end_matches('%')))
+                        .transpose()?
+                        .unwrap_or(87),
+                    arg(5).map(duration).transpose()?.unwrap_or_default(),
+                )?),
+            };
+            watch.refresh();
+        }
         "asleep" => {
             activity::set_asleep(on_off(need(0, "on|off")?, "on", "off")?);
             watch.refresh();
@@ -573,6 +595,42 @@ pub fn split(line: &str) -> Result<Vec<String>, String> {
     }
     words.extend(word);
     Ok(words)
+}
+
+/// A nearby Aranet4's reading, heard now: built as its advertisement's
+/// bytes, and read back through the firmware's own parser, so the
+/// simulator shows what the watch would make of them. The status colour
+/// is left out, so the band follows the default thresholds.
+fn aranet_sighting(
+    ppm: u16,
+    celsius: f32,
+    humidity: u8,
+    hpa: f32,
+    battery: u8,
+    ago: Duration,
+) -> Result<aranet::Sighting, String> {
+    let mut payload = [0u8; 22];
+    // Integrations on, firmware 1.4.4.
+    payload[..4].copy_from_slice(&[0x20, 4, 4, 1]);
+    payload[8..10].copy_from_slice(&ppm.to_le_bytes());
+    let twentieths = (celsius * 20.0).round();
+    if !(0.0..16384.0).contains(&twentieths) {
+        return Err(format!("{celsius} °C: out of an Aranet4's range"));
+    }
+    payload[10..12].copy_from_slice(&(twentieths as u16).to_le_bytes());
+    payload[12..14].copy_from_slice(&((hpa * 10.0).round() as u16).to_le_bytes());
+    payload[14] = humidity;
+    payload[15] = battery;
+    payload[17..19].copy_from_slice(&300u16.to_le_bytes());
+    let age = u16::try_from(ago.as_secs()).map_err(|_| "AGO: under 18 h".to_owned())?;
+    payload[19..21].copy_from_slice(&age.to_le_bytes());
+    let reading = aranet::parse(&payload).map_err(|skip| format!("{skip:?}"))?;
+    Ok(aranet::Sighting {
+        address: [0x2a, 0x3f, 0x11, 0x22, 0x33, 0xc4],
+        rssi: -60,
+        reading,
+        heard: embassy_time::Instant::now().as_millis(),
+    })
 }
 
 fn number<T: std::str::FromStr>(s: &str) -> Result<T, String> {
