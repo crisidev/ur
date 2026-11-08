@@ -1,11 +1,131 @@
 # Power plan: from about a week to two or three
 
-Research and plan only. Nothing here has been flashed or measured on the
-watch yet. The patches in the [appendix](#appendix-the-patch) compile
-(`cargo build --release`, with and without `--features field-log`) against
-`99c5f56`, but they haven't been run.
+**Status, 2026-11-08 (`9f01ada`).** Most of the plan has shipped: the
+meters and executor loop (step 0), DC/DC, the disconnect wake, button
+polling, the idle connection, advertising, the heart-rate back-off (now
+an adaptive schedule), the glance heart-rate rule, batched log flushes,
+the 10 s timeout, AUTO/SOFT brightness, touch sleep in the quiet night,
+and the panel's voltages and idle mode. Since then: the accelerometer's
+motion interrupt, and System OFF with storage mode. What's still open
+is the accelerometer rate (`#6`) and heart-rate polling (`#14`). The
+[opportunities table](#opportunities-ranked) has a status for each item,
+and the steps say what landed where. The first two sections below,
+[where the current goes now](#where-the-current-goes-now-2026-11-08) and
+[what's left](#whats-left-re-ranked-2026-11-08), work from the field
+data. Everything after them is the plan as first written, kept for its
+reasoning.
 
-## Summary
+## Where the current goes now (2026-11-08)
+
+The hourly `power:` lines come from the sealed watch on 2026-11-08
+(`tmp/day-20261108/report.txt`, `tmp/sealed-log19/night.log`). The night
+was build `snap.76` (`1e5b869`), with the phone off from 01:21. The day
+was `crash`, `hard` (`1e5b869`), `pair` (`d7ca4d1`), and `all`
+(`9d067b6`). Only the first three logged hourly lines. All of them are
+older than the 10 s timeout and the asleep heart-rate interval, and most
+are older than the panel savings and the motion interrupt. So the table
+uses the measured on-times (**L**), adjusted for what has changed since,
+times the currents from the [budget](#current-budget) (**M**/**D**/**E**).
+A night hour is asleep, worn, with the phone away, as that night was. A
+day hour is awake, with the phone connected, the sun up, and AUTO.
+
+| Item | Night hour µA | Day hour µA | Basis |
+|---|---:|---:|---|
+| Heart-rate LED | ~110 | ~50 | L: 77–116 s/h, all at 12.5 mA, on the old 10-minute schedule. Asleep it is now every 5 min, ~144 s/h (`heart_schedule.rs:72`). By day it's ~40–100 s/h, capped at 180 s/h (`LED_BUDGET`). × 2.8 mA (E, never measured) |
+| Screen | ~20 | ~310 | L: panel 5–51 s/h at night, and 58–107 s/h by day at the old 15 s timeout. By day, now: ~40 s/h of full wakes at AUTO's 19.6 mA backlight plus ~4.5 mA panel, and ~25 s/h of glances at low (1.83 mA) in idle mode. At night: dim, at low |
+| BMA421, 100 Hz, 4× averaging | 50 | 50 | M (aykevl) |
+| Rest of the floor | ~32 | ~40 | nRF 3, ST7789 asleep 10, touch 8 by day and ~0 in the quiet night, flash 1, divider 2, regulator and leakage 15, button polls ~1 (D/E) |
+| Bluetooth | ~24 | ~16 | Night: advertising at 417.5 ms, 2.4 events/s × ~10 µC. Day: 120 ms, latency 2 (L, logged) ≈ 2.8 events/s × ~4 µC ≈ 11, plus the second slot advertising every 2 s ≈ 5 (E) |
+| CPU, thread mode | ~11 | ~20 | L: awake 3‰ at night, 5–6‰ by day, × ~3.7 mA (D) |
+| Field log flushes (logging build) | ~2 | ~2 | L: flash awake ~2 s/h; E |
+| **Total** | **~250** | **~490** | |
+
+That's ~410 µA over a 16 h day and 8 h night: **~16 days** on 160 mAh.
+SOFT instead of AUTO takes ~150 µA off a day hour (~100 µA averaged).
+
+**The battery says otherwise, and that comes first.** The night's
+voltage fell ~4 mV/h (4108 → 4080 mV, 02:03–09:03). On the firmware's
+linear percentage that's the 0.63 %/h the report shows. Near 4.1 V a LiPo
+drops ~4–6 mV per mAh (E: 4.2 → 4.0 V spans only ~10–15% of its charge),
+so 4 mV/h is **~0.7–1 mA**. The `snap.76` night that logged it models at
+~0.2 mA (LED at 80 s/h, touch in standby). The day hours (09:03–14:03)
+fell at the same ~4 mV/h, though their meters show about twice the
+night's load. Either about half a milliamp of constant drain is invisible
+to the meters, or the slope is mostly measurement: relaxation after a
+charge, ±5–10 mV per line, a cell whose curve we don't know. Which it is
+outweighs every remaining item together. See item **A** below.
+
+### The 135 wake-ups a second
+
+The night's hourly lines show ~486 000 wake-ups an hour (135/s) with no
+connection, the screen off, and awake 3‰. That is understood now, and
+it's cheap. `power::sleep` counts every return from WFE
+(`power.rs:33–56`). Each interrupt makes about two (E): one to wake, and
+one straight after the next poll, because the ISR (and the executor's
+SEV pender, `main.rs:226–235`) leaves the event register set. Fitting the
+night's hours to their LED and panel time gives a base of ~118/s, plus
+~740 per LED-second and ~260 per panel-second. In `snap.76` that splits
+as:
+
+| Source | Rate | Wake-ups/s |
+|---|---|---:|
+| Button poll (`main.rs:153`, P0.15 pulsed) | 20 Hz | ~40 |
+| Advertising at 417.5 ms (`ble.rs:359`): RTC0, HFXO start, TIMER0, TX and RX on three channels, MPSL's low-priority signal, ~12 interrupts an event | 2.4 Hz | ~55–60 (the residual) |
+| Heart-rate sessions: 100 Hz `Ticker`, one I2C read each (~7 per poll) | ~80 s/h | ~16 |
+| `glance_task`'s 200 ms timer (it skipped the I2C read asleep, but not the timer) | 5 Hz | ~10 |
+| UI tick and SAADC sample (`main.rs:507`) | 1 Hz | ~5 |
+| Activity FIFO drain (two timers, ~5 transfers) | every 3 s | ~5 |
+| Field-log writer's check (`field_log.rs:243`) | 1 Hz | ~2 |
+| embassy's RTC1 overflow | 2 per 512 s | ~0 |
+
+The cost is the awake ‰. ISR time counts as asleep: it's part of each
+radio event's charge, which is already in the budget. Thread mode is 3‰,
+~3 ms a second (~22 µs per wake-up), so **~11 µA** at ~3.7 mA. Nothing is
+spinning: anomaly 87 is handled, and a stuck pending interrupt would read
+~1000‰. The current build should show ~140/s at night. The motion
+interrupt removed the glance timer while still (`activity.rs:865`, −10/s).
+The FIFO drain went to every 2 s (+2/s). Sessions every 5 min asleep add
+~+14/s. Advertising is the only large share that can go (item **E**).
+The button's 40/s cost ~1 µA in all (~15 µs each). The 1 Hz tick's cost
+is <1 µA, and it feeds the watchdog.
+
+## What's left, re-ranked (2026-11-08)
+
+Savings are 24-hour averages against the ~410 µA above. The letters are
+new, so they don't clash with the original numbers.
+
+| # | Change | Saves µA | Effort | Risk | Notes |
+|---|---|---:|---|---|---|
+| A | **Find the missing half milliamp, if it's real** | 0–~450 | S–M | None | First, with no gear: run the current build from full to empty (the field log keeps the last battery line). ~16 days means the model holds. A week or so means something is unmetered. Then, on the dev kit, measure the shunt floor with the screen off and nothing scheduled: the model says ~110 µA. Suspects, by how far off they could be: the HRS3300's real LED current (the 2.8 mA is a guess, see [below](#current-budget)), the ST7789 not quite in SLPIN (5.6 mA awake), the BMA421, the CST816S, the regulator's quiescent current |
+| B | AUTO by day at high alone (12.3 mA) instead of all three (19.6 mA); or SOFT as the default; or the backlight to low for the last ~3 s before the timeout | ~55 (high), ~100 (SOFT), ~40 (fade) | XS | UX | The biggest lever left, all UX. ~40 s/h of full wakes by day at +7.3 or +14 mA. Readability in sunlight is the cost. `brightness.rs`, `ui.rs:554` |
+| C | `#6`: accelerometer at 50 Hz with 2× averaging | ~30–35 | S | Medium | Still open (`activity.rs:298–300` writes `0x28`). The motion interrupt didn't change the chip's sampling, only our polling. Retune the movement thresholds (`sleep`, `heart::CALM`, `MOTION_LIMIT`, glances) after. Do it alongside the step undercount, not before it: the day's log counted 388 steps to the Garmin's 1324, and a rate change would muddy that |
+| D | Heart rate every 10 min asleep instead of 5 (`ASLEEP_INTERVAL`) | ~18 (~55 at night) | XS | Accuracy | Halves the night's biggest item. The cost is sleep staging: its simulation gave ~64% agreement at 5 min and ~59% at 20 min, so maybe ~62% at 10. Scales with the LED's true current (A) |
+| F | Keep the phone's latency 7: `slow_down` swaps Gadgetbridge's 112.5–120 ms, latency 7 (~1.05 events/s) for latency 2 (~2.8/s) | ~6 | XS | Low | A regression from `#1`, seen in every connection in the day's logs that went 30 s without traffic: latency 7 by 0.5 s, then latency 2 30 s later. Ask for `max_latency: 7` (`ble.rs:486–497`). With a 6 s timeout that's in spec. Phone-to-watch delay ≤ ~1 s, as the phone itself already chooses |
+| E | Advertising at 1022.5 ms once the phone has been gone ~1 h (417.5 ms until then) | ~4 (with the phone off 8 h a night); ~14 while away | S | Low | `ble.rs:359–367`. The cost is a reconnect of up to ~4 min after a long absence (what 1022.5 ms took before `8288e3f`). The first 5 minutes stay fast |
+| H | Find what spends the 3‰ of thread-mode CPU at night | ≤~5 | M | None | Count polls per task on the dev kit. Likely suspects: the per-minute sleep classifier, the FIFO maths, defmt encoding |
+| G | The second slot's advertising at 5 s instead of 2 s while the phone is connected | ~2–3 | XS | Low | An updater or log fetcher finds the watch in ~5–10 s instead of ~2–5 s |
+| — | Watch the hourly `disconnects` | 0, or tens | — | — | Each disconnect buys 5 min of 152.5 ms advertising (~5 µAh) and a fast reconnection. `crash` counted 16 in an hour (19 "Connection Timeout"s in its 1.3 h), which keeps the fast advertising running almost throughout: up to ~65 µA. If it happens on the current build, find out why |
+
+Checked again, and still not worth it:
+
+- **`#14`, heart-rate polling at ~27 Hz.** Each 10 ms poll is a
+  9-byte write-read at 250 kHz (~0.4 ms of TWIM and HFINT) and ~7
+  wake-ups, so ~25 µA while measuring. At 27 Hz that's ~7 µA, but the
+  LED is on only ~3–4% of the time now: **~1 µA**, for M effort and the
+  timing resolution the 100 Hz was there for.
+- **The 1 Hz UI tick with the screen off**: <1 µA, as before. It also
+  feeds the watchdog and keeps the battery smoothing and alarms simple.
+- **Log flushes per page only** (dropping the 30 s): ~1 µA, logging
+  builds only.
+- **Button polls at 100 ms**: ~0.5 µA, and a quick press could fall
+  between polls.
+
+## Summary (as first written, against `99c5f56`)
+
+Research and plan only. Nothing here had been flashed or measured on the
+watch yet. The patches in the [appendix](#appendix-the-patch) compiled
+(`cargo build --release`, with and without `--features field-log`)
+against `99c5f56`, but they hadn't been run.
 
 The battery is ~170–180 mAh. I take 160 mAh as usable. My model of an
 ordinary day (phone connected, ~18 minutes of screen-on, worn around the
@@ -65,6 +185,9 @@ actually lasts much less than ~6 days, something outside the model is
 drawing current. Step 0 is there to find out what.
 
 ## Current budget
+
+As first written. For today's, from the field data, see
+[where the current goes now](#where-the-current-goes-now-2026-11-08).
 
 Assumptions for "a day":
 
@@ -139,26 +262,27 @@ Power Profiler Kit would pin them down in a minute each.
 
 ## Opportunities, ranked
 
-Savings are against today's ~700 µA. Effort: XS (a line or two), S (an
-hour), M (a day). Risk is the chance of breaking something users notice.
+Savings are against the ~700 µA modelled when this was written. Effort:
+XS (a line or two), S (an hour), M (a day). Risk is the chance of
+breaking something users notice.
 
-| # | Change | Saves µA | Effort | Risk | Notes |
-|---|---|---:|---|---|---|
-| 1 | Idle connection parameters (100–125 ms, latency 2) after 30 s quiet; fast again for activity sync, DFU, log fetch | ~130 | S | Medium | The phone may refuse, so log what it gives (patch). Phone→watch latency +≤375 ms. The 0.4.0 log already has an "Instant Passed" disconnect, so watch for more after the change. Zero-code A/B: Gadgetbridge's per-device "low power connection priority" |
-| 2 | Heart rate: start each session at the last *successful* level; back off ×2, ×4 after failures; exit with `NoContact` when raising drive doesn't raise the signal | ~85 worn, ~140 more when off-wrist | S | Low | The drive-response test needs one on-wrist check first (step 3) |
-| 3 | DC/DC regulator (`config.dcdc.reg1 = true`) | ~70 (on today's radio/CPU load; less after #1) | XS | Low–medium | If the inductor were missing the chip would brown out and reset in a loop. Holding the button rolls back. Try the dev kit first |
-| 4 | No `Attention` wake on a plain disconnect | ~50 (scales with disconnects) | XS | None | Pure bug |
-| 5 | Poll the button every 50 ms with P0.15 low between polls | ~33 | S | Low–medium | Must keep the 7 s hold-to-rollback escape working |
-| 6 | Accelerometer at 50 Hz, 2× averaging (FIFO downsampling 4× keeps 12.5 Hz) | ~30 | XS | Medium | Step counter accuracy; the movement noise floor shifts, so the sleep thresholds need a recheck. 50 Hz is the least the feature engine's motion features (`activity::still`) accept in low-power mode; its single and double tap would need 200 Hz |
-| 7 | Advertising: 2 s while the phone is connected, 152.5 ms for a minute after it leaves, then 1022.5 ms | ~25 | S | Low | Updaters and log fetchers scan actively, so 2 s costs them ~2 s |
-| 8 | Heart rate on a glance only while the last reading is >5 min old, and stop at the first reading | ~30 | XS | UX | The face may show a reading up to 5 min old (the background one is ≤10 min) |
-| 9 | Executor sleep loop with the anomaly 87 workaround and timing | 0, or mA | S | Low | Insurance and instrumentation in one; see below |
-| 10 | Screen timeout 15 → 10 s | ~45 | XS | UX | **Done** (`ui`), as the user asked. Glances by button dominate screen-on time. The music screen stays on long enough for a long title to scroll by once (up to ~20 s), and a banner holds the screen until it's gone |
-| 11 | Backlight low (1.83 mA, M) instead of mid (5.51 mA) after dark | ~15–25 (SOFT); AUTO costs more by day | XS | UX | **Done** (`brightness`), as the user asked: AUTO is all three drivers (~19.6 mA) while the sun is up, low from midnight until getting up, mid otherwise. That *costs*: ~+14 mA over mid while the screen is on by day, roughly +50–90 µA averaged (300–550 of the budget's 1100 s/day by day), against ~15–25 µA saved at night. SOFT on the Info screen (mid by day, low otherwise) gets the saving without the cost. A wake alarm ramps from low over a minute |
-| 12 | Field-log flushes per page or per 30 s instead of per second | ~10 (field builds) | XS | Low | Loses ≤30 s of log on a hard reset |
-| 13 | CST816S into deep sleep (`0xA5 = 0x03`, as InfiniTime does) during detected sleep; button-only wake | ~5, plus no stray touch wakes | M | UX | **Done**, as the quiet night with the screen off (taps already didn't wake it then): ~2–3 µA averaged over a day, plus the I2C reads and task wake-ups that bedding's touches cost. Woken by a reset when the screen comes on |
-| 15 | ST7789 at InfiniTime's lowest voltages (PWCTRL1, PWCTRL2, GCTRL) and VDV; idle mode (8 colours, ~8 Hz) for the dim look | ~15–40 | S | Low–medium | **Done** (`display`). E: the voltages ~0.5–1.5 mA off the panel's 5.6 mA whenever it's on (~6–20 µA at 1100 s/day); idle mode at ~8 Hz perhaps 1.5–3 mA more while dim (~10–20 µA at ~600 s/day of glances and nights). Unmeasured: contrast and flicker need eyes on the panel |
-| 14 | Heart-rate polling at the conversion period (~27 Hz) instead of 100 Hz | ~2–5 | M | Medium | Timing resolution was the reason for 100 Hz (`Conversions`) |
+| # | Change | Status (2026-11-08) | Saves µA | Effort | Risk | Notes |
+|---|---|---|---:|---|---|---|
+| 1 | Idle connection parameters (100–125 ms, latency 2) after 30 s quiet; fast again for activity sync, DFU, log fetch | **Done** in `e9dba03` (`ble.rs:476–497`, `slow_down` after `IDLE_AFTER`). The phone grants it (L: 112.5–123.8 ms, latency 2). But Gadgetbridge now picks latency 7 on its own, so this *adds* events: see **F** | ~130 | S | Medium | The phone may refuse, so log what it gives (patch). Phone→watch latency +≤375 ms. The 0.4.0 log already has an "Instant Passed" disconnect, so watch for more after the change. Zero-code A/B: Gadgetbridge's per-device "low power connection priority" |
+| 2 | Heart rate: start each session at the last *successful* level; back off ×2, ×4 after failures; exit with `NoContact` when raising drive doesn't raise the signal | **Done** in `e9dba03` (`heart.rs:401`, the last good level; `NoContact` at `heart.rs:660–664`). Then replaced by the adaptive schedule, `4979861` (`heart_schedule.rs`: failure back-off to 1 h, `give_up`, `LED_BUDGET`). L: every LED millisecond since is at 12.5 mA | ~85 worn, ~140 more when off-wrist | S | Low | The drive-response test needs one on-wrist check first (step 3) |
+| 3 | DC/DC regulator (`config.dcdc.reg1 = true`) | **Done** in `ab5b207` (`main.rs:247`) | ~70 (on today's radio/CPU load; less after #1) | XS | Low–medium | If the inductor were missing the chip would brown out and reset in a loop. Holding the button rolls back. Try the dev kit first |
+| 4 | No `Attention` wake on a plain disconnect | **Done** in `ab5b207` (`ble.rs:331`, only a cut-short pairing wakes) | ~50 (scales with disconnects) | XS | None | Pure bug |
+| 5 | Poll the button every 50 ms with P0.15 low between polls | **Done** in `e9dba03` (`main.rs:151–185`) | ~33 | S | Low–medium | Must keep the 7 s hold-to-rollback escape working |
+| 6 | Accelerometer at 50 Hz, 2× averaging (FIFO downsampling 4× keeps 12.5 Hz) | **Still open** (`activity.rs:298–300`). Re-ranked as **C** | ~30 | XS | Medium | Step counter accuracy; the movement noise floor shifts, so the sleep thresholds need a recheck. 50 Hz is the least the feature engine's motion features (`activity::still`) accept in low-power mode; its single and double tap would need 200 Hz |
+| 7 | Advertising: 2 s while the phone is connected, 152.5 ms for a minute after it leaves, then 1022.5 ms | **Done** in `e9dba03`. Changed by `8288e3f`: 152.5 ms for 5 min, then 417.5 ms, not 1022.5 ms (Android took ~4 min to find that). See **E** (`ble.rs:359–367`) | ~25 | S | Low | Updaters and log fetchers scan actively, so 2 s costs them ~2 s |
+| 8 | Heart rate on a glance only while the last reading is >5 min old, and stop at the first reading | **Done** in `e9dba03`, made panic-safe in `1bd5e6b` (`main.rs:657–667`) | ~30 | XS | UX | The face may show a reading up to 5 min old (the background one is ≤10 min) |
+| 9 | Executor sleep loop with the anomaly 87 workaround and timing | **Done** in `e9dba03` (`main.rs:220–237`, `power.rs:33–56`). L: awake 3‰ at night, so nothing spins | 0, or mA | S | Low | Insurance and instrumentation in one; see below |
+| 10 | Screen timeout 15 → 10 s | **Done** in `93360e3` (`ui.rs:154`) | ~45 | XS | UX | **Done** (`ui`), as the user asked. Glances by button dominate screen-on time. The music screen stays on long enough for a long title to scroll by once (up to ~20 s), and a banner holds the screen until it's gone |
+| 11 | Backlight low (1.83 mA, M) instead of mid (5.51 mA) after dark | **Done** in `ec80454` (`brightness.rs`). AUTO's daytime cost is now the biggest lever: **B** | ~15–25 (SOFT); AUTO costs more by day | XS | UX | **Done** (`brightness`), as the user asked: AUTO is all three drivers (~19.6 mA) while the sun is up, low from midnight until getting up, mid otherwise. That *costs*: ~+14 mA over mid while the screen is on by day, roughly +50–90 µA averaged (300–550 of the budget's 1100 s/day by day), against ~15–25 µA saved at night. SOFT on the Info screen (mid by day, low otherwise) gets the saving without the cost. A wake alarm ramps from low over a minute |
+| 12 | Field-log flushes per page or per 30 s instead of per second | **Done** in `e9dba03` (`field_log.rs:241–256`) | ~10 (field builds) | XS | Low | Loses ≤30 s of log on a hard reset |
+| 13 | CST816S into deep sleep (`0xA5 = 0x03`, as InfiniTime does) during detected sleep; button-only wake | **Done** in `ec80454` (`touch.rs:87`, `main.rs:670–672`) | ~5, plus no stray touch wakes | M | UX | **Done**, as the quiet night with the screen off (taps already didn't wake it then): ~2–3 µA averaged over a day, plus the I2C reads and task wake-ups that bedding's touches cost. Woken by a reset when the screen comes on |
+| 15 | ST7789 at InfiniTime's lowest voltages (PWCTRL1, PWCTRL2, GCTRL) and VDV; idle mode (8 colours, ~8 Hz) for the dim look | **Done** in `ec80454` (`display.rs:116–144`, `set_idle` at `display.rs:207`) | ~15–40 | S | Low–medium | **Done** (`display`). E: the voltages ~0.5–1.5 mA off the panel's 5.6 mA whenever it's on (~6–20 µA at 1100 s/day); idle mode at ~8 Hz perhaps 1.5–3 mA more while dim (~10–20 µA at ~600 s/day of glances and nights). Unmeasured: contrast and flicker need eyes on the panel |
+| 14 | Heart-rate polling at the conversion period (~27 Hz) instead of 100 Hz | **Still open; not worth it now** (~1 µA, see [what's left](#whats-left-re-ranked-2026-11-08)) | ~2–5 | M | Medium | Timing resolution was the reason for 100 Hz (`Conversions`) |
 
 ### Anomaly 87 (FPU), in more detail
 
@@ -195,7 +319,8 @@ way:
 - **Waking once a minute instead of once a second with the screen off.**
   The 1 Hz pass (ADC sample, battery EMA, watchdog, clock checkpoint) is
   ~50 µs of CPU, so <1 µA. Slowing it would also make the clock checkpoint
-  up to a minute stale after a reset. Leave it.
+  up to a minute stale after a reset. Leave it. (Re-checked against the
+  field log's wake-ups on 2026-11-08: still <1 µA.)
 - **HFCLK held by something.** Nothing requests the HFXO except MPSL, for
   radio events. embassy's `hfclk_source` stays on the internal oscillator.
   TWIM and SPIM take HFINT only during transfers, and the RNG only runs
@@ -224,13 +349,19 @@ way:
 
 - `heart::off()` failing leaves the LED lit at up to ~8 mA until the next
   session (the existing TODO). Retrying, or at least counting failures in
-  the hourly line, is cheap insurance.
+  the hourly line, is cheap insurance. **Still open** (`heart.rs:464`).
 - `GattConnectionEvent::ConnectionParamsUpdated` falls into `_ => {}`, so
   we don't know what interval the phone actually picked. The patch logs
   it. This is the single most useful line to have before tuning #1.
+  **Done** in `e9dba03` (`ble.rs:768–777`). It showed Gadgetbridge
+  settling on 112.5–123.8 ms, latency 7, by itself (see **F**).
 - The 0.4.0 log (dev kit on a desk next to the laptop and phone) has three
   "Connection Timeout" disconnects and one "Instant Passed" in 50 minutes.
-  Each one also woke the screen (#4). Unclear why.
+  Each one also woke the screen (#4). Unclear why. The wake is gone
+  (`ab5b207`), and disconnects are counted hourly. The `crash` build
+  logged 19 "Connection Timeout"s in 1.3 h on 2026-11-08 (`hard`: 3,
+  the others none). **Still unexplained**; see the last row of
+  [what's left](#whats-left-re-ranked-2026-11-08).
 
 ## How to measure
 
@@ -304,6 +435,10 @@ before 3–4, since they're bigger wins than their effort.
   battery fit, and the phone's interval. If the fit says ≫ 1 mA, stop
   here and find out why before going on: look at the awake ‰, the LED
   buckets (an LED that never turned off), and wake causes.
+- **Status: done** in `e9dba03`, and `9ea33f8` added `still`. The
+  dev kit read 99.8% asleep and ~150 wake-ups a second. The sealed
+  watch logs 3‰ and 135/s at night, 5–6‰ by day. The battery fit is
+  item **A**.
 
 ### Step 1: the free ones (`#4` attention, `#3` DC/DC, `#7` advertising)
 
@@ -323,6 +458,9 @@ before 3–4, since they're bigger wins than their effort.
     ~10 s;
   - after it has been away >1 min, it reconnects within ~1 min of coming
     back.
+- **Status: done.** `#4` and `#3` in `ab5b207`, `#7` in `e9dba03`.
+  The last test failed at 1022.5 ms (a reconnect took ~4 min), so
+  `8288e3f` made it 152.5 ms for 5 min, then 417.5 ms.
 
 ### Step 2: the connection interval (`#1`)
 
@@ -341,6 +479,11 @@ before 3–4, since they're bigger wins than their effort.
 
   If the phone refuses (a warning, or the logged interval doesn't
   change), keep the Gadgetbridge setting and drop the patch.
+- **Status: done** in `e9dba03`, and the phone grants it. But by
+  2026-11-08 Gadgetbridge's own parameters were already 112.5–123.8 ms
+  with latency 7, half a second into each connection. So `slow_down`
+  now *lowers* the latency to 2, and costs ~7 µA while connected. The
+  fix is **F**.
 
 ### Step 3: heart rate (`#2`, `#8`)
 
@@ -359,6 +502,14 @@ before 3–4, since they're bigger wins than their effort.
     20 then 40 min;
   - sleep tracking now gets `worn = false` from those sessions, so check
     the not-worn classification on a desk night.
+- **Status: done**, differently. `e9dba03` landed the last good level,
+  the failure back-off, and the stale-only glance. Instead of the
+  drive-response test, a low-light check at the lowest drive ends
+  sessions off the wrist (`heart.rs:657–664`). `4979861` replaced the
+  fixed 10 minutes with `heart_schedule`: 2–20 min by movement and
+  readings, every 5 min asleep for sleep staging, failures backing off
+  to 1 h, a 180 s/h LED budget, and later a calm start and an early
+  give-up at a desk. Every LED millisecond since has been at 12.5 mA.
 
 ### Step 4: the floor (`#5`, `#6`)
 
@@ -374,18 +525,26 @@ before 3–4, since they're bigger wins than their effort.
   - re-check the still-wrist movement floor (~25 at 100 Hz) on a desk and
     one night, and adjust the `sleep` thresholds if it moved;
   - the heart-rate motion veto (`MOTION_LIMIT`) uses the same units.
+- **Status:** button polling **done** in `e9dba03`. The accelerometer
+  rate is **still open** (item **C**). `9ea33f8` added the motion
+  interrupt instead, which stops *our* polling while the wrist is
+  still (~1–3 µA), but the chip samples at 100 Hz as before.
 
 ### Step 5: UX knobs (`#10`, `#11`), if wanted
 
 - A 10 s timeout and the low backlight after dark are each a line. Look
   at the hourly `panel` ms and the wake causes before and after. If touch
   wakes are frequent and unintended, consider `#13`.
+- **Status: done.** `#11` and `#13` in `ec80454` (with `#15`), and
+  `#10` in `93360e3`. AUTO by day is now the largest single item:
+  **B**.
 
 ### Step 6: field builds (`#12`)
 
 - Batch the log flushes. Test: a fetched log is still complete up to
   ≤30 s before the fetch, and the `flash` ms in the hourly line drops by
   an order of magnitude.
+- **Status: done** in `e9dba03`. L: flash awake ~2 s/h.
 
 After each step, update the budget table with what the hourly lines and
 the battery fit say. The model is only as good as its worst current
@@ -452,6 +611,10 @@ Our own code and logs:
   the 30 s sessions, the battery noise, and the disconnects.
 
 ## Appendix: the patch
+
+**Historical.** It landed, adapted and split, as `ab5b207` and
+`e9dba03`, and the code has moved on since. Read the commits, not
+this, for what's there.
 
 This applies to `99c5f56` with `git apply`, and is also at
 `tmp/power-research/power.patch`. It covers steps 0–4 and 6. Steps 5 and
