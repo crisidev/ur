@@ -22,6 +22,9 @@ purpose, to test the crash reports. `battery:MV` makes the watch read its
 battery as MV millivolts from then on (`battery:0` for the real reading
 again), e.g. `battery:3300` to test what a critically low battery does: a
 minute later the watch saves its activity and switches itself off.
+`media:1,0` makes the phone seem to be playing something (`media` alone:
+paused), until it disconnects, for the music screen and the clock's media
+icon; it only shows while the phone is connected.
 
 `--theme` renders the frame in another theme's colours (e.g. HANDHELD, for
 the day look at night): the canvas holds colour roles, not colours.
@@ -53,6 +56,7 @@ KINDS = {
     "panic": 11,
     "fault": 12,
     "battery": 13,
+    "media": 14,
 }
 
 

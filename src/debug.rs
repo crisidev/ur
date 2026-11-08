@@ -27,7 +27,10 @@ static UR_CANVAS: AtomicPtr<Canvas> = AtomicPtr::new(core::ptr::null_mut());
 /// SoftDevice Controller fault (to test what a panic records), 13 a battery
 /// voltage, `x` + 256 × `y` millivolts, from now on instead of the measured
 /// one (0 for the measured one again; to test what a critically low battery
-/// does, see [`crate::system_off`])) and the next two the canvas x and y.
+/// does, see [`crate::system_off`]), 14 media from the phone, playing if
+/// `x` is 1, paused otherwise (for screenshots of the music screen and the
+/// clock's media icon; gone once the phone disconnects)) and the next two
+/// the canvas x and y.
 /// Cleared once taken.
 #[unsafe(no_mangle)]
 static UR_INPUT: AtomicU32 = AtomicU32::new(0);
@@ -88,6 +91,22 @@ pub async fn input_task() {
                 let mv = u16::from_le_bytes([x, y]);
                 defmt::warn!("debug: battery at {} mV from now on (0: measured)", mv);
                 BATTERY_MV.store(mv, Ordering::Relaxed);
+                continue;
+            }
+            14 => {
+                let mut artist = heapless::String::new();
+                let mut track = heapless::String::new();
+                let _ = artist.push_str("Ida Moreau");
+                let _ = track.push_str("Night Signals");
+                // Not awaiting room in the queue: holding the two events
+                // across an await would grow this task's static future by
+                // 200 bytes, all for a debugging aid.
+                for event in [
+                    crate::ui::PhoneEvent::MusicInfo { artist, track },
+                    crate::ui::PhoneEvent::MusicState { playing: x == 1 },
+                ] {
+                    let _ = INPUT.try_send(InputEvent::Phone(event));
+                }
                 continue;
             }
             10 => {
