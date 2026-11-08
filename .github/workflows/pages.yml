@@ -1,23 +1,28 @@
-# Publishes the simulator's web page (sim/web/) to GitHub Pages, so the
-# watch can be tried in a browser at the repository's Pages URL
-# (https://jonhoo.github.io/ur/), as of the latest commit on main.
+# Publishes the project's site to GitHub Pages
+# (https://jonhoo.github.io/ur/): a landing page made from README.md, and
+# the simulator's web page (sim/web/) under sim/, so the watch can be
+# tried in a browser, as of the latest commit on main. sim/web/site.sh
+# builds both, as it does locally.
 #
 # Needs Pages switched on, with GitHub Actions as its source (Settings,
 # Pages, "Build and deployment"); until then, this fails at "configure".
 #
-# test.yml's sim-web job checks the same build on every PR (and that its
-# screenshots match the command line's); this only builds and deploys.
+# test.yml's sim-web job checks the simulator's build on every PR (and that
+# its screenshots match the command line's); this only builds and deploys.
 permissions:
   contents: read
 on:
   push:
     branches: [main]
     # The simulator includes the firmware's own UI modules, and its
-    # version from Cargo.toml.
+    # version from Cargo.toml; the landing page is the README, and the
+    # images it shows.
     paths:
       - "src/**"
       - "sim/**"
       - "Cargo.toml"
+      - "README.md"
+      - "docs/screenshots/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 # One deployment at a time, and never cut short: a newer push queues
@@ -42,12 +47,20 @@ jobs:
           key: web
       - name: configure
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # tag=v6.0.0
-      - name: web/build.sh
+      # The checkout has the README's images as Git LFS pointers (no
+      # `lfs: true`): site.sh fetches only the ones the page shows, under
+      # 100 KB, rather than every image in the repository. That's
+      # little enough per deploy that a cache of them, as test.yml keeps
+      # for the approved screenshots, isn't worth its steps. The token is
+      # for GitHub's markdown API, which renders the README.
+      - name: web/site.sh
         working-directory: sim
-        run: web/build.sh
+        run: web/site.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # tag=v5.0.0
         with:
-          path: sim/target/web/
+          path: sim/target/site/
   deploy:
     needs: build
     runs-on: ubuntu-latest
