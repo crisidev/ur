@@ -2907,14 +2907,7 @@ fn render_ha_qr(canvas: &mut Canvas, identity: Option<&Identity>) {
         canvas.text_centered(40, 36, "NO KEY YET", Color::TEXT_DIM);
         return;
     };
-    let mut text = [0u8; 32];
-    for (pair, &byte) in text.chunks_mut(2).zip(&identity.key) {
-        pair[0] = HEX[usize::from(byte >> 4)];
-        pair[1] = HEX[usize::from(byte & 15)];
-    }
-    if let Some(matrix) = crate::qr::encode(&text) {
-        canvas.qr(&matrix);
-    }
+    canvas.qr(&identity.key);
 }
 
 const HEX: &[u8; 16] = b"0123456789ABCDEF";

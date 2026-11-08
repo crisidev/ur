@@ -159,6 +159,20 @@ def theme_symbol(elf: Path, name: str) -> int:
     sys.exit(f"no theme {name} in {elf}")
 
 
+def qr_matrix(key: bytes) -> list[int]:
+    """`key`'s hex as the watch encodes it (`qr::encode`): rows of bits,
+    bit x of row y set for a dark module. Needs `segno` (`uv run --with
+    segno scripts/screenshot.py ...`)."""
+    try:
+        import segno
+    except ImportError:
+        sys.exit("a QR code is showing: run with segno (uv run --with segno ...)")
+    code = segno.make(
+        key.hex().upper(), version=2, error="m", mode="alphanumeric", mask=0, boost_error=False
+    )
+    return [sum(bool(m) << x for x, m in enumerate(row)) for row in code.matrix]
+
+
 def screenshot(elf: Path, out: Path, theme_name: str | None = None) -> None:
     (canvas,) = read_words(symbol(elf, "UR_CANVAS"), 1)
     if canvas == 0:
@@ -179,11 +193,13 @@ def screenshot(elf: Path, out: Path, theme_name: str | None = None) -> None:
         (rgb565,) = struct.unpack(">H", palette_bytes[2 * i : 2 * i + 2])
         r, g, b = rgb565 >> 11, (rgb565 >> 5) & 0x3F, rgb565 & 0x1F
         palette.append((r << 3 | r >> 2, g << 2 | g >> 4, b << 3 | b >> 2))
-    # Then (after the theme pointer) a QR code's rows, and whether it's
-    # wanted and shown: drawn over the canvas at the panel's resolution
-    # (see `Canvas::qr`).
-    *qr, flags = read_words(canvas + 2 * BYTES + 8, QR_SIZE + 1)
+    # Then (after the theme pointer) the bytes a QR code shows (in hex),
+    # and whether it's wanted and shown: drawn over the canvas at the
+    # panel's resolution (see `Canvas::qr`). The watch only works out the
+    # code as it sends it, so this does too, as its host test checks it.
+    *key, flags = read_words(canvas + 2 * BYTES + 8, 4 + 1)
     qr_shown = (flags >> 8) & 0xFF != 0
+    qr = qr_matrix(b"".join(struct.pack("<I", w) for w in key)) if qr_shown else []
     side = (QR_SIZE + 8) * QR_MODULE
     origin = (WIDTH * SCALE - side) // 2
     pixels = []

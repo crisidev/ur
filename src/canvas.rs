@@ -50,10 +50,10 @@ pub struct Canvas {
     front_valid: bool,
     /// Resolves colour roles to pixel bytes when pushing.
     theme: &'static Theme,
-    /// A QR code to show over the canvas this frame (see [`Canvas::qr`]),
-    /// if `qr_wanted`; and whether the panel shows it. Before `batch`, at
-    /// a fixed place for `scripts/screenshot.py`.
-    qr: qr::Matrix,
+    /// The bytes to show over the canvas as a QR code this frame (see
+    /// [`Canvas::qr`]), if `qr_wanted`; and whether the panel shows it.
+    /// Before `batch`, at a fixed place for `scripts/screenshot.py`.
+    qr: [u8; 16],
     qr_wanted: bool,
     qr_shown: bool,
     /// Pixel bytes waiting to be sent; see [`stream`].
@@ -69,7 +69,7 @@ impl Canvas {
             front: [0; BYTES],
             front_valid: false,
             theme: &theme::ARCADE,
-            qr: [0; qr::SIZE],
+            qr: [0; 16],
             qr_wanted: false,
             qr_shown: false,
             batch: [0; BATCH],
@@ -107,8 +107,13 @@ impl Canvas {
     /// leave the canvas beneath it unchanged; whatever the canvas does send
     /// meanwhile (a banner, say) it's drawn again over. The first frame
     /// without it repaints the panel.
-    pub fn qr(&mut self, matrix: &qr::Matrix) {
-        self.qr = *matrix;
+    ///
+    /// What it encodes is `bytes` in hex (capitals, which QR's
+    /// alphanumeric mode packs tighter than bytes): Home Assistant's key.
+    /// The code itself is only worked out as it's sent (see `overlay`),
+    /// rather than kept here, in static RAM, for the rest of the time.
+    pub fn qr(&mut self, bytes: &[u8; 16]) {
+        self.qr = *bytes;
         self.qr_wanted = true;
     }
 
@@ -267,26 +272,39 @@ impl Canvas {
         const ORIGIN: usize = (WIDTH * SCALE - SIDE) / 2;
         match (self.qr_wanted, self.qr_shown) {
             (true, shown) if !shown || covered => {
+                // The code goes in the batch's tail, while the pixels go
+                // out of its head: worked out on the stack (`qr_rows`),
+                // never across an await, so it never takes static RAM
+                // in a future. Two rows of pixels fit beside it.
+                let (pixels, rows) = self.batch.split_at_mut(BATCH - 4 * qr::SIZE);
+                if !qr_rows(&self.qr, rows) {
+                    return;
+                }
                 let span = |at: usize| at as u16..(at + SIDE) as u16;
                 display.start_pixels(span(ORIGIN), span(ORIGIN)).await;
                 let row_bytes = SIDE * 2;
                 let mut used = 0;
                 for y in 0..SIDE {
-                    if used + row_bytes > BATCH {
-                        display.pixels(&self.batch[..used]).await;
+                    if used + row_bytes > pixels.len() {
+                        display.pixels(&pixels[..used]).await;
                         used = 0;
                     }
                     // Modules from the quiet zone's corner.
                     let my = (y / MODULE).wrapping_sub(4);
-                    let line = &mut self.batch[used..used + row_bytes];
+                    let row = rows
+                        .as_chunks::<4>()
+                        .0
+                        .get(my)
+                        .map_or(0, |r| u32::from_le_bytes(*r));
+                    let line = &mut pixels[used..used + row_bytes];
                     for (x, px) in line.as_chunks_mut::<2>().0.iter_mut().enumerate() {
                         let mx = (x / MODULE).wrapping_sub(4);
-                        let dark = my < qr::SIZE && mx < qr::SIZE && self.qr[my] >> mx & 1 != 0;
+                        let dark = mx < qr::SIZE && row >> mx & 1 != 0;
                         *px = if dark { [0x00, 0x00] } else { [0xFF, 0xFF] };
                     }
                     used += row_bytes;
                 }
-                display.pixels(&self.batch[..used]).await;
+                display.pixels(&pixels[..used]).await;
                 display.end_pixels();
                 self.qr_shown = true;
             }
@@ -543,4 +561,25 @@ mod marquee {
             overflow
         }
     }
+}
+
+/// Encodes `bytes` in hex as a QR code, into `rows` (a little-endian
+/// `u32` a row; see [`qr::Matrix`]). Not async, so the encoding's
+/// working (and the matrix) stay on the stack. False if it can't, which
+/// hex always can.
+#[inline(never)]
+fn qr_rows(bytes: &[u8; 16], rows: &mut [u8]) -> bool {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut text = [0u8; 32];
+    for (pair, &byte) in text.chunks_mut(2).zip(bytes) {
+        pair[0] = HEX[usize::from(byte >> 4)];
+        pair[1] = HEX[usize::from(byte & 15)];
+    }
+    let Some(matrix) = qr::encode(&text) else {
+        return false;
+    };
+    for (out, row) in rows.as_chunks_mut::<4>().0.iter_mut().zip(&matrix) {
+        *out = row.to_le_bytes();
+    }
+    true
 }
