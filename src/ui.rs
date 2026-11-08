@@ -109,10 +109,10 @@
 //!
 //! From the phone:
 //!
-//! - Notifications: a two-line banner (app, then sender) for
-//!   [`BANNER_TIME`] and a short buzz. If the screen was off, the
-//!   notification gets the whole (dim, white on black) screen instead, like
-//!   a glance, the sender big if it's short (see [`quiet_layout`]), and the
+//! - Notifications: a banner over the bottom of the screen (the app, then
+//!   who it's from) for [`BANNER_TIME`] and a short buzz. If the screen was
+//!   off, the notification gets the whole (dim) screen instead, like a
+//!   glance, as a history page shows it (see [`render_card`]), and the
 //!   screen sleeps again after. Either way, it's kept in
 //!   the history above the clock; one arriving while that's showing goes
 //!   straight to its first page instead of a banner.
@@ -166,6 +166,7 @@ use crate::motor::{self, Pattern};
 use crate::nav::{self, Place, Side};
 // Defined apart from the UI, so that `gb` (which decodes them) builds
 // without it, in host tests; see `phone`.
+use crate::phone::Text;
 pub use crate::phone::{PhoneEvent, Unpaired};
 use crate::route::{self, Route, Turn};
 use crate::sleep::{self, Change, Over};
@@ -301,10 +302,8 @@ const EDITOR_BUTTONS_Y: i32 = 60;
 
 struct Banner {
     /// Its text lives elsewhere, rather than in a copy (see
-    /// [`App::banner_lines`]).
+    /// [`App::banner_text`]).
     shows: Shows,
-    /// When it appeared, for scrolling long lines.
-    since: Instant,
     until: Instant,
 }
 
@@ -328,18 +327,19 @@ enum Shows {
 }
 
 /// How many notifications the history above the clock keeps. Each costs
-/// 76 bytes of RAM (its two strings, and when it arrived), where there's
+/// 68 bytes of RAM (its two texts, and when it arrived), where there's
 /// little to spare.
 const HISTORY: usize = 3;
 
 struct Notification {
-    app: String<24>,
-    who: String<40>,
+    app: Text<24>,
+    /// Its title: who it's from, in a chat (see `gb`).
+    who: Text<40>,
     /// When it arrived, in local minutes since 1970 (see [`arrival`]), if
     /// the time was known then. The whole minute rather than the minute
     /// of the day, so a page can say which day: with only a few kept,
     /// they can be days old. It costs nothing over a `u16` minute of the
-    /// day, which the strings' 4-byte alignment would pad to 4 bytes
+    /// day, which the texts' 4-byte alignment would pad to 4 bytes
     /// anyway; `NonZero`, so that `None` is free too (minute 0, in 1970,
     /// is never a real time).
     arrived: Option<NonZeroU32>,
@@ -363,7 +363,7 @@ struct Notifications {
 
 impl Notifications {
     /// Keeps a new notification, forgetting the oldest if there's no room.
-    fn push(&mut self, app: String<24>, who: String<40>, arrived: Option<NonZeroU32>) {
+    fn push(&mut self, app: Text<24>, who: Text<40>, arrived: Option<NonZeroU32>) {
         if self.list.is_full() {
             self.list.pop();
         }
@@ -792,20 +792,32 @@ impl App {
             .is_some_and(|b| b.shows == Shows::Newest)
     }
 
-    /// A banner's two lines: the app (or a title), then the sender (or
-    /// what to do).
-    fn banner_lines(&self, shows: Shows) -> (&str, &str) {
-        match shows {
-            Shows::Newest => self
-                .notifications
-                .list
-                .first()
-                .map_or(("", ""), |n| (&n.app, &n.who)),
+    /// What a banner says: the app (or a title) in `app`, then who it's
+    /// from (or what to do) in `who`.
+    fn banner_text(&self, shows: Shows, app: &mut AppText, who: &mut WhoText) {
+        let (title, hint) = match shows {
+            Shows::Newest => {
+                match self.notifications.list.first() {
+                    Some(n) => {
+                        n.app.write_to(app);
+                        n.who.write_to(who);
+                    }
+                    None => {
+                        app.clear();
+                        who.clear();
+                    }
+                }
+                return;
+            }
             Shows::Unpaired(why) => (why.title(), why.hint()),
             Shows::TextAsBitmaps => ("TEXT AS BITMAPS", "SEE FAQ N02"),
             Shows::IntentsOff => ("INTENTS OFF", "SEE FAQ C04"),
             Shows::UpdateRefused => ("UPDATE REFUSED", "SEE FAQ U02"),
-        }
+        };
+        app.clear();
+        who.clear();
+        app.push_str(title).expect("titles are short");
+        who.push_str(hint).expect("hints are short");
     }
 
     pub fn on_input(&mut self, event: InputEvent, now: Instant) {
@@ -1479,7 +1491,6 @@ impl App {
         if self.night.quiet() {
             self.banner = Some(Banner {
                 shows,
-                since: now,
                 until: UNSEEN,
             });
             return;
@@ -1488,12 +1499,9 @@ impl App {
             self.last_input = now;
         }
         // With the screen off, it gets the whole screen.
-        let (app, who) = self.banner_lines(shows);
-        let until = now + shown_for(app, who, !self.awake);
         self.banner = Some(Banner {
             shows,
-            since: now,
-            until,
+            until: now + BANNER_TIME,
         });
         // Not over a ringing alarm, which would go quiet.
         if self.ringing.is_none() {
@@ -1621,12 +1629,9 @@ impl App {
                 .filter(|b| b.until == UNSEEN)
                 .map(|b| b.shows)
         {
-            let (app, who) = self.banner_lines(shows);
-            let until = now + shown_for(app, who, false);
             self.banner = Some(Banner {
                 shows,
-                since: now,
-                until,
+                until: now + BANNER_TIME,
             });
         }
         if self.banner.as_ref().is_some_and(|b| now >= b.until) {
@@ -1661,9 +1666,6 @@ impl App {
     /// whole cycle shows every part of them. That's ~19 s for a 30-letter
     /// title, against the clock face's 10 s; the music screen is opened
     /// rarely enough that the extra time costs little.
-    ///
-    /// TODO: the notification history's pages could use the same, for a
-    /// sender too long to wrap (see `quiet_layout`); none has been seen.
     fn screen_timeout(&self) -> Duration {
         let overflow =
             |text: &str, scale: i32| font::small_text_width(text) * scale - MUSIC_TEXT_WIDTH;
@@ -1687,33 +1689,15 @@ impl App {
         if let Some(call) = &self.call {
             return overflows(&call.caller, 2, CALL_TEXT_WIDTH);
         }
-        // A whole-screen notification's sender only scrolls if it won't
-        // wrap; a banner's, if it won't fit on its line.
-        let scrolls = |app: &str, who: &str, whole_screen: bool| {
-            let who = if whole_screen {
-                quiet_layout(who, &mut Lines::new()).is_none()
-            } else {
-                overflows(who, 1, BANNER_TEXT_WIDTH)
-            };
-            overflows(app, 1, BANNER_TEXT_WIDTH) || who
-        };
-        let banner = self.banner.as_ref().is_some_and(|b| {
-            let (app, who) = self.banner_lines(b.shows);
-            scrolls(app, who, self.quiet_notification())
-        });
-        let screen = match self.screen {
+        // Notifications never scroll: what doesn't fit ends in an
+        // ellipsis (see `render_card` and `render_banner`).
+        match self.screen {
             Screen::Music => self.music.as_ref().is_some_and(|m| {
                 overflows(&m.artist, 1, MUSIC_TEXT_WIDTH)
                     || overflows(&m.track, 2, MUSIC_TEXT_WIDTH)
             }),
-            Screen::Notification(i) => self
-                .notifications
-                .list
-                .get(usize::from(i))
-                .is_some_and(|n| scrolls(&n.app, &n.who, true)),
             _ => false,
-        };
-        banner || screen
+        }
     }
 
     pub fn render(&self, canvas: &mut Canvas, status: &Status, now: Instant) {
@@ -1747,11 +1731,21 @@ impl App {
             }
             return;
         }
+        // Text kept as Latin-1 (see `phone::Text`), as UTF-8 to draw.
+        let (mut app, mut who) = (AppText::new(), WhoText::new());
         if self.quiet_notification()
             && let Some(banner) = &self.banner
         {
-            let (app, who) = self.banner_lines(banner.shows);
-            render_quiet_notification(canvas, app, who, now - banner.since);
+            // The time now in its corner: a wrist raised for a buzz
+            // usually wants that too.
+            self.banner_text(banner.shows, &mut app, &mut who);
+            let mut time = String::<{ arrival::MAX_LEN }>::new();
+            if let Some(second) = status.local_second {
+                // Arriving now: "HH:MM", as the history's are written.
+                let minute = second.div_euclid(60);
+                arrival::write(&mut time, minute, minute).expect("fits in MAX_LEN");
+            }
+            render_card(canvas, &app, &who, &time);
             return;
         }
         if let Some(editing) = self.editing {
@@ -1795,16 +1789,19 @@ impl App {
             Screen::LastNight => render_last_night(canvas, status.sleep),
             Screen::Alarms => render_alarms(canvas, &self.alarms, &self.alarm_state, status),
             Screen::PhoneAlarms => render_phone_alarms(canvas, &self.phone_alarms),
-            // Like a notification that arrived with the screen off, its
-            // text scrolling from when the page opened (the swipe there),
-            // with when it arrived at the bottom, and the handle (see
-            // `edge_bar`) below that.
+            // As a notification that arrived with the screen off shows,
+            // with when it arrived in its corner, and the handles (see
+            // `edge_bar`).
             Screen::Notification(i) => match self.notifications.list.get(usize::from(i)) {
                 Some(n) => {
-                    render_quiet_notification(canvas, &n.app, &n.who, now - self.last_input);
-                    if let (Some(arrived), Some(second)) = (n.arrived, status.local_second) {
-                        render_arrived(canvas, arrived.get().into(), second.div_euclid(60));
+                    let mut arrived = String::<{ arrival::MAX_LEN }>::new();
+                    if let (Some(at), Some(second)) = (n.arrived, status.local_second) {
+                        arrival::write(&mut arrived, at.get().into(), second.div_euclid(60))
+                            .expect("fits in MAX_LEN");
                     }
+                    n.app.write_to(&mut app);
+                    n.who.write_to(&mut who);
+                    render_card(canvas, &app, &who, &arrived);
                 }
                 None => render_clock(canvas, status, next_alarm, None),
             },
@@ -1847,8 +1844,8 @@ impl App {
             _ => {}
         }
         if let Some(banner) = &self.banner {
-            let (app, who) = self.banner_lines(banner.shows);
-            render_banner(canvas, app, who, now - banner.since);
+            self.banner_text(banner.shows, &mut app, &mut who);
+            render_banner(canvas, &app, &who);
         }
     }
 }
@@ -2265,15 +2262,27 @@ fn render_route_glance(canvas: &mut Canvas, status: &Status, step: &route::Step)
     };
     centred(canvas, DISTANCE_Y, &step.distance, scale, Color::TEXT);
 
-    let mut lines = Lines::new();
-    match wrap(&step.street, 76, 1, 2, &mut lines) {
-        Some(()) => {
-            for (i, line) in lines.iter().enumerate() {
-                centred(canvas, STREET_Y + i as i32 * 7, line, 1, Color::TEXT_DIM);
+    let mut lines = [font::Line::default(); 2];
+    let street = step.street.trim();
+    match font::fill(street, font::Face::Small, 76, &mut lines) {
+        count @ 0..=2 => {
+            for (i, &line) in lines[..count].iter().enumerate() {
+                let width = font::small_text_width(&street[line.start..line.end])
+                    + font::small_text_width(line.tail.as_str())
+                    + if line.tail == font::Tail::None { 0 } else { 1 };
+                let y = STREET_Y + i as i32 * 7;
+                canvas.line(
+                    40 - width / 2,
+                    y,
+                    street,
+                    line,
+                    font::Face::Small,
+                    Color::TEXT_DIM,
+                );
             }
         }
         // Too long even for two lines (one very long word): its start.
-        None => {
+        _ => {
             canvas.text(2, STREET_Y, &step.street, Color::TEXT_DIM);
         }
     }
@@ -3207,187 +3216,138 @@ fn render_update(canvas: &mut Canvas, percent: u8, now: Instant) {
 // Notifications, calls, and music
 // ==============================================================================
 
-/// Text columns of the banner, and of a whole-screen notification, as of a
-/// call: four columns (12 of the panel's pixels) clear of each edge, for a
+// Notifications look like the watch's other screens: their app is the
+// title, top left in the accent colour, as TODAY's or ALARMS' is, with the
+// time top right, as MUSIC's state is. Then a rule, and who it's from,
+// in a face that makes it the most important thing on the screen. The
+// banner is the same in short, over the bottom of whatever shows.
+//
+// Who it's from is the 3×5 at 2× if it fits on one line (up to about 9
+// letters): a poster, the size the watch's other big text is. Anything
+// longer is in the medium face (see `font::medium_glyph`), balanced over
+// as few lines as it takes (see `font::wrap`), never the small 1×, which
+// is too small to read at a glance. That's two sizes, chosen by one rule,
+// rather than the three there were: the 2× split over two lines when they
+// came out about equal, and 1× otherwise, so a name's size depended more
+// on how its words fell than on what it was.
+
+/// Text columns of the banner and the notification card, as of a call:
+/// four columns (12 of the panel's pixels) clear of each edge, for a
 /// little more air than the three there were. Four still leave room for
 /// 18 letters at 1× and 9 at 2×, as three did; a fifth would take a
 /// letter off each.
 const BANNER_TEXT: core::ops::Range<i32> = 4..76;
 const BANNER_TEXT_WIDTH: i32 = BANNER_TEXT.end - BANNER_TEXT.start;
 
-/// How long a notification shows: long enough to read, and for long lines
-/// to scroll through once. With the `whole_screen` to itself (it arrived
-/// with the screen off), the sender is wrapped over it (see
-/// [`quiet_layout`]), and only scrolls if even that won't do.
-fn shown_for(app: &str, who: &str, whole_screen: bool) -> Duration {
-    let who_overflow = if !whole_screen {
-        font::small_text_width(who)
-    } else if quiet_layout(who, &mut Lines::new()).is_some() {
-        0
-    } else {
-        font::small_text_width(who) * 2
-    };
-    let overflow = font::small_text_width(app).max(who_overflow) - BANNER_TEXT_WIDTH;
-    BANNER_TIME.max(marquee_cycle(overflow))
-}
+/// A notification's app, and who it's from, as UTF-8 to draw: room for
+/// what [`Text`] keeps of each (see [`Text::write_to`]).
+type AppText = String<{ 2 * 24 + 1 }>;
+type WhoText = String<{ 2 * 40 + 1 }>;
 
-/// Across the bottom rows (free on the clock face): app, then sender.
-/// `elapsed` is how long it's been showing.
-fn render_banner(canvas: &mut Canvas, app: &str, who: &str, elapsed: Duration) {
-    canvas.fill_rect(0, 63, 80, 17, BACKGROUND);
-    canvas.fill_rect(0, 63, 80, 1, Color::ACCENT);
-    canvas.marquee(BANNER_TEXT, 67, app, Color::ACCENT, 1, elapsed);
-    canvas.marquee(BANNER_TEXT, 74, who, Color::TEXT, 1, elapsed);
-}
+/// Line pitch of the medium face: 7 px capitals, 2 accent rows, and a
+/// row's gap, so an accent never touches the line above.
+const MEDIUM_PITCH: i32 = font::MEDIUM_HEIGHT + font::ACCENT_ROWS + 1;
 
-/// Where a quiet notification's sender goes: everything below the app
-/// name, which sits at the very top.
-const QUIET_TOP: i32 = 12;
-/// Line pitch of 1× text: 5 px glyphs, 2 accent rows, 2 rows' gap.
-const QUIET_PITCH: i32 = 9;
-/// The most lines a quiet notification's sender may wrap onto at 1×: as
-/// many 9 px lines as fit below the app name. (At 2×, it's one line or
-/// two; see [`quiet_layout`].)
-const QUIET_LINES: usize = 7;
+/// The most lines who it's from takes in the card: 40 letters at about 11
+/// a line, with room to spare for long words.
+const CARD_LINES: usize = 5;
 
-/// One wrapped line: the longest sender line at 1× is 18 characters, plus
-/// a hyphen; room for multi-byte letters.
-type Line = heapless::String<48>;
-/// Wrapped lines. At 0.4 KB, these are filled in where the caller keeps
-/// them rather than returned: returned (in an `Option`, and again through
-/// `quiet_layout`), each function on the way built its own copy, and
-/// kept a frame for it.
-type Lines = heapless::Vec<Line, QUIET_LINES>;
+/// Where who it's from starts on the card: two rows below the rule, plus
+/// the accents' rows.
+const CARD_WHO_Y: i32 = 12 + 2 + font::ACCENT_ROWS;
 
-/// How a quiet notification's sender fits on the screen: wrapped into
-/// `lines`, and the scale to draw them at. Big (2×) on one line, or two
-/// of about the same width, as a first name and a surname often are (see
-/// [`font::large`]); else normal size (1×), wrapped, as a big line over a
-/// short one, or big words broken with hyphens, read worse than small
-/// text does. `None` if it's too long even for that, and has to scroll.
-fn quiet_layout(who: &str, lines: &mut Lines) -> Option<i32> {
-    lines.clear();
-    let mut push = |line: &str| lines.push(Line::try_from(line).ok()?).ok();
-    match font::large(who, BANNER_TEXT_WIDTH, 2) {
-        Some(font::Large::One(line)) => push(line)?,
-        Some(font::Large::Two(top, bottom)) => {
-            push(top)?;
-            push(bottom)?;
-        }
-        None => return wrap(who, BANNER_TEXT_WIDTH, 1, QUIET_LINES, lines).map(|()| 1),
-    }
-    Some(2)
-}
-
-/// `text` broken at spaces into `lines` of at most `width` pixels at
-/// `scale`; `None` if it doesn't fit in `max_lines` (at most
-/// [`QUIET_LINES`]). A word too long for a line of its own (at 1×, 19
-/// letters or more) is hyphenated, keeping at least three letters for the
-/// next line.
-fn wrap(text: &str, width: i32, scale: i32, max_lines: usize, lines: &mut Lines) -> Option<()> {
-    let fits = |s: &str| font::small_text_width(s) * scale <= width;
-    lines.clear();
-    let mut rest = text.trim();
-    while !rest.is_empty() {
-        // The longest prefix that fits, and the last space within it.
-        let mut end = 0;
-        let mut last_space = None;
-        for (i, c) in rest.char_indices() {
-            let next = i + c.len_utf8();
-            if !fits(&rest[..next]) {
-                break;
-            }
-            end = next;
-            if c == ' ' {
-                last_space = Some(i);
-            }
-        }
-        if end == 0 {
-            return None;
-        }
-        let mut line = Line::new();
-        if end == rest.len() {
-            line.push_str(rest).ok()?;
-            rest = "";
-        } else if let Some(space) = last_space {
-            line.push_str(rest[..space].trim_end()).ok()?;
-            rest = rest[space..].trim_start();
-        } else {
-            // Mid-word: back off until the hyphen fits and at least three
-            // letters of the word go on to the next line.
-            let word_end = rest.find(' ').unwrap_or(rest.len());
-            let mut cut = end;
-            loop {
-                let hyphenated_fits = {
-                    let mut probe = Line::new();
-                    probe.push_str(&rest[..cut]).ok()?;
-                    probe.push('-').ok()?;
-                    fits(&probe)
-                };
-                let left_over = rest[cut..word_end].chars().count();
-                if hyphenated_fits && left_over >= 3 {
-                    break;
-                }
-                cut = rest[..cut].char_indices().last().map(|(i, _)| i)?;
-                if cut == 0 {
-                    return None;
-                }
-            }
-            line.push_str(&rest[..cut]).ok()?;
-            line.push('-').ok()?;
-            rest = &rest[cut..];
-        }
-        if lines.len() == max_lines {
-            return None;
-        }
-        lines.push(line).ok()?;
-    }
-    Some(())
-}
-
-/// A notification that arrived with the screen off (or a page of the
-/// history): the whole screen, white on black like a glance (or in the
-/// theme), the app small at the very top and the sender wrapped and
-/// centred below it, big if it's short (see [`quiet_layout`]; scrolling
-/// only if it's longer still). `elapsed` is how long it's been showing.
-fn render_quiet_notification(canvas: &mut Canvas, app: &str, who: &str, elapsed: Duration) {
+/// A notification, with the whole screen (one that arrived with the screen
+/// off, in the dim look, or a page of the history): the app top left in
+/// the accent colour, and `time` top right (the time now, or when it
+/// arrived), a rule under them, as on Today, and who it's from below,
+/// left-aligned, big if it's short.
+fn render_card(canvas: &mut Canvas, app: &str, who: &str, time: &str) {
     canvas.clear(BACKGROUND);
-    canvas.marquee(BANNER_TEXT, 3, app, Color::TEXT_DIM, 1, elapsed);
-    let mut lines = Lines::new();
-    match quiet_layout(who, &mut lines) {
-        Some(scale) => {
-            // The capitals centred on the screen, which is where the eye
-            // expects a name (centring the space below the app name put
-            // two lines 8 px low), unless that would run into the app name:
-            // seven small lines (the most there are) start just below it
-            // instead. Accents
-            // above the first line are left out of the centring, as most
-            // names have none.
-            let pitch = QUIET_PITCH * scale;
-            let capitals = pitch * (lines.len() as i32 - 1) + 5 * scale;
-            let top = (40 - capitals / 2).max(QUIET_TOP + font::ACCENT_ROWS * scale);
-            for (i, line) in lines.iter().enumerate() {
-                let y = top + pitch * i as i32;
-                let x = 40 - font::small_text_width(line) * scale / 2;
-                canvas.text_scaled(x, y, line, Color::TEXT, scale);
-            }
-        }
-        None => canvas.marquee(BANNER_TEXT, 44, who, Color::TEXT, 2, elapsed),
+    // The app gives way to the time: 4 px between them, and an ellipsis.
+    let time_width = font::small_text_width(time);
+    let gap = if time.is_empty() { 0 } else { time_width + 4 };
+    small_fitted(
+        canvas,
+        BANNER_TEXT.start,
+        3,
+        app,
+        BANNER_TEXT_WIDTH - gap,
+        Color::ACCENT,
+    );
+    canvas.text_right(BANNER_TEXT.end, 3, time, Color::TEXT_DIM);
+    // Dashed, 2 px on and 1 off: Today's chart baselines, in a colour
+    // that shows in every look.
+    for x in (BANNER_TEXT.start..BANNER_TEXT.end).step_by(3) {
+        canvas.fill_rect(x, 11, 2, 1, Color::TEXT_FAINT);
+    }
+
+    if font::small_text_width(who) * 2 <= BANNER_TEXT_WIDTH {
+        // The 2× accents are four rows tall, two more than the medium's.
+        let y = CARD_WHO_Y + font::ACCENT_ROWS;
+        canvas.text_scaled(BANNER_TEXT.start, y, who, Color::TEXT, 2);
+        return;
+    }
+    let mut lines = [font::Line::default(); CARD_LINES];
+    let count = font::wrap(who, font::Face::Medium, BANNER_TEXT_WIDTH, &mut lines);
+    for (i, &line) in lines[..count].iter().enumerate() {
+        let y = CARD_WHO_Y + MEDIUM_PITCH * i as i32;
+        canvas.line(
+            BANNER_TEXT.start,
+            y,
+            who,
+            line,
+            font::Face::Medium,
+            Color::TEXT,
+        );
     }
 }
 
-/// Where a history page shows when its notification arrived: small, and
-/// centred near the bottom, where the sender never reaches (two lines at
-/// 2× end at y = 53; at 1×, the longest sender, 40 bytes, takes at most
-/// four lines, ending at y = 55), above the handle at y = 78.
-const ARRIVED_Y: i32 = 70;
+/// `text` in the small font at (`x`, `y`), in `room` px, ending in an
+/// ellipsis if it doesn't fit.
+fn small_fitted(canvas: &mut Canvas, x: i32, y: i32, text: &str, room: i32, color: Color) {
+    let mut line = [font::Line::default()];
+    if font::wrap(text, font::Face::Small, room, &mut line) > 0 {
+        canvas.line(x, y, text, line[0], font::Face::Small, color);
+    }
+}
 
-/// When a history page's notification arrived, at local minute `at`, as
-/// of local minute `now` (see [`arrival::write`]).
-fn render_arrived(canvas: &mut Canvas, at: i64, now: i64) {
-    let mut text = heapless::String::<{ arrival::MAX_LEN }>::new();
-    arrival::write(&mut text, at, now).expect("fits in MAX_LEN");
-    canvas.text_centered(40, ARRIVED_Y, &text, Color::TEXT_DIM);
+/// Where the banner's box starts with who it's from on one line, and on
+/// two (see [`render_banner`]).
+const BANNER_TOP: [i32; 2] = [56, 46];
+
+/// Over the bottom of the screen: the app (or what happened) small in the
+/// accent colour, and who it's from (or what to do) in the medium face,
+/// on one line or two, ending in an ellipsis if even two won't do. The
+/// history has the rest. One line covers the clock face's heart rate and
+/// steps; two, from just under the seconds, the alarm too, which a 4 s
+/// banner can afford; the time and date always show. Who it's from ends
+/// 4 px above the bottom edge, as the text clears the sides.
+fn render_banner(canvas: &mut Canvas, app: &str, who: &str) {
+    let mut lines = [font::Line::default(); 2];
+    let count = font::wrap(who, font::Face::Medium, BANNER_TEXT_WIDTH, &mut lines).max(1);
+    let top = BANNER_TOP[count - 1];
+    canvas.fill_rect(0, top, 80, 80 - top, BACKGROUND);
+    canvas.fill_rect(0, top, 80, 1, Color::ACCENT);
+    small_fitted(
+        canvas,
+        BANNER_TEXT.start,
+        top + 4,
+        app,
+        BANNER_TEXT_WIDTH,
+        Color::ACCENT,
+    );
+    for (i, &line) in lines[..count].iter().enumerate() {
+        // The app's 5 rows, then 2 clear above the accents.
+        let y = top + 4 + 5 + 2 + font::ACCENT_ROWS + MEDIUM_PITCH * i as i32;
+        canvas.line(
+            BANNER_TEXT.start,
+            y,
+            who,
+            line,
+            font::Face::Medium,
+            Color::TEXT,
+        );
+    }
 }
 
 /// Where the decline/answer buttons start, for both drawing and tapping.

@@ -15,10 +15,10 @@ apart), `tap:X,Y` (`tap:X,Y,MS` held for MS milliseconds, up to 255,
 rather than 80), `long:X,Y`, or `up`, `down`, `left`, `right` (swipes,
 optionally with `:X,Y`), in canvas pixels (0–79);
 `glance` (as if the wrist turned) and `notify` (a test notification;
-`notify` alone has a two-word sender that's big on two lines, `notify:1,0`
-a four-word one, small, `notify:2,0` a much longer one, `notify:3,0` a
-two-word one too unequal to be big, `notify:4,0` one with an accent and a
-word too long for a big line, `notify:5,0` a one-line one, `notify:6,0` and `notify:7,0`
+`notify` alone has a two-word title on one line in the medium face,
+`notify:1,0` a four-word one, `notify:2,0` a much longer one,
+`notify:3,0` and `notify:4,0` (with accents) two-word ones on two lines,
+`notify:5,0` a short one, big, `notify:6,0` and `notify:7,0`
 every ASCII symbol between them, `notify:8,0` curly quotes, a dash, and an
 ellipsis; `notify:X,H` arrived H
 hours ago, for the history's arrival times). `hang`, `panic` (a `defmt::panic!`) and `fault` (a

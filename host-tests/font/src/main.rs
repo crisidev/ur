@@ -11,7 +11,9 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::font::{Glyph, Large, glyph, large, small_text_width};
+    use super::font::{
+        Face, Glyph, Line, MediumGlyph, glyph, medium_glyph, small_text_width, wrap,
+    };
 
     /// A glyph's width and pixels, to compare glyphs by.
     fn look(c: char) -> (u32, [u8; 7]) {
@@ -122,101 +124,238 @@ mod tests {
         assert_eq!(small_text_width("I\u{2026}"), 3 + 1 + 5);
     }
 
-    /// A notification's sender in large type, as the full-screen
-    /// notification lays it out: 2×, in the banner's 72 px.
-    fn sender(text: &str) -> Option<Large<'_>> {
-        large(text, 72, 2)
+    // ==========================================================================
+    // The medium face
+    // ==========================================================================
+
+    fn medium(c: char) -> (u32, [u8; 9]) {
+        let MediumGlyph { width, rows } = medium_glyph(c);
+        (width, rows)
     }
 
-    /// Nine 3-wide letters (or spaces) fit on a line at 2×, ten don't.
     #[test]
-    fn large_on_one_line_if_it_fits() {
-        assert_eq!(sender("Ida"), Some(Large::One("Ida")));
-        assert_eq!(sender("Bo Ek"), Some(Large::One("Bo Ek")));
-        assert_eq!(sender("Nils Holm"), Some(Large::One("Nils Holm")));
-        assert_eq!(sender("Christina"), Some(Large::One("Christina")));
-        assert_eq!(sender("  Ida  "), Some(Large::One("Ida")));
-        assert_ne!(sender("Nils Holme"), Some(Large::One("Nils Holme")));
+    fn medium_has_printable_ascii_all_different() {
+        let unknown = medium('\u{4e2d}');
+        let distinct: Vec<char> = printable_ascii()
+            .filter(|c| !c.is_ascii_lowercase())
+            .collect();
+        for &c in &distinct {
+            assert!(c == '?' || medium(c) != unknown, "{c:?} is drawn as `?`");
+        }
+        for (i, &a) in distinct.iter().enumerate() {
+            for &b in &distinct[i + 1..] {
+                assert_ne!(medium(a), medium(b), "{a:?} and {b:?} look the same");
+            }
+        }
+        for c in 'a'..='z' {
+            assert_eq!(medium(c), medium(c.to_ascii_uppercase()), "{c:?}");
+        }
     }
 
-    /// Two-word names of about the same length go on two lines, down to
-    /// 5 and 7 letters (70%).
+    /// Every Latin-1 letter has a glyph of its own, its lowercase the same.
     #[test]
-    fn large_on_two_lines_if_balanced() {
-        assert_eq!(sender("Maria Olsen"), Some(Large::Two("Maria", "Olsen")));
-        assert_eq!(sender("Jane Smith"), Some(Large::Two("Jane", "Smith")));
-        assert_eq!(sender("Nils Holme"), Some(Large::Two("Nils", "Holme")));
+    fn medium_has_every_latin1_letter() {
+        let unknown = medium('\u{4e2d}');
+        let letters: Vec<char> = ('\u{c0}'..='\u{ff}')
+            .filter(|c| c.is_alphabetic() && !matches!(c, '×' | '÷'))
+            .collect();
+        for &c in &letters {
+            assert_ne!(medium(c), unknown, "{c:?}");
+            assert_ne!(medium(c), medium('A'), "{c:?}");
+        }
+        for (i, &a) in letters.iter().enumerate() {
+            for &b in &letters[i + 1..] {
+                let same_letter = a.to_uppercase().eq(b.to_uppercase());
+                if !same_letter && a != 'ß' && b != 'ß' {
+                    assert_ne!(medium(a), medium(b), "{a:?} and {b:?} look the same");
+                }
+            }
+        }
+        assert_eq!(medium('ø'), medium('Ø'));
+        assert_eq!(medium('ÿ').1[2..], medium('Y').1[2..]);
+    }
+
+    /// Glyphs stay within their width, letters are bold (no pixel alone
+    /// in its row, bar the accents and a few marks), and ASCII leaves the
+    /// accent rows empty.
+    #[test]
+    fn medium_glyphs_stay_in_their_cell() {
+        for c in printable_ascii().chain(('\u{c0}'..='\u{ff}').filter(|c| c.is_alphabetic())) {
+            let (width, rows) = medium(c);
+            assert!((2..=8).contains(&width), "{c:?} is {width} wide");
+            for row in rows {
+                assert_eq!(u32::from(row) >> width, 0, "{c:?} spills right");
+            }
+            if c.is_ascii() {
+                assert_eq!(rows[..2], [0, 0], "{c:?} rises into the accents");
+            }
+            if c.is_ascii_alphanumeric() {
+                // A lone pixel between two clear ones is a hairline
+                // stem: the face is bold.
+                for (y, &row) in rows[2..].iter().enumerate() {
+                    let row = u32::from(row) << 1;
+                    for x in 1..=width {
+                        let lone = (row >> x) & 0b111 == 0b010;
+                        assert!(
+                            !lone || matches!(c.to_ascii_uppercase(), 'M' | 'W' | 'Q'),
+                            "{c:?} row {y}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Round letters are a column wider than square ones, so O isn't 0.
+    #[test]
+    fn medium_widths() {
+        assert_eq!(medium('H').0, 5);
+        assert_eq!(medium('0').0, 5);
+        assert_eq!(medium('O').0, 6);
+        assert_ne!(medium('O'), medium('0'));
         assert_eq!(
-            sender("Sofie Lindahl"),
-            Some(Large::Two("Sofie", "Lindahl"))
+            Face::Medium.width("NILS HOLM"),
+            6 + 4 + 5 + 5 + 2 + 5 + 6 + 5 + 7 + 8
+        );
+        // Typographic punctuation, as the small font has it.
+        assert_eq!(medium('\u{2019}'), medium('\''));
+        assert_eq!(medium('\u{2013}'), medium('-'));
+    }
+
+    // ==========================================================================
+    // Wrapping
+    // ==========================================================================
+
+    /// `text` wrapped in the medium face in 72 px, at most `most` lines,
+    /// as the lines' text.
+    fn wrapped(text: &str, most: usize) -> Vec<String> {
+        let mut lines = vec![Line::default(); most];
+        let count = wrap(text, Face::Medium, 72, &mut lines);
+        lines[..count]
+            .iter()
+            .map(|l| format!("{}{}", &text[l.start..l.end], l.tail.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn one_line_if_it_fits() {
+        assert_eq!(wrapped("ADA LOVELACE", 3), ["ADA LOVELACE"]);
+        assert_eq!(wrapped("", 3), Vec::<String>::new());
+    }
+
+    /// Two lines as even as they can be: not a long line and a stub.
+    #[test]
+    fn balanced() {
+        assert_eq!(wrapped("MARGARET HAMILTON", 3), ["MARGARET", "HAMILTON"]);
+        assert_eq!(
+            wrapped("YOUR PARCEL IS READY FOR PICKUP", 4),
+            ["YOUR PARCEL", "IS READY", "FOR PICKUP"]
+        );
+        assert_eq!(wrapped("3 NEW MESSAGES", 3), ["3 NEW", "MESSAGES"]);
+        // Never by breaking a word that fits.
+        for line in wrapped("NORSK BIBLIOTEKFORENING MEDLEMSSERVICE", 5) {
+            assert!(Face::Medium.width(&line) <= 72, "{line}");
+        }
+    }
+
+    /// A dash ends a line rather than starting one, and a hyphenated word
+    /// breaks after its hyphen.
+    #[test]
+    fn dashes() {
+        assert_eq!(
+            wrapped("TANNLEGE - DR. ØSTBY", 3),
+            ["TANNLEGE -", "DR. ØSTBY"]
+        );
+        assert_eq!(wrapped("#FIRMWARE-REVIEW", 3), ["#FIRMWARE-", "REVIEW"]);
+    }
+
+    /// A link breaks where its parts meet, never with a hyphen added.
+    #[test]
+    fn links_keep_their_letters() {
+        let lines = wrapped("HTTPS://CI.EXAMPLE.ORG/UR/RUNS/4821", 5);
+        assert_eq!(lines.concat(), "HTTPS://CI.EXAMPLE.ORG/UR/RUNS/4821");
+        assert_eq!(lines[0], "HTTPS://CI");
+        assert!(lines[1].starts_with(".EXAMPLE"));
+        // Without anywhere to break, still no hyphen.
+        let lines = wrapped("WWW.ABCDEFGHIJKLMNOPQRSTU", 3);
+        assert_eq!(lines.concat(), "WWW.ABCDEFGHIJKLMNOPQRSTU");
+    }
+
+    /// A word too long for a line, with nothing else to break at, is
+    /// hyphenated, with at least three letters either side.
+    #[test]
+    fn long_words_hyphenate() {
+        let lines = wrapped("VELFERDSTEKNOLOGIAVDELINGEN", 4);
+        assert!(lines.len() >= 2);
+        let mut joined = String::new();
+        for line in &lines[..lines.len() - 1] {
+            assert!(line.ends_with('-'), "{line}");
+            assert!(line.chars().count() >= 4, "{line}");
+            joined += line.trim_end_matches('-');
+        }
+        let last = lines.last().expect("two lines at least");
+        assert!(last.chars().count() >= 3, "{last}");
+        joined += last;
+        assert_eq!(joined, "VELFERDSTEKNOLOGIAVDELINGEN");
+    }
+
+    /// What doesn't fit ends in an ellipsis, not cut off silently, and not
+    /// after a space or punctuation.
+    #[test]
+    fn ellipsis_when_out_of_lines() {
+        assert_eq!(
+            wrapped("NORSK BIBLIOTEKFORENING", 1),
+            ["NORSK BIBLI\u{2026}"]
         );
         assert_eq!(
-            sender("Henrik Nordahl"),
-            Some(Large::Two("Henrik", "Nordahl"))
+            wrapped("FAMILIEN (12 MESSAGES): ÅSE", 2)[1],
+            "MESSAGES)\u{2026}"
         );
-        // Extra spaces between the words don't end up on either line.
-        assert_eq!(sender("Maria  Olsen"), Some(Large::Two("Maria", "Olsen")));
+        for (text, most) in [
+            ("YOUR PARCEL IS READY FOR PICKUP", 2),
+            ("ABC DEF GHI JKL MNO PQR", 1),
+        ] {
+            let lines = wrapped(text, most);
+            assert_eq!(lines.len(), most);
+            let last = lines.last().expect("a line");
+            assert!(last.ends_with('\u{2026}'), "{last}");
+            assert!(!last.contains(" \u{2026}"), "{last}");
+            for line in &lines {
+                assert!(Face::Medium.width(line) <= 72, "{line}");
+            }
+        }
     }
 
-    /// A short word over a long one is small, even if both fit at 2×.
+    /// Every line fits, and the lines together are the text, for anything.
     #[test]
-    fn small_if_unbalanced() {
-        assert_eq!(sender("Ada Lovelace"), None);
-        assert_eq!(sender("Nora Lindqvist"), None);
-        // 4 and 6 letters: 65%.
-        assert_eq!(sender("Nils Hansen"), None);
-        // 6 and 9 letters: 66%.
-        assert_eq!(sender("Henrik Johansson"), None);
-    }
-
-    /// A word too long for a line is small, never hyphenated.
-    #[test]
-    fn small_if_a_word_is_too_long() {
-        assert_eq!(sender("Bartholomew"), None);
-        assert_eq!(sender("Dr. Bartholomew"), None);
-        assert_eq!(sender("Åse Kristiansen"), None);
-    }
-
-    /// With more words, the split that balances the lines best, which
-    /// needn't be where a greedy wrap would break.
-    #[test]
-    fn several_words_split_where_most_balanced() {
-        assert_eq!(
-            sender("Hi how are you"),
-            Some(Large::Two("Hi how", "are you"))
-        );
-        // Greedy: "ANA BO EK" over "LUND".
-        assert_eq!(
-            sender("Ana Bo Ek Lund"),
-            Some(Large::Two("Ana Bo", "Ek Lund"))
-        );
-        // Three lines' worth.
-        assert_eq!(sender("Hi how are you doing"), None);
-        assert_eq!(sender("Night Signals: Ida Moreau"), None);
-        // Every split leaves one line too long, or the two unequal.
-        assert_eq!(sender("Bo Ek Lovelace"), None);
-    }
-
-    /// Letters beyond ASCII measure as their glyphs do: Æ is wider than
-    /// the rest, Å and Ø as wide.
-    #[test]
-    fn large_with_nordic_letters() {
-        assert_eq!(sender("Åse Ørn"), Some(Large::One("Åse Ørn")));
-        assert_eq!(
-            sender("Bjørn Ødegård"),
-            Some(Large::Two("Bjørn", "Ødegård"))
-        );
-        assert_eq!(sender("Åse Øvrebø"), None);
-        // Nine letters fit on a line, but not with Æ's two extra columns.
-        assert_eq!(sender("Ærle Holm"), Some(Large::Two("Ærle", "Holm")));
-        assert_eq!(sender("Ærle Holme"), Some(Large::Two("Ærle", "Holme")));
-        assert_eq!(sender("Æsa Holmsen"), None);
-    }
-
-    /// Nothing to show fits on one line.
-    #[test]
-    fn large_when_empty() {
-        assert_eq!(sender(""), Some(Large::One("")));
-        assert_eq!(sender("   "), Some(Large::One("")));
+    fn lines_fit_and_keep_everything() {
+        for text in [
+            "SAMEIET BJØRNSTJERNE BJØRNSONS GATE 12",
+            "BURSDAGSGJENGEN 2026",
+            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+            "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM",
+            "A - B - C - D - E - F - G - H - I - J - K",
+            "- - - - - - - - - - - - - - - - - - - -",
+            "ÆØÅÆØÅÆØÅÆØÅÆØÅÆØÅÆØÅ",
+            "X",
+            "A.B/C@D:E_F-G.H/I@J:K_L-M.N/O@P:Q_R-S",
+        ] {
+            let lines = wrapped(text, 40);
+            let mut joined = String::new();
+            for line in &lines {
+                assert!(Face::Medium.width(line) <= 72, "{text}: {line}");
+                if !joined.is_empty()
+                    && !line.starts_with(['.', '/'])
+                    && !joined.ends_with(['-', '/', '@', ':', '_'])
+                {
+                    joined.push(' ');
+                }
+                joined += line
+                    .strip_suffix('-')
+                    .filter(|_| line.len() > 1 && !text.contains(line.as_str()))
+                    .unwrap_or(line);
+            }
+            assert_eq!(joined.replace(' ', ""), text.replace(' ', ""), "{lines:?}");
+        }
     }
 }

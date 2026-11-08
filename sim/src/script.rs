@@ -198,8 +198,8 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
                 debug::backdate_next(duration(ago)?.as_secs() as i64 / 60);
             }
             watch.input(InputEvent::Phone(PhoneEvent::Notification {
-                app: truncated(&app),
-                who: truncated(&who),
+                app: app.as_str().into(),
+                who: who.as_str().into(),
             }));
         }
         "call" => {

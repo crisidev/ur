@@ -13,7 +13,7 @@
 //! "don't echo this" marker) and ending in `\n`, in ISO-8859-1. Two shapes:
 //!
 //! ```text
-//! \x10GB({"t":"notify","id":17,"src":"Signal","sender":"Alice",…})
+//! \x10GB({"t":"notify","id":17,"src":"Signal","title":"Alice",…})
 //! \x10setTime(1762436800);E.setTimeZone(1.0);(s=>s&&…)(…)
 //! ```
 //!
@@ -35,7 +35,7 @@ use core::fmt::Write as _;
 use defmt::{Format, debug, warn};
 use heapless::String;
 
-use crate::phone::PhoneEvent;
+use crate::phone::{PhoneEvent, TextBuilder};
 use crate::{alarm, route};
 
 // ==============================================================================
@@ -173,26 +173,37 @@ fn phone_event(kind: &str, object: Object<'_>, bitmaps: &mut bool) -> Option<Pho
         }
         out
     }
+    /// The text of a notification, as it's kept to show (see
+    /// [`TextBuilder`]).
+    fn shown<const N: usize>(object: Object<'_>, key: &str, bitmaps: &mut bool) -> TextBuilder<N> {
+        let mut out = TextBuilder::new();
+        if let Some(value) = object.get(key) {
+            *bitmaps |= value.decode(&mut |c| out.push(c));
+        }
+        out
+    }
     Some(match kind {
         "notify" => {
             // What isn't shown is still read, for images: Gadgetbridge
-            // renders the title, subject, and body the same way.
-            for key in ["title", "subject", "body"] {
+            // renders the subject and body the same way as the title.
+            for key in ["subject", "body"] {
                 if let Some(value) = object.get(key) {
                     *bitmaps |= value.decode(&mut |_| {});
                 }
             }
-            // Messaging apps usually put the sender's name in the title and
-            // leave `sender` empty.
-            let sender: String<40> = text(object, "sender", bitmaps);
-            let who = if sender.is_empty() {
-                text(object, "title", bitmaps)
-            } else {
-                sender
-            };
+            // The title is who it's from, in chats (the contact, or the
+            // group); Gadgetbridge's `sender` is set by fewer apps, and
+            // then often to something else (an SMS's number, with the
+            // contact's name as the title). So the title, shown as it
+            // comes, whatever app it's from, and `sender` only when the
+            // title is empty: not when it was only emoji, which shows
+            // nothing (see `TextBuilder`).
+            let title: TextBuilder<40> = shown(object, "title", bitmaps);
+            let sender: TextBuilder<40> = shown(object, "sender", bitmaps);
+            let who = if title.blank() { sender } else { title };
             PhoneEvent::Notification {
-                app: text(object, "src", bitmaps),
-                who,
+                app: shown(object, "src", bitmaps).finish(),
+                who: who.finish(),
             }
         }
         "call" => match object.get("cmd").and_then(|v| v.as_raw_str()) {

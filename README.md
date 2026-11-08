@@ -107,6 +107,11 @@ along the top means unseen notifications; a note in the top left, that
 music is playing; a crossed-out Bluetooth rune there, that the phone
 isn't connected.
 
+**Notifications** show the app and the notification's title (in a
+chat, who it's from), never what it says, and without emoji. One that
+comes with the screen on shows along the bottom for 4 seconds; with the
+screen off, it gets the whole screen, dimly, with the time.
+
 **Screens:** swipe right for Today (steps and heart rate by the hour),
 then Last night; left for Alarms, the alarms set in Gadgetbridge,
 Settings, then Info; down for the last three notifications; up for the

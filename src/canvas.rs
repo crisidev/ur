@@ -192,6 +192,41 @@ impl Canvas {
         cursor
     }
 
+    /// Text in the medium face (see [`font::medium_glyph`]); returns the x
+    /// just past its end. `y` is the top of the capitals; accents extend
+    /// above it.
+    pub fn text_medium(&mut self, x: i32, y: i32, text: &str, color: Color) -> i32 {
+        let mut cursor = x;
+        let top = y - font::ACCENT_ROWS;
+        for c in text.chars() {
+            let glyph = font::medium_glyph(c);
+            self.sprite(cursor, top, glyph.width, &glyph.rows, 1, color);
+            cursor += glyph.width as i32 + 1;
+        }
+        cursor
+    }
+
+    /// One laid-out [`font::Line`] of `text` (see [`font::wrap`]), in
+    /// `face`, its tail (a hyphen or an ellipsis) after it.
+    pub fn line(
+        &mut self,
+        x: i32,
+        y: i32,
+        text: &str,
+        line: font::Line,
+        face: font::Face,
+        color: Color,
+    ) {
+        let mut draw = |x: i32, text: &str| match face {
+            font::Face::Small => self.text(x, y, text, color),
+            font::Face::Medium => self.text_medium(x, y, text, color),
+        };
+        let end = draw(x, &text[line.start..line.end]);
+        // Right after the text, as one more letter of it.
+        let x = if line.end > line.start { end } else { x };
+        draw(x, line.tail.as_str());
+    }
+
     /// Text confined to `columns`. If it doesn't fit, it scrolls:
     /// a pause at the start, a steady crawl to the end, a pause there, and
     /// round again. `elapsed` is how long the text has been showing.

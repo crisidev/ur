@@ -46,7 +46,7 @@ mod tests {
 
     use super::alarm::{PhoneAlarm, Switch};
     use super::gb::{self, Incoming, LineBuffer};
-    use super::phone::PhoneEvent;
+    use super::phone::{PhoneEvent, Text, TextBuilder};
     use super::route::{Step, Turn};
 
     // ==========================================================================
@@ -82,17 +82,9 @@ mod tests {
         text.try_into().expect("test strings fit")
     }
 
-    /// `text` cut to what fits in `N` bytes of UTF-8, at a character
-    /// boundary, as the firmware's fixed-size strings cut it.
-    fn fit<const N: usize>(text: &str) -> String {
-        let mut out = String::new();
-        for c in text.chars() {
-            if out.len() + c.len_utf8() > N {
-                break;
-            }
-            out.push(c);
-        }
-        out
+    /// `text` as a notification keeps it to show (see `TextBuilder`).
+    fn t<const N: usize>(text: &str) -> Text<N> {
+        text.into()
     }
 
     /// Gadgetbridge's `jsonToStringInternal` for a string, ported: how it
@@ -361,22 +353,51 @@ mod tests {
         assert_eq!(
             event(line),
             PhoneEvent::Notification {
-                app: s("Signal"),
-                who: s("Kari Nordmann")
+                app: t("Signal"),
+                who: t("Kari Nordmann")
             }
         );
     }
 
+    /// The title is shown, whatever `sender` says, and whole: a group
+    /// chat's "Group: Person" isn't split.
     #[test]
-    fn the_sender_wins_over_the_title() {
+    fn the_title_wins_over_the_sender() {
         let line = br#"GB({"t":"notify","id":5,"src":"SMS Message","title":"New message","subject":"","body":"Your parcel has shipped","sender":"Posten","tel":"+4799999999"})"#;
         assert_eq!(
             event(line),
             PhoneEvent::Notification {
-                app: s("SMS Message"),
-                who: s("Posten")
+                app: t("SMS Message"),
+                who: t("New message")
             }
         );
+        let line = notify_line("WhatsApp", "Familien (12 messages): Åse", "Åse");
+        let PhoneEvent::Notification { who, .. } = event(&line) else {
+            panic!("a notification");
+        };
+        assert_eq!(who.to_string(), "Familien (12 messages): Åse");
+    }
+
+    /// Without a title (Gadgetbridge's own SMS, say), `sender`; but not
+    /// for a title that was only emoji, which shows nothing.
+    #[test]
+    fn the_sender_only_without_a_title() {
+        let line = br#"GB({"t":"notify","id":5,"src":"SMS Message","title":"","subject":"","body":"Hei","sender":"+47 912 34 567","tel":"+4791234567"})"#;
+        let PhoneEvent::Notification { who, .. } = event(line) else {
+            panic!("a notification");
+        };
+        assert_eq!(who.to_string(), "+47 912 34 567");
+        let line = br#"GB({"t":"notify","src":"SMS Message","title":" 
+ ","sender":"Posten"})"#;
+        let PhoneEvent::Notification { who, .. } = event(line) else {
+            panic!("a notification");
+        };
+        assert_eq!(who.to_string(), "Posten");
+        let line = br#"GB({"t":"notify","src":"Telegram","title":"\ud83c\udf89\ud83c\udf82","sender":"Kari"})"#;
+        let PhoneEvent::Notification { who, .. } = event(line) else {
+            panic!("a notification");
+        };
+        assert!(who.is_empty(), "{who:?}");
     }
 
     #[test]
@@ -387,8 +408,8 @@ mod tests {
         assert_eq!(
             event(line),
             PhoneEvent::Notification {
-                app: s("Calendar"),
-                who: s("")
+                app: t("Calendar"),
+                who: t("")
             }
         );
     }
@@ -415,13 +436,15 @@ mod tests {
             (br#""a\1b\20c\x035""#, "a\u{1}b\u{10}c\u{3}5"),
         ];
         for &(spelled, text) in cases {
-            let mut line = br#"GB({"t":"notify","id":1,"src":"Signal","title":"#.to_vec();
+            // A caller's name keeps the text as decoded (a notification's
+            // is cleaned up: see `text_as_shown`).
+            let mut line = br#"GB({"t":"call","cmd":"incoming","name":"#.to_vec();
             line.extend_from_slice(spelled);
-            line.extend_from_slice(br#","sender":""})"#);
-            let PhoneEvent::Notification { who, .. } = event(&line) else {
-                panic!("a notification");
+            line.extend_from_slice(br#"})"#);
+            let PhoneEvent::IncomingCall { caller } = event(&line) else {
+                panic!("a call");
             };
-            assert_eq!(who, text, "{}", String::from_utf8_lossy(spelled));
+            assert_eq!(caller, text, "{}", String::from_utf8_lossy(spelled));
         }
     }
 
@@ -430,21 +453,28 @@ mod tests {
     /// are no entities to decode (an `&amp;` would be the app's own, and
     /// show on the phone too). Smart quotes and dashes arrive as `\u`
     /// escapes (Gadgetbridge only swaps them for ASCII when it renders
-    /// text as images), for the font to draw as their ASCII look-alikes.
+    /// text as images), and are kept as their ASCII look-alikes, as the
+    /// font draws them.
     #[test]
     fn symbols_arrive_as_they_are() {
-        for title in [
-            "Tom & Jerry <3",
-            "Don't \"panic\" #1 @ben?",
-            "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~",
-            "\u{201c}Don\u{2019}t\u{201d} \u{2013} Ida\u{2026}",
-            "AT&amp;T",
+        for (title, shown) in [
+            ("Tom & Jerry <3", "Tom & Jerry <3"),
+            ("Don't \"panic\" #1 @ben?", "Don't \"panic\" #1 @ben?"),
+            (
+                "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~",
+                "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~",
+            ),
+            (
+                "\u{201c}Don\u{2019}t\u{201d} \u{2013} Ida\u{2026}",
+                "\"Don't\" - Ida\u{2026}",
+            ),
+            ("AT&amp;T", "AT&amp;T"),
         ] {
             let line = notify_line("Mail", title, "");
             let PhoneEvent::Notification { who, .. } = event(&line) else {
                 panic!("a notification");
             };
-            assert_eq!(who, title, "{}", String::from_utf8_lossy(&line));
+            assert_eq!(who.to_string(), shown, "{}", String::from_utf8_lossy(&line));
         }
         // As Gadgetbridge spells them (see `gadgetbridge_string`).
         assert_eq!(
@@ -464,8 +494,8 @@ mod tests {
         assert_eq!(
             event(&line),
             PhoneEvent::Notification {
-                app: s("Signal"),
-                who: s("ÆØÅ æøå")
+                app: t("Signal"),
+                who: t("ÆØÅ æøå")
             }
         );
         // Without padding, too.
@@ -473,30 +503,99 @@ mod tests {
         let PhoneEvent::Notification { who, .. } = event(line) else {
             panic!("a notification");
         };
-        assert_eq!(who, "ÆØÅ");
+        assert_eq!(who.to_string(), "ÆØÅ");
     }
 
+    /// 40 characters of title, æ, ø and å as many as any (in UTF-8 they
+    /// took two bytes each, and a name of them was cut at 20), and an
+    /// ellipsis where it was cut.
     #[test]
-    fn long_fields_are_cut_at_a_character() {
-        // 40 bytes of sender: 20 two-byte letters, the 21st cut.
+    fn long_fields_keep_characters_and_end_in_an_ellipsis() {
         let name = "Øyvind Åsmund Ødegård Ærlig Østby Æsøy";
-        let line = notify_line("A messaging app with a long name", "", name);
+        let line = notify_line("A messaging app with a long name", name, "");
         let PhoneEvent::Notification { app, who } = event(&line) else {
             panic!("a notification");
         };
-        assert_eq!(app.as_str(), fit::<24>("A messaging app with a long name"));
-        assert_eq!(who.as_str(), fit::<40>(name));
-        assert!(who.len() <= 40);
+        assert_eq!(who.to_string(), name);
+        assert_eq!(app.to_string(), "A messaging app with a\u{2026}");
+        let name = "Sameiet Bjørnstjerne Bjørnsons gate 12, oppgang B";
+        let line = notify_line("Signal", name, "");
+        let PhoneEvent::Notification { who, .. } = event(&line) else {
+            panic!("a notification");
+        };
+        assert_eq!(
+            who.to_string(),
+            "Sameiet Bjørnstjerne Bjørnsons gate 12,\u{2026}"
+        );
+    }
+
+    /// What a notification's text becomes on the watch (`TextBuilder`):
+    /// emoji and invisible characters out, spaces collapsed, typographic
+    /// punctuation as ASCII, and `?` only for letters the font lacks.
+    #[test]
+    fn text_as_shown() {
+        for (sent, shown) in [
+            // Emoji go, and the spaces around them collapse, with none
+            // left before the punctuation that followed.
+            ("Familien \u{1F3E1}: Nils Holm", "Familien: Nils Holm"),
+            (
+                "Familien \u{1F3E1} (12 messages): Åse",
+                "Familien (12 messages): Åse",
+            ),
+            (
+                "\u{1F389}\u{1F382} Bursdagsgjengen 2026",
+                "Bursdagsgjengen 2026",
+            ),
+            ("Ida \u{2764}\u{FE0F}", "Ida"),
+            ("Hei\u{1F60A}Kari", "Hei Kari"),
+            ("Bra \u{1F44D}!", "Bra!"),
+            // A family, joined, with skin tones; a flag; a keycap.
+            (
+                "Team \u{1F468}\u{1F3FD}\u{200D}\u{1F469}\u{200D}\u{1F467} Ur",
+                "Team Ur",
+            ),
+            ("Norge \u{1F1F3}\u{1F1F4}", "Norge"),
+            ("Room 1\u{FE0F}\u{20E3}", "Room 1"),
+            // Symbols phones draw as emoji, all over Unicode.
+            (
+                "\u{23F0} Alarm \u{2600} \u{2705} \u{2B50} \u{25B6} \u{3299}",
+                "Alarm",
+            ),
+            // Direction marks around a phone number.
+            ("\u{202A}+47 912 34 567\u{202C}", "+47 912 34 567"),
+            // Typographic punctuation, as the font draws it.
+            (
+                "\u{201c}Ida\u{201d} \u{2013} 5\u{2212}3\u{2026}",
+                "\"Ida\" - 5-3\u{2026}",
+            ),
+            // Letters the font lacks are missing, and say so.
+            ("Łukasz Борис", "?ukasz ?????"),
+            // Whitespace of every kind, once, and none at the ends.
+            ("  Ola \n\t Kari\u{a0}\u{a0}Nordmann  ", "Ola Kari Nordmann"),
+            ("\u{1F389}", ""),
+            ("", ""),
+        ] {
+            let mut builder = TextBuilder::<40>::new();
+            sent.chars().for_each(|c| builder.push(c));
+            assert_eq!(builder.blank(), sent.trim().is_empty(), "{sent:?}");
+            assert_eq!(builder.finish().to_string(), shown, "{sent:?}");
+        }
+        // Cut with an ellipsis, in place of a space before it too.
+        assert_eq!(t::<8>("Ola Kari Nordmann").to_string(), "Ola Kar\u{2026}");
+        assert_eq!(t::<8>("Ola Kar Nordmann").to_string(), "Ola Kar\u{2026}");
+        assert_eq!(t::<8>("Ola Kari").to_string(), "Ola Kari");
+        assert_eq!(t::<8>("Ola Kari \u{1F389}").to_string(), "Ola Kari");
+        assert_eq!(t::<8>("Ola Kari!").to_string(), "Ola Kar\u{2026}");
+        assert_eq!(t::<4>("Ola  K").to_string(), "Ola\u{2026}");
     }
 
     /// The decoder against Gadgetbridge's encoder (ported above), for any
-    /// text: what reaches the screen is the text, but for line breaks and
-    /// tabs (spaces), cut to the field's size. Text with a NUL in it is
-    /// left out: that starts an image (see `text_as_bitmaps`), for a
-    /// Bangle.js too.
+    /// text: what reaches the screen is what `TextBuilder` makes of the
+    /// text (tested below). Text with a NUL in it is left out: that starts
+    /// an image (see `text_as_bitmaps`), for a Bangle.js too.
     #[test]
     fn any_text_survives_the_trip() {
-        fn property(sender: String, src: String) -> TestResult {
+        fn property(title: String, src: String) -> TestResult {
             // Gadgetbridge's `\20` for DLE runs into a following octal digit
             // (JavaScript reads `\205`): its bug, which the watch can't undo.
             let dle_digit = |t: &str| {
@@ -504,31 +603,14 @@ mod tests {
                     .zip(t.chars().skip(1))
                     .any(|(a, b)| a == '\u{10}' && ('0'..='7').contains(&b))
             };
-            // An empty sender falls back to the title, tested elsewhere.
-            if sender.is_empty()
-                || dle_digit(&sender)
-                || dle_digit(&src)
-                || sender.contains('\0')
-                || src.contains('\0')
-            {
+            if dle_digit(&title) || dle_digit(&src) || title.contains('\0') || src.contains('\0') {
                 return TestResult::discard();
             }
-            let shown = |text: &str| -> String {
-                text.chars()
-                    .map(|c| match c {
-                        '\u{8}'..='\r' => ' ',
-                        c => c,
-                    })
-                    .collect()
-            };
-            let line = notify_line(&src, "title", &sender);
+            let line = notify_line(&src, &title, "");
             let PhoneEvent::Notification { app, who } = event(&line) else {
                 return TestResult::failed();
             };
-            TestResult::from_bool(
-                who.as_str() == fit::<40>(&shown(&sender))
-                    && app.as_str() == fit::<24>(&shown(&src)),
-            )
+            TestResult::from_bool(who == t(&title) && app == t(&src))
         }
         QuickCheck::new()
             .tests(5000)
@@ -1014,8 +1096,8 @@ mod tests {
             with_bitmaps(&line),
             (
                 PhoneEvent::Notification {
-                    app: s("Signal"),
-                    who: s("Mamma ? ?")
+                    app: t("Signal"),
+                    who: t("Mamma ? ?")
                 },
                 true
             ),
@@ -1034,7 +1116,7 @@ mod tests {
                     String::from_utf8_lossy(&line)
                 );
             };
-            assert_eq!(who, "Kari ?!", "{width}");
+            assert_eq!(who.to_string(), "Kari ?!", "{width}");
         }
         assert_eq!(spellings, [true; 2], "both spellings tried");
         // Without, nothing is said.
@@ -1042,8 +1124,8 @@ mod tests {
     }
 
     /// Images are noticed wherever Gadgetbridge puts them: in what's
-    /// shown, in a notification's title, subject, and body (which aren't,
-    /// unless the title stands in for the sender), past what fits, and in
+    /// shown, in a notification's title, subject, and body (which aren't
+    /// shown), in `sender` (which is, without a title), past what fits, and in
     /// calls, music, and directions.
     #[test]
     fn text_as_bitmaps_anywhere() {
@@ -1110,7 +1192,7 @@ mod tests {
             let (PhoneEvent::Notification { who, .. }, true) = with_bitmaps(&line) else {
                 return TestResult::failed();
             };
-            TestResult::from_bool(who.as_str() == fit::<40>(&shown))
+            TestResult::from_bool(who == t(&shown))
         }
         QuickCheck::new()
             .tests(2000)
@@ -1173,8 +1255,8 @@ mod tests {
         assert_eq!(
             event(line),
             PhoneEvent::Notification {
-                app: s("Signal"),
-                who: s("")
+                app: t("Signal"),
+                who: t("")
             }
         );
     }

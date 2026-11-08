@@ -35,9 +35,9 @@ mod tests {
     }
 
     #[test]
-    fn yesterday_is_named() {
-        assert_eq!(label(at(-1, 23, 10), at(0, 0, 1)), "YESTERDAY 23:10");
-        assert_eq!(label(at(-1, 0, 0), at(0, 23, 59)), "YESTERDAY 00:00");
+    fn yesterday_is_by_weekday() {
+        assert_eq!(label(at(-1, 23, 10), at(0, 0, 1)), "SAT 23:10");
+        assert_eq!(label(at(-1, 0, 0), at(0, 23, 59)), "SAT 00:00");
     }
 
     #[test]
@@ -50,11 +50,11 @@ mod tests {
 
     #[test]
     fn older_is_how_long_ago() {
-        assert_eq!(label(at(-7, 12, 0), at(0, 8, 0)), "7 DAYS AGO");
-        assert_eq!(label(at(-30, 23, 59), at(0, 0, 0)), "30 DAYS AGO");
+        assert_eq!(label(at(-7, 12, 0), at(0, 8, 0)), "7 DAYS");
+        assert_eq!(label(at(-30, 23, 59), at(0, 0, 0)), "30 DAYS");
         // The furthest apart a stored (`u32`, non-zero) arrival and a
         // `u32` now can be still fits.
-        assert_eq!(label(1, u32::MAX.into()), "2982616 DAYS AGO");
+        assert_eq!(label(1, u32::MAX.into()), "2982616 DAYS");
     }
 
     #[test]

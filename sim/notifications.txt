@@ -8,14 +8,15 @@
 # Each is a line as Gadgetbridge sends it (`gb`), through the firmware's
 # parser. Every name, number, and message is invented; the shapes are
 # typical Android ones (see the list below). The watch shows only `src`
-# and the sender (or, without one, the title): subject and body are read
-# for images, never shown. They're here anyway, as the phone sends them.
+# and the title (or, without one, `sender`), as they come, but for emoji:
+# subject and body are read for images, never shown. They're here anyway,
+# as the phone sends them.
 #
 # Each notification arrives three times, once per section, as each view
 # needs its own way in:
 #
-#   1. quiet:   with the screen off: the whole screen, dim (always white on
-#               black), the sender big if it's short.
+#   1. quiet:   with the screen off: the whole screen, dim (always white,
+#               and red, on black), the title big if it's short.
 #   2. banner:  with the clock on screen: the banner over its bottom rows;
 #      history: then swiped down to: the first page of the history.
 #               Both shot in ARCADE (the evening's theme) and HANDHELD
@@ -28,7 +29,7 @@
 #
 #   01 sms-short          Messages: Ida
 #   02 signal             Signal: Ada Lovelace
-#   03 sms-number         SMS Message: +47 912 34 567
+#   03 sms-number         SMS Message: +47 912 34 567 (no title: `sender`)
 #   04 code-2fa           Messages: UrBank
 #   05 group-whatsapp     WhatsApp: Familien \ud83c\udfe1: Nils Holm
 #   06 group-count        WhatsApp: Familien \ud83c\udfe1 (12 messages): \xc5se Bergersen
@@ -65,8 +66,7 @@ expect not screen-on
 # 1. Quiet: arriving with the screen off
 # ==============================================================================
 
-# Shot a second in, still in the marquee's first pause; then left to time
-# out (the longest takes ~27 s to scroll through once).
+# Shot a second in; then left to time out.
 
 gb GB({"t":"notify","id":1794170001,"src":"Messages","title":"Ida","subject":"","body":"Ok","sender":"","tel":"","reply":true})
 wait 1s
@@ -82,7 +82,7 @@ shot 02-signal-quiet-dim.png
 wait 40s
 expect not screen-on
 
-gb GB({"t":"notify","id":1794170003,"src":"SMS Message","title":"New message","subject":"","body":"Hei, det er Nils. Har du tid til en kaffe i morgen?","sender":"+47 912 34 567","tel":"+4791234567","reply":true})
+gb GB({"t":"notify","id":1794170003,"src":"SMS Message","title":"","subject":"","body":"Hei, det er Nils. Har du tid til en kaffe i morgen?","sender":"+47 912 34 567","tel":"+4791234567","reply":true})
 wait 1s
 expect dim
 shot 03-sms-number-quiet-dim.png
@@ -252,7 +252,7 @@ expect not screen-on
 
 button
 wait 1s
-gb GB({"t":"notify","id":1794170003,"src":"SMS Message","title":"New message","subject":"","body":"Hei, det er Nils. Har du tid til en kaffe i morgen?","sender":"+47 912 34 567","tel":"+4791234567","reply":true})
+gb GB({"t":"notify","id":1794170003,"src":"SMS Message","title":"","subject":"","body":"Hei, det er Nils. Har du tid til en kaffe i morgen?","sender":"+47 912 34 567","tel":"+4791234567","reply":true})
 wait 1s
 expect not dim
 shot 03-sms-number-banner-arcade.png
@@ -603,7 +603,7 @@ wait 1s
 expect not screen-on
 expect quiet-night
 
-gb GB({"t":"notify","id":1794170003,"src":"SMS Message","title":"New message","subject":"","body":"Hei, det er Nils. Har du tid til en kaffe i morgen?","sender":"+47 912 34 567","tel":"+4791234567","reply":true})
+gb GB({"t":"notify","id":1794170003,"src":"SMS Message","title":"","subject":"","body":"Hei, det er Nils. Har du tid til en kaffe i morgen?","sender":"+47 912 34 567","tel":"+4791234567","reply":true})
 wait 1s
 expect not screen-on
 button

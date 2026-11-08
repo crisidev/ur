@@ -24,7 +24,7 @@ static UR_CANVAS: AtomicPtr<Canvas> = AtomicPtr::new(core::ptr::null_mut());
 /// button, pressed twice 0.2 s apart (a double press) if `x` is 2, 2 tap
 /// (held for the top byte's milliseconds, if not 0, to try taps too brief
 /// to be deliberate; see [`crate::wake::deliberate`]), 3 long press, 4–7 swipe up, down, left, right, 8 a
-/// glance, 9 a test notification (`x` picks the sender, `y` how many hours
+/// glance, 9 a test notification (`x` picks the title, `y` how many hours
 /// ago it arrived), 10 hang (spin forever, to test what the
 /// watchdog records), 11 a `defmt::panic!`, 12 a `core::panic!` as from a
 /// SoftDevice Controller fault (to test what a panic records), 13 a battery
@@ -191,21 +191,19 @@ pub async fn input_task() {
                 loop {}
             }
             9 => {
-                let mut app = heapless::String::new();
-                let mut who = heapless::String::new();
-                // `x` picks the sender, to check how each length lays out.
-                let (from, sender) = match x {
-                    // Small, on two lines: four words.
+                // `x` picks the title, to check how each length lays out.
+                let (from, title) = match x {
+                    // Medium, on two lines: four words.
                     1 => ("Podcasts", "Night Signals: Ida Moreau"),
-                    // As long as a sender gets (`ui::PhoneEvent`'s 40).
+                    // As long as a title gets (`ui::PhoneEvent`'s 40).
                     2 => ("Calendar", "Quarterly planning: platform team, 4B"),
-                    // Small: a short word over a long one at 2×.
+                    // Medium, two lines: too long for one.
                     3 => ("Signal", "Nora Lindqvist"),
-                    // Accents, and a word too long for a line at 2×.
+                    // Accents, on two lines in the medium face.
                     4 => ("Signal", "Åse Kristiansen"),
-                    // One line, even at 2×.
+                    // One line at 2×.
                     5 => ("Messages", "Ida"),
-                    // Every ASCII symbol, a line or two each at 2×.
+                    // Every ASCII symbol, a line or two each.
                     6 => ("Punctuation", "!\"#$%&' ()*+,-./"),
                     7 => ("Punctuation", ":;<=>?@ [\\]^_ `{|}~"),
                     // Curly quotes, a dash, and an ellipsis, as phones
@@ -214,11 +212,10 @@ pub async fn input_task() {
                         "Messages",
                         "\u{201c}Don\u{2019}t\u{201d} \u{2013} Ida\u{2026}",
                     ),
-                    // Two lines of about the same width at 2×.
+                    // One line in the medium face.
                     _ => ("Signal", "Jane Smith"),
                 };
-                let _ = app.push_str(from);
-                let _ = who.push_str(sender);
+                let (app, who) = (from.into(), title.into());
                 BACKDATE_HOURS.store(y, Ordering::Relaxed);
                 let notification = crate::ui::PhoneEvent::Notification { app, who };
                 INPUT.send(InputEvent::Phone(notification)).await;

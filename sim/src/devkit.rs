@@ -641,8 +641,8 @@ impl Follower {
                 }) => {
                     debug::backdate_next(backdate_minutes);
                     PhoneEvent::Notification {
-                        app: script::truncated(app),
-                        who: script::truncated(who),
+                        app: app.into(),
+                        who: who.into(),
                     }
                 }
                 None => {
