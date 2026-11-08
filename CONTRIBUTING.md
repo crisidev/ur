@@ -6,6 +6,14 @@ build][pinetime-bootloader]). This covers how it's built, how to iterate
 on it with a dev kit (the way it was developed), how to get logs off a
 sealed watch, and how releases are made.
 
+Images (`*.png`, `*.gif`: the README's screenshots and GIFs, and the
+simulator's approved screenshots) are in [Git LFS]: run `git lfs install`
+once before cloning, or `git lfs pull` after, or the simulator's tests
+will compare against pointer files. Adding or re-approving an image then
+needs nothing special; LFS stores it.
+
+[Git LFS]: https://git-lfs.com
+
 ## Layout
 
 - `src/`: the firmware. `main.rs` starts the tasks and runs the UI loop;

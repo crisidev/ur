@@ -59,6 +59,20 @@ jobs:
     name: sim
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      # The approved screenshots are in Git LFS. They come from a cache
+      # keyed by their LFS ids where possible, rather than `lfs: true`,
+      # since every download counts against the repository's LFS
+      # bandwidth; `git lfs pull` then fetches only what the cache lacks.
+      - name: list LFS objects
+        run: git lfs ls-files --long | cut -d' ' -f1 | sort >lfs-ids
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # tag=v6.1.0
+        with:
+          path: .git/lfs/objects
+          # (`hashFiles` only reads the workspace, hence lfs-ids there.)
+          key: lfs-${{ hashFiles('lfs-ids') }}
+          restore-keys: lfs-
+      - name: fetch LFS objects
+        run: git lfs pull
       - name: Install the pinned toolchain
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
