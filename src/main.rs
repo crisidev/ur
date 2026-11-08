@@ -60,6 +60,7 @@ mod heart_schedule;
 mod i2c;
 mod motor;
 mod nav;
+mod packet_pool;
 mod power;
 mod ppg;
 mod route;
@@ -414,8 +415,7 @@ async fn main(spawner: Spawner) {
         p.PPI_CH17, p.PPI_CH18, p.PPI_CH20, p.PPI_CH21, p.PPI_CH22, p.PPI_CH23, p.PPI_CH24,
         p.PPI_CH25, p.PPI_CH26, p.PPI_CH27, p.PPI_CH28, p.PPI_CH29,
     );
-    let packet_size =
-        <trouble_host::prelude::DefaultPacketPool as trouble_host::PacketPool>::MTU as u16;
+    let packet_size = <packet_pool::Pool as trouble_host::PacketPool>::MTU as u16;
     let controller = nrf_sdc::Builder::new()
         .and_then(|b| {
             b.support_adv()

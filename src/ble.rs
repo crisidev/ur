@@ -37,6 +37,7 @@ use trouble_host::prelude::*;
 
 use crate::gb::{self, Incoming, LineBuffer, Outgoing};
 use crate::geo::{self, GpsPolicy, Location};
+use crate::packet_pool::Pool;
 use crate::ui::{PhoneEvent, Unpaired};
 use crate::{activity, clock, dfu, route, storage};
 
@@ -87,7 +88,7 @@ pub type Controller = nrf_sdc::SoftdeviceController<'static>;
 // GATT server
 // ==============================================================================
 
-#[gatt_server(connections_max = CONNECTIONS)]
+#[gatt_server(connections_max = CONNECTIONS, packet_type = Pool)]
 struct Server {
     uart: UartService,
     dfu: DfuService,
@@ -192,7 +193,7 @@ pub async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
     mpsl.run().await
 }
 
-type BleStack = Stack<'static, Controller, DefaultPacketPool>;
+type BleStack = Stack<'static, Controller, Pool>;
 
 /// Builds the host and the GATT server, in statics.
 ///
@@ -211,7 +212,7 @@ fn build(
 ) -> (&'static BleStack, &'static Server<'static>) {
     // The host's resources and the server share a cell: each cell costs a
     // word for its "taken" flag.
-    type Resources = HostResources<DefaultPacketPool, CONNECTIONS, L2CAP_CHANNELS, 1, BONDS>;
+    type Resources = HostResources<Pool, CONNECTIONS, L2CAP_CHANNELS, 1, BONDS>;
     static PARTS: StaticCell<(Resources, Server<'static>)> = StaticCell::new();
     static STACK: StaticCell<BleStack> = StaticCell::new();
     let (resources, server) = PARTS.init((
@@ -368,10 +369,10 @@ fn advertising_interval(last_disconnect: Option<Instant>) -> Duration {
 /// Advertises at `interval` until something connects, or until
 /// [`ADVERTISING_REVIEW`] passes (`None`).
 async fn advertise<'values, 'server, C: trouble_host::Controller>(
-    peripheral: &mut Peripheral<'values, C, DefaultPacketPool>,
+    peripheral: &mut Peripheral<'values, C, Pool>,
     server: &'server Server<'values>,
     interval: Duration,
-) -> Result<Option<GattConnection<'values, 'server, DefaultPacketPool>>, BleHostError<C::Error>> {
+) -> Result<Option<GattConnection<'values, 'server, Pool>>, BleHostError<C::Error>> {
     let mut data = [0; 31];
     let len = AdStructure::encode_slice(
         &[
@@ -402,11 +403,7 @@ async fn advertise<'values, 'server, C: trouble_host::Controller>(
 }
 
 /// Sends one field log sector; see [`LogService`].
-async fn send_log_sector(
-    server: &Server<'_>,
-    conn: &GattConnection<'_, '_, DefaultPacketPool>,
-    index: u16,
-) {
+async fn send_log_sector(server: &Server<'_>, conn: &GattConnection<'_, '_, Pool>, index: u16) {
     let notify = async |bytes: &[u8]| {
         if let Err(e) = server.log.data.notify_raw(conn, bytes, false).await {
             warn!("ble: sending the field log failed: {}", e);
@@ -462,10 +459,7 @@ fn become_phone(
 /// limit. Phones and BlueZ default to 30–50 ms; 7.5 ms is the minimum. The
 /// client may refuse, and the phone's usual parameters return with the next
 /// connection (an update ends in a reset), so nothing to undo.
-async fn speed_up(
-    stack: &Stack<'_, Controller, DefaultPacketPool>,
-    conn: &GattConnection<'_, '_, DefaultPacketPool>,
-) {
+async fn speed_up(stack: &Stack<'_, Controller, Pool>, conn: &GattConnection<'_, '_, Pool>) {
     let params = RequestedConnParams {
         min_connection_interval: Duration::from_micros(7_500),
         max_connection_interval: Duration::from_millis(15),
@@ -489,10 +483,7 @@ const IDLE_AFTER: Duration = Duration::from_secs(30);
 /// for "balanced" (30–50 ms, no skipping) at connect, i.e. ~25 connection
 /// events a second; this is ~3. Anything from the phone waits at most
 /// ~375 ms longer.
-async fn slow_down(
-    stack: &Stack<'_, Controller, DefaultPacketPool>,
-    conn: &GattConnection<'_, '_, DefaultPacketPool>,
-) {
+async fn slow_down(stack: &Stack<'_, Controller, Pool>, conn: &GattConnection<'_, '_, Pool>) {
     let params = RequestedConnParams {
         min_connection_interval: Duration::from_millis(100),
         max_connection_interval: Duration::from_millis(125),
@@ -527,9 +518,9 @@ enum Action {
 /// `phone`. Other clients (an updater, a log fetcher) never see them, so
 /// they can't swallow messages meant for the phone.
 async fn serve(
-    stack: &Stack<'_, Controller, DefaultPacketPool>,
+    stack: &Stack<'_, Controller, Pool>,
     server: &Server<'_>,
-    conn: &GattConnection<'_, '_, DefaultPacketPool>,
+    conn: &GattConnection<'_, '_, Pool>,
     gps: &RefCell<GpsPolicy>,
     lines: &RefCell<LineBuffer>,
     phone: &Cell<bool>,
@@ -829,7 +820,7 @@ const SECURITY_GRACE: Duration = Duration::from_secs(10);
 /// - It does, yet didn't encrypt with the bond: the phone has forgotten its
 ///   side (as a sealed watch's phone once had: Android had no bond, the
 ///   watch still did). It has to forget the watch too, and pair again.
-fn not_paired(conn: &GattConnection<'_, '_, DefaultPacketPool>, security: &mut Security) {
+fn not_paired(conn: &GattConnection<'_, '_, Pool>, security: &mut Security) {
     if core::mem::replace(security, Security::Told) == Security::Told {
         return;
     }
@@ -1011,11 +1002,7 @@ async fn update_location(location: Location) {
 }
 
 /// Sends the per-minute activity samples Gadgetbridge asked for.
-async fn send_activity(
-    server: &Server<'_>,
-    conn: &GattConnection<'_, '_, DefaultPacketPool>,
-    since_ms: i64,
-) {
+async fn send_activity(server: &Server<'_>, conn: &GattConnection<'_, '_, Pool>, since_ms: i64) {
     send(server, conn, Outgoing::ActivityFetch { done: false }).await;
     // Copy out in small batches: the history can't be borrowed across the
     // awaits while sending. Small, because the batch lives in the host
@@ -1071,10 +1058,7 @@ static ACTIVE: Mutex<CriticalSectionRawMutex, RefCell<Vec<Identity, CONNECTIONS>
 ///
 /// The eviction only reaches flash once the pairing completes (see
 /// `save_bonds`), so a pairing that fails costs nothing after a reboot.
-fn make_room_for_bond(
-    stack: &Stack<'_, Controller, DefaultPacketPool>,
-    conn: &GattConnection<'_, '_, DefaultPacketPool>,
-) {
+fn make_room_for_bond(stack: &Stack<'_, Controller, Pool>, conn: &GattConnection<'_, '_, Pool>) {
     let peer = conn.raw().peer_identity();
     let bonds: Vec<Identity, BONDS> =
         stack.with_bond_information(|bonds| bonds.iter().map(|b| b.identity).collect());
@@ -1097,11 +1081,7 @@ fn make_room_for_bond(
 
 /// Sends one message, split into notifications that fit the MTU.
 /// Returns whether it went out (failures are logged).
-async fn send(
-    server: &Server<'_>,
-    conn: &GattConnection<'_, '_, DefaultPacketPool>,
-    message: Outgoing,
-) -> bool {
+async fn send(server: &Server<'_>, conn: &GattConnection<'_, '_, Pool>, message: Outgoing) -> bool {
     let line = message.to_line();
     let chunk = usize::from(conn.raw().att_mtu().saturating_sub(3)).clamp(20, 244);
     // `notify_raw` sends the bytes as they are, where `notify` would want
@@ -1159,7 +1139,7 @@ fn show_passkey(passkey: Option<u32>) {
 
 /// Writes the stack's current bonds to flash, one per slot, and clears
 /// unused slots.
-async fn save_bonds<C: trouble_host::Controller>(stack: &Stack<'_, C, DefaultPacketPool>) {
+async fn save_bonds<C: trouble_host::Controller>(stack: &Stack<'_, C, Pool>) {
     let encoded: Vec<[u8; BOND_LEN], BONDS> = stack.with_bond_information(|bonds| {
         bonds
             .iter()
