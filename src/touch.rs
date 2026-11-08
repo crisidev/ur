@@ -11,17 +11,15 @@
 //! raw reports throughout each touch and classify the touch ourselves from
 //! where it started and ended, and how long it lasted.
 //!
-//! A long press is the exception: it's reported the moment the finger has
-//! been down for [`LONG_PRESS`] without moving, while it's still down, so
-//! whatever it does (and its buzz) comes then, and the wearer knows when
-//! to let go rather than guessing. That touch is then spent: lifting the
-//! finger, or moving it, does nothing more. The timer runs from the press,
-//! not from reports, though the chip does keep reporting (every ~10 ms)
-//! for as long as a finger is down, however still: the field logs have
-//! long presses of nearly 10 s, which [`LIFT_TIMEOUT`] would otherwise
-//! have cut short. A finger that moves past the tap tolerance
-//! ([`SWIPE_DISTANCE`]) before then is on its way to a swipe, and the
-//! long press is off for that touch, even if it comes back.
+//! What each touch was is [`crate::gesture`]'s call. A long press is
+//! the exception to waiting for the lift: it's reported the moment the
+//! finger has been down for [`LONG_PRESS`] without moving, while it's
+//! still down. The timer runs from the press, not from reports, though
+//! the chip does keep reporting (every ~10 ms) for as long as a finger is
+//! down, however still: the field logs have long presses of nearly 10 s,
+//! which [`LIFT_TIMEOUT`] would otherwise have cut short.
+//!
+//! [`LONG_PRESS`]: crate::gesture::LONG_PRESS
 //!
 //! When touches can't do anything (the screen is off in the quiet night;
 //! see [`set_asleep`]), the chip goes into deep sleep, as InfiniTime puts
@@ -31,7 +29,7 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use defmt::{Format, debug, info, warn};
+use defmt::{debug, info, warn};
 use embassy_futures::select::{Either, Either3, select, select3};
 use embassy_nrf::gpio::{Input, Output};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -39,8 +37,10 @@ use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use embedded_hal_async::i2c::I2c;
 
-use crate::canvas;
+use crate::gesture::Tracking;
 use crate::i2c::Device;
+
+pub use crate::gesture::{Gesture, Touch};
 
 const ADDRESS: u8 = 0x15;
 /// First register of the touch report: gesture, finger count, X, Y.
@@ -57,13 +57,6 @@ const DEEP_SLEEP: u8 = 0x03;
 /// InfiniTime uses.
 const IRQ_CTL: u8 = 0b0111_0000;
 
-/// Minimum travel, in panel pixels, for a touch to be a swipe rather than a
-/// tap. From logged touches on the dev kit: taps drift at most ~11 px, while
-/// lazy swipes can be as short as ~24 px.
-const SWIPE_DISTANCE: i32 = 20;
-/// A stationary touch at least this long is a long press, reported as soon
-/// as it's been held this long.
-const LONG_PRESS: Duration = Duration::from_millis(600);
 /// The panel's size in the chip's coordinates (pixels). Reports beyond it
 /// are garbage: the first report after the chip wakes from its own sleep
 /// sometimes reads e.g. x = 3584, which started phantom swipes.
@@ -87,91 +80,6 @@ static ASLEEP_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 pub fn set_asleep(asleep: bool) {
     if ASLEEP.swap(asleep, Ordering::Relaxed) != asleep {
         ASLEEP_CHANGED.signal(());
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Format)]
-pub enum Gesture {
-    Tap,
-    LongPress,
-    SwipeUp,
-    SwipeDown,
-    SwipeLeft,
-    SwipeRight,
-}
-
-#[derive(Clone, Copy, Format)]
-pub struct Touch {
-    pub gesture: Gesture,
-    /// Where the touch started, in canvas pixels.
-    pub x: i32,
-    pub y: i32,
-    /// How long the finger was down, in milliseconds (saturating). Not a
-    /// `Duration`: its 8 bytes, 8-aligned, grew every queued input event,
-    /// and static RAM has no room to spare.
-    pub held_ms: u16,
-}
-
-/// The touch in progress: where and when it started, and the latest position.
-struct Tracking {
-    start: (i32, i32),
-    last: (i32, i32),
-    since: Instant,
-    /// It went beyond the tap tolerance ([`SWIPE_DISTANCE`]) at some point,
-    /// so it can't become a long press.
-    moved: bool,
-    /// It was reported as a long press already, while still down.
-    held: bool,
-}
-
-impl Tracking {
-    fn new(at: (i32, i32)) -> Self {
-        Self {
-            start: at,
-            last: at,
-            since: Instant::now(),
-            moved: false,
-            held: false,
-        }
-    }
-
-    /// The finger is now at `at`.
-    fn moved_to(&mut self, at: (i32, i32)) {
-        self.last = at;
-        let (dx, dy) = (at.0 - self.start.0, at.1 - self.start.1);
-        self.moved |= dx.abs().max(dy.abs()) >= SWIPE_DISTANCE;
-    }
-
-    /// When this touch becomes a long press, if it still can.
-    fn long_press_at(&self) -> Option<Instant> {
-        (!self.moved && !self.held).then_some(self.since + LONG_PRESS)
-    }
-
-    fn classify(&self) -> Touch {
-        let dx = self.last.0 - self.start.0;
-        let dy = self.last.1 - self.start.1;
-        let gesture = if dx.abs().max(dy.abs()) >= SWIPE_DISTANCE {
-            // Named for the direction the finger moved.
-            match (dx.abs() > dy.abs(), dx < 0, dy < 0) {
-                (true, true, _) => Gesture::SwipeLeft,
-                (true, false, _) => Gesture::SwipeRight,
-                (false, _, true) => Gesture::SwipeUp,
-                (false, _, false) => Gesture::SwipeDown,
-            }
-        } else if !self.moved && self.since.elapsed() >= LONG_PRESS {
-            // Usually reported while held (see `touch_task`); this is for a
-            // lift that beat the timer.
-            Gesture::LongPress
-        } else {
-            Gesture::Tap
-        };
-        let scale = canvas::SCALE as i32;
-        Touch {
-            gesture,
-            x: self.start.0 / scale,
-            y: self.start.1 / scale,
-            held_ms: self.since.elapsed().as_millis().min(u64::from(u16::MAX)) as u16,
-        }
     }
 }
 

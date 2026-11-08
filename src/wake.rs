@@ -12,7 +12,7 @@
 //! - While a phone is connected, a long press plays or pauses, also
 //!   without waking it. The touch task reports it while the finger is
 //!   still down, once it's been still for long enough, and the buzz then
-//!   tells the wearer it took (see [`crate::touch`]).
+//!   tells the wearer it took (see [`crate::gesture`]).
 //!
 //! The media gestures are the clock face's, so they work the same whether
 //! the screen is on, glancing, or off: the wearer can pause or skip
@@ -52,7 +52,7 @@
 //!
 //! Hardware-free, so it runs in host tests (`host-tests/wake`).
 //!
-//! [`SWIPE_DISTANCE`]: crate::touch
+//! [`SWIPE_DISTANCE`]: crate::gesture::SWIPE_DISTANCE
 
 /// A touch's kind, as far as the dark screen cares.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

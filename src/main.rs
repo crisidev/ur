@@ -8,7 +8,8 @@
 //! - [`spi`] / [`spi_flash`]: the bus the LCD shares with the external flash.
 //! - [`ui`] / [`nav`]: screens, navigation, and screen power.
 //! - [`brightness`]: how bright the backlight is.
-//! - [`touch`], the button task here: input, delivered through [`INPUT`].
+//! - [`touch`] / [`gesture`], the button task here: input, delivered
+//!   through [`INPUT`].
 //! - [`motor`]: vibration patterns.
 //! - [`alarm`]: when alarms (smart wake, at a time, from the phone, timer)
 //!   ring.
@@ -54,6 +55,7 @@ mod firmware;
 mod font;
 mod gb;
 mod geo;
+mod gesture;
 mod glance;
 mod heart;
 mod heart_schedule;
