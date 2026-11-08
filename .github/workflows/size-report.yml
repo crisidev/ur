@@ -54,9 +54,12 @@ jobs:
           # The PR must be one whose head is the commit the run built: this
           # stops an artifact naming some other PR, and a run that finished
           # late (for a commit since replaced) overwriting a newer report.
-          pr=$(<"$RUNNER_TEMP/report/pr")
-          if [[ ! $pr =~ ^[0-9]+$ ]]; then
-            echo "::error::not a PR number: $pr"
+          # Read only a little of it, and never print it unchecked: a line
+          # of the fork's choosing in this job's log could be a workflow
+          # command (`::add-mask::`, `::stop-commands::`, …).
+          pr=$(head -c 16 "$RUNNER_TEMP/report/pr" | tr -d '\n')
+          if [[ ! $pr =~ ^[1-9][0-9]{0,8}$ ]]; then
+            echo "::error::the artifact's PR number isn't one"
             exit 1
           fi
           pr_head=$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)
