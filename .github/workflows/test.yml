@@ -5,6 +5,7 @@
 #   touches apart, what a touch does with the screen off), each built into
 #   a host crate under host-tests/ and tested on the computer, with the
 #   pinned toolchain and on beta
+# - sim: the simulator's tests (sim/), and screenshots of the UI from it
 # - firmware: builds and packages both variants exactly as a release would
 #   (scripts/release.sh), and uploads them, so every PR, and every commit on
 #   main, has a package to try on a watch
@@ -47,6 +48,33 @@ jobs:
       - name: cargo test
         working-directory: host-tests/${{ matrix.crate }}
         run: cargo ${{ matrix.toolchain == 'beta' && '+beta' || '' }} test --locked --release
+  sim:
+    runs-on: ubuntu-latest
+    name: sim
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
+        with:
+          workspaces: sim
+      # Without the window, which a runner has nowhere to show. The tests
+      # run the tour (which checks itself) and the README's screenshots.
+      - name: cargo test
+        working-directory: sim
+        run: cargo test --locked --no-default-features
+      # The same screenshots again, to look at: what this commit's UI looks
+      # like, without a watch.
+      - name: screenshots
+        working-directory: sim
+        run: |
+          cargo run --locked --no-default-features -- --out ../screenshots/readme readme-screenshots.txt
+          cargo run --locked --no-default-features -- --out ../screenshots/tour tour.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # tag=v7.0.2
+        with:
+          name: screenshots
+          path: screenshots/
+          if-no-files-found: error
   firmware:
     runs-on: ubuntu-latest
     name: firmware

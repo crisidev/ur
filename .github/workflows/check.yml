@@ -1,7 +1,8 @@
 # Runs whenever a PR is opened or updated, or a commit is pushed to main:
-# - fmt: rustfmt, for the firmware and each host-test crate
+# - fmt: rustfmt, for the firmware, each host-test crate, and the simulator
 # - clippy: lints, for the firmware as released (both variants; see
-#   scripts/release.sh), with the pinned toolchain and on beta
+#   scripts/release.sh), with the pinned toolchain and on beta, and for the
+#   simulator (sim/), with and without its window
 # - scripts: shellcheck, and that the Python scripts at least parse
 #
 # Most of jonhoo/rust-ci-conf's library checks (semver, minimal versions,
@@ -33,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        crate: [".", host-tests/alarm, host-tests/arrival, host-tests/battery, host-tests/brightness, host-tests/day, host-tests/decimal, host-tests/gesture, host-tests/glance, host-tests/heart_schedule, host-tests/nav, host-tests/ppg, host-tests/route, host-tests/sleep, host-tests/snapshot, host-tests/temperature, host-tests/wake]
+        crate: [".", host-tests/alarm, host-tests/arrival, host-tests/battery, host-tests/brightness, host-tests/day, host-tests/decimal, host-tests/gesture, host-tests/glance, host-tests/heart_schedule, host-tests/nav, host-tests/ppg, host-tests/route, host-tests/sleep, host-tests/snapshot, host-tests/temperature, host-tests/wake, sim]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
       - name: Install the pinned toolchain
@@ -70,6 +71,23 @@ jobs:
         run: >-
           cargo ${{ matrix.toolchain == 'beta' && '+beta' || '' }}
           clippy --locked --release --features "${{ matrix.features }}" -- -D warnings
+  sim-clippy:
+    runs-on: ubuntu-latest
+    name: clippy / sim
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
+        with:
+          workspaces: sim
+      # With the window too: on Linux it only loads X11 or Wayland when it
+      # opens, so it builds without either installed.
+      - name: cargo clippy
+        working-directory: sim
+        run: |
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --all-targets --no-default-features -- -D warnings
   scripts:
     runs-on: ubuntu-latest
     name: scripts

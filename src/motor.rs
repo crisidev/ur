@@ -11,13 +11,18 @@
 //! peripheral could run it at part duty, as wasp-os does, but pulse
 //! lengths alone give a gentle start, without tying up a peripheral.)
 
+#[cfg(target_os = "none")]
 use embassy_futures::select::{Either, select};
+#[cfg(target_os = "none")]
 use embassy_nrf::gpio::Output;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Timer};
+use embassy_time::Duration;
+#[cfg(target_os = "none")]
+use embassy_time::Timer;
 
 #[derive(Clone, Copy)]
+#[cfg_attr(not(target_os = "none"), derive(PartialEq, Eq))]
 pub struct Pattern {
     /// Alternating on/off durations in milliseconds, starting with "on".
     steps: &'static [u16],
@@ -150,6 +155,29 @@ pub fn buzz(pattern: Pattern) {
     REQUEST.signal(pattern);
 }
 
+// The simulator (`sim/`) has no motor: it plays requests back on screen
+// instead of through `motor_task`, which needs the hardware.
+
+/// The pattern last asked for, if there's been one since the last call.
+#[cfg(not(target_os = "none"))]
+pub fn take_request() -> Option<Pattern> {
+    REQUEST.try_take()
+}
+
+#[cfg(not(target_os = "none"))]
+impl Pattern {
+    /// Its on/off durations in milliseconds, starting with "on".
+    pub fn steps(&self) -> &'static [u16] {
+        self.steps
+    }
+
+    /// Where it loops back to once the steps run out, if it repeats.
+    pub fn repeat_from(&self) -> Option<usize> {
+        self.repeat_from.map(usize::from)
+    }
+}
+
+#[cfg(target_os = "none")]
 #[embassy_executor::task]
 pub async fn motor_task(mut motor: Output<'static>) {
     let mut pattern = REQUEST.wait().await;

@@ -18,6 +18,8 @@ sealed watch, and how releases are made.
   covers `stages` too), which includes the firmware's source file with
   `#[path]` and tests it on the host. Some also replay real data (see
   [Field logs](#field-logs)).
+- `sim/`: a simulator that runs the UI on the computer; see
+  [The simulator](#the-simulator).
 - `scripts/`: packaging (`package.py`, `release.sh`), flashing and
   screenshots over SWD (`run-esprobe.sh`, `screenshot.py`), and Bluetooth tools
   (`dfu.py`, `fetch-log.py`).
@@ -86,6 +88,24 @@ where the rest goes. Some things cost far more than they look:
   implements `defmt::Format`, as trouble-host's types do.
 - A static that isn't all zeros goes in `.data`, whose initial image takes
   as much flash as the static takes RAM.
+
+## The simulator
+
+`sim/` runs the firmware's UI on the computer, in a window (the mouse is
+the finger) or from a script, against a clock it controls:
+
+```sh
+cd sim && cargo run --release
+cargo run --release -- tour.txt --out ../tmp/tour
+```
+
+It renders exactly what the panel would, so most UI work can be checked
+there before a dev kit, and its screenshots match `screenshot.py`'s pixel
+for pixel; `sim/readme-screenshots.txt` makes the README's. It takes the
+dev kit's inputs, every message from the phone, and sensor readings, and
+skips ahead in time, for alarms and the quiet night. CI runs its tour
+and uploads screenshots of every PR's UI. See [sim/README.md] for its
+commands, and what it can't simulate (sensors, Bluetooth, flash).
 
 ## A dev kit
 
@@ -314,9 +334,11 @@ gh release download v0.9.0 --pattern sha256.sum --dir published
 ## CI
 
 - `check.yml`: rustfmt, clippy (both variants, with the pinned toolchain
-  and on beta), [shellcheck], and that the Python scripts parse.
-- `test.yml`: the host tests (pinned and beta), and a packaged build of
-  every PR and every commit on main, to try on a watch:
+  and on beta; and the simulator), [shellcheck], and that the Python
+  scripts parse.
+- `test.yml`: the host tests (pinned and beta), the simulator's tests
+  and screenshots (as the run's `screenshots` artifact), and a packaged
+  build of every PR and every commit on main, to try on a watch:
   `0.9.0-pr.<number>+<commit>`, or `0.9.0-snap.<commits>+<commit>`. The
   run's artifacts include each variant's `-dfu.zip` on its own, unzipped,
   ready to send to a watch, and everything (with the ELFs that decode
@@ -347,4 +369,5 @@ toolchain quarterly.
 [artifact attestations]: https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds
 [reproducible builds]: https://reproducible-builds.org
 [CHANGELOG.md]: CHANGELOG.md
+[sim/README.md]: sim/README.md
 [shellcheck]: https://www.shellcheck.net

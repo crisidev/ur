@@ -1,0 +1,4 @@
+# The firmware config above targets the nRF52; the simulator runs on
+# whatever computer builds it.
+[build]
+target = "host-tuple"

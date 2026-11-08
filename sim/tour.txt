@@ -1,0 +1,192 @@
+# A tour of the watch: most screens, and what the phone, the night, and the
+# alarms do, with a screenshot of each step. Also the simulator's test (see
+# tests/scripts.rs): the `expect`s check it behaves.
+#
+#     cargo run -- --out ../tmp/tour tour.txt
+
+# ==============================================================================
+# A day on the wrist
+# ==============================================================================
+
+battery 3990
+time 2026-11-09 15:42:10 +01:00
+location 59.91 10.75
+connect
+heart 64
+temperature 31
+demo-day
+last-night 23:20 06:55
+wait 1.5s
+expect clock
+shot 01-clock.png
+
+# Left of the clock, the past: today, then last night.
+right
+wait 1s
+shot 02-today.png
+right
+wait 1s
+shot 03-last-night.png
+button
+wait 1s
+expect clock
+
+# Right of it, what's next: the alarms, then the phone's.
+phone-alarms 06:45/31 08:30/96/off
+left
+wait 1s
+shot 04-alarms.png
+left
+wait 1s
+shot 05-phone-alarms.png
+button
+
+# A notification: a banner, then above the clock in the history.
+notify Signal "Nora Lindqvist"
+expect buzzing
+wait 1s
+shot 06-banner.png
+notify 2 3h
+wait 5s
+down
+wait 1s
+shot 07-history.png
+up
+wait 1s
+
+# Music: below the clock, while the phone plays something. A finger held
+# still on the clock (through the touch task's recogniser) plays or pauses.
+music "Ida Moreau" "Night Signals" playing
+up
+wait 1s
+shot 08-music.png
+button
+wait 1s
+press 40,40
+wait 620ms
+expect buzzing
+lift
+wait 200ms
+shot 09-paused.png
+
+# Below the music, the info screen; tapping THEME switches theme.
+press 40,40
+wait 50ms
+press 40,10
+wait 50ms
+lift
+wait 1s
+up
+wait 1s
+shot 10-info.png
+tap 40,58
+wait 1s
+shot 11-info-theme.png
+tap 40,58
+button
+wait 1s
+
+# ==============================================================================
+# The phone wants attention
+# ==============================================================================
+
+call "Nora Lindqvist"
+expect buzzing
+wait 1s
+shot 12-call.png
+call over
+expect not buzzing
+wait 1s
+
+passkey 482913
+wait 1s
+shot 13-pairing.png
+passkey off
+update 42
+wait 1s
+shot 14-update.png
+update off
+wait 1s
+
+# Directions, while the phone navigates: on a glance.
+button
+nav left "150 m" Storgata
+wait 1s
+glance
+wait 1s
+expect dim
+shot 15-route-glance.png
+nav off
+wait 6s
+expect not screen-on
+
+# ==============================================================================
+# Evening and night
+# ==============================================================================
+
+until 22:47
+glance
+wait 1s
+shot 16-glance.png
+wait 6s
+
+# Asleep: once the night is quiet, notifications wait, touches do nothing,
+# and the button shows the time dimly.
+alarm 1 07:00 on
+until 23:40
+asleep on
+wait 2m
+expect quiet-night
+notify 5
+expect not screen-on
+tap
+expect not screen-on
+button
+wait 1s
+expect dim
+shot 17-quiet-night.png
+button
+
+# The alarm ends the night.
+until 07:00
+expect buzzing
+expect not quiet-night
+wait 1s
+shot 18-alarm.png
+asleep off
+button
+expect not buzzing
+wait 1s
+shot 19-morning.png
+
+# ==============================================================================
+# Switching off
+# ==============================================================================
+
+# Storage mode: a long press on the info screen (below the music's)
+# offers it, a tap confirms.
+up
+up
+wait 1s
+long 40,40
+wait 1s
+shot 20-storage-prompt.png
+tap 40,40
+wait 1s
+expect off
+shot 21-off.png
+wait 5s
+expect not screen-on
+button
+wait 2s
+expect not off
+expect screen-on
+
+# A critically low battery: after a minute below 3.4 V, the watch saves
+# what it must and switches itself off, until it's charged.
+battery 3300
+wait 90s
+expect off
+battery 3500 charging
+wait 5s
+expect not off
