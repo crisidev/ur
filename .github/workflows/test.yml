@@ -7,7 +7,8 @@
 #   messages, colours that must differ in every theme), each built into a
 #   host crate under host-tests/ and tested on the computer, with the
 #   pinned toolchain and on beta
-# - sim: the simulator's tests (sim/), and screenshots of the UI from it
+# - sim: the simulator's tests (sim/), which check its screenshots of the
+#   UI against the approved ones, and those screenshots, to look at
 # - firmware: builds and packages both variants exactly as a release would
 #   (scripts/release.sh), and uploads them, so every PR, and every commit on
 #   main, has a package to try on a watch; checks them, and the `compare`
@@ -63,21 +64,22 @@ jobs:
         with:
           workspaces: sim
       # Without the window, which a runner has nowhere to show. The tests
-      # run the tour (which checks itself) and the README's screenshots.
+      # run the tour (which checks itself), the README's screenshots, and
+      # Gadgetbridge's lines, and check every screenshot against the
+      # approved ones (see sim/README.md).
       - name: cargo test
         working-directory: sim
         run: cargo test --locked --no-default-features
-      # The same screenshots again, to look at: what this commit's UI looks
-      # like, without a watch.
-      - name: screenshots
-        working-directory: sim
-        run: |
-          cargo run --locked --no-default-features -- --out ../screenshots/readme readme-screenshots.txt
-          cargo run --locked --no-default-features -- --out ../screenshots/tour tour.txt
+      # What the tests drew, to look at (what this commit's UI looks like,
+      # without a watch), and, when they failed on a difference, the
+      # images of it: under each script's name, `rendered/` and
+      # `differences/`. Even when the tests fail, for those images. The
+      # target directory is named after the host (sim/.cargo/config.toml).
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # tag=v7.0.2
+        if: ${{ !cancelled() }}
         with:
           name: screenshots
-          path: screenshots/
+          path: sim/target/*/tmp/shots/
           if-no-files-found: error
   firmware:
     runs-on: ubuntu-latest

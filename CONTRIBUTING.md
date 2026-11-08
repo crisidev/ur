@@ -163,14 +163,33 @@ It renders exactly what the panel would, so most UI work can be checked
 there before a dev kit; `sim/readme-screenshots.txt` makes the README's
 screenshots. It takes the dev kit's inputs, every message from the phone
 (also as Gadgetbridge's own lines), and sensor readings, and skips ahead
-in time, for alarms and the quiet night. CI runs its tour and uploads
-screenshots of every PR's UI.
+in time, for alarms and the quiet night.
 
 With a dev kit, it checks itself against the watch: flash a build with
 the `compare` feature (`cargo run --release --features compare`), and
 `ur-sim --devkit <elf> devkit-compare.txt` follows it frame for frame,
 failing if any pixel differs. See [sim/README.md] for its commands, and
 what it can't simulate (sensors, Bluetooth, flash).
+
+### Approved screenshots
+
+The simulator draws the same pixels on every run and every computer, so
+its scripts' screenshots are committed, and `cargo test` in `sim/` fails
+if any screen changes: it names each screenshot that differs (and
+writes an image of it before, after, and where, in magenta), each that's
+new, and each no longer taken. Those of `readme-screenshots.txt` are the
+README's own, in `docs/screenshots/`. When a change to what the watch
+shows is meant, look at those images, then approve the new screenshots
+and commit them with it:
+
+```sh
+cd sim && UPDATE_SHOTS=1 cargo test
+```
+
+See [sim/README.md](sim/README.md#approved-screenshots) for what's
+checked, and the README's `info.png`, which isn't. CI's `sim` job
+uploads what the tests drew, and the images of any differences, as its
+`screenshots` artifact.
 
 ## A dev kit
 
@@ -366,7 +385,10 @@ Cargo.toml's version is the source of truth. To release:
    commits since the last tag), then move its entries under a heading
    for the new version and update the compare links at the bottom.
 2. Set the version in Cargo.toml, and run any cargo build without
-   `--locked` (e.g. `cargo check`) to update Cargo.lock to match.
+   `--locked` (e.g. `cargo check`) to update Cargo.lock to match. The
+   simulator's Info screen shows the version too, so approve its new
+   screenshots (`cd sim && UPDATE_SHOTS=1 cargo test`; see
+   [Approved screenshots](#approved-screenshots)).
 3. Commit, then tag (annotated, with a very brief summary of what changed
    since the last release: the key user-facing effects, naming new
    concepts as the README does, and any particularly impactful change

@@ -10,6 +10,7 @@ use crate::watch::Watch;
 const USAGE: &str = "\
 Usage: ur-sim [--window] [--out DIR] [--speed N] [--zoom N] [SCRIPT ...]
        ur-sim --devkit ELF [--out DIR] SCRIPT ...
+       ur-sim --diff BEFORE AFTER [--out DIR]
 
 Runs the ur firmware's UI on this computer. With scripts, runs them (each
 line a command; `-` reads commands from stdin) and exits; without, or with
@@ -26,6 +27,10 @@ after running any scripts, and takes commands typed into the terminal.
                run the scripts' inputs on it, replay what its UI did, and
                check each `compare NAME` frame against it, pixel for pixel
                (see README.md)
+  --diff BEFORE AFTER
+               compare the screenshots (every PNG) under two directories,
+               pixel for pixel; write the differences under --out (as
+               changed/, added/ and removed/), and fail if there are any
   --help       this, and the commands
 ";
 
@@ -36,6 +41,8 @@ pub struct Options {
     pub speed: f64,
     pub zoom: usize,
     pub devkit: Option<PathBuf>,
+    /// `--diff BEFORE AFTER`.
+    pub diff: Option<(PathBuf, PathBuf)>,
 }
 
 pub fn main() -> ExitCode {
@@ -50,6 +57,16 @@ pub fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if let Some((before, after)) = &options.diff {
+        return match crate::diff::run(before, after, &options.output.dir) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("ur-sim: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if let Some(elf) = &options.devkit {
         return match crate::devkit::run(elf, &options.scripts, &options.output.dir) {
             Ok(()) => ExitCode::SUCCESS,
@@ -139,6 +156,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
         speed: 1.0,
         zoom: 4,
         devkit: None,
+        diff: None,
     };
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -153,6 +171,11 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
                 options.output.zoom = options.zoom;
             }
             "--devkit" => options.devkit = Some(args.next().ok_or("--devkit needs an ELF")?.into()),
+            "--diff" => {
+                let before = args.next().ok_or("--diff needs BEFORE and AFTER")?;
+                let after = args.next().ok_or("--diff needs BEFORE and AFTER")?;
+                options.diff = Some((before.into(), after.into()));
+            }
             "--out" => options.output.dir = args.next().ok_or("--out needs a DIR")?.into(),
             "--speed" => {
                 let speed = args.next().ok_or("--speed needs N")?;
@@ -167,6 +190,11 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
     }
     if options.devkit.is_some() && (options.window || options.scripts.is_empty()) {
         return Err("--devkit runs scripts, without the window".into());
+    }
+    if options.diff.is_some()
+        && (options.window || options.devkit.is_some() || !options.scripts.is_empty())
+    {
+        return Err("--diff compares screenshots; it runs no scripts".into());
     }
     options.window |= options.scripts.is_empty();
     Ok(Some(options))

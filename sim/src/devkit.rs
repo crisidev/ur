@@ -20,8 +20,6 @@
 //! and where they differ (magenta), side by side.
 
 use std::collections::VecDeque;
-use std::fs::File;
-use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration as StdDuration, Instant as StdInstant};
@@ -37,6 +35,7 @@ use crate::compare::{self, Event, Export, Head, Pass, kind, phone};
 use crate::display::{Display, PANEL, SIZE, rgb888};
 use crate::gesture::{Gesture, Touch};
 use crate::script;
+use crate::shot;
 use crate::ui::{App, PhoneEvent, Status, ThemeChoice, Unpaired};
 use crate::{InputEvent, activity, debug, time};
 
@@ -827,43 +826,22 @@ fn describe(event: &InputEvent) -> String {
     }
 }
 
-/// Writes the simulator's frame, the dev kit's, and their differences
-/// (magenta where they differ, the dev kit's frame dimmed elsewhere), side
-/// by side, at the panel's 3×.
+/// Writes the simulator's frame, the dev kit's, and their differences side
+/// by side (see [`shot::save_difference`]), each canvas pixel drawn as the
+/// panel's block of pixels.
 fn side_by_side(path: &Path, sim: &[u16], devkit: &[u16]) -> Result<(), String> {
-    const GAP: usize = 8;
-    let width = 3 * SIZE + 2 * GAP;
-    let mut rgb = vec![0x80u8; width * SIZE * 3];
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let i = (y / 3) * WIDTH + x / 3;
-            let mut put = |panel: usize, color: [u8; 3]| {
-                let at = (y * width + panel * (SIZE + GAP) + x) * 3;
-                rgb[at..at + 3].copy_from_slice(&color);
-            };
-            put(0, rgb888(sim[i], false));
-            put(1, rgb888(devkit[i], false));
-            put(
-                2,
-                if sim[i] == devkit[i] {
-                    rgb888(devkit[i], false).map(|c| c / 3)
-                } else {
-                    [255, 0, 255]
-                },
-            );
-        }
-    }
-    let fail = |e: &dyn std::fmt::Display| format!("writing {}: {e}", path.display());
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| fail(&e))?;
-    }
-    let file = File::create(path).map_err(|e| fail(&e))?;
-    let mut encoder = png::Encoder::new(BufWriter::new(file), width as u32, SIZE as u32);
-    encoder.set_color(png::ColorType::Rgb);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().map_err(|e| fail(&e))?;
-    writer.write_image_data(&rgb).map_err(|e| fail(&e))?;
-    writer.finish().map_err(|e| fail(&e))
+    // Both are the canvas's own pixels (the dev kit exports its canvas, not
+    // the panel), so each fills a square of the panel.
+    let scale = SIZE / WIDTH;
+    let image = |canvas: &[u16]| shot::Image {
+        width: WIDTH * scale,
+        height: HEIGHT * scale,
+        rgb: (0..HEIGHT * scale)
+            .flat_map(|y| (0..WIDTH * scale).map(move |x| (y / scale) * WIDTH + x / scale))
+            .flat_map(|i| rgb888(canvas[i], false))
+            .collect(),
+    };
+    shot::save_difference(path, &image(sim), &image(devkit)).map(|_| ())
 }
 
 #[cfg(test)]

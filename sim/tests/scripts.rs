@@ -3,23 +3,28 @@
 //! clock, the location, the motor's request), and the mock clock is one
 //! per process.
 //!
-//! `tour.txt` checks itself with `expect`; this checks that it, and the
-//! README's screenshots, run to the end and write their screenshots.
+//! `tour.txt` checks itself with `expect`; this checks that it, the
+//! README's screenshots, and Gadgetbridge's lines run to the end, and that
+//! every screenshot they take is the approved one, pixel for pixel.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 fn run(script: &str, args: &[&str]) -> (bool, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_ur-sim"))
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(args)
-        .arg(script)
-        .output()
-        .expect("the simulator runs");
+    let output = sim(&[args, &[script]].concat());
     (
         output.status.success(),
         String::from_utf8_lossy(&output.stderr).into_owned(),
     )
+}
+
+fn sim(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_ur-sim"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(args)
+        .output()
+        .expect("the simulator runs")
 }
 
 /// A fresh directory for a test's screenshots.
@@ -29,34 +34,159 @@ fn out(name: &str) -> PathBuf {
     dir
 }
 
-fn pngs(dir: &Path) -> usize {
-    std::fs::read_dir(dir)
-        .expect("screenshots were written")
-        .filter(|entry| {
-            entry
-                .as_ref()
-                .is_ok_and(|e| e.path().extension().is_some_and(|x| x == "png"))
-        })
-        .count()
+// ==============================================================================
+// Screenshots, against the approved ones
+// ==============================================================================
+//
+// The simulator draws deterministically: a script's screenshots are the
+// same on every run, on every computer. So each script's are committed,
+// as approved, and every run must draw exactly those, or something
+// changed what the watch shows. A change that's meant to is approved by
+// running the tests with `UPDATE_SHOTS=1`, which makes the approved
+// images what the scripts drew (adding new ones, and deleting those no
+// longer taken), for the commit to include: its diff then shows the new
+// screens. (CI renders the same scripts for a PR and its base, and posts
+// the differences on the PR: see .github/workflows/screenshots.yml.)
+
+/// A script whose screenshots are checked.
+struct Shots {
+    script: &'static str,
+    /// Where its approved screenshots are, from sim/.
+    approved: &'static str,
+    /// Approved images that aren't the script's to check, or to update.
+    unchecked: &'static [&'static str],
+}
+
+/// Whether to approve what the scripts draw, rather than check it.
+fn updating() -> bool {
+    std::env::var_os("UPDATE_SHOTS").is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+/// Every PNG directly in `dir`, by name; none if it doesn't exist (a new
+/// script's, before its first approval).
+fn pngs(dir: &Path) -> BTreeSet<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return BTreeSet::new();
+    };
+    entries
+        .map(|entry| entry.expect("the directory lists").file_name())
+        .map(|name| name.into_string().expect("screenshots have UTF-8 names"))
+        .filter(|name| name.ends_with(".png"))
+        .collect()
+}
+
+/// Runs `shots.script`, and checks its screenshots against the approved
+/// ones (or, with `UPDATE_SHOTS`, approves them). Returns its log.
+fn check_shots(shots: Shots) -> String {
+    let name = shots.script.trim_end_matches(".txt");
+    let dir = out(&format!("shots/{name}"));
+    let rendered = dir.join("rendered");
+    let (ok, log) = run(shots.script, &["--out", rendered.to_str().expect("UTF-8")]);
+    assert!(ok, "{log}");
+    for unchecked in shots.unchecked {
+        let _ = std::fs::remove_file(rendered.join(unchecked));
+    }
+    let approved = Path::new(env!("CARGO_MANIFEST_DIR")).join(shots.approved);
+    let checked = |names: BTreeSet<String>| -> BTreeSet<String> {
+        names
+            .into_iter()
+            .filter(|name| !shots.unchecked.contains(&name.as_str()))
+            .collect()
+    };
+    let (old, new) = (checked(pngs(&approved)), checked(pngs(&rendered)));
+
+    if updating() {
+        std::fs::create_dir_all(&approved).expect("the approved directory can be created");
+        for gone in old.difference(&new) {
+            std::fs::remove_file(approved.join(gone)).expect("approved images can be deleted");
+        }
+        for shot in &new {
+            let (from, to) = (rendered.join(shot), approved.join(shot));
+            // Only what changed, so the rest keep their timestamps.
+            if std::fs::read(&from).ok() != std::fs::read(&to).ok() {
+                std::fs::copy(&from, &to).expect("approved images can be written");
+            }
+        }
+        return log;
+    }
+
+    // `--diff` compares whole directories: the approved images this checks
+    // (not the unchecked) go in one of their own.
+    let expected = dir.join("approved");
+    std::fs::create_dir_all(&expected).expect("the target dir is writable");
+    for shot in &old {
+        std::fs::copy(approved.join(shot), expected.join(shot))
+            .expect("the target dir is writable");
+    }
+    let differences = dir.join("differences");
+    let diff = sim(&[
+        "--diff",
+        expected.to_str().expect("UTF-8"),
+        rendered.to_str().expect("UTF-8"),
+        "--out",
+        differences.to_str().expect("UTF-8"),
+    ]);
+    if diff.status.success() {
+        return log;
+    }
+
+    // Each difference, by what it means here: a changed screen (and where
+    // to see how), a new one, or one no longer taken.
+    let report = std::fs::read_to_string(differences.join("report.tsv")).unwrap_or_default();
+    let mut message = format!(
+        "{}'s screenshots aren't the approved ones (in sim/{}). Each that \
+         differs has an image of it before, after, and where (magenta), side by side:\n",
+        shots.script, shots.approved
+    );
+    for line in report.lines() {
+        let mut fields = line.split('\t');
+        let (Some(kind), Some(shot), differ) = (fields.next(), fields.next(), fields.next()) else {
+            continue;
+        };
+        let at = |dir: &Path| dir.join(shot).display().to_string();
+        message += &match kind {
+            "changed" => format!(
+                "- {shot} differs, in {} pixels: {}\n",
+                differ.unwrap_or("?"),
+                at(&differences.join("changed"))
+            ),
+            "added" => format!("- {shot} is new, not approved yet: {}\n", at(&rendered)),
+            "removed" => format!("- {shot} is missing: approved, but no longer taken\n"),
+            _ => format!("- {line}\n"),
+        };
+    }
+    // Not a difference, then, but the comparison failing.
+    if report.is_empty() {
+        message += &String::from_utf8_lossy(&diff.stderr);
+    }
+    panic!(
+        "{message}\nIf that's intended, approve them (from sim/), and commit what changes:\n\n    \
+         UPDATE_SHOTS=1 cargo test\n"
+    );
 }
 
 #[test]
 fn the_tour() {
-    let dir = out("tour");
-    let (ok, log) = run("tour.txt", &["--out", dir.to_str().expect("UTF-8")]);
-    assert!(ok, "{log}");
-    assert_eq!(pngs(&dir), 27, "{log}");
+    check_shots(Shots {
+        script: "tour.txt",
+        approved: "shots/tour",
+        unchecked: &[],
+    });
 }
 
+/// The README's own screenshots, so it can't go stale: approving these
+/// updates it. Only its PNGs: the GIFs beside them are readme-gifs.txt's
+/// (see tests/record.rs), which this neither checks nor touches.
 #[test]
 fn the_readme_screenshots() {
-    let dir = out("readme");
-    let (ok, log) = run(
-        "readme-screenshots.txt",
-        &["--out", dir.to_str().expect("UTF-8")],
-    );
-    assert!(ok, "{log}");
-    assert_eq!(pngs(&dir), 12, "{log}");
+    check_shots(Shots {
+        script: "readme-screenshots.txt",
+        approved: "../docs/screenshots",
+        // The README's Info screen shows a release's version and commit
+        // (see readme-screenshots.txt), which the tests' build never has.
+        // The tour checks the screen itself.
+        unchecked: &["info.png"],
+    });
 }
 
 #[test]
@@ -149,10 +279,11 @@ fn a_double_press_ends_the_quiet_night() {
 /// the UI as what it says.
 #[test]
 fn gadgetbridge_lines() {
-    let dir = out("gadgetbridge");
-    let (ok, log) = run("gadgetbridge.txt", &["--out", dir.to_str().expect("UTF-8")]);
-    assert!(ok, "{log}");
-    assert_eq!(pngs(&dir), 4, "{log}");
+    let log = check_shots(Shots {
+        script: "gadgetbridge.txt",
+        approved: "shots/gadgetbridge",
+        unchecked: &[],
+    });
     for line in [
         "time set (UTC offset 60 min)",
         r#"to the phone: {"t":"gps_power","status":false}"#,

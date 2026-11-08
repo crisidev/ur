@@ -211,6 +211,7 @@ defmt::timestamp!("{=u64:us}", embassy_time::Instant::now().as_micros());
 mod case;
 mod cli;
 mod devkit;
+mod diff;
 mod record;
 mod script;
 mod shot;

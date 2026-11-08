@@ -5,9 +5,11 @@
 #         cargo run --release -- --out ../docs/screenshots readme-screenshots.txt
 #
 # (UR_VERSION, for the version and build the Info screen shows; see
-# build.rs.) Each section sets up what its screenshot shows. Every name,
-# track, and street is fictional: the same shared senders as the dev
-# kit's test notifications (src/debug.rs).
+# build.rs.) They're also approved screenshots (see README.md here):
+# `UPDATE_SHOTS=1 cargo test` updates all but info.png, which only this
+# makes, as only it has a release's version. Each section sets up what
+# its screenshot shows. Every name, track, and street is fictional: the
+# same shared senders as the dev kit's test notifications (src/debug.rs).
 
 # ==============================================================================
 # Info: first, as it shows the uptime, a few seconds after booting

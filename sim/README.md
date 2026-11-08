@@ -91,7 +91,44 @@ Screenshots are the 240×240 the panel would show: the canvas's pixels
 as pushed to the panel, in the same colours `screenshot.py` gives, so the
 two match pixel for pixel. `readme-screenshots.txt` makes the README's;
 `tour.txt` goes round most screens, checking itself as it goes; `cargo
-test` runs it, and `gadgetbridge.txt`.
+test` runs it, and `gadgetbridge.txt`, and checks every screenshot they
+take.
+
+## Approved screenshots
+
+A script draws the same pixels on every run, on every computer, so its
+screenshots are committed, as approved, and `cargo test` checks that
+each script still draws exactly those: `tour.txt`'s in `shots/tour/`,
+`gadgetbridge.txt`'s in `shots/gadgetbridge/`, and
+`readme-screenshots.txt`'s in `../docs/screenshots/`, the README's own,
+so it can't go stale. A test fails on a screenshot that differs (with
+how many pixels, and an image of it before, after, and where it differs,
+in magenta, side by side), on a new one, and on one no longer taken.
+
+When the change is what you meant, look at those images, then approve
+what the scripts now draw, and commit it with the change:
+
+```sh
+UPDATE_SHOTS=1 cargo test
+```
+
+That makes each approved directory exactly what its script drew: it
+adds new screenshots, rewrites changed ones, and deletes those no longer
+taken. The Info screen shows the version, from Cargo.toml (`0.9.0-dev`
+here), so a release's new version needs approving too. The README's
+`info.png` is the exception: it shows a release's version and commit
+(`UR_VERSION`; see `readme-screenshots.txt`), which the tests' build
+never does, so they neither check nor update it, and the tour's
+`11a-info.png` checks that screen instead. Only the PNGs there are
+`readme-screenshots.txt`'s: the GIFs beside them are
+`readme-gifs.txt`'s, which approving leaves alone (`tests/record.rs`
+checks they're made, and small; a GIF's frames make a poor diff).
+
+The comparison is `ur-sim --diff BEFORE AFTER --out DIR`, which
+compares every PNG under two directories, and writes each that changed
+(side by side, as above) to `DIR/changed/`, each only `AFTER` has to
+`DIR/added/`, and each only `BEFORE` has to `DIR/removed/`, with a list,
+`DIR/report.tsv`.
 
 ## Recordings
 
