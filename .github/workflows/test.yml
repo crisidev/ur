@@ -2,10 +2,10 @@
 # - host-tests: the firmware's hardware-free modules (signal processing,
 #   sleep, alarms, glance detection, heart rate scheduling, navigation
 #   between screens, turn-by-turn directions, number parsing, telling
-#   touches apart, what a touch does with the screen off, Gadgetbridge's
-#   messages, colours that must differ in every theme), each built into a
-#   host crate under host-tests/ and tested on the computer, with the
-#   pinned toolchain and on beta
+#   touches apart, the button grid's gestures, what a touch does with
+#   the screen off, Gadgetbridge's messages, colours that must differ in
+#   every theme), each built into a host crate under host-tests/ and
+#   tested on the computer, with the pinned toolchain and on beta
 # - sim: the simulator's tests (sim/), and screenshots of the UI from it
 # - firmware: builds and packages both variants exactly as a release would
 #   (scripts/release.sh), and uploads them, so every PR, and every commit on
@@ -31,7 +31,7 @@ jobs:
       fail-fast: false
       matrix:
         toolchain: [pinned, beta]
-        crate: [alarm, arrival, battery, brightness, day, decimal, font, gb, gesture, glance, heart_schedule, nav, ppg, route, sleep, snapshot, temperature, theme, wake]
+        crate: [alarm, arrival, battery, brightness, buttons, day, decimal, font, gb, gesture, glance, heart_schedule, nav, ppg, route, sleep, snapshot, temperature, theme, wake]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
       - name: Install the pinned toolchain
