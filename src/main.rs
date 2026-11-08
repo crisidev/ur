@@ -46,6 +46,7 @@ mod canvas;
 mod clock;
 mod day;
 mod debug;
+mod decimal;
 mod dfu;
 mod display;
 mod field_log;

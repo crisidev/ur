@@ -137,7 +137,7 @@ fn parse_set_time(rest: &[u8]) -> Option<Incoming<'static>> {
     let zone = find(rest, b"E.setTimeZone(")?;
     let zone = &rest[zone + b"E.setTimeZone(".len()..];
     let end = zone.iter().position(|&b| b == b')')?;
-    let hours: f32 = core::str::from_utf8(&zone[..end]).ok()?.parse().ok()?;
+    let hours = crate::decimal::parse(&zone[..end])? as f32;
     // Offsets are whole quarter-hours in practice (e.g. +5:45); rounding to
     // minutes absorbs float noise in Gadgetbridge's division.
     let offset_minutes = libm::roundf(hours * 60.0) as i16;
@@ -307,7 +307,7 @@ impl<'a> Value<'a> {
     }
 
     pub fn as_f64(&self) -> Option<f64> {
-        core::str::from_utf8(self.0).ok()?.parse().ok()
+        crate::decimal::parse(self.0)
     }
 }
 
