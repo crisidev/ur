@@ -30,14 +30,14 @@ timepiece.)
   weekends), two alarms, and two timers, plus up to ten alarms set in
   Gadgetbridge. Alarms start with faint taps and build up to full strength
   over a minute; timers buzz in full straight away.
-- **Sleep and heart rate:** measured on the watch, and synced to
-  Gadgetbridge (and from there to [Health Connect], if you like). Sleep
-  comes in light, deep, and REM stages, estimated from your wrist's
-  movement and heart rate: a rough guide, tuned against a Garmin on one
-  watch.
+- **Sleep and heart rate:** measured on the watch, shown there for today
+  and last night, and synced to Gadgetbridge (and from there to [Health
+  Connect], if you like). Sleep comes in light, deep, and REM stages,
+  estimated from your wrist's movement and heart rate: a rough guide,
+  tuned against a Garmin on one watch.
 - **Notifications:** which app, and who from, briefly. With the screen off
-  they're full-screen and dim. Calls take over the screen, and you can
-  answer or decline.
+  they're full-screen and dim. The last three wait above the clock face.
+  Calls take over the screen, and you can answer or decline.
 - **Quiet nights:** from when you fall asleep until the morning's first
   alarm (or until you've been up for 22 minutes), notifications neither
   buzz nor light the screen; the latest waits on the clock face for you.
@@ -78,12 +78,17 @@ hardware by a human.
   fully. During a quiet night, taps don't wake it at all: use the button.
 - **Button:** with the screen on, back to the clock, or off from the
   clock. Also silences a call, and stops a ringing alarm.
-- **Swipe left and right:** between the clock, alarms, phone alarms (once
-  Gadgetbridge has sent some), music (while something is playing), and
-  info screens.
-- **Long-press:** the next theme. On the alarms screen, long-pressing an
-  alarm or timer switches it on or off instead; on the info screen, it
-  offers storage mode.
+- **Screens:** around the clock face. Swipe right for today (steps and
+  heart rate, by the hour), then last night's sleep; left for alarms, then
+  phone alarms (once Gadgetbridge has sent some); down for the last three
+  notifications, newest first; up for music (while something is playing),
+  then info. Swipe the same way again to go further, the other way to come
+  back. The dots on a screen's edge point back to the clock, one for each
+  screen that way. A dot at the top of the clock means notifications you
+  haven't seen.
+- **Long-press:** on the clock, the next theme (or tap THEME on the info
+  screen). On the alarms screen, long-pressing an alarm or timer switches
+  it on or off; on the info screen, it offers storage mode.
 - **Brightness:** brightest while the sun is up, dim from midnight until
   you get up, and in between, medium. For less (and a longer battery),
   tap LIGHT on the info screen to switch from AUTO to SOFT: medium while

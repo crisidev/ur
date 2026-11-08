@@ -6,7 +6,7 @@
 //!   glyphs, and colour themes.
 //! - [`display`]: the async LCD driver the canvas pushes pixels through.
 //! - [`spi`] / [`spi_flash`]: the bus the LCD shares with the external flash.
-//! - [`ui`]: screens, navigation, and screen power.
+//! - [`ui`] / [`nav`]: screens, navigation, and screen power.
 //! - [`brightness`]: how bright the backlight is.
 //! - [`touch`], the button task here: input, delivered through [`INPUT`].
 //! - [`motor`]: vibration patterns.
@@ -16,7 +16,7 @@
 //! - [`system_off`] / [`snapshot`]: switching off when the battery is
 //!   critically low, or for storage, saving what the phone hasn't fetched.
 //! - [`activity`] / [`sleep`]: steps, movement, and sleep, from the
-//!   accelerometer.
+//!   accelerometer; [`day`]: the day's activity by the hour, for the UI.
 //! - [`heart`] / [`ppg`] / [`heart_schedule`]: heart rate from the optical
 //!   sensor, the signal processing behind it, and when to measure.
 //! - [`i2c`]: the shared sensor bus.
@@ -43,6 +43,7 @@ mod ble;
 mod brightness;
 mod canvas;
 mod clock;
+mod day;
 mod debug;
 mod dfu;
 mod display;
@@ -56,6 +57,7 @@ mod heart;
 mod heart_schedule;
 mod i2c;
 mod motor;
+mod nav;
 mod power;
 mod ppg;
 mod sleep;

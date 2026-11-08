@@ -5,18 +5,41 @@
 //! All state that affects what's shown lives in [`App`] or in the [`Status`]
 //! snapshot passed to `render`.
 //!
+//! The screens sit around the clock face, in a line on each side, nearest
+//! first (see [`crate::nav`] for how swipes move along them):
+//!
+//! - Left, the past: Today (steps, and the heart rate, by the hour), then
+//!   Last night (sleep).
+//! - Right, what's next: Alarms, then the phone's alarms, once it has sent
+//!   some.
+//! - Above: the last [`HISTORY`] notifications, newest nearest, one a page.
+//! - Below: Music, while the phone has media, then Info.
+//!
+//! Screens away from the clock show a dot for each screen in their line on
+//! the edge facing the clock, the one showing lit: the way home, and how far
+//! out it is. On the clock, a dot on the top edge means notifications came
+//! in that haven't been seen (see [`Notifications::unseen`]).
+//!
 //! Navigation:
 //!
-//! - Swipe left/right: cycle between screens (clock, alarms, the phone's
-//!   alarms once it has sent some, music while the phone has media, info).
-//! - Long press: next colour theme within the current group (dark themes
-//!   after sunset, light ones after sunrise; each group remembers its own).
-//!   On the info screen: offer storage mode (see [`crate::system_off`]);
-//!   a tap then confirms, anything else cancels.
-//! - On the info screen, tap the brightness ("LIGHT") row: switch between
-//!   auto and soft (see [`crate::brightness`]).
-//! - Button: return to the clock; on the clock, turn the screen off. While a
-//!   call rings: silence it.
+//! - Swipe: the content follows the finger, so swiping left brings in
+//!   the screen to the right. Along a line, the same swipe goes further
+//!   out and the opposite one comes back; there's no wrapping round, and
+//!   no sideways step into another line. The transition sweeps the way
+//!   the content moves.
+//! - Button: back to the clock, sweeping towards it; on the clock, turn the
+//!   screen off. While a call rings: silence it.
+//! - Long press: on the clock, the next colour theme within the current
+//!   group (dark themes after sunset, light ones after sunrise; each group
+//!   remembers its own). On the alarms screen, switch an alarm on or off.
+//!   On the info screen, offer storage mode (see [`crate::system_off`]); a
+//!   tap then confirms, anything else cancels. Elsewhere, nothing.
+//! - On the info screen, tap the theme ("THEME") row for the next theme, or
+//!   the brightness ("LIGHT") row to switch between auto and soft (see
+//!   [`crate::brightness`]).
+//! - Screens that take over (the alarm editor, a ringing alarm, a call,
+//!   pairing, an update, the storage prompt) get every touch: swipes there
+//!   don't navigate.
 //! - While the screen is off, a button press, a deliberate tap (see
 //!   [`deliberate`]), or a double tap (two taps within [`DOUBLE_TAP`]):
 //!   wake to the clock. Other touches don't, so a brush of a sleeve
@@ -47,7 +70,9 @@
 //! - Notifications: a two-line banner (app, then sender) for
 //!   [`BANNER_TIME`] and a short buzz. If the screen was off, the
 //!   notification gets the whole (dim, white on black) screen instead, like
-//!   a glance, and the screen sleeps again after.
+//!   a glance, and the screen sleeps again after. Either way, it's kept in
+//!   the history above the clock; one arriving while that's showing goes
+//!   straight to its first page instead of a banner.
 //! - Calls: take over the screen, ringing, until the phone says the call is
 //!   over (answered, rejected, ended) or the user acts.
 //! - Media info: enables the music screen.
@@ -57,7 +82,8 @@
 //! minutes awake):
 //!
 //! - Notifications neither buzz nor light the screen. The last one waits
-//!   as a banner for the next time the screen is properly on.
+//!   as a banner for the next time the screen is properly on (and all of
+//!   them in the history).
 //! - Touches don't wake the screen (pillows and bedding tap it); the button
 //!   and turning the wrist still do. Once it's on, touches work as usual.
 //! - Everything shows in the dim white-on-black look, at the glance's low
@@ -79,9 +105,11 @@ use crate::ble;
 use crate::brightness;
 use crate::canvas::{Canvas, Color, Sweep, marquee_cycle};
 use crate::clock::DateTime;
+use crate::day::Day;
 use crate::font;
 use crate::gb::{CallAction, MusicCommand, Outgoing};
 use crate::motor::{self, Pattern};
+use crate::nav::{self, Place, Side};
 use crate::sleep::{self, Change, Over};
 use crate::theme::{self, Theme};
 use crate::touch::{Gesture, Touch};
@@ -193,11 +221,6 @@ pub enum Unpaired {
     PairingLost,
 }
 
-/// README.md's FAQ entries for [`Unpaired`]: the watch shows only these
-/// IDs, since the steps don't fit on its screen.
-pub const NOT_PAIRED_FAQ: &str = "C01";
-pub const PAIRING_LOST_FAQ: &str = "C02";
-
 impl Unpaired {
     pub fn title(self) -> &'static str {
         match self {
@@ -206,10 +229,12 @@ impl Unpaired {
         }
     }
 
-    fn faq(self) -> &'static str {
+    /// What to do about it: README.md's FAQ entry, by its ID only, as the
+    /// steps don't fit on the screen.
+    fn hint(self) -> &'static str {
         match self {
-            Self::NotPaired => NOT_PAIRED_FAQ,
-            Self::PairingLost => PAIRING_LOST_FAQ,
+            Self::NotPaired => "SEE FAQ C01",
+            Self::PairingLost => "SEE FAQ C02",
         }
     }
 }
@@ -234,14 +259,22 @@ impl defmt::Format for PhoneEvent {
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
 enum Screen {
     Clock,
+    Today,
+    LastNight,
     Alarms,
     PhoneAlarms,
+    /// One of the [`Notifications`], by its index (0 the newest).
+    Notification(u8),
     Music,
     Info,
-    /// Asking whether to switch to storage mode: not in the swipe order,
-    /// only reached by a long press on the info screen.
+    /// Asking whether to switch to storage mode: in no line, only reached
+    /// by a long press on the info screen.
     Storage,
 }
+
+/// The most screens in a line (the notifications' is the longest).
+const LONGEST_LINE: usize = if HISTORY > 2 { HISTORY } else { 2 };
+type Screens = heapless::Vec<Screen, LONGEST_LINE>;
 
 /// An alarm ringing.
 struct Ringing {
@@ -270,11 +303,54 @@ const TIMERS_TOP: i32 = 53;
 const EDITOR_BUTTONS_Y: i32 = 60;
 
 struct Banner {
-    app: String<24>,
-    who: String<40>,
+    /// Its text lives elsewhere, rather than in a copy (see
+    /// [`App::banner_lines`]).
+    shows: Shows,
     /// When it appeared, for scrolling long lines.
     since: Instant,
     until: Instant,
+}
+
+/// What a banner shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shows {
+    /// The newest of the [`Notifications`].
+    Newest,
+    /// That a client can't connect, and why. Not a notification, so not
+    /// kept: the Info screen's phone row keeps saying so meanwhile.
+    Unpaired(Unpaired),
+}
+
+/// How many notifications the history above the clock keeps. Each costs
+/// 72 bytes of RAM (its two strings), where there's little to spare.
+const HISTORY: usize = 3;
+
+struct Notification {
+    app: String<24>,
+    who: String<40>,
+}
+
+/// The latest notifications, for the history above the clock.
+#[derive(Default)]
+struct Notifications {
+    /// Newest first.
+    list: heapless::Vec<Notification, HISTORY>,
+    /// Whether any came in that the wearer hasn't seen: that they haven't
+    /// touched the watch, or pressed its button, while it showed, nor
+    /// opened the history since. (It lit the screen, but nobody may have
+    /// been looking.)
+    unseen: bool,
+}
+
+impl Notifications {
+    /// Keeps a new notification, forgetting the oldest if there's no room.
+    fn push(&mut self, app: String<24>, who: String<40>) {
+        if self.list.is_full() {
+            self.list.pop();
+        }
+        let _ = self.list.insert(0, Notification { app, who });
+        self.unseen = true;
+    }
 }
 
 struct Call {
@@ -317,6 +393,7 @@ pub struct App {
     /// [`theme::DARK`]. Long press advances the one currently in use.
     pub themes: ThemeChoice,
     connected: bool,
+    notifications: Notifications,
     banner: Option<Banner>,
     /// The screen woke only to show a notification; sleep again after it.
     brief_wake: bool,
@@ -350,6 +427,9 @@ pub struct App {
     small_hours: bool,
     /// The user confirmed storage mode; `main` switches the watch off.
     pub storage_mode: bool,
+    /// Pairing or an update has the screen (as of the last tick), and so
+    /// every touch (see the module docs).
+    takeover: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -370,6 +450,7 @@ impl App {
             daytime: false,
             themes,
             connected: false,
+            notifications: Notifications::default(),
             banner: None,
             brief_wake: false,
             call: None,
@@ -387,6 +468,7 @@ impl App {
             brightness: brightness::Setting::default(),
             small_hours: false,
             storage_mode: false,
+            takeover: false,
         }
     }
 
@@ -497,35 +579,113 @@ impl App {
         core::mem::take(&mut self.phone_alarms_changed)
     }
 
-    /// Screens in swipe order (wrapping around). The phone's alarms only
-    /// have a screen once the phone has sent some, and the music screen
-    /// only exists while the phone has told us about media.
-    fn screens(&self) -> heapless::Vec<Screen, 5> {
-        let mut screens = heapless::Vec::new();
-        let _ = screens.push(Screen::Clock);
-        let _ = screens.push(Screen::Alarms);
-        if !self.phone_alarms.alarms().is_empty() {
-            let _ = screens.push(Screen::PhoneAlarms);
+    /// The line of screens on `side` of the clock, nearest first. The
+    /// phone's alarms only have a screen once the phone has sent some, and
+    /// the music screen only exists while the phone has told us about
+    /// media.
+    fn line(&self, side: Side) -> Screens {
+        let mut line = Screens::new();
+        let mut add = |screen| {
+            let _ = line.push(screen);
+        };
+        match side {
+            Side::Left => {
+                add(Screen::Today);
+                add(Screen::LastNight);
+            }
+            Side::Right => {
+                add(Screen::Alarms);
+                if !self.phone_alarms.alarms().is_empty() {
+                    add(Screen::PhoneAlarms);
+                }
+            }
+            Side::Above => {
+                for i in 0..self.notifications.list.len() {
+                    add(Screen::Notification(i as u8));
+                }
+            }
+            Side::Below => {
+                if self.music.is_some() {
+                    add(Screen::Music);
+                }
+                add(Screen::Info);
+            }
         }
-        if self.music.is_some() {
-            let _ = screens.push(Screen::Music);
-        }
-        let _ = screens.push(Screen::Info);
-        screens
+        line
     }
 
-    fn neighbour(&self, step: isize) -> Screen {
-        let screens = self.screens();
-        let i = screens.iter().position(|&s| s == self.screen).unwrap_or(0);
-        screens[(i as isize + step).rem_euclid(screens.len() as isize) as usize]
+    /// Where the current screen is. The storage prompt counts as the info
+    /// screen it came from.
+    fn place(&self) -> Place {
+        let screen = match self.screen {
+            Screen::Storage => Screen::Info,
+            screen => screen,
+        };
+        Side::ALL
+            .into_iter()
+            .find_map(|side| {
+                let index = self.line(side).iter().position(|&s| s == screen)?;
+                Some(Place::Line { side, index })
+            })
+            .unwrap_or(Place::Clock)
     }
 
-    /// Switches screens. The sweep follows the finger: swiping left moves
-    /// content left, so the new screen comes in from the right.
+    /// Follows a swipe, if it goes anywhere (see [`nav::swipe`]).
+    fn navigate(&mut self, swipe: nav::Swipe) {
+        let Some((place, towards)) = nav::swipe(self.place(), swipe, |side| self.line(side).len())
+        else {
+            return;
+        };
+        let screen = match place {
+            Place::Clock => Screen::Clock,
+            Place::Line { side, index } => self.line(side)[index],
+        };
+        self.go_to(screen, sweep(towards));
+    }
+
+    /// Switches screens, with a transition.
     fn go_to(&mut self, screen: Screen, sweep: Sweep) {
         if screen != self.screen {
             self.screen = screen;
             self.transition = Some(sweep);
+        }
+        // Opening the history is seeing what's new in it, and a banner for
+        // the newest would only cover it.
+        if let Screen::Notification(_) = screen {
+            self.notifications.unseen = false;
+            if self.banner_newest() {
+                self.banner = None;
+            }
+        }
+    }
+
+    /// Whether the banner is on screen for the wearer to see.
+    fn banner_showing(&self) -> bool {
+        self.awake
+            && self.call.is_none()
+            && self.ringing.is_none()
+            && self.editing.is_none()
+            && self.banner.as_ref().is_some_and(|b| b.until != UNSEEN)
+    }
+
+    /// Whether there's a banner for the newest notification (showing, or
+    /// waiting to).
+    fn banner_newest(&self) -> bool {
+        self.banner
+            .as_ref()
+            .is_some_and(|b| b.shows == Shows::Newest)
+    }
+
+    /// A banner's two lines: the app (or a title), then the sender (or
+    /// what to do).
+    fn banner_lines(&self, shows: Shows) -> (&str, &str) {
+        match shows {
+            Shows::Newest => self
+                .notifications
+                .list
+                .first()
+                .map_or(("", ""), |n| (&n.app, &n.who)),
+            Shows::Unpaired(why) => (why.title(), why.hint()),
         }
     }
 
@@ -572,12 +732,22 @@ impl App {
             }
             self.wake_tap = None;
         }
-        // A user input (or a request for attention) from here on.
+        // A user input (or a request for attention) from here on. Touching
+        // or pressing while a notification shows means the wearer saw it.
+        if self.banner_showing() && self.banner_newest() && !matches!(event, InputEvent::Attention)
+        {
+            self.notifications.unseen = false;
+        }
         self.last_input = now;
         self.brief_wake = false;
         if !self.awake {
             self.awake = true;
             self.screen = Screen::Clock;
+            return;
+        }
+        // Pairing or an update: what's beneath doesn't show, so touches
+        // mustn't change it.
+        if self.takeover && matches!(event, InputEvent::Touch(_)) {
             return;
         }
 
@@ -628,15 +798,10 @@ impl App {
             InputEvent::Phone(_) | InputEvent::Glance => unreachable!("handled above"),
             // Only ever a reason to wake up, handled above.
             InputEvent::Attention => {}
-            InputEvent::Button => {
-                if self.screen == Screen::Clock {
-                    self.awake = false;
-                } else {
-                    // Home is the leftmost screen, so going home sweeps the
-                    // same way as swiping back towards it.
-                    self.go_to(Screen::Clock, Sweep::LeftToRight);
-                }
-            }
+            InputEvent::Button => match nav::home(self.place()) {
+                Some(towards) => self.go_to(Screen::Clock, sweep(towards)),
+                None => self.awake = false,
+            },
             InputEvent::Touch(touch) => match (touch.gesture, self.screen) {
                 // Storage mode needs a long press, then a tap: hard to do by
                 // accident, while anything else backs out.
@@ -646,8 +811,10 @@ impl App {
                     self.go_to(Screen::Storage, Sweep::RightToLeft);
                     motor::buzz(Pattern::NOTIFY);
                 }
-                (Gesture::SwipeLeft, _) => self.go_to(self.neighbour(1), Sweep::RightToLeft),
-                (Gesture::SwipeRight, _) => self.go_to(self.neighbour(-1), Sweep::LeftToRight),
+                (Gesture::SwipeLeft, _) => self.navigate(nav::Swipe::Left),
+                (Gesture::SwipeRight, _) => self.navigate(nav::Swipe::Right),
+                (Gesture::SwipeUp, _) => self.navigate(nav::Swipe::Up),
+                (Gesture::SwipeDown, _) => self.navigate(nav::Swipe::Down),
                 (Gesture::Tap, Screen::Music) if touch.y >= MUSIC_CONTROLS_Y => {
                     // Left, middle, and right thirds.
                     let command = match touch.x {
@@ -674,13 +841,19 @@ impl App {
                         motor::buzz(Pattern::NOTIFY);
                     }
                 }
+                (Gesture::Tap, Screen::Info) if INFO_THEME_TAP.contains(&touch.y) => {
+                    self.next_theme();
+                }
                 (Gesture::Tap, Screen::Info) if INFO_LIGHT_TAP.contains(&touch.y) => {
                     self.brightness = self.brightness.next();
                 }
                 // TODO: remove once something real uses the motor; for now
                 // this is how we check it works.
                 (Gesture::Tap, Screen::Info) => motor::buzz(Pattern::NOTIFY),
-                (Gesture::LongPress, _) => self.next_theme(),
+                // The theme's shortcut, on the clock only: elsewhere a long
+                // press is the screen's own (or nothing), so one meant for
+                // a screen can't change the theme by missing.
+                (Gesture::LongPress, Screen::Clock) => self.next_theme(),
                 _ => {}
             },
         }
@@ -764,61 +937,23 @@ impl App {
             }
             return;
         }
-        // A banner like a notification's, pointing at the FAQ for the
-        // steps; the Info screen's phone row keeps saying so meanwhile.
+        // Both of these show as a banner: a notification (kept in the
+        // history, too), or that a client can't connect.
         let event = match event {
-            PhoneEvent::Unpaired(why) => {
-                let mut who = String::new();
-                let _ = write!(who, "SEE FAQ {}", why.faq());
-                PhoneEvent::Notification {
-                    app: String::try_from(why.title()).expect("fits in 24"),
-                    who,
-                }
+            PhoneEvent::Notification { app, who } => {
+                self.notifications.push(app, who);
+                return self.show_banner(Shows::Newest, now);
             }
+            PhoneEvent::Unpaired(why) => return self.show_banner(Shows::Unpaired(why), now),
             event => event,
         };
-        // In the quiet night, a notification makes no sound or light: it's
-        // only kept, as a banner that waits until the screen is properly on
-        // (see `on_tick`), even if that's now. Only the latest is kept.
-        //
-        // TODO: a count of the notifications that came in the night, if
-        // one banner turns out not to be enough of a hint.
-        if self.night.quiet()
-            && let PhoneEvent::Notification { app, who } = event
-        {
-            self.banner = Some(Banner {
-                app,
-                who,
-                since: now,
-                until: UNSEEN,
-            });
-            return;
-        }
         // Anything else from the phone gets the full screen.
         if self.glance_until.take().is_some() {
             self.last_input = now;
         }
         match event {
-            PhoneEvent::Unpaired(_) => unreachable!("made a notification above"),
-            PhoneEvent::Notification { app, who } => {
-                // With the screen off, the notification gets the whole
-                // screen.
-                let until = now + shown_for(&app, &who, !self.awake);
-                self.banner = Some(Banner {
-                    app,
-                    who,
-                    since: now,
-                    until,
-                });
-                // Not over a ringing alarm, which would go quiet.
-                if self.ringing.is_none() {
-                    motor::buzz(Pattern::NOTIFY);
-                }
-                if !self.awake {
-                    self.awake = true;
-                    self.brief_wake = true;
-                    self.screen = Screen::Clock;
-                }
+            PhoneEvent::Notification { .. } | PhoneEvent::Unpaired(_) | PhoneEvent::Alarms(_) => {
+                unreachable!("handled above")
             }
             // Calls ring and light the screen even in the quiet night: one
             // at night is likely to matter. (In the dim look, though.)
@@ -859,7 +994,57 @@ impl App {
                     self.last_input = now;
                 }
             }
-            PhoneEvent::Alarms(_) => unreachable!("handled above"),
+        }
+    }
+
+    /// Shows a banner (or keeps it for later, in the quiet night).
+    fn show_banner(&mut self, shows: Shows, now: Instant) {
+        // Reading the history: a new notification goes straight to its
+        // first page, whole, rather than in a banner over an older one
+        // (which it has just moved along a page).
+        if shows == Shows::Newest
+            && self.awake
+            && matches!(self.screen, Screen::Notification(_))
+            && self.call.is_none()
+            && self.ringing.is_none()
+        {
+            self.go_to(Screen::Notification(0), sweep(Side::Below));
+            // Its text scrolls from the last input (see `render`).
+            self.last_input = now;
+            if !self.night.quiet() {
+                motor::buzz(Pattern::NOTIFY);
+            }
+            return;
+        }
+        // In the quiet night, it makes no sound or light: it waits until
+        // the screen is properly on (see `on_tick`), even if that's now.
+        if self.night.quiet() {
+            self.banner = Some(Banner {
+                shows,
+                since: now,
+                until: UNSEEN,
+            });
+            return;
+        }
+        if self.glance_until.take().is_some() {
+            self.last_input = now;
+        }
+        // With the screen off, it gets the whole screen.
+        let (app, who) = self.banner_lines(shows);
+        let until = now + shown_for(app, who, !self.awake);
+        self.banner = Some(Banner {
+            shows,
+            since: now,
+            until,
+        });
+        // Not over a ringing alarm, which would go quiet.
+        if self.ringing.is_none() {
+            motor::buzz(Pattern::NOTIFY);
+        }
+        if !self.awake {
+            self.awake = true;
+            self.brief_wake = true;
+            self.screen = Screen::Clock;
         }
     }
 
@@ -947,6 +1132,8 @@ impl App {
     /// `keep_awake` holds the screen on regardless of input, e.g. while a
     /// pairing passkey is showing and the user is typing it on the phone.
     pub fn on_tick(&mut self, now: Instant, keep_awake: bool) {
+        // That's pairing or an update, which take every touch too.
+        self.takeover = keep_awake;
         // A glance has its own timer: it isn't input, so the screen timeout
         // (which counts from the last input) would end it at once.
         if let Some(until) = self.glance_until {
@@ -963,11 +1150,19 @@ impl App {
             && self.call.is_none()
             && self.ringing.is_none()
             && self.editing.is_none()
-            && let Some(banner) = &mut self.banner
-            && banner.until == UNSEEN
+            && let Some(shows) = self
+                .banner
+                .as_ref()
+                .filter(|b| b.until == UNSEEN)
+                .map(|b| b.shows)
         {
-            banner.since = now;
-            banner.until = now + shown_for(&banner.app, &banner.who, false);
+            let (app, who) = self.banner_lines(shows);
+            let until = now + shown_for(app, who, false);
+            self.banner = Some(Banner {
+                shows,
+                since: now,
+                until,
+            });
         }
         if self.banner.as_ref().is_some_and(|b| now >= b.until) {
             self.banner = None;
@@ -999,21 +1194,33 @@ impl App {
         if let Some(call) = &self.call {
             return overflows(&call.caller, 2, CALL_TEXT_WIDTH);
         }
-        let quiet = self.quiet_notification();
-        let banner = self.banner.as_ref().is_some_and(|b| {
-            let who = if quiet {
-                quiet_layout(&b.who).is_none()
+        // A whole-screen notification's sender only scrolls if it won't
+        // wrap; a banner's, if it won't fit on its line.
+        let scrolls = |app: &str, who: &str, whole_screen: bool| {
+            let who = if whole_screen {
+                quiet_layout(who, QUIET_LINES_2X).is_none()
             } else {
-                overflows(&b.who, 1, BANNER_TEXT_WIDTH)
+                overflows(who, 1, BANNER_TEXT_WIDTH)
             };
-            overflows(&b.app, 1, BANNER_TEXT_WIDTH) || who
+            overflows(app, 1, BANNER_TEXT_WIDTH) || who
+        };
+        let banner = self.banner.as_ref().is_some_and(|b| {
+            let (app, who) = self.banner_lines(b.shows);
+            scrolls(app, who, self.quiet_notification())
         });
-        let music = self.screen == Screen::Music
-            && self.music.as_ref().is_some_and(|m| {
+        let screen = match self.screen {
+            Screen::Music => self.music.as_ref().is_some_and(|m| {
                 overflows(&m.artist, 1, MUSIC_TEXT_WIDTH)
                     || overflows(&m.track, 2, MUSIC_TEXT_WIDTH)
-            });
-        banner || music
+            }),
+            Screen::Notification(i) => self
+                .notifications
+                .list
+                .get(usize::from(i))
+                .is_some_and(|n| scrolls(&n.app, &n.who, true)),
+            _ => false,
+        };
+        banner || screen
     }
 
     pub fn render(&self, canvas: &mut Canvas, status: &Status, now: Instant) {
@@ -1042,7 +1249,8 @@ impl App {
         if self.quiet_notification()
             && let Some(banner) = &self.banner
         {
-            render_quiet_notification(canvas, banner, now);
+            let (app, who) = self.banner_lines(banner.shows);
+            render_quiet_notification(canvas, app, who, now - banner.since, QUIET_LINES_2X);
             return;
         }
         if let Some(editing) = self.editing {
@@ -1061,8 +1269,27 @@ impl App {
         });
         match self.screen {
             Screen::Clock => render_clock(canvas, status, next_alarm),
+            // From the day's history, only while it shows: walking it
+            // costs a little time, while keeping it up to date would cost
+            // RAM.
+            Screen::Today => render_today(canvas, crate::activity::today().as_ref(), status.steps),
+            Screen::LastNight => render_last_night(canvas, status.sleep),
             Screen::Alarms => render_alarms(canvas, &self.alarms, &self.alarm_state, status),
             Screen::PhoneAlarms => render_phone_alarms(canvas, &self.phone_alarms),
+            // Like a notification that arrived with the screen off, its
+            // text scrolling from when the page opened (the swipe there),
+            // but a line short at 2×, to leave the bottom edge for the
+            // dots.
+            Screen::Notification(i) => match self.notifications.list.get(usize::from(i)) {
+                Some(n) => render_quiet_notification(
+                    canvas,
+                    &n.app,
+                    &n.who,
+                    now - self.last_input,
+                    QUIET_LINES_2X - 1,
+                ),
+                None => render_clock(canvas, status, next_alarm),
+            },
             Screen::Music => match &self.music {
                 Some(music) => render_music(canvas, music, now),
                 None => render_clock(canvas, status, next_alarm),
@@ -1070,8 +1297,20 @@ impl App {
             Screen::Info => render_info(canvas, status, self.chosen_theme(), self.brightness),
             Screen::Storage => render_storage_prompt(canvas),
         }
+        match self.place() {
+            // Notifications nobody has seen: a dot on the edge that leads
+            // to them, like the dots that lead home from there.
+            Place::Clock if self.notifications.unseen => {
+                canvas.fill_rect(40 - DOT / 2, 0, DOT, DOT, Color::ACCENT);
+            }
+            Place::Line { side, index } if self.screen != Screen::Storage => {
+                render_hint(canvas, side, index, self.line(side).len());
+            }
+            _ => {}
+        }
         if let Some(banner) = &self.banner {
-            render_banner(canvas, banner, now);
+            let (app, who) = self.banner_lines(banner.shows);
+            render_banner(canvas, app, who, now - banner.since);
         }
     }
 }
@@ -1080,6 +1319,45 @@ impl App {
 /// full; none of these are worth retrying later).
 fn send(message: Outgoing) {
     let _ = ble::OUTBOX.try_send(message);
+}
+
+/// The transition for moving towards a screen on `side`: the content
+/// moves away from it, so the new screen comes in from there.
+fn sweep(towards: Side) -> Sweep {
+    match towards {
+        Side::Left => Sweep::LeftToRight,
+        Side::Right => Sweep::RightToLeft,
+        Side::Above => Sweep::TopToBottom,
+        Side::Below => Sweep::BottomToTop,
+    }
+}
+
+/// The side of the hint dots, and the unseen notifications' dot.
+const DOT: i32 = 2;
+
+/// Dots on the edge facing the clock, one for each of the `count` screens
+/// in the line on `side`, nearest the clock first (from the top, or the
+/// left), with the one showing (`index`) lit: which way home is, and how
+/// far out this is. They take the outer [`DOT`] pixels of the edge, and
+/// screens keep one more clear (text starts 3 pixels in).
+fn render_hint(canvas: &mut Canvas, side: Side, index: usize, count: usize) {
+    const PITCH: i32 = DOT + 2;
+    let start = 40 - (PITCH * count as i32 - (PITCH - DOT)) / 2;
+    for i in 0..count {
+        let along = start + PITCH * i as i32;
+        let (x, y) = match side {
+            Side::Right => (0, along),
+            Side::Left => (80 - DOT, along),
+            Side::Above => (along, 80 - DOT),
+            Side::Below => (along, 0),
+        };
+        let color = if i == index {
+            Color::ACCENT
+        } else {
+            Color::TEXT_FAINT
+        };
+        canvas.fill_rect(x, y, DOT, DOT, color);
+    }
 }
 
 // ==============================================================================
@@ -1284,6 +1562,158 @@ fn hhmm(minutes: i64) -> heapless::String<6> {
     let mut text = heapless::String::new();
     write!(text, "{:02}:{:02}", minutes / 60, minutes % 60).expect("fits in 6");
     text
+}
+
+// ==============================================================================
+// The past: today and last night
+// ==============================================================================
+
+/// Today's charts: a column per hour from midnight, [`CHART_BAR`] wide and
+/// [`CHART_PITCH`] apart, from [`CHART_LEFT`] (24 of them end at x = 75).
+const CHART_LEFT: i32 = 4;
+const CHART_PITCH: i32 = 3;
+const CHART_BAR: i32 = 2;
+
+/// Today's steps and heart rate: for each, a figure for the day, then a
+/// chart hour by hour since midnight, over a faint baseline that shows
+/// how much of the day is left.
+fn render_today(canvas: &mut Canvas, day: Option<&Day>, steps: Option<u32>) {
+    canvas.clear(BACKGROUND);
+    canvas.text(4, 3, "TODAY", Color::ACCENT);
+    let day = day.copied().unwrap_or_default();
+    let column = |hour: usize| CHART_LEFT + CHART_PITCH * hour as i32;
+
+    // Steps: the step counter's total (which, unlike the history, counts
+    // steps from before the phone set the clock), then the hours, scaled
+    // to the busiest, but to at least 500 steps, so a quiet day looks it.
+    const STEPS_BASE: i32 = 30;
+    const STEPS_HEIGHT: u32 = 10;
+    canvas.sprite(4, 11, font::FOOT_W, &font::FOOT, 1, Color::TEXT_DIM);
+    canvas.text(10, 12, "STEPS", Color::TEXT_DIM);
+    let mut text = heapless::String::<10>::new();
+    match steps {
+        Some(steps) => write!(text, "{steps}").expect("a u32 is at most 10 digits"),
+        None => text.push_str("--").expect("fits"),
+    }
+    canvas.text_right(77, 12, &text, Color::TEXT);
+    let most = u32::from(day.most_steps()).max(500);
+    for (i, hour) in day.hours.iter().enumerate() {
+        let height = (u32::from(hour.steps) * STEPS_HEIGHT).div_ceil(most) as i32;
+        canvas.fill_rect(
+            column(i),
+            STEPS_BASE - height,
+            CHART_BAR,
+            height,
+            Color::ACCENT,
+        );
+        canvas.fill_rect(column(i), STEPS_BASE, CHART_BAR, 1, Color::TRACK);
+    }
+
+    // The heart rate: resting (see `Day::resting`), then each hour's
+    // range, from its lowest reading to its highest, on a scale from the
+    // day's lowest to its highest in whole tens, but at least 40 BPM
+    // tall, so a calm day doesn't look like a wild one.
+    // TODO: the scale's ends as figures, if the shape alone isn't enough.
+    const HEART_BASE: i32 = 64;
+    const HEART_HEIGHT: i32 = 20;
+    canvas.sprite(4, 35, font::HEART_W, &font::HEART, 1, Color::HEART);
+    canvas.sprite(
+        4,
+        35,
+        font::HEART_W,
+        &font::HEART_SHINE,
+        1,
+        Color::HEART_SHINE,
+    );
+    canvas.text(13, 36, "RESTING", Color::TEXT_DIM);
+    let mut text = heapless::String::<3>::new();
+    match day.resting() {
+        Some(bpm) => write!(text, "{bpm}").expect("a u8 is at most 3 digits"),
+        None => text.push_str("--").expect("fits"),
+    }
+    canvas.text_right(77, 36, &text, Color::TEXT);
+    if let Some((low, high)) = day.heart_range() {
+        let floor = i32::from(low) / 10 * 10;
+        let ceiling = ((i32::from(high) + 9) / 10 * 10).max(floor + 40);
+        // The top of the row `bpm` is drawn in.
+        let y = |bpm: u8| {
+            HEART_BASE - 1 - (i32::from(bpm) - floor) * (HEART_HEIGHT - 1) / (ceiling - floor)
+        };
+        for (i, hour) in day.hours.iter().enumerate() {
+            if hour.heart_max > 0 {
+                let top = y(hour.heart_max);
+                let height = y(hour.heart_min) - top + 1;
+                canvas.fill_rect(column(i), top, CHART_BAR, height, Color::HEART);
+            }
+        }
+    }
+    for i in 0..day.hours.len() {
+        canvas.fill_rect(column(i), HEART_BASE, CHART_BAR, 1, Color::TRACK);
+    }
+    for hour in [0, 6, 12, 18] {
+        let mut label = heapless::String::<2>::new();
+        write!(label, "{hour}").expect("fits in 2");
+        canvas.text(column(hour), HEART_BASE + 4, &label, Color::TEXT_FAINT);
+    }
+}
+
+/// The last night's (or nap's) sleep: how long, big, and from when to
+/// when.
+fn render_last_night(canvas: &mut Canvas, sleep: Option<crate::activity::Sleep>) {
+    canvas.clear(BACKGROUND);
+    canvas.text(4, 3, "LAST NIGHT", Color::ACCENT);
+    let Some(sleep) = sleep else {
+        canvas.text_centered(40, 36, "NO SLEEP YET", Color::TEXT_FAINT);
+        return;
+    };
+
+    // Time asleep (not counting time lying awake) as H:MM, in the clock's
+    // 3× digits, laid out as its are (2 px between digits, 7 px for the
+    // colon), and centred.
+    const TOP: i32 = 14;
+    const SCALE: i32 = 3;
+    const DIGIT: i32 = font::DIGIT_W as i32 * SCALE;
+    let (hours, minutes) = (sleep.asleep_minutes / 60, sleep.asleep_minutes % 60);
+    let mut digits = heapless::Vec::<u16, 4>::new();
+    if hours >= 10 {
+        let _ = digits.push(hours / 10 % 10);
+    }
+    let _ = digits.push(hours % 10);
+    let _ = digits.push(minutes / 10);
+    let _ = digits.push(minutes % 10);
+    let width = DIGIT * digits.len() as i32 + 2 * (digits.len() as i32 - 2) + 7;
+    let mut x = 40 - width / 2;
+    let colon_after = digits.len() - 2;
+    for (i, &digit) in digits.iter().enumerate() {
+        if i == colon_after {
+            for row in [2, 4] {
+                let y = TOP + row * SCALE;
+                canvas.fill_rect(x + 1, y + 1, 3, 3, Color::SHADOW);
+                canvas.fill_rect(x, y, 3, 3, Color::ACCENT);
+            }
+            x += 3 + 2;
+        }
+        draw_digit(canvas, x, TOP, u64::from(digit), SCALE, Color::TEXT);
+        x += DIGIT + 2;
+    }
+    canvas.text_centered(40, 40, "ASLEEP", Color::TEXT_DIM);
+
+    // From falling asleep to waking, in local time (as the offset is now).
+    if let Some(offset) = crate::clock::utc_offset_minutes() {
+        let local = |utc_minute: i64| hhmm((utc_minute + i64::from(offset)).rem_euclid(24 * 60));
+        let mut window = heapless::String::<16>::new();
+        write!(
+            window,
+            "{} - {}",
+            local(sleep.start_utc_minute),
+            local(sleep.end_utc_minute)
+        )
+        .expect("fits in 16");
+        canvas.text_centered(40, 50, &window, Color::TEXT);
+    }
+
+    // TODO: the stages (light, deep, REM) across the night, in the rows
+    // left free below (60–76), once `activity::Sleep` has them.
 }
 
 // ==============================================================================
@@ -1583,22 +2013,24 @@ fn render_battery(canvas: &mut Canvas, battery: &Battery, uptime_secs: u64) {
 /// First value row, and the spacing between rows.
 const INFO_TOP: i32 = 12;
 const INFO_LINE: i32 = 8;
-/// The brightness row, after the theme's (both are about the look).
-const INFO_LIGHT: i32 = INFO_TOP + 4 * INFO_LINE;
-/// Where a tap switches the brightness: its row, and half a row either side
-/// (a row alone is only ~3 mm tall).
-const INFO_LIGHT_TAP: core::ops::Range<i32> = INFO_LIGHT - 4..INFO_LIGHT + 9;
+/// The rows a tap changes, theme then brightness, at the bottom below a
+/// hairline, and further apart than the others: a fingertip covers a few
+/// rows, and a row alone is only ~3 mm tall. Each one's tap area runs to
+/// halfway to the other, and to the hairline or the edge.
+const INFO_THEME: i32 = 57;
+const INFO_LIGHT: i32 = 69;
+const INFO_THEME_TAP: core::ops::Range<i32> = 50..65;
+const INFO_LIGHT_TAP: core::ops::Range<i32> = 65..80;
 
 fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme, light: brightness::Setting) {
     canvas.clear(BACKGROUND);
     // The version without its build metadata (`0.9.0-pr.12`); the commit
-    // goes at the bottom (see `build.rs`).
+    // goes in the BUILD row (see `build.rs`).
     canvas.text(4, 3, concat!("UR ", env!("UR_RELEASE")), Color::ACCENT);
 
     let battery = status.battery;
     let mv = battery.millivolts();
     let secs = status.uptime_secs;
-    // The charge shares the battery's row, to make room for the brightness.
     let mut values: [heapless::String<12>; 3] = Default::default();
     write!(
         values[0],
@@ -1617,23 +2049,6 @@ fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme, light: brigh
         secs % 60
     )
     .expect("fits in 12 until uptime exceeds ~11 years");
-
-    let labels = ["BATTERY", "POWER", "UPTIME"];
-    for (i, (label, value)) in labels.iter().zip(&values).enumerate() {
-        let y = INFO_TOP + INFO_LINE * i as i32;
-        canvas.text(4, y, label, Color::TEXT_DIM);
-        canvas.text_right(77, y, value, Color::TEXT);
-    }
-
-    let y = INFO_TOP + INFO_LINE * labels.len() as i32;
-    canvas.text(4, y, "THEME", Color::TEXT_DIM);
-    canvas.text_right(77, y, theme.name, Color::TEXT);
-    let y = y + INFO_LINE;
-    debug_assert_eq!(y, INFO_LIGHT);
-    canvas.text(4, y, "LIGHT", Color::TEXT_DIM);
-    canvas.text_right(77, y, light.name(), Color::TEXT);
-    let y = y + INFO_LINE;
-    canvas.text(4, y, "PHONE", Color::TEXT_DIM);
     // "PAIRED" rather than "CONNECTED": the phone only counts as here once
     // it has written over an authenticated link (see `ble`), which takes
     // its bond, so this says both that it's connected and that it's paired
@@ -1645,35 +2060,37 @@ fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme, light: brigh
     } else {
         "WAITING"
     };
-    canvas.text_right(77, y, phone, Color::TEXT);
-    let y = y + INFO_LINE;
-    // How long the last night's (or nap's) sleep was, not counting time
-    // lying awake.
-    canvas.text(4, y, "SLEEP", Color::TEXT_DIM);
-    let mut slept = heapless::String::<12>::new();
-    match status.sleep {
-        Some(sleep) => write!(
-            slept,
-            "{}:{:02}",
-            sleep.asleep_minutes / 60,
-            sleep.asleep_minutes % 60
-        )
-        .expect("fits in 12"),
-        None => slept.push_str("--:--").expect("fits in 12"),
-    }
-    canvas.text_right(77, y, &slept, Color::TEXT);
-
     // Which commit this build is from, for bug reports: "DEV" for a local
     // `cargo build`, which doesn't know.
-    // TODO: tapping still buzzes (a motor test); drop that once alarms
-    // exercise the motor.
-    let y = y + INFO_LINE;
-    canvas.text(4, y, "BUILD", Color::TEXT_DIM);
     let build = match env!("UR_BUILD") {
         "" => "DEV",
         build => build,
     };
-    canvas.text_right(77, y, build, Color::TEXT);
+    let rows = [
+        ("BATTERY", values[0].as_str()),
+        ("POWER", &values[1]),
+        ("UPTIME", &values[2]),
+        ("PHONE", phone),
+        ("BUILD", build),
+    ];
+    for (i, (label, value)) in rows.into_iter().enumerate() {
+        let y = INFO_TOP + INFO_LINE * i as i32;
+        canvas.text(4, y, label, Color::TEXT_DIM);
+        canvas.text_right(77, y, value, Color::TEXT);
+    }
+
+    // The settings a tap changes. (Last night's sleep, which used to be
+    // here, has a screen of its own.)
+    // TODO: tapping elsewhere still buzzes (a motor test); drop that once
+    // alarms exercise the motor.
+    canvas.fill_rect(4, INFO_THEME_TAP.start + 1, 72, 1, Color::TEXT_FAINT);
+    for (y, label, value) in [
+        (INFO_THEME, "THEME", theme.name),
+        (INFO_LIGHT, "LIGHT", light.name()),
+    ] {
+        canvas.text(4, y, label, Color::TEXT_DIM);
+        canvas.text_right(77, y, value, Color::TEXT);
+    }
 }
 
 // ==============================================================================
@@ -1816,7 +2233,7 @@ const BANNER_TEXT_WIDTH: i32 = 74;
 fn shown_for(app: &str, who: &str, whole_screen: bool) -> Duration {
     let who_overflow = if !whole_screen {
         font::small_text_width(who)
-    } else if quiet_layout(who).is_some() {
+    } else if quiet_layout(who, QUIET_LINES_2X).is_some() {
         0
     } else {
         font::small_text_width(who) * 2
@@ -1826,26 +2243,12 @@ fn shown_for(app: &str, who: &str, whole_screen: bool) -> Duration {
 }
 
 /// Across the bottom rows (free on the clock face): app, then sender.
-fn render_banner(canvas: &mut Canvas, banner: &Banner, now: Instant) {
-    let elapsed = now - banner.since;
+/// `elapsed` is how long it's been showing.
+fn render_banner(canvas: &mut Canvas, app: &str, who: &str, elapsed: Duration) {
     canvas.fill_rect(0, 63, 80, 17, BACKGROUND);
     canvas.fill_rect(0, 63, 80, 1, Color::ACCENT);
-    canvas.marquee(
-        3..3 + BANNER_TEXT_WIDTH,
-        67,
-        &banner.app,
-        Color::ACCENT,
-        1,
-        elapsed,
-    );
-    canvas.marquee(
-        3..3 + BANNER_TEXT_WIDTH,
-        74,
-        &banner.who,
-        Color::TEXT,
-        1,
-        elapsed,
-    );
+    canvas.marquee(3..3 + BANNER_TEXT_WIDTH, 67, app, Color::ACCENT, 1, elapsed);
+    canvas.marquee(3..3 + BANNER_TEXT_WIDTH, 74, who, Color::TEXT, 1, elapsed);
 }
 
 /// Where a quiet notification's sender goes: everything below the app
@@ -1866,10 +2269,11 @@ const QUIET_LINES: usize = 7;
 type Line = heapless::String<48>;
 
 /// How a quiet notification's sender fits on the screen: wrapped lines,
-/// and the scale to draw them at. Big (2×) if it fits, else normal size
-/// (1×); `None` if it's too long even for that, and has to scroll.
-fn quiet_layout(who: &str) -> Option<(heapless::Vec<Line, QUIET_LINES>, i32)> {
-    wrap(who, BANNER_TEXT_WIDTH, 2, QUIET_LINES_2X)
+/// and the scale to draw them at. Big (2×) if it fits in `lines_2x` lines
+/// (at most [`QUIET_LINES_2X`]), else normal size (1×); `None` if it's too
+/// long even for that, and has to scroll.
+fn quiet_layout(who: &str, lines_2x: usize) -> Option<(heapless::Vec<Line, QUIET_LINES>, i32)> {
+    wrap(who, BANNER_TEXT_WIDTH, 2, lines_2x)
         .map(|lines| (lines, 2))
         .or_else(|| wrap(who, BANNER_TEXT_WIDTH, 1, QUIET_LINES).map(|lines| (lines, 1)))
 }
@@ -1944,22 +2348,29 @@ fn wrap(
     Some(lines)
 }
 
-/// A notification that arrived with the screen off: the whole screen,
-/// white on black like a glance, the app small at the very top and the
-/// sender wrapped and centred below it, as big as fits (see
-/// [`quiet_layout`]; scrolling only if it's longer still).
-fn render_quiet_notification(canvas: &mut Canvas, banner: &Banner, now: Instant) {
-    let elapsed = now - banner.since;
+/// A notification that arrived with the screen off (or a page of the
+/// history): the whole screen, white on black like a glance (or in the
+/// theme), the app small at the very top and the sender wrapped and
+/// centred below it, as big as fits in `lines_2x` lines (see
+/// [`quiet_layout`]; scrolling only if it's longer still). `elapsed` is
+/// how long it's been showing.
+fn render_quiet_notification(
+    canvas: &mut Canvas,
+    app: &str,
+    who: &str,
+    elapsed: Duration,
+    lines_2x: usize,
+) {
     canvas.clear(BACKGROUND);
     canvas.marquee(
         3..3 + BANNER_TEXT_WIDTH,
         3,
-        &banner.app,
+        app,
         Color::TEXT_DIM,
         1,
         elapsed,
     );
-    match quiet_layout(&banner.who) {
+    match quiet_layout(who, lines_2x) {
         Some((lines, scale)) => {
             // The capitals centred on the screen, which is where the eye
             // expects a name (centring the space below the app name put
@@ -1976,14 +2387,7 @@ fn render_quiet_notification(canvas: &mut Canvas, banner: &Banner, now: Instant)
                 canvas.text_scaled(x, y, line, Color::TEXT, scale);
             }
         }
-        None => canvas.marquee(
-            3..3 + BANNER_TEXT_WIDTH,
-            44,
-            &banner.who,
-            Color::TEXT,
-            2,
-            elapsed,
-        ),
+        None => canvas.marquee(3..3 + BANNER_TEXT_WIDTH, 44, who, Color::TEXT, 2, elapsed),
     }
 }
 

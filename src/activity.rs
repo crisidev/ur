@@ -932,6 +932,30 @@ pub fn steps_today() -> Option<u32> {
     })
 }
 
+/// Today's activity hour by hour since local midnight (see [`crate::day`]),
+/// for the Today screen, once the time is known. Computed afresh from the
+/// history when asked, rather than kept up to date in RAM, as the screen
+/// is seldom on.
+///
+/// TODO: a day with a change to or from summer time has an hour too many
+/// or too few; this files each minute under the offset in force now.
+pub fn today() -> Option<crate::day::Day> {
+    let utc_minute = clock::now_utc_seconds()?.div_euclid(60);
+    let offset = i64::from(clock::utc_offset_minutes()?);
+    let midnight = utc_minute - (utc_minute + offset).rem_euclid(24 * 60);
+    let mut day = crate::day::Day::default();
+    HISTORY.lock(|history| {
+        for (minute, sample) in history.borrow().since(midnight) {
+            day.add(
+                (minute - midnight) as usize,
+                sample.steps,
+                sample.heart_rate,
+            );
+        }
+    });
+    Some(day)
+}
+
 // ==============================================================================
 // The task
 // ==============================================================================
