@@ -1,7 +1,8 @@
 //! Persistent storage: a small key-value map in the last 12 KB of flash.
 //!
 //! Holds anything that should survive a reboot: Bluetooth bonds (so the phone
-//! doesn't have to pair again) and settings (the theme; alarms later).
+//! doesn't have to pair again) and settings (themes, alarms, the
+//! phone's alarms).
 //!
 //! Two choices worth knowing about:
 //!
@@ -45,6 +46,8 @@ pub mod key {
     // timers).
     /// Alarm settings; see [`crate::alarm::Settings`].
     pub const ALARMS: u8 = 23;
+    /// The alarms synced from the phone; see [`crate::alarm::Phone`].
+    pub const PHONE_ALARMS: u8 = 24;
 }
 
 /// Big enough for the largest item (a 43-byte bond) plus its key, rounded up

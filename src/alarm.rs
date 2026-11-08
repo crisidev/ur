@@ -11,6 +11,9 @@
 //!   regardless.
 //! - **Alarms**: two, each at a time of day, the next time it comes round.
 //!   Each turns itself off after ringing.
+//! - **Phone alarms**: up to [`PHONE_ALARMS`], set in Gadgetbridge and
+//!   synced to the watch (see [`Phone`]). Each rings at a time of day, on
+//!   the weekdays it repeats on, or once (then turning itself off).
 //! - **Timers**: two, each ringing after a duration. Each remembers its last
 //!   duration, as that's usually the one wanted again (the tea, the
 //!   laundry).
@@ -34,6 +37,15 @@ pub const RING_FOR: i64 = 3;
 pub const TIMERS: usize = 2;
 /// How many one-off alarms there are.
 pub const ALARMS: usize = 2;
+/// How many alarms the phone can sync: Gadgetbridge's Bangle.js support
+/// has ten slots (`BangleJSCoordinator.getAlarmSlotCount`), and a device
+/// can't declare fewer.
+pub const PHONE_ALARMS: usize = 10;
+/// How far back alarms at a time of day still ring, in minutes, when the
+/// checks were held up (by another alarm ringing for up to [`RING_FOR`]).
+/// A clock that jumps further (set by the phone, or a new time zone)
+/// skips what it jumped over rather than ringing for it.
+const CATCH_UP: i64 = 10;
 
 const DAY: i64 = 24 * 60;
 
@@ -128,6 +140,8 @@ pub enum Kind {
     /// Which of the [`TIMERS`].
     Timer(u8),
     Snooze,
+    /// Which of the [`Phone`] alarms.
+    Phone(u8),
 }
 
 /// 0 = Monday … 6 = Sunday, of local day `day` (days since 1970-01-01,
@@ -153,11 +167,157 @@ pub fn next_smart(settings: &Settings, now: i64) -> i64 {
         .expect("one of three days has its time ahead")
 }
 
-/// The next time (local minutes) a daily `time` comes round, strictly after
-/// minute `now`.
-pub fn next_daily(time: u16, now: i64) -> i64 {
-    let today = now.div_euclid(DAY) * DAY + i64::from(time);
-    if today > now { today } else { today + DAY }
+/// The next time (local minutes) that `time` comes round, strictly after
+/// minute `after`, on one of `days` (bit 0 Monday … bit 6 Sunday, as
+/// Gadgetbridge sends them), or on any day if `days` is 0.
+pub fn next_at(time: u16, days: u8, after: i64) -> i64 {
+    let today = after.div_euclid(DAY);
+    (today..today + 8)
+        .filter(|&day| days == 0 || days >> weekday(day) & 1 != 0)
+        .map(|day| day * DAY + i64::from(time))
+        .find(|&at| at > after)
+        .expect("every weekday comes round within eight days")
+}
+
+// ==============================================================================
+// Alarms from the phone
+// ==============================================================================
+
+/// One alarm from the phone: four bytes, as there may be ten of them in a
+/// build with little RAM to spare.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PhoneAlarm {
+    /// Minutes after local midnight.
+    pub time: u16,
+    /// The weekdays it rings on, bit 0 Monday … bit 6 Sunday
+    /// (Gadgetbridge's `rep`); 0 rings once.
+    pub days: u8,
+    pub switch: Switch,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(target_os = "none", derive(defmt::Format))]
+#[repr(u8)]
+pub enum Switch {
+    Off,
+    On,
+    /// A one-off alarm that has rung, which turned it off. Gadgetbridge
+    /// doesn't hear of that (the protocol only goes from phone to watch), so
+    /// it still has the alarm on, and sends it as such along with any later
+    /// change to the others; see [`Phone::sync`].
+    Rang,
+}
+
+impl PhoneAlarm {
+    pub fn on(&self) -> bool {
+        self.switch == Switch::On
+    }
+}
+
+/// The alarms set in Gadgetbridge's alarm screen, as it last sent them.
+///
+/// Gadgetbridge only ever sends them (all at once, whenever one changes
+/// there), and never hears back, so the phone is in charge: on the watch
+/// they're read-only, as anything changed here would be silently undone
+/// by the next sync. They sit alongside the watch's own alarms, which are
+/// for setting on the wrist.
+///
+/// Gadgetbridge has no smart-wake flag for a Bangle.js, so these ring at
+/// their time; the smart wake stays the watch's own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Phone {
+    alarms: [PhoneAlarm; PHONE_ALARMS],
+    count: u8,
+}
+
+impl Default for Phone {
+    fn default() -> Self {
+        Self {
+            alarms: [PhoneAlarm {
+                time: 0,
+                days: 0,
+                switch: Switch::Off,
+            }; PHONE_ALARMS],
+            count: 0,
+        }
+    }
+}
+
+impl Phone {
+    pub const BYTES: usize = 1 + 4 * PHONE_ALARMS;
+
+    /// The alarms, in Gadgetbridge's order.
+    pub fn alarms(&self) -> &[PhoneAlarm] {
+        &self.alarms[..usize::from(self.count)]
+    }
+
+    /// Adds an alarm as received from the phone (`hour`, `minute`, `rep`,
+    /// `on`); returns `false`, ignoring it, if it's nonsense or there's no
+    /// room.
+    pub fn push(&mut self, hour: u16, minute: u16, days: u8, on: bool) -> bool {
+        let count = usize::from(self.count);
+        if hour >= 24 || minute >= 60 || count == PHONE_ALARMS {
+            return false;
+        }
+        self.alarms[count] = PhoneAlarm {
+            time: hour * 60 + minute,
+            // Bit 7 means nothing; Gadgetbridge never sets it.
+            days: days & 0x7F,
+            switch: if on { Switch::On } else { Switch::Off },
+        };
+        self.count += 1;
+        true
+    }
+
+    /// Takes the alarms the phone just sent in place of these.
+    ///
+    /// A one-off alarm that has rung here comes back from the phone still
+    /// on, with every later sync (see [`Switch::Rang`]); it stays off,
+    /// rather than ringing again at the same time the next day. Switching
+    /// it off and on again in Gadgetbridge, or changing its time, sets it
+    /// again, as it then arrives off, or as a different alarm.
+    pub fn sync(&mut self, mut new: Phone) {
+        for alarm in &mut new.alarms[..usize::from(new.count)] {
+            let rang = PhoneAlarm {
+                switch: Switch::Rang,
+                ..*alarm
+            };
+            if alarm.on() && alarm.days == 0 && self.alarms().contains(&rang) {
+                alarm.switch = Switch::Rang;
+            }
+        }
+        *self = new;
+    }
+
+    pub fn to_bytes(self) -> [u8; Self::BYTES] {
+        let mut bytes = [0; Self::BYTES];
+        bytes[0] = self.count;
+        let (chunks, _) = bytes[1..].as_chunks_mut::<4>();
+        for (alarm, out) in self.alarms.iter().zip(chunks) {
+            let [lo, hi] = alarm.time.to_le_bytes();
+            *out = [lo, hi, alarm.days, alarm.switch as u8];
+        }
+        bytes
+    }
+
+    /// Like [`Settings::from_bytes`], drops what doesn't make sense rather
+    /// than ringing at nonsense times.
+    pub fn from_bytes(bytes: [u8; Self::BYTES]) -> Self {
+        let mut phone = Self::default();
+        let count = usize::from(bytes[0]).min(PHONE_ALARMS);
+        for &[lo, hi, days, switch] in bytes[1..].as_chunks::<4>().0.iter().take(count) {
+            let time = u16::from_le_bytes([lo, hi]);
+            let switch = match switch {
+                1 => Switch::On,
+                2 => Switch::Rang,
+                _ => Switch::Off,
+            };
+            if phone.push(time / 60, time % 60, days, switch == Switch::On) {
+                phone.alarms[usize::from(phone.count) - 1].switch = switch;
+            }
+        }
+        phone
+    }
 }
 
 /// What's armed, beyond the settings, and what has already rung. Times
@@ -169,22 +329,22 @@ pub struct State {
     /// When a snoozed alarm rings again.
     pub snooze_at: Option<i64>,
     /// The smart alarm occurrence (its latest time, local minutes) that has
-    /// already rung, so it rings once per morning.
-    smart_rang: Option<i64>,
-    /// The occurrence (local minutes) each one-off alarm is armed for: fixed
-    /// when it's switched on (or first checked after a reset, since this
-    /// isn't stored), so that ringing (which switches it off) is for that
-    /// one only.
-    at_armed: [Option<i64>; ALARMS],
+    /// already rung, so it rings once per morning. (Minutes fit in 32 bits
+    /// for millennia, and RAM is tight.)
+    smart_rang: Option<i32>,
+    /// The last minute (local) checked for alarms at a time of day (the
+    /// watch's and the phone's): the next check rings those whose time
+    /// fell in the minutes since. Not stored: after a reset, checking
+    /// starts afresh from the current minute.
+    ///
+    /// This is all it takes to ring each occurrence once, however many
+    /// alarms there are, so nothing per alarm needs to be kept in RAM. A
+    /// one-off alarm rings the first time its time comes round after it's
+    /// switched on, since earlier minutes were already checked.
+    checked: Option<i32>,
 }
 
 impl State {
-    /// Call when a one-off alarm is switched on (or its time changes).
-    pub fn arm_at(&mut self, alarm: usize, settings: &Settings, now: i64) {
-        self.at_armed[alarm] =
-            settings.at[alarm].then(|| next_daily(settings.at_time[alarm], now.div_euclid(60)));
-    }
-
     pub fn start_timer(&mut self, timer: usize, settings: &Settings, now: i64) {
         self.timers[timer] = Some(now + i64::from(settings.timers[timer]) * 60);
     }
@@ -204,15 +364,13 @@ impl State {
 
     /// The next thing to ring, and when (local seconds), for the clock face.
     /// A smart alarm counts at its latest.
-    pub fn next(&self, settings: &Settings, now: i64) -> Option<(Kind, i64)> {
+    pub fn next(&self, settings: &Settings, phone: &Phone, now: i64) -> Option<(Kind, i64)> {
         let minute = now.div_euclid(60);
         let smart = settings
             .smart
             .then(|| (Kind::Smart, self.pending_smart(settings, minute) * 60));
-        let alarms = (0..ALARMS).filter(|&i| settings.at[i]).map(|i| {
-            let at = self.at_armed[i].unwrap_or_else(|| next_daily(settings.at_time[i], minute));
-            (Kind::At(i as u8), at * 60)
-        });
+        let alarms = at_a_time(settings, phone)
+            .map(|(kind, time, days)| (kind, next_at(time, days, minute) * 60));
         let timers = (0..TIMERS).filter_map(|i| self.timers[i].map(|t| (Kind::Timer(i as u8), t)));
         let snooze = self.snooze_at.map(|t| (Kind::Snooze, t));
         [smart, snooze]
@@ -229,7 +387,7 @@ impl State {
         // An occurrence whose time has just passed (by up to a minute) is
         // still due, in case a check was late.
         let next = next_smart(settings, minute - 1);
-        if self.smart_rang == Some(next) {
+        if self.smart_rang == Some(next as i32) {
             next_smart(settings, next)
         } else {
             next
@@ -241,7 +399,13 @@ impl State {
     /// after being still (see `crate::activity`), which is what a smart
     /// alarm waits for in its window. Turns off what rings (a one-off alarm,
     /// a timer), and remembers the smart one.
-    pub fn due(&mut self, settings: &mut Settings, now: i64, stirring: bool) -> Option<Kind> {
+    pub fn due(
+        &mut self,
+        settings: &mut Settings,
+        phone: &mut Phone,
+        now: i64,
+        stirring: bool,
+    ) -> Option<Kind> {
         if self.snooze_at.is_some_and(|t| now >= t) {
             self.snooze_at = None;
             return Some(Kind::Snooze);
@@ -253,27 +417,62 @@ impl State {
             }
         }
         let minute = now.div_euclid(60);
-        for i in 0..ALARMS {
-            if settings.at[i] && self.at_armed[i].is_none() {
-                self.arm_at(i, settings, now);
+        // The minutes not yet checked: normally just this one, or a few
+        // after a hold-up (see `CATCH_UP`).
+        let after = match self.checked.map(i64::from) {
+            Some(checked) if (minute - CATCH_UP..=minute).contains(&checked) => checked,
+            _ => minute - 1,
+        };
+        // The earliest alarm in those minutes rings. Others at the very
+        // same minute ring as one with it (two alarms at 07:00 are one
+        // wake-up), and ones later in the minutes left get their turn once
+        // it's done.
+        let earliest = at_a_time(settings, phone)
+            .map(|(kind, time, days)| (kind, next_at(time, days, after)))
+            .filter(|&(_, at)| at <= minute)
+            .min_by_key(|&(_, at)| at);
+        if let Some((kind, at)) = earliest {
+            self.checked = Some(at as i32);
+            // One-off alarms turn themselves off, all of those ringing.
+            for i in 0..ALARMS {
+                if settings.at[i] && next_at(settings.at_time[i], 0, after) == at {
+                    settings.at[i] = false;
+                }
             }
-            if settings.at[i]
-                && let Some(t) = self.at_armed[i]
-                && minute >= t
-            {
-                settings.at[i] = false;
-                self.at_armed[i] = None;
-                return Some(Kind::At(i as u8));
+            for alarm in &mut phone.alarms[..usize::from(phone.count)] {
+                if alarm.on() && alarm.days == 0 && next_at(alarm.time, 0, after) == at {
+                    alarm.switch = Switch::Rang;
+                }
             }
+            return Some(kind);
         }
+        self.checked = Some(minute as i32);
         if settings.smart {
             let latest = self.pending_smart(settings, minute);
             let in_window = minute >= latest - SMART_WINDOW;
             if minute >= latest || (in_window && stirring) {
-                self.smart_rang = Some(latest);
+                self.smart_rang = Some(latest as i32);
                 return Some(Kind::Smart);
             }
         }
         None
     }
+}
+
+/// The alarms at a time of day that are on, the watch's and the phone's,
+/// with their time and weekdays (0 for any day).
+fn at_a_time<'a>(
+    settings: &'a Settings,
+    phone: &'a Phone,
+) -> impl Iterator<Item = (Kind, u16, u8)> + 'a {
+    let own = (0..ALARMS)
+        .filter(|&i| settings.at[i])
+        .map(|i| (Kind::At(i as u8), settings.at_time[i], 0));
+    let phone = phone
+        .alarms()
+        .iter()
+        .enumerate()
+        .filter(|(_, alarm)| alarm.on())
+        .map(|(i, alarm)| (Kind::Phone(i as u8), alarm.time, alarm.days));
+    own.chain(phone)
 }

@@ -40,7 +40,30 @@ mod tests {
     ) -> Option<(i64, Kind)> {
         // A check a minute (the firmware checks every second; minutes are
         // enough for these).
-        (from..to).find_map(|now| state.due(settings, now * 60, stir(now)).map(|k| (now, k)))
+        let mut phone = Phone::default();
+        (from..to).find_map(|now| {
+            state
+                .due(settings, &mut phone, now * 60, stir(now))
+                .map(|k| (now, k))
+        })
+    }
+
+    /// Everything that rings from minute `from` to `to`, checking once a
+    /// minute, with nothing ever stopping the ringing early.
+    fn rings(
+        settings: &mut Settings,
+        phone: &mut Phone,
+        state: &mut State,
+        from: i64,
+        to: i64,
+    ) -> Vec<(i64, Kind)> {
+        (from..to)
+            .filter_map(|now| {
+                state
+                    .due(settings, phone, now * 60, false)
+                    .map(|k| (now, k))
+            })
+            .collect()
     }
 
     #[test]
@@ -102,7 +125,7 @@ mod tests {
         let mut state = State::default();
         let mut rings = Vec::new();
         for now in at(MONDAY, 0, 0)..at(MONDAY + 2, 0, 0) {
-            if let Some(kind) = state.due(&mut s, now * 60, true) {
+            if let Some(kind) = state.due(&mut s, &mut Phone::default(), now * 60, true) {
                 rings.push((now, kind));
             }
         }
@@ -143,7 +166,7 @@ mod tests {
             ..Settings::default()
         };
         let mut state = State::default();
-        // Armed lazily on the first check (as after a reset).
+        // Checked from the first check on (as after a reset).
         let rang = first_ring(
             &mut s,
             &mut state,
@@ -174,7 +197,11 @@ mod tests {
         };
         let mut state = State::default();
         let rings: Vec<_> = (at(MONDAY, 0, 0)..at(MONDAY + 2, 0, 0))
-            .filter_map(|now| state.due(&mut s, now * 60, false).map(|k| (now, k)))
+            .filter_map(|now| {
+                state
+                    .due(&mut s, &mut Phone::default(), now * 60, false)
+                    .map(|k| (now, k))
+            })
             .collect();
         assert_eq!(
             rings,
@@ -196,14 +223,17 @@ mod tests {
         let start = at(MONDAY, 10, 0) * 60;
         state.start_timer(0, &s, start);
         assert_eq!(
-            state.next(&s, start),
+            state.next(&s, &Phone::default(), start),
             Some((Kind::Timer(0), start + 25 * 60))
         );
         assert_eq!(state.remaining(0, start + 61), Some(25 * 60 - 61));
         // To the second.
-        assert_eq!(state.due(&mut s, start + 25 * 60 - 1, false), None);
         assert_eq!(
-            state.due(&mut s, start + 25 * 60, false),
+            state.due(&mut s, &mut Phone::default(), start + 25 * 60 - 1, false),
+            None
+        );
+        assert_eq!(
+            state.due(&mut s, &mut Phone::default(), start + 25 * 60, false),
             Some(Kind::Timer(0))
         );
         assert_eq!(state.timers[0], None);
@@ -222,11 +252,15 @@ mod tests {
         state.start_timer(0, &s, start);
         state.start_timer(1, &s, start + 30);
         assert_eq!(
-            state.next(&s, start),
+            state.next(&s, &Phone::default(), start),
             Some((Kind::Timer(1), start + 30 + 120))
         );
         let rings: Vec<_> = (start..start + 600)
-            .filter_map(|now| state.due(&mut s, now, false).map(|k| (now - start, k)))
+            .filter_map(|now| {
+                state
+                    .due(&mut s, &mut Phone::default(), now, false)
+                    .map(|k| (now - start, k))
+            })
             .collect();
         assert_eq!(rings, vec![(150, Kind::Timer(1)), (300, Kind::Timer(0))]);
     }
@@ -255,11 +289,11 @@ mod tests {
         };
         let state = State::default();
         assert_eq!(
-            state.next(&s, at(MONDAY, 1, 0) * 60),
+            state.next(&s, &Phone::default(), at(MONDAY, 1, 0) * 60),
             Some((Kind::At(0), at(MONDAY, 6, 0) * 60))
         );
         assert_eq!(
-            state.next(&s, at(MONDAY, 6, 30) * 60),
+            state.next(&s, &Phone::default(), at(MONDAY, 6, 30) * 60),
             Some((Kind::Smart, at(MONDAY, 7, 0) * 60))
         );
     }
@@ -278,5 +312,241 @@ mod tests {
         let garbage = Settings::from_bytes([0xFF; Settings::BYTES]);
         assert_eq!(garbage.smart_weekday, Settings::default().smart_weekday);
         assert_eq!(garbage.timers, Settings::default().timers);
+    }
+
+    // ==========================================================================
+    // Alarms at a time of day, on weekdays, and from the phone
+    // ==========================================================================
+
+    /// Gadgetbridge's weekday bits (`Alarm.ALARM_MON` = 1 … `ALARM_SUN` = 64).
+    const MON: u8 = 1;
+    const FRI: u8 = 16;
+    const SAT: u8 = 32;
+    const SUN: u8 = 64;
+    const WEEKDAYS: u8 = 0b0011111;
+    const WEEKENDS: u8 = SAT | SUN;
+
+    fn phone(alarms: &[(u16, u16, u8, bool)]) -> Phone {
+        let mut phone = Phone::default();
+        for &(h, m, days, on) in alarms {
+            assert!(phone.push(h, m, days, on));
+        }
+        phone
+    }
+
+    #[test]
+    fn next_at_follows_the_weekdays() {
+        // Any day: later today, else tomorrow.
+        assert_eq!(next_at(7 * 60, 0, at(MONDAY, 6, 0)), at(MONDAY, 7, 0));
+        assert_eq!(next_at(7 * 60, 0, at(MONDAY, 7, 0)), at(MONDAY + 1, 7, 0));
+        // Weekdays: Friday after its time goes to Monday.
+        assert_eq!(
+            next_at(7 * 60, WEEKDAYS, at(MONDAY + 4, 7, 30)),
+            at(MONDAY + 7, 7, 0)
+        );
+        // Weekends, from a Monday.
+        assert_eq!(
+            next_at(9 * 60, WEEKENDS, at(MONDAY, 12, 0)),
+            at(MONDAY + 5, 9, 0)
+        );
+        // Only Mondays, just after Monday's: a whole week on.
+        assert_eq!(next_at(6 * 60, MON, at(MONDAY, 6, 0)), at(MONDAY + 7, 6, 0));
+        // Only Sundays, the last bit.
+        assert_eq!(next_at(0, SUN, at(MONDAY, 0, 0)), at(MONDAY + 6, 0, 0));
+        // Midnight to midnight, every day, around a whole week.
+        for day in MONDAY..MONDAY + 7 {
+            assert_eq!(
+                next_at(23 * 60 + 59, 0x7F, at(day, 23, 59)),
+                at(day + 1, 23, 59)
+            );
+        }
+    }
+
+    #[test]
+    fn a_repeating_phone_alarm_rings_on_its_weekdays() {
+        let mut s = Settings::default();
+        let mut p = phone(&[(6, 45, WEEKDAYS | SAT, true)]);
+        let mut state = State::default();
+        let rang = rings(
+            &mut s,
+            &mut p,
+            &mut state,
+            at(MONDAY, 0, 0),
+            at(MONDAY + 14, 0, 0),
+        );
+        let expected: Vec<_> = (0..14)
+            .filter(|d| d % 7 != 6)
+            .map(|d| (at(MONDAY + d, 6, 45), Kind::Phone(0)))
+            .collect();
+        assert_eq!(rang, expected);
+        // Still on, as it repeats.
+        assert!(p.alarms()[0].on());
+    }
+
+    #[test]
+    fn a_one_off_phone_alarm_rings_once() {
+        let mut s = Settings::default();
+        let mut p = phone(&[(5, 30, 0, true), (6, 0, FRI, false)]);
+        let mut state = State::default();
+        let rang = rings(
+            &mut s,
+            &mut p,
+            &mut state,
+            at(MONDAY, 12, 0),
+            at(MONDAY + 7, 0, 0),
+        );
+        assert_eq!(rang, vec![(at(MONDAY + 1, 5, 30), Kind::Phone(0))]);
+        assert_eq!(p.alarms()[0].switch, Switch::Rang);
+    }
+
+    #[test]
+    fn a_rung_one_off_stays_off_until_the_phone_changes_it() {
+        let mut s = Settings::default();
+        let mut p = phone(&[(5, 30, 0, true), (8, 0, WEEKDAYS, true)]);
+        let mut state = State::default();
+        let rang = rings(
+            &mut s,
+            &mut p,
+            &mut state,
+            at(MONDAY, 0, 0),
+            at(MONDAY, 6, 0),
+        );
+        assert_eq!(rang, vec![(at(MONDAY, 5, 30), Kind::Phone(0))]);
+
+        // The phone resends everything (another alarm changed): the one-off
+        // still says on, but it rang.
+        p.sync(phone(&[(5, 30, 0, true), (8, 15, WEEKDAYS, true)]));
+        assert_eq!(p.alarms()[0].switch, Switch::Rang);
+        assert_eq!(p.alarms()[1].time, 8 * 60 + 15);
+        let rang = rings(
+            &mut s,
+            &mut p,
+            &mut state,
+            at(MONDAY, 6, 0),
+            at(MONDAY + 2, 0, 0),
+        );
+        assert_eq!(
+            rang,
+            vec![
+                (at(MONDAY, 8, 15), Kind::Phone(1)),
+                (at(MONDAY + 1, 8, 15), Kind::Phone(1))
+            ]
+        );
+
+        // Switched off and on again in Gadgetbridge: set again.
+        p.sync(phone(&[(5, 30, 0, false), (8, 15, WEEKDAYS, true)]));
+        p.sync(phone(&[(5, 30, 0, true), (8, 15, WEEKDAYS, true)]));
+        assert!(p.alarms()[0].on());
+        // A new time is a new alarm, too.
+        rings(
+            &mut s,
+            &mut p,
+            &mut state,
+            at(MONDAY + 2, 0, 0),
+            at(MONDAY + 2, 6, 0),
+        );
+        assert_eq!(p.alarms()[0].switch, Switch::Rang);
+        p.sync(phone(&[(5, 35, 0, true), (8, 15, WEEKDAYS, true)]));
+        assert!(p.alarms()[0].on());
+    }
+
+    #[test]
+    fn alarms_at_the_same_minute_ring_as_one() {
+        let mut s = Settings {
+            at: [true, false],
+            at_time: [7 * 60, 0],
+            ..Settings::default()
+        };
+        let mut p = phone(&[(7, 0, 0, true), (7, 0, WEEKDAYS, true), (7, 5, 0, true)]);
+        let mut state = State::default();
+        let rang = rings(
+            &mut s,
+            &mut p,
+            &mut state,
+            at(MONDAY, 6, 0),
+            at(MONDAY, 8, 0),
+        );
+        assert_eq!(
+            rang,
+            vec![
+                (at(MONDAY, 7, 0), Kind::At(0)),
+                (at(MONDAY, 7, 5), Kind::Phone(2))
+            ]
+        );
+        // Every one-off that rang is off, the watch's and the phone's.
+        assert!(!s.at[0]);
+        assert_eq!(p.alarms()[0].switch, Switch::Rang);
+        assert!(p.alarms()[1].on());
+    }
+
+    #[test]
+    fn alarms_held_up_by_another_ringing_still_ring() {
+        let mut s = Settings::default();
+        let mut p = phone(&[(7, 0, 0, true), (7, 2, 0, true)]);
+        let mut state = State::default();
+        let mut due = |minute| state.due(&mut s, &mut p, minute * 60, false);
+        assert_eq!(due(at(MONDAY, 6, 59)), None);
+        assert_eq!(due(at(MONDAY, 7, 0)), Some(Kind::Phone(0)));
+        // Ringing for three minutes, during which nothing checks.
+        assert_eq!(due(at(MONDAY, 7, 3)), Some(Kind::Phone(1)));
+        assert_eq!(due(at(MONDAY, 7, 3)), None);
+    }
+
+    #[test]
+    fn a_jump_of_the_clock_skips_rather_than_ringing_for_the_past() {
+        let mut s = Settings::default();
+        let mut p = phone(&[(7, 0, 0x7F, true), (9, 0, 0x7F, true)]);
+        let mut state = State::default();
+        let mut due = |minute| state.due(&mut s, &mut p, minute * 60, false);
+        assert_eq!(due(at(MONDAY, 6, 0)), None);
+        // The phone sets the clock three hours on (a new time zone): 07:00
+        // went by unrung, and 09:00 is still to come.
+        assert_eq!(due(at(MONDAY, 8, 30)), None);
+        assert_eq!(due(at(MONDAY, 8, 59)), None);
+        assert_eq!(due(at(MONDAY, 9, 0)), Some(Kind::Phone(1)));
+        // And back six hours (westwards): 07:00 comes round again, and rings.
+        assert_eq!(due(at(MONDAY, 3, 0)), None);
+        assert_eq!(due(at(MONDAY, 6, 59)), None);
+        assert_eq!(due(at(MONDAY, 7, 0)), Some(Kind::Phone(0)));
+    }
+
+    #[test]
+    fn next_includes_phone_alarms() {
+        let s = Settings::default();
+        let p = phone(&[(6, 15, FRI, true), (5, 0, 0, false)]);
+        let state = State::default();
+        assert_eq!(
+            state.next(&s, &p, at(MONDAY, 12, 0) * 60),
+            Some((Kind::Phone(0), at(MONDAY + 4, 6, 15) * 60))
+        );
+    }
+
+    #[test]
+    fn phone_alarms_round_trip_and_reject_nonsense() {
+        let mut p = phone(&[
+            (5, 30, 0, true),
+            (23, 59, WEEKENDS, false),
+            (0, 0, 0x7F, true),
+        ]);
+        let mut state = State::default();
+        rings(
+            &mut Settings::default(),
+            &mut p,
+            &mut state,
+            at(MONDAY, 5, 0),
+            at(MONDAY, 6, 0),
+        );
+        assert_eq!(p.alarms()[0].switch, Switch::Rang);
+        assert_eq!(Phone::from_bytes(p.to_bytes()), p);
+        assert_eq!(Phone::from_bytes([0xFF; Phone::BYTES]).alarms(), &[]);
+        // Nonsense times aren't taken; nor more than ten alarms.
+        let mut p = Phone::default();
+        assert!(!p.push(24, 0, 0, true));
+        assert!(!p.push(7, 60, 0, true));
+        for _ in 0..PHONE_ALARMS {
+            assert!(p.push(7, 0, 0, true));
+        }
+        assert!(!p.push(7, 0, 0, true));
+        assert_eq!(p.alarms().len(), PHONE_ALARMS);
     }
 }

@@ -155,9 +155,10 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 // A minimal JSON reader
 // ==============================================================================
 //
-// Just enough for Gadgetbridge's flat objects: look up a top-level member by
-// key and read it as a string or number. Nested values are skipped over, not
-// interpreted. No allocation; values borrow from the line.
+// Just enough for Gadgetbridge's objects: look up a member by key and read
+// it as a string, number, or boolean, or as an array of objects (alarms).
+// Other nested values are skipped over, not interpreted. No allocation;
+// values borrow from the line.
 
 /// A JSON object's text, from `{` to `}`.
 #[derive(Clone, Copy)]
@@ -274,6 +275,27 @@ impl<'a> Value<'a> {
             }
         }
         Some(())
+    }
+
+    /// The value as an object, if it is one.
+    pub fn as_object(&self) -> Option<Object<'a>> {
+        self.0.starts_with(b"{").then_some(Object(self.0))
+    }
+
+    /// The elements of an array (none if it isn't one, and up to any that
+    /// doesn't parse).
+    pub fn items(&self) -> impl Iterator<Item = Value<'a>> + use<'a> {
+        let mut rest = self.0.strip_prefix(b"[");
+        core::iter::from_fn(move || {
+            let here = skip_whitespace(rest.take()?);
+            if here.first() == Some(&b']') {
+                return None;
+            }
+            let (value, after) = take_value(here)?;
+            let after = skip_whitespace(after);
+            rest = Some(after.strip_prefix(b",").unwrap_or(after));
+            Some(Value(value))
+        })
     }
 
     pub fn as_bool(&self) -> Option<bool> {

@@ -7,8 +7,8 @@
 //!
 //! Navigation:
 //!
-//! - Swipe left/right: cycle between screens (clock, alarms, music while
-//!   the phone has media, info).
+//! - Swipe left/right: cycle between screens (clock, alarms, the phone's
+//!   alarms once it has sent some, music while the phone has media, info).
 //! - Long press: next colour theme within the current group (dark themes
 //!   after sunset, light ones after sunrise; each group remembers its own).
 //! - Button: return to the clock; on the clock, turn the screen off. While a
@@ -31,7 +31,11 @@
 //! - In the editor: swipe up/down on the left half for hours, the right
 //!   half for minutes; tap the bottom left to switch it on/off, the bottom
 //!   right for the next page or done. The button also means done.
-//! - Ringing takes over the screen: tap to snooze, button to stop.
+//! - The phone's alarms (see [`alarm::Phone`]) have a screen of their own,
+//!   read-only: they're set in Gadgetbridge.
+//! - Ringing takes over the screen: tap to snooze, button to stop. Alarms
+//!   start buzzing gently and build up (see [`Pattern::ALARM`]); timers
+//!   buzz at full strength straight away.
 //!
 //! From the phone:
 //!
@@ -166,6 +170,8 @@ pub enum PhoneEvent {
     /// A client connected but never secured the link (see
     /// `ble::not_paired`). Shown like a notification.
     Unpaired(Unpaired),
+    /// The alarms set in Gadgetbridge, all of them.
+    Alarms(alarm::Phone),
 }
 
 /// Why a connected client can't use the watch: its link never became
@@ -211,6 +217,7 @@ impl defmt::Format for PhoneEvent {
             Self::MusicState { .. } => "MusicState",
             Self::Find { .. } => "Find",
             Self::Unpaired(_) => "Unpaired",
+            Self::Alarms(_) => "Alarms",
         };
         defmt::write!(f, "{=str}", kind)
     }
@@ -220,6 +227,7 @@ impl defmt::Format for PhoneEvent {
 enum Screen {
     Clock,
     Alarms,
+    PhoneAlarms,
     Music,
     Info,
 }
@@ -306,6 +314,10 @@ pub struct App {
     music: Option<Music>,
     /// Alarm settings, as stored (`main` saves them when they change).
     pub alarms: alarm::Settings,
+    /// The phone's alarms, as stored (`main` saves them when
+    /// [`App::take_phone_alarms_changed`] says so).
+    pub phone_alarms: alarm::Phone,
+    phone_alarms_changed: bool,
     alarm_state: alarm::State,
     ringing: Option<Ringing>,
     /// The alarm editor, while open.
@@ -345,6 +357,8 @@ impl App {
             call: None,
             music: None,
             alarms,
+            phone_alarms: alarm::Phone::default(),
+            phone_alarms_changed: false,
             alarm_state: alarm::State::default(),
             ringing: None,
             editing: None,
@@ -435,12 +449,22 @@ impl App {
         self.transition.take()
     }
 
-    /// Screens in swipe order (wrapping around). The music screen only
-    /// exists while the phone has told us about media.
-    fn screens(&self) -> heapless::Vec<Screen, 4> {
+    /// Whether the phone's alarms changed (synced, or a one-off rang and
+    /// turned itself off) since last asked, so they need saving.
+    pub fn take_phone_alarms_changed(&mut self) -> bool {
+        core::mem::take(&mut self.phone_alarms_changed)
+    }
+
+    /// Screens in swipe order (wrapping around). The phone's alarms only
+    /// have a screen once the phone has sent some, and the music screen
+    /// only exists while the phone has told us about media.
+    fn screens(&self) -> heapless::Vec<Screen, 5> {
         let mut screens = heapless::Vec::new();
         let _ = screens.push(Screen::Clock);
         let _ = screens.push(Screen::Alarms);
+        if !self.phone_alarms.alarms().is_empty() {
+            let _ = screens.push(Screen::PhoneAlarms);
+        }
         if self.music.is_some() {
             let _ = screens.push(Screen::Music);
         }
@@ -613,13 +637,7 @@ impl App {
     fn toggle(&mut self, row: Editing) {
         match row {
             Editing::SmartWeekday | Editing::SmartWeekend => self.alarms.smart = !self.alarms.smart,
-            Editing::At(i) => {
-                let i = usize::from(i);
-                self.alarms.at[i] = !self.alarms.at[i];
-                if let Some(now) = self.local_second {
-                    self.alarm_state.arm_at(i, &self.alarms, now);
-                }
-            }
+            Editing::At(i) => self.alarms.at[usize::from(i)] ^= true,
             Editing::Timer(i) => {
                 let i = usize::from(i);
                 match (self.alarm_state.timers[i], self.local_second) {
@@ -633,13 +651,7 @@ impl App {
     }
 
     fn on_editor_input(&mut self, editing: Editing, event: InputEvent) {
-        let done = |app: &mut Self| {
-            app.editing = None;
-            // A changed time for an armed alarm moves it.
-            if let (Editing::At(i), Some(now)) = (editing, app.local_second) {
-                app.alarm_state.arm_at(usize::from(i), &app.alarms, now);
-            }
-        };
+        let done = |app: &mut Self| app.editing = None;
         let InputEvent::Touch(touch) = event else {
             if let InputEvent::Button = event {
                 done(self);
@@ -688,6 +700,17 @@ impl App {
     }
 
     fn on_phone(&mut self, event: PhoneEvent, now: Instant) {
+        // New alarms from the phone change nothing on screen bar the
+        // phone's alarms screen: no buzz, no light.
+        if let PhoneEvent::Alarms(alarms) = event {
+            defmt::info!("alarm: {} from the phone", alarms.alarms().len());
+            self.phone_alarms.sync(alarms);
+            self.phone_alarms_changed = true;
+            if self.phone_alarms.alarms().is_empty() && self.screen == Screen::PhoneAlarms {
+                self.screen = Screen::Alarms;
+            }
+            return;
+        }
         // A banner like a notification's, pointing at the FAQ for the
         // steps; the Info screen's phone row keeps saying so meanwhile.
         let event = match event {
@@ -734,7 +757,10 @@ impl App {
                     since: now,
                     until,
                 });
-                motor::buzz(Pattern::NOTIFY);
+                // Not over a ringing alarm, which would go quiet.
+                if self.ringing.is_none() {
+                    motor::buzz(Pattern::NOTIFY);
+                }
                 if !self.awake {
                     self.awake = true;
                     self.brief_wake = true;
@@ -780,6 +806,7 @@ impl App {
                     self.last_input = now;
                 }
             }
+            PhoneEvent::Alarms(_) => unreachable!("handled above"),
         }
     }
 
@@ -821,9 +848,17 @@ impl App {
             self.stop_ringing();
         }
         if self.ringing.is_none()
-            && let Some(kind) = self.alarm_state.due(&mut self.alarms, second, stirring)
+            && let Some(kind) =
+                self.alarm_state
+                    .due(&mut self.alarms, &mut self.phone_alarms, second, stirring)
         {
             defmt::info!("alarm: ringing ({})", kind);
+            // A one-off phone alarm turned itself off. (Saving after a
+            // repeating one too costs a flash write a day: not worth
+            // telling them apart for.)
+            if let alarm::Kind::Phone(_) = kind {
+                self.phone_alarms_changed = true;
+            }
             // The morning's first alarm (a snooze is still the morning)
             // ends the night, so it rings with the screen bright. Not a
             // timer: that rings in the dim look, and the night goes on.
@@ -832,7 +867,10 @@ impl App {
             }
             self.ringing = Some(Ringing { kind, since: now });
             self.editing = None;
-            motor::buzz(Pattern::ALARM);
+            motor::buzz(match kind {
+                alarm::Kind::Timer(_) => Pattern::TIMER,
+                _ => Pattern::ALARM,
+            });
             self.awake = true;
             self.brief_wake = false;
             self.last_input = now;
@@ -950,12 +988,14 @@ impl App {
             );
             return;
         }
-        let next_alarm = status
-            .local_second
-            .and_then(|minute| self.alarm_state.next(&self.alarms, minute));
+        let next_alarm = status.local_second.and_then(|minute| {
+            self.alarm_state
+                .next(&self.alarms, &self.phone_alarms, minute)
+        });
         match self.screen {
             Screen::Clock => render_clock(canvas, status, next_alarm),
             Screen::Alarms => render_alarms(canvas, &self.alarms, &self.alarm_state, status),
+            Screen::PhoneAlarms => render_phone_alarms(canvas, &self.phone_alarms),
             Screen::Music => match &self.music {
                 Some(music) => render_music(canvas, music, now),
                 None => render_clock(canvas, status, next_alarm),
@@ -1272,6 +1312,40 @@ fn render_alarms(
     }
 }
 
+/// The phone's alarms, a row each: the time, the weekdays it rings on (or
+/// "ONCE"), and whether it's on. Ten rows fit, as many as Gadgetbridge
+/// sends.
+fn render_phone_alarms(canvas: &mut Canvas, phone: &alarm::Phone) {
+    canvas.clear(BACKGROUND);
+    canvas.text(4, 3, "PHONE ALARMS", Color::ACCENT);
+    for (row, alarm) in phone.alarms().iter().enumerate() {
+        let y = 11 + 7 * row as i32;
+        let on = alarm.on();
+        let text = if on { Color::TEXT } else { Color::TEXT_FAINT };
+        canvas.text(4, y, &hhmm(alarm.time.into()), text);
+        if alarm.days == 0 {
+            canvas.text(26, y, "ONCE", text);
+        } else {
+            // Its weekdays bright, the others faint, so the row reads as
+            // a little calendar.
+            for (day, letter) in ["M", "T", "W", "T", "F", "S", "S"].into_iter().enumerate() {
+                let color = if on && alarm.days >> day & 1 != 0 {
+                    Color::TEXT
+                } else {
+                    Color::TEXT_FAINT
+                };
+                canvas.text(26 + 4 * day as i32, y, letter, color);
+            }
+        }
+        let (state, color) = if on {
+            ("ON", Color::GOOD)
+        } else {
+            ("OFF", Color::TEXT_FAINT)
+        };
+        canvas.text_right(77, y, state, color);
+    }
+}
+
 /// A timer's duration (not counting down): "3 MIN", "1H30".
 fn duration(minutes: u16) -> heapless::String<8> {
     let mut text = heapless::String::new();
@@ -1369,7 +1443,7 @@ fn render_ringing(canvas: &mut Canvas, ringing: &Ringing, status: &Status) {
     canvas.clear(BACKGROUND);
     let title = match ringing.kind {
         alarm::Kind::Smart => "GOOD MORNING",
-        alarm::Kind::At(_) | alarm::Kind::Snooze => "ALARM",
+        alarm::Kind::At(_) | alarm::Kind::Phone(_) | alarm::Kind::Snooze => "ALARM",
         alarm::Kind::Timer(_) => "TIME'S UP",
     };
     canvas.text_centered(40, 6, title, Color::ACCENT);

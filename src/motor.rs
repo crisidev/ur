@@ -3,43 +3,140 @@
 //! Other code asks for a [`Pattern`] via [`buzz`]; a newer request always
 //! replaces whatever is playing, so e.g. an incoming call can cut short a
 //! notification buzz, and [`Pattern::STOP`] silences anything.
+//!
+//! The motor is either on or off: it hangs off a plain GPIO, through a
+//! transistor. How strong a buzz feels comes from how long it's on (it
+//! takes tens of milliseconds to spin up, so a short pulse is a faint
+//! tick) and how often. InfiniTime drives it the same way. (The PWM
+//! peripheral could run it at part duty, as wasp-os does, but pulse
+//! lengths alone give a gentle start, without tying up a peripheral.)
 
 use embassy_futures::select::{Either, select};
 use embassy_nrf::gpio::Output;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use embassy_time::Timer;
+use embassy_time::{Duration, Timer};
 
 #[derive(Clone, Copy)]
 pub struct Pattern {
     /// Alternating on/off durations in milliseconds, starting with "on".
     steps: &'static [u16],
-    /// Loop until replaced (calls, alarms) rather than playing once.
-    repeat: bool,
+    /// Where to loop back to once the steps run out, until replaced (calls,
+    /// alarms): an even index, so an "on". `None` plays once.
+    repeat_from: Option<u8>,
 }
 
 impl Pattern {
     pub const STOP: Self = Self {
         steps: &[],
-        repeat: false,
+        repeat_from: None,
     };
     /// A notification: noticeable, but brief.
     pub const NOTIFY: Self = Self {
         steps: &[60],
-        repeat: false,
+        repeat_from: None,
     };
     /// Incoming call: rings until stopped.
     pub const RING: Self = Self {
         steps: &[400, 600],
-        repeat: true,
+        repeat_from: Some(0),
     };
-    /// Alarms: two quick pulses and a pause, so it's not mistaken for a
-    /// call; until stopped.
+    /// Timers: two quick pulses and a pause, so it's not mistaken for a
+    /// call; until stopped. At full strength from the start: a timer is
+    /// set by someone awake, who wants to know it's done (the tea, the
+    /// oven), perhaps across a noisy kitchen.
+    pub const TIMER: Self = Self {
+        steps: &FULL,
+        repeat_from: Some(0),
+    };
+    /// Alarms (snoozes too): from faint, sparse ticks to [`Pattern::TIMER`]'s
+    /// full strength over [`ALARM_RAMP`], then that until stopped. Being
+    /// shaken awake is unpleasant, and a gentle start is often enough to
+    /// wake from light sleep.
     pub const ALARM: Self = Self {
-        steps: &[200, 120, 200, 800],
-        repeat: true,
+        steps: &ALARM_STEPS,
+        repeat_from: Some(RAMP_LEN as u8),
     };
 }
+
+/// Two quick pulses and a pause.
+const FULL: [u16; 4] = [200, 120, 200, 800];
+
+/// The alarm's build-up, in five phases of about 12 s, each a short
+/// on/off pattern repeated. Pulses grow longer and the pauses shorter;
+/// the last phases are already the full pattern's pairs, a little
+/// shorter. About a minute in all.
+///
+/// TODO: tune on the wrist. The first ticks are meant to be only just
+/// felt; 30 ms may turn out too faint for this motor, or not faint enough.
+const RAMP: [(&[u16], usize); 5] = [
+    // 12 s: a faint tick every 3 s.
+    (&[30, 2970], 4),
+    // 12.5 s: a firmer tick every 2.5 s.
+    (&[50, 2450], 5),
+    // 12 s: short buzzes every 2 s.
+    (&[80, 1920], 6),
+    // 11.9 s: pairs, still short and spaced out.
+    (&[120, 150, 120, 1100], 8),
+    // 10.8 s: pairs almost at full strength.
+    (&[160, 130, 160, 900], 8),
+];
+
+/// How many steps the ramp takes.
+const RAMP_LEN: usize = {
+    let mut len = 0;
+    let mut i = 0;
+    while i < RAMP.len() {
+        len += RAMP[i].0.len() * RAMP[i].1;
+        i += 1;
+    }
+    len
+};
+
+/// The ramp's steps, then [`FULL`]'s to loop on.
+const ALARM_STEPS: [u16; RAMP_LEN + FULL.len()] = {
+    let mut steps = [0; RAMP_LEN + FULL.len()];
+    let mut at = 0;
+    let mut phase = 0;
+    while phase < RAMP.len() {
+        let (pattern, times) = RAMP[phase];
+        let mut time = 0;
+        while time < times {
+            let mut i = 0;
+            while i < pattern.len() {
+                steps[at] = pattern[i];
+                at += 1;
+                i += 1;
+            }
+            time += 1;
+        }
+        phase += 1;
+    }
+    let mut i = 0;
+    while i < FULL.len() {
+        steps[at] = FULL[i];
+        at += 1;
+        i += 1;
+    }
+    steps
+};
+
+// The loop must start on an "on", at an index `repeat_from` can hold.
+const _: () = assert!(RAMP_LEN.is_multiple_of(2) && RAMP_LEN <= u8::MAX as usize);
+
+/// How long an alarm takes to build up to full strength (about a
+/// minute), for anything else that should build up alongside it (the
+/// backlight, say).
+#[allow(dead_code, reason = "for the backlight, which doesn't build up yet")]
+pub const ALARM_RAMP: Duration = {
+    let mut ms = 0;
+    let mut i = 0;
+    while i < RAMP_LEN {
+        ms += ALARM_STEPS[i] as u64;
+        i += 1;
+    }
+    Duration::from_millis(ms)
+};
 
 static REQUEST: Signal<CriticalSectionRawMutex, Pattern> = Signal::new();
 
@@ -52,8 +149,9 @@ pub async fn motor_task(mut motor: Output<'static>) {
     let mut pattern = REQUEST.wait().await;
     loop {
         // Play `pattern`; if a new request arrives mid-way, switch to it.
+        let mut from = 0;
         let interrupted = 'play: loop {
-            for (i, &ms) in pattern.steps.iter().enumerate() {
+            for (i, &ms) in pattern.steps.iter().enumerate().skip(from) {
                 if i % 2 == 0 {
                     motor.set_low();
                 } else {
@@ -65,8 +163,11 @@ pub async fn motor_task(mut motor: Output<'static>) {
                     break 'play Some(next);
                 }
             }
-            if !pattern.repeat || pattern.steps.is_empty() {
-                break None;
+            match pattern.repeat_from {
+                Some(start) if usize::from(start) < pattern.steps.len() => {
+                    from = usize::from(start)
+                }
+                _ => break None,
             }
         };
         motor.set_high();

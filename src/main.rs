@@ -9,7 +9,8 @@
 //! - [`ui`]: screens, navigation, and screen power.
 //! - [`touch`], the button task here: input, delivered through [`INPUT`].
 //! - [`motor`]: vibration patterns.
-//! - [`alarm`]: when alarms (smart wake, at a time, timer) ring.
+//! - [`alarm`]: when alarms (smart wake, at a time, from the phone, timer)
+//!   ring.
 //! - [`battery`]: battery voltage and charge state.
 //! - [`activity`] / [`sleep`]: steps, movement, and sleep, from the
 //!   accelerometer.
@@ -476,6 +477,9 @@ async fn main(spawner: Spawner) {
         .map(alarm::Settings::from_bytes)
         .unwrap_or_default();
     let mut app = App::new(Instant::now(), themes, alarms);
+    if let Some(phone_alarms) = storage::load(storage::key::PHONE_ALARMS).await {
+        app.phone_alarms = alarm::Phone::from_bytes(phone_alarms);
+    }
     if let Some(location) = storage::load(storage::key::LOCATION).await {
         geo::set_location(geo::Location::from_bytes(location));
     }
@@ -675,6 +679,10 @@ async fn main(spawner: Spawner) {
         // Edited, switched, or (a one-off alarm) rung and switched off.
         if app.alarms != alarms_before {
             storage::save(storage::key::ALARMS, &app.alarms.to_bytes()).await;
+        }
+        // Synced, or a one-off rung and switched off.
+        if app.take_phone_alarms_changed() {
+            storage::save(storage::key::PHONE_ALARMS, &app.phone_alarms.to_bytes()).await;
         }
     }
 }

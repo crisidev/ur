@@ -27,7 +27,9 @@ timepiece.)
   seconds, without lighting the whole screen. Not while you're asleep.
 - **Alarms:** smart wake (rings in the half hour before your time, as soon
   as you stir from light sleep, with separate times for weekdays and
-  weekends), two alarms, and two timers.
+  weekends), two alarms, and two timers, plus up to ten alarms set in
+  Gadgetbridge. Alarms start with faint taps and build up to full strength
+  over a minute; timers buzz in full straight away.
 - **Sleep and heart rate:** measured on the watch, and synced to
   Gadgetbridge (and from there to [Health Connect], if you like).
 - **Notifications:** which app, and who from, briefly. With the screen off
@@ -73,8 +75,9 @@ hardware by a human.
   fully. During a quiet night, taps don't wake it at all: use the button.
 - **Button:** with the screen on, back to the clock, or off from the
   clock. Also silences a call, and stops a ringing alarm.
-- **Swipe left and right:** between the clock, alarms, music (while
-  something is playing), and info screens.
+- **Swipe left and right:** between the clock, alarms, phone alarms (once
+  Gadgetbridge has sent some), music (while something is playing), and
+  info screens.
 - **Long-press:** the next theme. On the alarms screen, long-pressing an
   alarm or timer switches it on or off instead.
 - **Tap an alarm or timer** to set it: swipe up and down to change the
@@ -82,6 +85,11 @@ hardware by a human.
   timer).
 - **A ringing alarm:** tap to snooze for 9 minutes, or press the button to
   stop it.
+- **Phone alarms:** set them in Gadgetbridge's Alarms screen for the watch;
+  they sync whenever you change one, and the watch only shows them. A
+  one-off alarm switches itself off on the watch once it has rung, but
+  Gadgetbridge doesn't hear of it: to set it again, switch it off and on
+  there.
 - **Connecting a phone:** in Gadgetbridge, add the watch "Bangle.js ur" and
   type the passkey the watch shows when Android asks to pair. The watch only
   talks to a phone that paired this way: if it shows "NOT PAIRED" or

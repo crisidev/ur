@@ -897,9 +897,9 @@ fn interpret(line: &[u8], actions: &mut Vec<Action, 4>) {
     }
 }
 
-/// Translates the phone's notification, call, music, and find-my-watch
-/// messages for the UI. Only the fields we show are copied; in particular a
-/// notification's body never leaves this function.
+/// Translates the phone's notification, call, music, find-my-watch, and
+/// alarm messages for the UI. Only the fields we show are copied; in
+/// particular a notification's body never leaves this function.
 fn phone_event(kind: &str, object: gb::Object<'_>) -> Option<PhoneEvent> {
     fn text<const N: usize>(object: gb::Object<'_>, key: &str) -> heapless::String<N> {
         let mut out = heapless::String::new();
@@ -946,6 +946,27 @@ fn phone_event(kind: &str, object: gb::Object<'_>) -> Option<PhoneEvent> {
         "find" => PhoneEvent::Find {
             on: object.get("n").and_then(|v| v.as_bool()) == Some(true),
         },
+        // `{"t":"alarm","d":[{"h":7,"m":30,"rep":31,"on":true},…]}`: every
+        // alarm set in Gadgetbridge's alarm screen, whenever one changes
+        // there (see `onSetAlarms` in its driver). `rep` has a bit per
+        // weekday, Monday first; 0 is once.
+        "alarm" => {
+            let mut alarms = crate::alarm::Phone::default();
+            let items = object.get("d").map(|d| d.items()).into_iter().flatten();
+            for alarm in items.filter_map(|v| v.as_object()) {
+                let number = |key| alarm.get(key).and_then(|v| v.as_f64());
+                let (Some(hour), Some(minute)) = (number("h"), number("m")) else {
+                    continue;
+                };
+                let days = number("rep").unwrap_or(0.0) as u8;
+                // A Bangle.js takes a missing `on` as on.
+                let on = alarm.get("on").and_then(|v| v.as_bool()) != Some(false);
+                if !alarms.push(hour as u16, minute as u16, days, on) {
+                    warn!("ble: dropped an alarm ({}:{})", hour as u16, minute as u16);
+                }
+            }
+            PhoneEvent::Alarms(alarms)
+        }
         _ => return None,
     })
 }
