@@ -281,7 +281,7 @@ The plaintext object block is 2 + 2 + 8 + 3 = **15 B**.
 There is no room left for a local name. HA can still learn the name
 "Bangle.js ur" from our connectable advertisements, which use the same
 address. If we ever want more tiles, drop the battery object (+2 B), then the
-dimmer (+3 B). The maximum is 7 buttons with only a packet id.
+dimmer (+3 B). The maximum is 6 buttons with a packet id, 7 without (15 B of objects; see the rework above).
 
 ### 2.3 Examples (generated and checked by `docs/bthome_vectors.py`)
 
