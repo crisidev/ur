@@ -90,8 +90,9 @@ const MOTION_HISTORY: usize = 8;
 
 /// Whether the clock face is showing; set by the UI loop.
 static WATCHING: AtomicBool = AtomicBool::new(false);
-/// Raised when [`WATCHING`] becomes true, to start a session right away.
-static WATCH_STARTED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+/// Raised when [`WATCHING`] becomes true, to start a session right away,
+/// and when [`activity::still`] changes (see [`wake`]).
+static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// Whether the last session saw skin; for sleep tracking, which must tell
 /// a still wrist from a watch on the nightstand.
@@ -113,8 +114,15 @@ static LATEST: Mutex<CriticalSectionRawMutex, Cell<Option<(u8, Instant)>>> =
 pub fn set_watching(watching: bool) {
     let was = WATCHING.swap(watching, Ordering::Relaxed);
     if watching && !was {
-        WATCH_STARTED.signal(());
+        WAKE.signal(());
     }
+}
+
+/// Has the heart-rate task look again at what it's waiting for: the wrist
+/// just went still (a due session may start), or started moving (which
+/// may bring the next session forward). Cheap.
+pub fn wake() {
+    WAKE.signal(());
 }
 
 fn watching() -> bool {
@@ -380,26 +388,32 @@ pub async fn heart_task(i2c: Device) {
         // Wait until a background session is due and the wrist is still,
         // or until someone looks at the clock face. Movement can bring the
         // session forward while we wait, so the due time is looked at
-        // again every `RECHECK_SECS`; once due, every 3 s, as movement is
-        // only updated with each read of the accelerometer. (A signal left
-        // over from during the last session is stale: `watching()` says
-        // whether it still holds.)
+        // again every `RECHECK_SECS` while the wrist moves (while it's
+        // still, nothing can, and `activity` wakes us when it starts
+        // moving); once due, every 3 s, as movement is only updated with
+        // each read of the accelerometer, and at once when it sees the
+        // wrist go still. (A wake left over from during the last session is
+        // stale: everything is looked at afresh.)
         let due = loop {
-            WATCH_STARTED.reset();
+            WAKE.reset();
             if watching() {
                 break None;
             }
             let (at, why) = schedule.due(activity::active_polls(), activity::asleep());
             let now = uptime();
             let wait = if now < at {
-                (at - now).min(RECHECK_SECS)
+                if activity::still() {
+                    at - now
+                } else {
+                    (at - now).min(RECHECK_SECS)
+                }
             } else if activity::movement() > CALM {
                 // Measuring a busy wrist only spends LED time.
                 3
             } else {
                 break Some(why);
             };
-            select(Timer::after_secs(u64::from(wait)), WATCH_STARTED.wait()).await;
+            select(Timer::after_secs(u64::from(wait)), WAKE.wait()).await;
         };
         let background = due.is_some();
         if let Some(why) = due {

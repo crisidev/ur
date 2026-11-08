@@ -19,14 +19,24 @@
 //! shown on the clock face. The history also holds each minute's heart
 //! rate, recorded by [`crate::heart`], and the heart-rate measurement asks
 //! [`movement`] whether the wrist is still enough to trust.
+//!
+//! The feature engine also watches for motion starting and stopping
+//! ("any-motion" and "no-motion"), and raises its interrupt pin (INT1, on
+//! P0.08) when the wrist starts moving. [`motion_task`] uses that to stop
+//! polling while the wrist is still ([`still`]): the glance detector only
+//! needs samples once something moves, and the heart rate's schedule can't
+//! change meanwhile. (This config has no other gestures: no taps, and no
+//! wrist-turn, which is why glances are recognised in [`crate::glance`].)
 
 use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
 
-use defmt::{info, warn};
+use defmt::{debug, info, warn};
+use embassy_futures::select::{Either, select};
+use embassy_nrf::gpio::Input;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_time::{Duration, Timer, with_timeout};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use embedded_hal_async::i2c::I2c;
 
 use crate::i2c::Device;
@@ -43,6 +53,9 @@ const ADDRESS: u8 = 0x18;
 const REG_CHIP_ID: u8 = 0x00;
 /// The current acceleration, x/y/z (LSB first), 12 bits left-justified.
 const REG_ACC_DATA: u8 = 0x12;
+/// Which feature interrupts fired since it was last read (which clears
+/// it, and the latched pin): the `INT_*` bits.
+const REG_INT_STATUS_0: u8 = 0x1C;
 const REG_STEP_COUNT: u8 = 0x1E;
 const REG_FIFO_LENGTH: u8 = 0x24;
 const REG_FIFO_DATA: u8 = 0x26;
@@ -51,6 +64,13 @@ const REG_ACC_CONF: u8 = 0x40;
 const REG_ACC_RANGE: u8 = 0x41;
 const REG_FIFO_DOWNSAMPLING: u8 = 0x45;
 const REG_FIFO_CONFIG_1: u8 = 0x49;
+const REG_INT1_IO_CTRL: u8 = 0x53;
+const REG_INT_LATCH: u8 = 0x55;
+/// Which feature interrupts drive INT1 and INT2 (the same bits as
+/// `INT_STATUS_0`). A feature's status is only set while it's mapped to
+/// one of them.
+const REG_INT1_MAP: u8 = 0x56;
+const REG_INT2_MAP: u8 = 0x57;
 const REG_INIT_CTRL: u8 = 0x59;
 const REG_ASIC_LSB: u8 = 0x5B;
 const REG_ASIC_MSB: u8 = 0x5C;
@@ -72,6 +92,72 @@ const FEATURES_LEN: usize = 70;
 /// Within it: the step counter's settings (offset 0x3A) high byte, whose
 /// bit 4 enables counting.
 const STEP_COUNTER_ENABLE: (usize, u8) = (0x3A + 1, 0x10);
+/// The any-motion and no-motion settings (offsets 0x00 and 0x04), two
+/// little-endian words each: the threshold (11 bits, in 1/2048 g), then the
+/// duration (13 bits, in 20 ms steps) with the axes to watch in its top
+/// three bits. See [`ANY_MOTION`] and [`NO_MOTION`].
+const ANY_MOTION_OFFSET: usize = 0x00;
+const NO_MOTION_OFFSET: usize = 0x04;
+const MOTION_ALL_AXES: u16 = 0xE000;
+/// The settings end there, with the step counter's, at 0x3C: this config
+/// has no taps and no wrist-wear gesture (unlike the BMA456's wearable one,
+/// whose layout Bosch's BMA423 driver and InfiniTime's copy of it
+/// describe, with those at 0x3C..0x42 and an axis remap at 0x44). Read on
+/// the dev kit, 0x3C.. holds 4e 14 88 00 57 00 71 00 7a 00, and writes
+/// there don't stick. An earlier attempt at the wrist-wear gesture wrote
+/// its "enable" to 0x40 and its axis remap to 0x44, which is why it never
+/// fired.
+const SETTINGS_LEN: usize = 0x3C;
+
+/// Feature interrupt bits, in `INT_STATUS_0` and the `INT*_MAP`s.
+const INT_ANY_MOTION: u8 = 0x20;
+const INT_NO_MOTION: u8 = 0x40;
+/// `INTERNAL_STATUS`'s error flags, as Bosch's BMA456 documents them: the
+/// sample rate too low for the features (0x40), or a bad axis remap (0x20).
+/// Not 0x80 ("too low for taps"): it's set with this config whatever the
+/// features, and there are no taps.
+const INTERNAL_ERRORS: u8 = 0x60;
+
+/// A motion feature's settings: a threshold in 1/2048 g, and how many
+/// samples at 50 Hz (20 ms) it must hold for.
+struct Motion {
+    threshold: u16,
+    samples: u16,
+}
+
+/// Any-motion: the acceleration differs from a reference by more than
+/// this, for this long, on any axis. The reference is the acceleration
+/// when it last fired (per Bosch's BMA456 notes), so a slow turn of the
+/// wrist adds up and fires too. Bosch's default threshold (83 mg, the pull
+/// of gravity tilted ~5°), held for 100 ms: turning the wrist to look takes
+/// a few hundred.
+const ANY_MOTION: Motion = Motion {
+    threshold: 0xAA,
+    samples: 5,
+};
+
+/// No-motion: every axis changes by less than this, for this long. While
+/// that holds, the chip raises its status again every sample (20 ms), so
+/// it's only read as a status, never raises INT1.
+///
+/// The dev kit lying on a desk holds 10 mg throughout, and 5 mg with
+/// gaps of seconds; this is twice the former, and well under
+/// [`ANY_MOTION`]'s threshold, so the two don't take turns.
+///
+/// TODO: check on a wrist, with the field log's `still` time: a wrist at
+/// rest may rarely be this still, which only costs polling, as before.
+const NO_MOTION: Motion = Motion {
+    threshold: 0x28,
+    samples: 150,
+};
+
+/// Writes `motion` into the feature window at `offset`, all axes enabled.
+fn set_motion(window: &mut [u8], offset: usize, motion: &Motion) {
+    window[offset..offset + 2].copy_from_slice(&motion.threshold.to_le_bytes());
+    window[offset + 2..offset + 4]
+        .copy_from_slice(&(motion.samples | MOTION_ALL_AXES).to_le_bytes());
+}
+
 /// Upload granularity: the config goes over I2C in pieces this size, each
 /// preceded by its position (in 16-bit words). Even, and small enough to
 /// stage in RAM (the TWIM can't send from flash).
@@ -172,14 +258,42 @@ impl Bma421 {
             return Err(());
         }
 
-        // Enable the step counter. The feature window is read and written
-        // whole; right after initialisation, the address registers point at
-        // its start (as Bosch's driver assumes for full-length accesses).
+        // Enable the step counter and the motion features. The feature
+        // window is read and written whole; right after initialisation, the
+        // address registers point at its start (as Bosch's driver assumes
+        // for full-length accesses).
         let mut features = [0u8; FEATURES_LEN + 1];
         self.read(REG_FEATURES, &mut features[1..]).await?;
         features[0] = REG_FEATURES;
-        features[1 + STEP_COUNTER_ENABLE.0] |= STEP_COUNTER_ENABLE.1;
+        let window = &mut features[1..];
+        window[STEP_COUNTER_ENABLE.0] |= STEP_COUNTER_ENABLE.1;
+        set_motion(window, ANY_MOTION_OFFSET, &ANY_MOTION);
+        set_motion(window, NO_MOTION_OFFSET, &NO_MOTION);
         self.write_bytes(&features).await?;
+        // Read the settings back: the engine ignores writes it doesn't take
+        // without an error, and nothing else would tell.
+        let mut written = [0u8; SETTINGS_LEN];
+        self.read(REG_FEATURES, &mut written).await?;
+        if let Some(at) = (0..SETTINGS_LEN).find(|&i| written[i] != features[1 + i]) {
+            warn!(
+                "activity: feature setting {=usize:#04x} reads {=u8:#04x}, not {=u8:#04x}",
+                at,
+                written[at],
+                features[1 + at]
+            );
+            return Err(());
+        }
+
+        // Any-motion to INT1 (P0.08; see `motion_task`). Latched: the pin
+        // stays high until `INT_STATUS_0` is read, so even a short pulse is
+        // seen. Output enabled, push-pull, active high, so the pin needs no
+        // pull resistor (which would draw current while it's high).
+        // No-motion to INT2, which isn't connected (and whose output stays
+        // disabled), only so that its status is set.
+        self.write(REG_INT1_IO_CTRL, 0x0A).await?;
+        self.write(REG_INT_LATCH, 0x01).await?;
+        self.write(REG_INT1_MAP, INT_ANY_MOTION).await?;
+        self.write(REG_INT2_MAP, INT_NO_MOTION).await?;
 
         // Accelerometer: 100 Hz (what the step counter wants), ±2 g,
         // averaging 4 samples, low-power averaging mode, as InfiniTime does.
@@ -194,7 +308,26 @@ impl Bma421 {
         // Advanced power save back on (with FIFO self-wake-up), now that
         // configuration is done.
         self.write(REG_POWER_CONF, 0x03).await?;
+        // The feature engine flags a sample rate too low for its features
+        // only once it's running with them (which matters if the rate is
+        // ever lowered to save power: they need 50 Hz).
+        Timer::after_millis(50).await;
+        self.read(REG_INTERNAL_STATUS, &mut status).await?;
+        if status[0] & INTERNAL_ERRORS != 0 {
+            warn!(
+                "activity: feature engine unhappy (status {=u8:#04x})",
+                status[0]
+            );
+        }
         Ok(())
+    }
+
+    /// Which feature interrupts fired since the last call (`INT_*` bits).
+    /// Reading clears them, and lowers the latched INT1.
+    async fn interrupts(&mut self) -> Result<u8, ()> {
+        let mut status = [0];
+        self.read(REG_INT_STATUS_0, &mut status).await?;
+        Ok(status[0])
     }
 
     /// Steps since the last reset (i.e. since boot).
@@ -539,31 +672,106 @@ static ACTIVE_POLLS: AtomicU8 = AtomicU8::new(0);
 /// before (setup soft-resets it and uploads its program).
 static READY: AtomicBool = AtomicBool::new(false);
 
+/// Whether the wrist is still: the accelerometer saw no motion for a few
+/// seconds ([`NO_MOTION`]), and hasn't seen any since ([`ANY_MOTION`]).
+/// [`crate::heart`] is woken whenever this changes.
+///
+/// Coarser than [`movement`], and on different terms (every sample within
+/// a threshold, rather than an average), so it isn't what the heart rate's
+/// calm threshold or sleep tracking use.
+pub fn still() -> bool {
+    STILL.load(Ordering::Relaxed)
+}
+
+static STILL: AtomicBool = AtomicBool::new(false);
+
 // ==============================================================================
-// Glances
+// Motion and glances
 // ==============================================================================
 
-/// How often to look at the wrist's pose while the screen is off: fast
-/// enough that the time is up within ~0.5 s of turning the wrist.
+/// How often to look at the wrist's pose while the screen is off and the
+/// wrist moves: fast enough that the time is up within ~0.5 s of turning
+/// the wrist.
 const GLANCE_POLL: Duration = Duration::from_millis(200);
 
-/// Watches for the wrist turning to look at the watch (see
-/// [`crate::glance`]) while the screen is off, and asks the UI for a
-/// glance.
+/// How often to look for the end of movement while no glance is wanted
+/// (the screen is on, or the wearer asleep): one byte of interrupt status.
+const STATUS_POLL: Duration = Duration::from_secs(1);
+
+/// Polls that must pass after the last any-motion before polling stops,
+/// however still the accelerometer says the wrist is: at least
+/// [`crate::glance::RECENT`] + [`crate::glance::SETTLE`] samples (2 s), so
+/// a glance in progress can finish, and so that
+/// [`crate::glance::Detector::pause`]'s premise holds.
+const MIN_MOVING_POLLS: u8 = crate::glance::RECENT + crate::glance::SETTLE;
+
+/// While still, how often to check that a motion interrupt wasn't missed
+/// (a latched any-motion with the pin low). Cheap insurance: if INT1 ever
+/// stopped working, glances would stop with it.
+const STILL_CHECK: Duration = Duration::from_secs(60);
+
+/// Follows the wrist moving and keeping still, from the accelerometer's
+/// motion features (see [`still`]), and while it moves with the screen
+/// off, watches for it turning to look at the watch (see
+/// [`crate::glance`]) and asks the UI for a glance.
 ///
-/// Reads the current acceleration (6 bytes) rather than the FIFO: one
-/// short transfer, no power save dance. A misread in power save shows up
-/// as an implausible magnitude, which the detector ignores.
+/// While the wrist moves, this polls: every [`GLANCE_POLL`] while a glance
+/// may be wanted, reading the acceleration and the interrupt status in one
+/// transfer (no FIFO, so no power save dance; a misread in power save
+/// shows up as an implausible magnitude, which the detector ignores), or
+/// every [`STATUS_POLL`] otherwise. Once the chip reports no motion, it
+/// stops, and sleeps until INT1 (`interrupt`, P0.08) rises with
+/// any-motion: no timer, no I2C, until something moves.
 #[embassy_executor::task]
-pub async fn glance_task(i2c: Device) {
+pub async fn motion_task(i2c: Device, mut interrupt: Input<'static>) {
     let mut bma = Bma421 { i2c };
     let mut detector = crate::glance::Detector::default();
     let mut screen_was_on = true;
-    loop {
+    while !READY.load(Ordering::Relaxed) {
         Timer::after(GLANCE_POLL).await;
-        if !READY.load(Ordering::Relaxed) {
-            continue;
+    }
+    // Small types throughout: this task's state is a static, and RAM is
+    // tight. Polls since the last any-motion (saturating); until the chip
+    // says otherwise, the wrist may be moving.
+    let mut polls_since_motion = 0u8;
+    // Whether the last poll was for a glance (which sets the pace), and
+    // whether to skip the wait before the next.
+    let mut glancing = true;
+    let mut poll_now = false;
+    // Cleared if INT1 is ever caught missing a motion: from then on this
+    // polls as if the wrist never kept still, as it did before INT1 was
+    // used.
+    let mut interrupt_works = true;
+    loop {
+        if STILL.load(Ordering::Relaxed) {
+            let still_since = Instant::now();
+            loop {
+                let woken = select(interrupt.wait_for_high(), Timer::after(STILL_CHECK)).await;
+                // Before the read below lowers it.
+                let raised = matches!(woken, Either::First(())) || interrupt.is_high();
+                // A failed read counts as motion: polling is the safe side.
+                let status = bma.interrupts().await.unwrap_or(INT_ANY_MOTION);
+                if status & INT_ANY_MOTION != 0 {
+                    if !raised {
+                        warn!("activity: INT1 missed a motion; polling instead");
+                        interrupt_works = false;
+                    }
+                    break;
+                }
+            }
+            debug!("activity: moving");
+            STILL.store(false, Ordering::Relaxed);
+            crate::heart::wake();
+            crate::power::add(crate::power::Meter::Still, still_since);
+            polls_since_motion = 0;
+            // Look at once: this may be the start of a glance.
+            poll_now = true;
         }
+
+        if !poll_now {
+            Timer::after(if glancing { GLANCE_POLL } else { STATUS_POLL }).await;
+        }
+        poll_now = false;
         let screen_on = crate::glance::screen_on();
         if screen_on != screen_was_on {
             detector.reset();
@@ -574,18 +782,44 @@ pub async fn glance_task(i2c: Device) {
         // button and a tap still wake it. On waking, glances return once the
         // classifier has seen it: after a few minutes of movement, or at
         // once on getting up and walking.
-        if screen_on || asleep() {
+        glancing = !screen_on && !asleep();
+        if !glancing {
             detector.reset();
+        }
+
+        // The acceleration (0x12..=0x17) and, five bytes on, the interrupt
+        // status (0x1C), in one transfer; or only the status.
+        let mut data = [0u8; 11];
+        let (register, bytes) = if glancing {
+            (REG_ACC_DATA, &mut data[..])
+        } else {
+            (REG_INT_STATUS_0, &mut data[10..])
+        };
+        if bma.read(register, bytes).await.is_err() {
             continue;
         }
-        let mut data = [0u8; 6];
-        if bma.read(REG_ACC_DATA, &mut data).await.is_err() {
-            continue;
+        let status = data[10];
+        polls_since_motion = if status & INT_ANY_MOTION != 0 {
+            0
+        } else {
+            polls_since_motion.saturating_add(1)
+        };
+        if glancing {
+            let axis = |i: usize| i16::from_le_bytes([data[i], data[i + 1]]) >> 4;
+            let sample = crate::glance::from_sensor([axis(0), axis(2), axis(4)]);
+            if detector.push(sample) {
+                let _ = crate::INPUT.try_send(crate::InputEvent::Glance);
+            }
         }
-        let axis = |i: usize| i16::from_le_bytes([data[i], data[i + 1]]) >> 4;
-        let sample = crate::glance::from_sensor([axis(0), axis(2), axis(4)]);
-        if detector.push(sample) {
-            let _ = crate::INPUT.try_send(crate::InputEvent::Glance);
+
+        // Still: stop polling until INT1 says otherwise. The read above
+        // cleared the latch, so any motion from here on raises the pin.
+        if interrupt_works && status & INT_NO_MOTION != 0 && polls_since_motion >= MIN_MOVING_POLLS
+        {
+            debug!("activity: still");
+            detector.pause();
+            STILL.store(true, Ordering::Relaxed);
+            crate::heart::wake();
         }
     }
 }

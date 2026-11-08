@@ -1,8 +1,8 @@
 //! Turning the wrist to look at the watch: when to show the glance.
 //!
 //! The accelerometer's own gesture (Bosch's "wrist wear wakeup") never
-//! fired on a wrist, even with the sensor's mounting configured, and its
-//! expectations aren't documented. So this recognises the movement itself,
+//! fired: the feature-engine config this chip runs doesn't have it (see
+//! `activity::SETTINGS_LEN`). So this recognises the movement itself,
 //! from the acceleration (i.e. which way is down) sampled a few times a
 //! second while the screen is off:
 //!
@@ -15,6 +15,11 @@
 //! - A glance is going from away to readable, then staying readable for
 //!   [`SETTLE`] samples. Staying readable (a watch flat on a desk, or a
 //!   wrist resting on a keyboard) doesn't glance again until it's been away.
+//!
+//! Samples are only taken while the wrist moves: once the accelerometer
+//! reports it still, sampling stops until its motion interrupt fires (see
+//! `activity::motion_task`), and [`Detector::pause`] stands in for the
+//! identical samples in between.
 //!
 //! Like `sleep`, this is free of hardware, so it runs in host tests
 //! (`host-tests/glance`).
@@ -108,5 +113,18 @@ impl Detector {
     /// looking already) or off again.
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// Samples stop for a while: the wrist has kept still for at least
+    /// [`RECENT`] + [`SETTLE`] samples, and will until it moves (the
+    /// accelerometer's motion interrupt says when). Leaves the detector as
+    /// those samples, all the same pose, would have: still away, it's
+    /// ready to glance as soon as the wrist turns; anywhere else, the
+    /// chance has passed, as the readable stretch is long over or the away
+    /// pose is no longer recent.
+    pub fn pause(&mut self) {
+        if self.since_away != Some(0) {
+            self.since_away = None;
+        }
     }
 }

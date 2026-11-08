@@ -78,9 +78,13 @@ pub enum Meter {
     Connected,
     /// SPI flash out of deep power-down.
     SpiFlash,
+    /// The wrist still, so the accelerometer isn't polled at all (see
+    /// `activity::still`); the rest of the time, it's read every 0.2 s
+    /// (screen off, awake) or every second.
+    Still,
 }
 
-const METERS: usize = 8;
+const METERS: usize = 9;
 static MILLIS: [AtomicU32; METERS] = [const { AtomicU32::new(0) }; METERS];
 
 /// Adds time spent in `meter`'s state.
@@ -116,7 +120,7 @@ pub fn report(period: embassy_time::Duration) {
     let take = |a: &AtomicU32| a.swap(0, Ordering::Relaxed);
     info!(
         "power: awake {=u64}‰, {=u32} wakeups; ms: panel {=u32}, backlight {=u32}, \
-         led {=u32}/{=u32}/{=u32}/{=u32}, connected {=u32}, flash {=u32}; \
+         led {=u32}/{=u32}/{=u32}/{=u32}, connected {=u32}, flash {=u32}, still {=u32}; \
          wakes: button {=u32}, touch {=u32}, phone {=u32}, attention {=u32}, glance {=u32}; \
          hr sessions {=u32}, disconnects {=u32}; stack {=u32} B",
         1000 - asleep.min(total) * 1000 / total,
@@ -129,6 +133,7 @@ pub fn report(period: embassy_time::Duration) {
         take(&MILLIS[Meter::HeartLed3 as usize]),
         take(&MILLIS[Meter::Connected as usize]),
         take(&MILLIS[Meter::SpiFlash as usize]),
+        take(&MILLIS[Meter::Still as usize]),
         take(&EVENTS[Count::WakeButton as usize]),
         take(&EVENTS[Count::WakeTouch as usize]),
         take(&EVENTS[Count::WakePhone as usize]),

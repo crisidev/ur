@@ -149,7 +149,7 @@ hour), M (a day). Risk is the chance of breaking something users notice.
 | 3 | DC/DC regulator (`config.dcdc.reg1 = true`) | ~70 (on today's radio/CPU load; less after #1) | XS | Low–medium | If the inductor were missing the chip would brown out and reset in a loop. Holding the button rolls back. Try the dev kit first |
 | 4 | No `Attention` wake on a plain disconnect | ~50 (scales with disconnects) | XS | None | Pure bug |
 | 5 | Poll the button every 50 ms with P0.15 low between polls | ~33 | S | Low–medium | Must keep the 7 s hold-to-rollback escape working |
-| 6 | Accelerometer at 50 Hz, 2× averaging (FIFO downsampling 4× keeps 12.5 Hz) | ~30 | XS | Medium | Step counter accuracy; the movement noise floor shifts, so the sleep thresholds need a recheck |
+| 6 | Accelerometer at 50 Hz, 2× averaging (FIFO downsampling 4× keeps 12.5 Hz) | ~30 | XS | Medium | Step counter accuracy; the movement noise floor shifts, so the sleep thresholds need a recheck. 50 Hz is the least the feature engine's motion features (`activity::still`) accept in low-power mode; its single and double tap would need 200 Hz |
 | 7 | Advertising: 2 s while the phone is connected, 152.5 ms for a minute after it leaves, then 1022.5 ms | ~25 | S | Low | Updaters and log fetchers scan actively, so 2 s costs them ~2 s |
 | 8 | Heart rate on a glance only while the last reading is >5 min old, and stop at the first reading | ~30 | XS | UX | The face may show a reading up to 5 min old (the background one is ≤10 min) |
 | 9 | Executor sleep loop with the anomaly 87 workaround and timing | 0, or mA | S | Low | Insurance and instrumentation in one; see below |

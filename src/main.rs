@@ -352,7 +352,11 @@ async fn main(spawner: Spawner) {
             .expect("spawned once"),
     );
     spawner.spawn(activity::activity_task(I2cDevice::new(i2c_bus)).expect("spawned once"));
-    spawner.spawn(activity::glance_task(I2cDevice::new(i2c_bus)).expect("spawned once"));
+    // The accelerometer's INT1, driven push-pull once configured.
+    let motion_interrupt = Input::new(p.P0_08, Pull::None);
+    spawner.spawn(
+        activity::motion_task(I2cDevice::new(i2c_bus), motion_interrupt).expect("spawned once"),
+    );
     spawner.spawn(heart::heart_task(I2cDevice::new(i2c_bus)).expect("spawned once"));
 
     // ==========================================================================
