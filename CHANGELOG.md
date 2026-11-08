@@ -24,6 +24,7 @@ missing below were test builds for the dev kit.
 
 ### Fixed
 
+- Make releases rebuild byte for byte whether or not the builder already has the dependencies downloaded; 0.9.0 only reproduces from an empty cargo home (introduced in 0.9.0) (e49cb26)
 - Show `&`, `#`, `@`, `"`, `*` and the rest of ASCII's symbols in notifications, and curly quotes, dashes and ellipses as their plain look-alikes, instead of `?` (929a956)
 
 ### Security
