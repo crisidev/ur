@@ -71,15 +71,19 @@ impl Location {
 static LOCATION: Mutex<CriticalSectionRawMutex, Cell<Option<Location>>> =
     Mutex::new(Cell::new(None));
 
-/// How many times the location has been set, wrapping: once at boot if
-/// one was saved, then for each fix from the phone. So the UI loop
-/// notices a new one (see `aranet::Nearby::located`) by a byte, rather
-/// than keeping a copy of the last.
+/// How many precise fixes have come from the phone, wrapping. So the UI
+/// loop notices a new one (see `aranet::Nearby::located`) by a byte,
+/// rather than keeping a copy of the last.
 static SET: AtomicU8 = AtomicU8::new(0);
 
-pub fn set_location(location: Location) {
+/// `precise`: a fix from the phone good enough to tell whether the wearer
+/// is near the room sensors (`aranet::precise`), which counts in
+/// [`times_set`]. A coarse one (from cell towers) does for the sunrise.
+pub fn set_location(location: Location, precise: bool) {
     LOCATION.lock(|cell| cell.set(Some(location)));
-    SET.fetch_add(1, Ordering::Relaxed);
+    if precise {
+        SET.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// See [`SET`].
@@ -120,6 +124,13 @@ pub fn has_fix() -> bool {
 // unless Gadgetbridge's own "Keep location updated" setting is on, and
 // Android only delivers fixes to it in the background with location
 // allowed "all the time". README FAQ C03 has the steps.
+//
+// So every request ends with `gps_power` off: at the first fix precise
+// enough for the room sensors, after [`FIX_TIMEOUT`] without one, or
+// (Gadgetbridge's own doing) when the watch disconnects. A coarse fix
+// (`hdop`, which is Android's accuracy in metres, despite the name, over
+// `aranet::PRECISE`) doesn't end it: the GPS, or Wi-Fi, may yet do
+// better within the timeout.
 
 const MAX_FIX_AGE: Duration = Duration::from_secs(24 * 3600);
 const LONG_ABSENCE: Duration = Duration::from_secs(2 * 3600);

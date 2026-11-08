@@ -612,8 +612,9 @@ mod tests {
         about(place(69.6492, 18.9553), place(69.6492, 18.9653), 386.7, 2.0);
         about(place(0.0, 179.999), place(0.0, -179.999), 222.4, 1.0);
         about(home, place(60.3913, 5.3221), 305_067.0, 1.0);
-        // North is the same everywhere: 500 m is 0.0045°.
+        // North is the same everywhere: 500 m is 0.0045°, and 200 m 0.0018°.
         about(home, place(59.9184, 10.7522), 500.4, 0.5);
+        about(home, place(59.9157, 10.7522), 200.2, 0.5);
         assert_eq!(distance_squared(home, home), 0.0);
     }
 
@@ -653,11 +654,34 @@ mod tests {
         nearby.located(home, 5 * MIN);
         scan(&mut nearby, 15 * MIN, &[]);
         // Within the threshold (a Wi-Fi fix's error): still around.
-        nearby.located(place(59.9175, 10.7522), 20 * MIN);
+        nearby.located(place(59.9148, 10.7522), 20 * MIN);
         assert!(nearby.around(20 * MIN));
         assert!(nearby.best().is_some());
         // And not a scan brought forward, with a sensor known.
         assert_eq!(nearby.due(25 * MIN, worn()), None);
+    }
+
+    #[test]
+    fn a_short_walk_away_is_away() {
+        let home = place(HOME.0, HOME.1);
+        let mut nearby = Nearby::new();
+        scan(&mut nearby, 0, &[(KITCHEN, -60)]);
+        nearby.located(home, 5 * MIN);
+        // Four minutes' walk down the road when the next scan missed them.
+        scan(&mut nearby, 15 * MIN, &[]);
+        assert!(nearby.located(place(59.9169, 10.7522), 16 * MIN));
+    }
+
+    #[test]
+    fn only_precise_fixes_count() {
+        assert!(precise(Some(13.23)));
+        assert!(precise(Some(PRECISE)));
+        assert!(!precise(Some(PRECISE + 1.0)));
+        assert!(!precise(Some(1500.0)));
+        // Unknown: Android's 0, a missing `hdop`, or nonsense.
+        assert!(!precise(Some(0.0)));
+        assert!(!precise(None));
+        assert!(!precise(Some(f32::NAN)));
     }
 
     #[test]

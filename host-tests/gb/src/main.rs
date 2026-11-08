@@ -986,7 +986,9 @@ mod tests {
             parse(line),
             Some(Incoming::Gps {
                 latitude: 59.9127,
-                longitude: 10.7461
+                longitude: 10.7461,
+                // `hdop` is Android's accuracy, in metres.
+                accuracy: Some(13.231),
             })
         );
         // West and south, with a `course`, and Java's scientific notation
@@ -996,7 +998,17 @@ mod tests {
             parse(line),
             Some(Incoming::Gps {
                 latitude: -33.8688,
-                longitude: -0.0001
+                longitude: -0.0001,
+                accuracy: Some(3.9),
+            })
+        );
+        // Without one, it doesn't say how far off it may be.
+        assert_eq!(
+            parse(br#"GB({"t":"gps","lat":59.9127,"lon":10.7461})"#),
+            Some(Incoming::Gps {
+                latitude: 59.9127,
+                longitude: 10.7461,
+                accuracy: None,
             })
         );
     }

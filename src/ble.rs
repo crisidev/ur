@@ -686,7 +686,8 @@ enum Action {
         utc_seconds: i64,
         offset_minutes: i16,
     },
-    Fix(Location),
+    /// A location, and whether it's precise (see `aranet::precise`).
+    Fix(Location, bool),
     ReportGps,
     ActivityFetch {
         since_ms: i64,
@@ -897,14 +898,22 @@ async fn serve(
                                 request_gps(&mut gps_deadline);
                             }
                         }
-                        Action::Fix(location) => {
+                        Action::Fix(location, precise) => {
                             // The phone keeps sending fixes until told to
-                            // stop; one is all we wanted.
-                            if gps_deadline.take().is_some() {
+                            // stop; a precise one is all we wanted. A
+                            // coarse one does for the sunrise, but not for
+                            // the room sensors: the phone may yet do better
+                            // before the deadline (see `geo::GpsPolicy`).
+                            // Once we've stopped, a coarse one still on its
+                            // way mustn't replace the precise one.
+                            let asked = gps_deadline.is_some();
+                            if precise && gps_deadline.take().is_some() {
                                 send(server, conn, Outgoing::GpsPower(false)).await;
                             }
-                            gps.borrow_mut().on_fix(Instant::now());
-                            update_location(location).await;
+                            if precise || asked {
+                                gps.borrow_mut().on_fix(Instant::now());
+                                update_location(location, precise).await;
+                            }
                         }
                         Action::ReportGps => {
                             send(server, conn, Outgoing::GpsPower(gps_deadline.is_some())).await;
@@ -1078,8 +1087,9 @@ fn interpret(line: &[u8], actions: &mut Vec<Action, 4>) {
         Some(Incoming::Gps {
             latitude,
             longitude,
+            accuracy,
         }) => match Location::from_degrees(latitude, longitude) {
-            Some(location) => Action::Fix(location),
+            Some(location) => Action::Fix(location, aranet::precise(accuracy)),
             None => return,
         },
         Some(Incoming::IsGpsActive) => Action::ReportGps,
@@ -1116,9 +1126,9 @@ fn interpret(line: &[u8], actions: &mut Vec<Action, 4>) {
 
 /// Adopts a new location, saving it only when it moved noticeably (about a
 /// kilometre), since the phone may send several fixes in a row.
-async fn update_location(location: Location) {
+async fn update_location(location: Location, precise: bool) {
     let previous = geo::has_fix().then(geo::location);
-    geo::set_location(location);
+    geo::set_location(location, precise);
     let moved = previous.is_none_or(|p| {
         p.latitude_micro.abs_diff(location.latitude_micro)
             + p.longitude_micro.abs_diff(location.longitude_micro)

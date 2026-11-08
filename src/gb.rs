@@ -109,8 +109,14 @@ pub enum Incoming<'a> {
         utc_seconds: i64,
         offset_minutes: i16,
     },
-    /// `{"t":"gps",…}`: a location from the phone.
-    Gps { latitude: f64, longitude: f64 },
+    /// `{"t":"gps",…}`: a location from the phone, and how far off it may
+    /// be, in metres, if it says (in `hdop`, which Gadgetbridge fills with
+    /// Android's `Location.getAccuracy()`, not a dilution of precision).
+    Gps {
+        latitude: f64,
+        longitude: f64,
+        accuracy: Option<f32>,
+    },
     /// `{"t":"is_gps_active"}`: Gadgetbridge asking whether we want GPS.
     IsGpsActive,
     /// `{"t":"actfetch","ts":…}`: send activity samples since `ts` (UTC
@@ -142,6 +148,10 @@ pub fn parse(line: &[u8]) -> Option<Incoming<'_>> {
         "gps" => Incoming::Gps {
             latitude: object.get("lat")?.as_f64()?,
             longitude: object.get("lon")?.as_f64()?,
+            accuracy: object
+                .get("hdop")
+                .and_then(|v| v.as_f64())
+                .map(|m| m as f32),
         },
         "is_gps_active" => Incoming::IsGpsActive,
         "actfetch" => Incoming::ActivityFetch {

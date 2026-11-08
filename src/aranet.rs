@@ -656,13 +656,38 @@ pub struct Place {
 }
 
 /// How far from where sensors were near a fix must be (metres) for them
-/// to count as away. A room sensor is heard across a flat or a house, a
-/// few tens of metres; a phone's first fix, which is what the watch keeps,
-/// is often from Wi-Fi (tens of metres off) rather than GPS. Half a
-/// kilometre is well beyond both, and a fix from cell towers alone (which
-/// can be a kilometre or more off) at home costs at most an hour without
-/// the room's sensor, until the hourly scan hears it again.
-pub const AWAY: f32 = 500.0;
+/// to count as away.
+///
+/// A room sensor is heard across a flat or a house, a few tens of metres
+/// (less with [`FLOOR_DBM`]). Only fixes good to [`PRECISE`] count, so
+/// at home the place and a later fix are each typically 10–40 m off (a
+/// Wi-Fi fix), at most ~75 m (Android's accuracy is a 68% radius): a fix
+/// at home rarely lands 200 m from the place (~5% with both at the
+/// limit, next to never for typical fixes), and if it does, it costs at
+/// most an hour without the room's reading, until the hourly scan hears
+/// it again.
+///
+/// Why not more: a fix soon after leaving should already count. One 0–15
+/// min after leaving (a scan's interval) on foot (5 km/h) is 0–1.25 km
+/// away: at 500 m, two walks out in five were still within it, and
+/// changed nothing; at 200 m, one in six.
+pub const AWAY: f32 = 200.0;
+
+/// The most a fix may be off (metres, the accuracy the phone gives with
+/// it) to tell whether the wearer is near the sensors ([`AWAY`]).
+/// A phone's location is typically good to 5–50 m (GPS, or Wi-Fi), but
+/// one from cell towers alone can be hundreds of metres off, and two
+/// such fixes at home could look further apart than [`AWAY`]. 75 m keeps
+/// Wi-Fi fixes, even in a sparse suburb, and leaves out cell fixes.
+/// Coarser fixes still set the sunrise's location.
+pub const PRECISE: f32 = 75.0;
+
+/// Whether a fix whose accuracy is `metres` (if it said) is good enough
+/// for [`Nearby::located`]: see [`PRECISE`]. Without an accuracy (or with
+/// Android's 0, "unknown"), no: there's no telling.
+pub fn precise(metres: Option<f32>) -> bool {
+    metres.is_some_and(|m| m > 0.0 && m <= PRECISE)
+}
 
 /// The square of the distance between two places, in m², near enough
 /// for a few kilometres: the earth as flat around them (equirectangular),
@@ -685,7 +710,7 @@ pub fn distance_squared(a: Place, b: Place) -> f32 {
 }
 
 impl Nearby {
-    /// The phone sent where it is (`here`). If a sensor was heard within
+    /// The phone sent where it is (`here`, a fix good to [`PRECISE`]). If a sensor was heard within
     /// a background scan's interval, this is where the sensors are. If
     /// not, and it's more than [`AWAY`] from where they were, the sensors
     /// known are gone: forgotten, with the reading shown, so that scans

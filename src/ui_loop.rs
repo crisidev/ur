@@ -212,7 +212,9 @@ impl Stored {
         let brightness = brightness::Setting::from_byte(load_u8(storage::key::BRIGHTNESS).await);
         let buttons = buttons::Setting::from_byte(load_u8(storage::key::BUTTONS).await);
         if let Some(location) = storage::load(storage::key::LOCATION).await {
-            geo::set_location(geo::Location::from_bytes(location));
+            // An old fix, for the sunrise: not one to judge the room
+            // sensors by.
+            geo::set_location(geo::Location::from_bytes(location), false);
         }
         let calibration = storage::load(storage::key::CALIBRATION)
             .await

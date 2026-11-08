@@ -195,7 +195,7 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
             let (latitude, longitude) = (number(need(0, "LAT")?)?, number(need(1, "LON")?)?);
             let location =
                 geo::Location::from_degrees(latitude, longitude).ok_or("location: out of range")?;
-            geo::set_location(location);
+            geo::set_location(location, true);
             watch.refresh();
         }
         "notify" => {
@@ -557,9 +557,10 @@ fn gadgetbridge(watch: &mut Watch, line: &str) -> Result<(), String> {
         Some(Incoming::Gps {
             latitude,
             longitude,
+            accuracy,
         }) => match geo::Location::from_degrees(latitude, longitude) {
             Some(location) => {
-                geo::set_location(location);
+                geo::set_location(location, aranet::precise(accuracy));
                 watch.log(format!("location set: {latitude}, {longitude}"));
                 watch.refresh();
             }
