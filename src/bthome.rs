@@ -12,10 +12,28 @@
 //! hold, release, … and nothing more) and dimmer (`0x3C`: rotate left or
 //! right, by a number of steps) objects. It tells repeated objects apart
 //! only by their position in the advertisement (`button_1`, `button_2`,
-//! …), and an encrypted legacy advertisement has room for six two-byte
-//! objects after the packet id, not one per grid button (nine), let alone
-//! one per code (90). So each advertisement says what happened twice
-//! over, for two kinds of automation:
+//! …), and an encrypted legacy advertisement has room for 15 bytes of
+//! objects: the packet id (`00`, which Home Assistant uses to drop the
+//! repeats of one press), and six two-byte objects. Every advertisement
+//! of a layout has the same objects, in the same order, so their
+//! positions, and with them Home Assistant's names, never change. What
+//! goes in them depends on the grid's [`Layout`] (see docs/bthome-design.md
+//! for the budget, and why not extended advertising):
+//!
+//! **Six buttons:** six button objects, one per button, in order, so Home
+//! Assistant names them `button_1` to `button_6`. The pressed one's says
+//! what it did: `press` (`01`), `double_press` (`02`), `hold_press`
+//! (`80`), or `hold_release` (`81`, on the lift after a hold); the rest
+//! say "none" (`00`), which fires nothing. Each button and gesture is a
+//! device trigger in Home Assistant's UI. 14 bytes: no room for the
+//! battery (two more), which goes in an advertisement of its own instead,
+//! the packet id and the battery alone, which fires no event: soon after
+//! boot (or turning six buttons for Home Assistant on), then as it moves
+//! by a 5% step (see [`battery_due`]).
+//!
+//! **Two layers** (codes 1–99, none ending in 0): the buttons can't each
+//! have an object (nine, let alone a code each), so each advertisement
+//! says what happened twice over, for two kinds of automation:
 //!
 //! | Object     | Home Assistant's event class | Fires                         |
 //! |------------|------------------------------|-------------------------------|
@@ -24,21 +42,14 @@
 //! | `3C ...`   | `dimmer_2`                   | a double tap, by the code     |
 //! | `3C ...`   | `dimmer_3`                   | a hold, by the code           |
 //!
-//! The button is the gesture alone: `press` (`01`), `double_press`
-//! (`02`), `hold_press` (`80`), or `hold_release` (`81`, on the lift after
-//! a hold), which Home Assistant offers as device triggers in its UI. The
-//! dimmers carry which code it was: the one for the gesture turns right
-//! (`02`) by the code (`23` for 2 then 3), so a single event says both,
-//! and one trigger can match it. A release turns no dimmer: only one hold
-//! can be down at a time, so its end needs no code. The dimmers that
-//! don't turn carry `00 00`, which fires nothing: every advertisement has
-//! the same objects, so their positions, and with them Home Assistant's
-//! names, never change. Before them come the packet id
-//! (`00`, which Home Assistant uses to drop the repeats of one press) and
-//! the battery (`01`, a battery sensor that updates with each press).
-//! That's 15 bytes, all a legacy advertisement holds once encrypted (see
-//! docs/bthome-design.md for the budget, and why not extended
-//! advertising).
+//! The button is the gesture alone, as above. The dimmers carry which
+//! code it was: the one for the gesture turns right (`02`) by the code
+//! (`23` for 2 then 3), so a single event says both, and one trigger can
+//! match it. A release turns no dimmer: only one hold can be down at a
+//! time, so its end needs no code. The dimmers that don't turn carry
+//! `00 00`, which fires nothing. With the packet id, and the battery
+//! (`01`, a battery sensor that updates with each press), that's 15
+//! bytes, all there's room for.
 //!
 //! **Encrypted**, with AES-CCM and a key made on the watch at first boot
 //! (shown on the Settings screen, for typing into Home Assistant). Home
@@ -56,7 +67,7 @@
 use aes::Aes128;
 use aes::cipher::{BlockEncrypt, KeyInit};
 
-use crate::buttons::{Gesture, Press};
+use crate::buttons::{Gesture, Layout, Press};
 
 /// BTHome's 16-bit service UUID, as sent (little-endian).
 const UUID: [u8; 2] = [0xD2, 0xFC];
@@ -75,28 +86,63 @@ pub struct Identity {
     pub address: [u8; 6],
 }
 
-/// The advertising data for `press` (flags, then the service data), and
-/// its length. `counter` must never repeat for one key.
-pub fn advert(press: Press, battery: u8, counter: u32, identity: &Identity) -> ([u8; 31], usize) {
-    // BTHome's button event, and which dimmer turns (none for a release).
-    let (event, slot) = match press.gesture {
-        Gesture::Tap => (0x01, Some(0)),
-        Gesture::DoubleTap => (0x02, Some(1)),
-        Gesture::Hold => (0x80, Some(2)),
-        Gesture::Release => (0x81, None),
-    };
-    // The objects, in ascending id order, as BTHome asks.
+/// The advertising data for `press` on a grid laid out as `layout`, or,
+/// with no press, the battery alone (see [`battery_due`]): flags, then the
+/// service data, and its length. `counter` must never repeat for one key.
+pub fn advert(
+    press: Option<Press>,
+    layout: Layout,
+    battery: u8,
+    counter: u32,
+    identity: &Identity,
+) -> ([u8; 31], usize) {
+    let battery = battery.min(100);
+    // The objects, in ascending id order, as BTHome asks, after the
+    // packet id.
     let mut objects = [0u8; 15];
-    objects[..6].copy_from_slice(&[0x00, counter as u8, 0x01, battery.min(100), 0x3A, event]);
-    for i in 0..3 {
-        let (rotate, steps) = if slot == Some(i) {
-            // Rotate right, by the code.
-            (0x02, press.code)
-        } else {
-            (0x00, 0x00)
-        };
-        objects[6 + 3 * i..9 + 3 * i].copy_from_slice(&[0x3C, rotate, steps]);
-    }
+    objects[..2].copy_from_slice(&[0x00, counter as u8]);
+    let len = match press {
+        None => {
+            objects[2..4].copy_from_slice(&[0x01, battery]);
+            4
+        }
+        Some(press) => {
+            // BTHome's button event, and which dimmer turns (none for a
+            // release).
+            let (event, slot) = match press.gesture {
+                Gesture::Tap => (0x01, Some(0)),
+                Gesture::DoubleTap => (0x02, Some(1)),
+                Gesture::Hold => (0x80, Some(2)),
+                Gesture::Release => (0x81, None),
+            };
+            match layout {
+                // A button each, the pressed one's with the event: "none"
+                // (`00`) for the rest.
+                Layout::Six => {
+                    for (i, object) in objects[2..14].as_chunks_mut::<2>().0.iter_mut().enumerate()
+                    {
+                        let pressed = usize::from(press.code) == i + 1;
+                        *object = [0x3A, if pressed { event } else { 0x00 }];
+                    }
+                    14
+                }
+                Layout::TwoLayers => {
+                    objects[2..6].copy_from_slice(&[0x01, battery, 0x3A, event]);
+                    for i in 0..3 {
+                        let (rotate, steps) = if slot == Some(i) {
+                            // Rotate right, by the code.
+                            (0x02, press.code)
+                        } else {
+                            (0x00, 0x00)
+                        };
+                        objects[6 + 3 * i..9 + 3 * i].copy_from_slice(&[0x3C, rotate, steps]);
+                    }
+                    15
+                }
+            }
+        }
+    };
+    let objects = &mut objects[..len];
 
     // The nonce: the address as people write it (most significant byte
     // first, unlike on the air), the UUID, the info byte, and the counter.
@@ -108,7 +154,7 @@ pub fn advert(press: Press, battery: u8, counter: u32, identity: &Identity) -> (
     nonce[6..8].copy_from_slice(&UUID);
     nonce[8] = INFO;
     nonce[9..].copy_from_slice(&counter);
-    let mic = seal(&identity.key, &nonce, &mut objects);
+    let mic = seal(&identity.key, &nonce, objects);
 
     let mut data = [0u8; 31];
     let service_data = 1 + UUID.len() + 1 + objects.len() + counter.len() + mic.len();
@@ -120,7 +166,7 @@ pub fn advert(press: Press, battery: u8, counter: u32, identity: &Identity) -> (
         &[service_data as u8, 0x16],
         &UUID,
         &[INFO],
-        &objects,
+        objects,
         &counter,
         &mic,
     ] {
@@ -128,6 +174,26 @@ pub fn advert(press: Press, battery: u8, counter: u32, identity: &Identity) -> (
         len += part.len();
     }
     (data, len)
+}
+
+/// How far the battery must go past a 5% step's edge before its own
+/// advertisement goes again: a reading that wobbles across an edge (they
+/// move by a point or so) mustn't send each time.
+const HYSTERESIS: u8 = 2;
+
+/// Whether to advertise the battery on its own, at `percent`, having last
+/// sent `sent` (`None`: not since boot, or since six buttons with Home
+/// Assistant were turned on). Six buttons' presses have no room for it
+/// (see the module docs), so it goes now and then: first so Home
+/// Assistant has a value, then each time it leaves the 5% step it was
+/// last sent in (85–89, say), by [`HYSTERESIS`], either way, so charging
+/// shows too.
+pub fn battery_due(sent: Option<u8>, percent: u8) -> bool {
+    let Some(sent) = sent else {
+        return true;
+    };
+    let step = sent / 5 * 5;
+    percent + HYSTERESIS <= step || percent >= step + 5 - 1 + HYSTERESIS
 }
 
 /// Encrypts `data` (at most a block) in place with AES-128-CCM, as BTHome
@@ -194,7 +260,7 @@ mod device {
     use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 
     use super::{Identity, advert};
-    use crate::buttons::Press;
+    use crate::buttons::{Layout, Press};
     use crate::storage;
 
     /// The key and address, once [`init`] has loaded or made them.
@@ -267,11 +333,12 @@ mod device {
         IDENTITY.lock(Cell::get)
     }
 
-    /// Advertises `press` for a moment (see `ble::burst`). The counter is
+    /// Advertises `press`, on a grid laid out as `layout` (or with none,
+    /// the battery alone), for a moment (see `ble::burst`). The counter is
     /// reserved in flash before it's used, so a reset can never make it
     /// repeat with another press: a repeat would let anyone listening
     /// decrypt both (CTR mode). If flash can't reserve one, nothing is sent.
-    pub async fn send(press: Press, battery: u8) {
+    pub async fn send(press: Option<Press>, layout: Layout, battery: u8) {
         let Some(identity) = identity() else {
             warn!("bthome: no key");
             return;
@@ -286,7 +353,7 @@ mod device {
             COUNTER.lock(|c| c.set((next, reserve)));
         }
         COUNTER.lock(|c| c.set((next + 1, c.get().1)));
-        let (data, len) = advert(press, battery, next, &identity);
+        let (data, len) = advert(press, layout, battery, next, &identity);
         info!("bthome: {=u32} {=[u8]:02x}", next, data[..len]);
         crate::ble::burst(data, len);
     }

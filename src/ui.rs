@@ -52,7 +52,9 @@
 //!   theme ("THEME", the next within the current group: dark themes after
 //!   sunset, light ones after sunrise; each group remembers its own), the
 //!   brightness ("LIGHT", auto or soft; see [`crate::brightness`]), the
-//!   button grid ("BUTTONS": off, or where its presses go), and, on the
+//!   button grid ("BUTTONS": off, or where its presses go), its layout
+//!   ("GRID": six buttons, or two layers; with Home Assistant, the latter
+//!   shows FAQ B04, which explains the events it sends then), and, on the
 //!   last row ("HA KEY"), the key Home Assistant needs for them (see
 //!   [`crate::bthome`]): a QR code to scan, then, at a tap, as text with
 //!   the watch's address. Another tap, or anything else, closes it.
@@ -496,6 +498,8 @@ pub struct App {
     /// The button grid's setting, as stored (`main` saves it when it
     /// changes).
     pub buttons: buttons::Setting,
+    /// The button grid's layout, as stored (likewise).
+    pub grid_layout: buttons::Layout,
     /// What the grid's waiting on (see [`buttons::Grid`]).
     grid: buttons::Grid,
     /// The grid's last press, for the screen: until when it shows, and
@@ -555,6 +559,7 @@ impl App {
             route: None,
             told_bitmaps: false,
             buttons: buttons::Setting::Off,
+            grid_layout: buttons::Layout::default(),
             grid: buttons::Grid::default(),
             sent: None,
             ha_presses: heapless::Vec::new(),
@@ -1112,6 +1117,7 @@ impl App {
                     Some(Row::Theme) => self.next_theme(),
                     Some(Row::Light) => self.brightness = self.brightness.next(),
                     Some(Row::Buttons) => self.buttons = self.buttons.next(),
+                    Some(Row::Grid) => self.grid_layout = self.grid_layout.next(),
                     Some(Row::HaKey) => self.go_to(Screen::HaQr, Sweep::RightToLeft),
                     None => {}
                 },
@@ -1143,10 +1149,11 @@ impl App {
         let started = now
             .checked_sub(Duration::from_millis(touch.held_ms.into()))
             .unwrap_or(now);
-        let button = buttons::at(touch.x, touch.y);
+        let layout = self.grid_layout;
+        let button = buttons::at(layout, touch.x, touch.y);
         for press in self
             .grid
-            .touch(button, kind, started, now)
+            .touch(layout, button, kind, started, now)
             .into_iter()
             .flatten()
         {
@@ -1820,11 +1827,15 @@ impl App {
                 // The dim look is white on black: dark.
                 let dark = self.dim() || !self.daytime;
                 let sent = sent.map(|(press, _, ok)| (press, ok));
-                render_buttons(canvas, &self.grid, sent, dark);
+                render_buttons(canvas, self.grid_layout, &self.grid, sent, dark);
             }
-            Screen::Settings => {
-                render_settings(canvas, self.chosen_theme(), self.brightness, self.buttons)
-            }
+            Screen::Settings => render_settings(
+                canvas,
+                self.chosen_theme(),
+                self.brightness,
+                self.buttons,
+                self.grid_layout,
+            ),
             Screen::Info => render_info(canvas, status),
             Screen::Storage => render_storage_prompt(canvas),
             Screen::HaQr => render_ha_qr(canvas, status.bthome.as_ref()),
@@ -2871,12 +2882,13 @@ fn render_info(canvas: &mut Canvas, status: &Status) {
 // Settings
 // ==============================================================================
 //
-// One setting a row, each a tap for its next value, with the rows as tall
-// as a fingertip (17 canvas pixels, ~6 mm), between hairlines.
+// One setting a row, each a tap for its next value, between hairlines:
+// five rows of 14 canvas pixels (~5 mm), as much of a fingertip as fits
+// under the title.
 
 /// Where the rows start, and how tall each is.
-const SETTINGS_TOP: i32 = 12;
-const SETTINGS_ROW: i32 = 17;
+const SETTINGS_TOP: i32 = 10;
+const SETTINGS_ROW: i32 = 14;
 
 /// The settings screen's rows, top to bottom.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2884,10 +2896,11 @@ enum Row {
     Theme,
     Light,
     Buttons,
+    Grid,
     HaKey,
 }
 
-const ROWS: [Row; 4] = [Row::Theme, Row::Light, Row::Buttons, Row::HaKey];
+const ROWS: [Row; 5] = [Row::Theme, Row::Light, Row::Buttons, Row::Grid, Row::HaKey];
 
 /// Which row a tap at `y` is on.
 fn settings_row(y: i32) -> Option<Row> {
@@ -2899,7 +2912,8 @@ fn render_settings(
     canvas: &mut Canvas,
     theme: &Theme,
     light: brightness::Setting,
-    grid: buttons::Setting,
+    buttons: buttons::Setting,
+    layout: buttons::Layout,
 ) {
     canvas.clear(BACKGROUND);
     canvas.text(4, 3, "SETTINGS", Color::ACCENT);
@@ -2911,13 +2925,19 @@ fn render_settings(
         let (label, value, color) = match row {
             Row::Theme => ("THEME", theme.name, Color::TEXT),
             Row::Light => ("LIGHT", light.name(), Color::TEXT),
-            Row::Buttons => ("BUTTONS", grid.name(), Color::TEXT),
+            Row::Buttons => ("BUTTONS", buttons.name(), Color::TEXT),
+            Row::Grid => ("GRID", layout.name(), Color::TEXT),
             // Not a value, but somewhere to go.
             Row::HaKey => ("HA KEY", "SHOW", Color::TEXT_DIM),
         };
         let y = top + (SETTINGS_ROW - 5) / 2 + 1;
         canvas.text(4, y, label, Color::TEXT_DIM);
         canvas.text_right(77, y, value, color);
+        // Two layers reach Home Assistant unlike six buttons do (as dimmers
+        // turned by the code): FAQ B04 says how, and how to automate them.
+        if row == Row::Grid && buttons.ha() && layout == buttons::Layout::TwoLayers {
+            canvas.text(24, y, "B04", Color::TEXT_FAINT);
+        }
     }
 }
 
@@ -2975,10 +2995,12 @@ fn render_ha_key(canvas: &mut Canvas, identity: Option<&Identity>) {
 // The button grid
 // ==============================================================================
 //
-// Nine buttons in a 3×3 grid, unlabelled: each 22 px (~8 mm) in the middle
-// of its third of the screen, which is what a touch hits (see
-// `buttons::at`), so the gaps between them belong to the nearest. They
-// stay clear of the edges' handles.
+// Nine buttons in a 3×3 grid (two layers), or six in two rows of three,
+// unlabelled: each 22 px (~8 mm) wide, in the same three columns either
+// way, and 22 px or 36 px (~13 mm) tall, in the middle of its part of the
+// screen, which is what a touch hits (see `buttons::at`), so the gaps
+// between them belong to the nearest. They stay clear of the edges'
+// handles.
 //
 // Drawn as an old arcade cabinet's or console's buttons, in the theme's
 // colours: a chunky keycap with a lit edge and a glint at its top left,
@@ -3011,15 +3033,21 @@ enum Key {
 /// dark and the paper the light.
 fn render_buttons(
     canvas: &mut Canvas,
+    layout: buttons::Layout,
     grid: &buttons::Grid,
     sent: Option<(Press, bool)>,
     dark: bool,
 ) {
     canvas.clear(BACKGROUND);
     let (first, second) = grid.waiting();
-    for button in 1..=9u8 {
+    // How many, how tall, and how far apart the rows are.
+    let (count, height, pitch) = match layout {
+        buttons::Layout::Six => (6, 36, 40),
+        buttons::Layout::TwoLayers => (9, 22, 27),
+    };
+    for button in 1..=count {
         let x = 2 + 27 * i32::from((button - 1) % 3);
-        let y = 2 + 27 * i32::from((button - 1) / 3);
+        let y = 2 + pitch * i32::from((button - 1) / 3);
         let key = match (sent, first, second) {
             (Some((press, ok)), ..) if press.last() == button => Key::Sent(press, ok),
             (_, _, Some(second)) if second == button => Key::Lit,
@@ -3027,12 +3055,12 @@ fn render_buttons(
             (_, Some(first), None) if first == button => Key::Lit,
             _ => Key::Up,
         };
-        draw_key(canvas, x, y, key, dark);
+        draw_key(canvas, x, y, height, key, dark);
     }
 }
 
-/// One 22 px button at (`x`, `y`).
-fn draw_key(canvas: &mut Canvas, x: i32, y: i32, key: Key, dark: bool) {
+/// One button at (`x`, `y`), 22 px wide and `height` tall.
+fn draw_key(canvas: &mut Canvas, x: i32, y: i32, height: i32, key: Key, dark: bool) {
     const SIZE: i32 = 22;
     /// How deep the side is, and so how far a pressed cap sinks (less a
     /// pixel, so it still sits in a well).
@@ -3056,13 +3084,13 @@ fn draw_key(canvas: &mut Canvas, x: i32, y: i32, key: Key, dark: bool) {
         Key::Sent(_, true) => (Color::GOOD, true),
         Key::Sent(_, false) => (Color::BAD, true),
     };
-    canvas.fill_rect(x, y, SIZE, SIZE, outline);
+    canvas.fill_rect(x, y, SIZE, height, outline);
     // Rounded off, a pixel at each corner.
     for (cx, cy) in [
         (x, y),
         (x + SIZE - 1, y),
-        (x, y + SIZE - 1),
-        (x + SIZE - 1, y + SIZE - 1),
+        (x, y + height - 1),
+        (x + SIZE - 1, y + height - 1),
     ] {
         canvas.pixel(cx, cy, BACKGROUND);
     }
@@ -3071,11 +3099,11 @@ fn draw_key(canvas: &mut Canvas, x: i32, y: i32, key: Key, dark: bool) {
     let top = if down { y + DEPTH } else { y + 1 };
     if down {
         canvas.fill_rect(inner, y + 1, width, DEPTH - 1, side);
-        canvas.fill_rect(inner, top, width, y + SIZE - 1 - top, face);
+        canvas.fill_rect(inner, top, width, y + height - 1 - top, face);
         // The well's shadow falls on the cap's left edge too.
-        canvas.fill_rect(inner, top, 1, y + SIZE - 1 - top, side);
+        canvas.fill_rect(inner, top, 1, y + height - 1 - top, side);
     } else {
-        let cap_height = SIZE - 2 - DEPTH;
+        let cap_height = height - 2 - DEPTH;
         canvas.fill_rect(inner, top, width, cap_height, face);
         // The cap's lower lip, then its side.
         canvas.fill_rect(inner, top + cap_height - 1, width, 1, outline);
@@ -3087,6 +3115,8 @@ fn draw_key(canvas: &mut Canvas, x: i32, y: i32, key: Key, dark: bool) {
         canvas.pixel(x + 3, top + 3, light);
     }
     if let Key::Sent(press, _) = key {
+        // In the middle of a tall button.
+        let top = top + (height - SIZE) / 2;
         let mut code = heapless::String::<2>::new();
         write!(code, "{}", press.code).expect("at most 2 digits");
         let width = font::small_text_width(&code) * 2;

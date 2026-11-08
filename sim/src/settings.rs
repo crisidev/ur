@@ -6,7 +6,7 @@
 
 use crate::storage::{self, key};
 use crate::watch::run;
-use crate::{alarm, brightness, geo, theme};
+use crate::{alarm, brightness, buttons, geo, theme};
 
 /// The stored settings, a line each; what isn't stored says so (the UI
 /// then starts with its default).
@@ -37,6 +37,19 @@ async fn read() -> Vec<String> {
             brightness::Setting::from_byte(byte).name().to_owned()
         });
     lines.push(format!("brightness: {value}"));
+
+    let value = storage::load::<1>(key::BUTTONS)
+        .await
+        .map_or_else(none, |[byte]| {
+            buttons::Setting::from_byte(byte).name().to_owned()
+        });
+    lines.push(format!("button grid: {value}"));
+    let value = storage::load::<1>(key::GRID)
+        .await
+        .map_or_else(none, |[byte]| {
+            buttons::Layout::from_byte(byte).name().to_owned()
+        });
+    lines.push(format!("grid layout: {value}"));
 
     let value = storage::load(key::ALARMS).await.map_or_else(none, |bytes| {
         let alarms = alarm::Settings::from_bytes(bytes);

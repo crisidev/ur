@@ -68,6 +68,8 @@ pub mod key {
     /// [`crate::temperature::Calibration`]. (Not 33–39: kept clear for
     /// what other branches add.)
     pub const CALIBRATION: u8 = 40;
+    /// The button grid's layout; see [`crate::buttons::Layout`].
+    pub const GRID: u8 = 41;
     /// Written only by builds with the `flash-stress` feature (see
     /// `flash_stress.rs`); a dev kit that ran one may hold it.
     #[allow(dead_code)] // Used only by those builds.

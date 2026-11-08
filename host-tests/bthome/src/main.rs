@@ -1,7 +1,8 @@
 //! Host tests for the firmware's `bthome` module: the button grid's
 //! presses as encrypted BTHome advertisements. `cargo test` runs them.
 //!
-//! `main` prints an advertisement for each gesture, which `check.py`
+//! `main` prints an advertisement for each gesture, in each layout of the
+//! grid, which `check.py`
 //! decodes with Home Assistant's own parser (`bthome-ble`), as Home
 //! Assistant would:
 //!
@@ -17,7 +18,7 @@ mod bthome;
 mod buttons;
 
 use bthome::Identity;
-use buttons::{Gesture, Press};
+use buttons::{Gesture, Layout, Press};
 
 /// bthome.io's example key.
 const KEY: [u8; 16] = [
@@ -39,15 +40,43 @@ fn main() {
         .unwrap_or("E5:12:34:56:78:9A".into());
     let identity = identity(&address);
     println!("{address} {}", hex(&KEY));
-    for (counter, code, gesture) in [
-        (256, 23, Gesture::Tap),
-        (257, 23, Gesture::DoubleTap),
-        (258, 5, Gesture::Tap),
-        (259, 5, Gesture::Hold),
-        (260, 5, Gesture::Release),
-    ] {
-        let (data, len) = bthome::advert(Press { code, gesture }, 82, counter, &identity);
-        println!("{code} {} {}", gesture.name(), hex(&data[..len]));
+    // Each line: the layout, the code, the gesture, and the advertisement.
+    let two = [
+        (23, Gesture::Tap),
+        (23, Gesture::DoubleTap),
+        (5, Gesture::Tap),
+        (5, Gesture::Hold),
+        (5, Gesture::Release),
+    ]
+    .map(|(code, gesture)| (Layout::TwoLayers, code, gesture));
+    // Every button, with every gesture.
+    let six = (1..=6).flat_map(|code| {
+        [
+            Gesture::Tap,
+            Gesture::DoubleTap,
+            Gesture::Hold,
+            Gesture::Release,
+        ]
+        .map(|gesture| (Layout::Six, code, gesture))
+    });
+    for (counter, (layout, code, gesture)) in (256..).zip(two.into_iter().chain(six)) {
+        let (data, len) = bthome::advert(
+            Some(Press { code, gesture }),
+            layout,
+            82,
+            counter,
+            &identity,
+        );
+        let layout = match layout {
+            Layout::Six => "six",
+            Layout::TwoLayers => "two",
+        };
+        println!("{layout} {code} {} {}", gesture.name(), hex(&data[..len]));
+    }
+    // The battery on its own, as six buttons send it: 82%, then 77%.
+    for (counter, battery) in [(400, 82), (401, 77)] {
+        let (data, len) = bthome::advert(None, Layout::Six, battery, counter, &identity);
+        println!("battery {battery} - {}", hex(&data[..len]));
     }
 }
 
@@ -113,7 +142,13 @@ mod tests {
             (0x80, Some(2), Gesture::Hold),
             (0x81, None, Gesture::Release),
         ] {
-            let (data, len) = bthome::advert(Press { code: 47, gesture }, 82, 0x1234, &identity);
+            let (data, len) = bthome::advert(
+                Some(Press { code: 47, gesture }),
+                Layout::TwoLayers,
+                82,
+                0x1234,
+                &identity,
+            );
             assert_eq!(len, 31, "all of a legacy advertisement");
             let (plain, counter) = open(&data[..len], &identity);
             assert_eq!(counter, 0x1234);
@@ -129,14 +164,76 @@ mod tests {
     }
 
     #[test]
+    fn six_buttons_are_six_button_objects() {
+        let identity = identity("E5:12:34:56:78:9A");
+        for (event, gesture) in [
+            (0x01, Gesture::Tap),
+            (0x02, Gesture::DoubleTap),
+            (0x80, Gesture::Hold),
+            (0x81, Gesture::Release),
+        ] {
+            for code in 1..=6 {
+                let press = Press { code, gesture };
+                let (data, len) = bthome::advert(Some(press), Layout::Six, 82, 0x1234, &identity);
+                assert_eq!(len, 30, "a byte short of a whole legacy advertisement");
+                let (plain, counter) = open(&data[..len], &identity);
+                assert_eq!(counter, 0x1234);
+                // The packet id, then a button each, in order: the pressed
+                // one's with the event, the rest "none". No battery.
+                let mut buttons = vec![[0x3A, 0x00]; 6];
+                buttons[usize::from(code) - 1][1] = event;
+                assert_eq!(plain[..2], [0x00, 0x34]);
+                assert_eq!(plain[2..].to_vec(), buttons.concat(), "{code} {gesture:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_battery_alone() {
+        let identity = identity("E5:12:34:56:78:9A");
+        let (data, len) = bthome::advert(None, Layout::Six, 140, 0x1234, &identity);
+        assert_eq!(len, 20);
+        let (plain, _) = open(&data[..len], &identity);
+        assert_eq!(
+            plain,
+            [0x00, 0x34, 0x01, 100],
+            "the packet id, then 100% at most"
+        );
+    }
+
+    #[test]
+    fn the_battery_goes_at_each_5_percent_step() {
+        use bthome::battery_due;
+        // At first, whatever it is.
+        assert!(battery_due(None, 57));
+        // Sent at 90 (the step 90–94): not within it, nor a point either
+        // side, where a reading wobbles.
+        for percent in 89..=95 {
+            assert!(!battery_due(Some(90), percent), "{percent}");
+        }
+        assert!(battery_due(Some(90), 88));
+        assert!(battery_due(Some(90), 96), "charging");
+        // Sent at 88 (85–89) on the way down: a wobble back to 90 doesn't
+        // send it again, 83 or 91 does.
+        assert!(!battery_due(Some(88), 90));
+        assert!(battery_due(Some(88), 91));
+        assert!(battery_due(Some(88), 83));
+        // The ends.
+        assert!(!battery_due(Some(100), 99));
+        assert!(battery_due(Some(100), 98));
+        assert!(!battery_due(Some(0), 5));
+        assert!(battery_due(Some(0), 6));
+    }
+
+    #[test]
     fn a_new_counter_changes_everything() {
         let identity = identity("E5:12:34:56:78:9A");
         let press = Press {
             code: 5,
             gesture: Gesture::Tap,
         };
-        let (a, len) = bthome::advert(press, 82, 300, &identity);
-        let (b, _) = bthome::advert(press, 82, 301, &identity);
+        let (a, len) = bthome::advert(Some(press), Layout::TwoLayers, 82, 300, &identity);
+        let (b, _) = bthome::advert(Some(press), Layout::TwoLayers, 82, 301, &identity);
         assert_ne!(a[8..len - 8], b[8..len - 8], "the ciphertext");
     }
 }

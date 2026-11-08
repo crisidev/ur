@@ -71,6 +71,8 @@ The wearer and the watch:
   theme NAME|auto            pick a theme, and its time of day (auto: the sun's)
   buttons off|ha|phone|both  the button grid, and where its presses go (as
                              the Settings screen's BUTTONS row)
+  grid 6|99                  the button grid's layout: six buttons, or two
+                             layers, codes 1-99 (the GRID row)
 Time:
   wait DURATION              e.g. 1.5s, 300ms, 10m, 2h (a bare number: seconds)
   until HH:MM                to the next time the clock shows HH:MM (and
@@ -439,6 +441,15 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
                 "phone" => Setting::Phone,
                 "both" => Setting::Both,
                 other => return Err(format!("buttons: {other}? (off, ha, phone, or both)")),
+            };
+            watch.refresh();
+        }
+        "grid" => {
+            use crate::buttons::Layout;
+            watch.app.grid_layout = match need(0, "6|99")? {
+                "6" => Layout::Six,
+                "99" => Layout::TwoLayers,
+                other => return Err(format!("grid: {other}? (6 or 99)")),
             };
             watch.refresh();
         }

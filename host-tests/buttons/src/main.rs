@@ -1,5 +1,5 @@
 //! Host tests for the firmware's `buttons` module: telling the button
-//! grid's 261 events apart. `cargo test` runs them.
+//! grid's events apart, in either layout. `cargo test` runs them.
 //!
 //! Each test plays touches at given milliseconds; nothing reads the clock,
 //! so no time driver is needed.
@@ -27,14 +27,32 @@ mod tests {
     /// The touches a typical tap takes: down for 80 ms.
     const TAP_MS: u64 = 80;
 
-    /// A test's grid, and everything it sent.
-    #[derive(Default)]
+    /// A test's grid, its layout, and everything it sent.
     struct Run {
+        layout: Layout,
         grid: Grid,
         sent: Vec<(u64, Press)>,
     }
 
     impl Run {
+        fn new(layout: Layout) -> Self {
+            Self {
+                layout,
+                grid: Grid::default(),
+                sent: Vec::new(),
+            }
+        }
+
+        /// Nine buttons, 90 codes.
+        fn codes() -> Self {
+            Self::new(Layout::TwoLayers)
+        }
+
+        /// Six buttons.
+        fn six() -> Self {
+            Self::new(Layout::Six)
+        }
+
         /// A tap on `button`, lifting at `at`.
         fn tap(&mut self, button: u8, at: u64) -> &mut Self {
             self.touch(button, Touch::Tap, at - TAP_MS, at)
@@ -48,7 +66,10 @@ mod tests {
 
         fn touch(&mut self, button: u8, touch: Touch, started: u64, now: u64) -> &mut Self {
             self.expire(started, false);
-            for press in self.grid.touch(button, touch, ms(started), ms(now)) {
+            for press in self
+                .grid
+                .touch(self.layout, button, touch, ms(started), ms(now))
+            {
                 self.sent.extend(press.map(|p| (now, p)));
             }
             self
@@ -85,7 +106,7 @@ mod tests {
 
     #[test]
     fn a_single_tap_goes_once_nothing_follows() {
-        let mut run = Run::default();
+        let mut run = Run::codes();
         run.tap(5, 1000);
         assert!(run.sent.is_empty(), "waits to see whether more follows");
         assert_eq!(run.grid.waiting(), (Some(5), None));
@@ -105,7 +126,7 @@ mod tests {
 
     #[test]
     fn a_single_hold_goes_at_once() {
-        let mut run = Run::default();
+        let mut run = Run::codes();
         run.hold(7, 1000);
         assert_eq!(
             run.sent,
@@ -122,7 +143,7 @@ mod tests {
 
     #[test]
     fn a_hold_ends_when_the_finger_lifts() {
-        let mut run = Run::default();
+        let mut run = Run::codes();
         run.hold(7, 1000).lift(3000);
         assert_eq!(run.presses(), [(7, Hold), (7, Release)]);
         // Once: a second lift (or one with no hold before it) is nothing.
@@ -135,7 +156,7 @@ mod tests {
 
     #[test]
     fn a_tap_has_no_release() {
-        let mut run = Run::default();
+        let mut run = Run::codes();
         run.tap(2, 1000).until(5000).lift(5000);
         assert_eq!(run.presses(), [(2, Tap)]);
     }
@@ -145,7 +166,7 @@ mod tests {
         // Swiping away mid-hold can't happen (the hold took the touch),
         // but the side button can: whatever the hold set going must still
         // hear it end.
-        let mut run = Run::default();
+        let mut run = Run::codes();
         run.hold(5, 1000);
         assert!(!run.grid.cancel(), "nothing was waiting");
         run.lift(2000);
@@ -154,7 +175,7 @@ mod tests {
 
     #[test]
     fn two_buttons_are_a_sequence() {
-        let mut run = Run::default();
+        let mut run = Run::codes();
         run.tap(2, 1000).tap(3, 1500);
         assert!(run.sent.is_empty(), "the second may be double-tapped");
         assert_eq!(run.grid.waiting(), (Some(2), Some(3)));
@@ -166,14 +187,14 @@ mod tests {
 
     #[test]
     fn the_same_button_twice_is_a_sequence_too() {
-        let mut run = Run::default();
+        let mut run = Run::codes();
         run.tap(1, 1000).tap(1, 1300).until(10_000);
         assert_eq!(run.presses(), [(11, Tap)]);
     }
 
     #[test]
     fn a_sequence_double_tapped() {
-        let mut run = Run::default();
+        let mut run = Run::codes();
         run.tap(2, 1000).tap(3, 1500).tap(3, 1750);
         assert_eq!(
             run.sent,
@@ -187,14 +208,14 @@ mod tests {
         );
         assert_eq!(run.grid.deadline(), None, "nothing more to wait for");
         // And 1, 1, 1 is 11 double-tapped.
-        let mut run = Run::default();
+        let mut run = Run::codes();
         run.tap(1, 1000).tap(1, 1200).tap(1, 1400);
         assert_eq!(run.presses(), [(11, DoubleTap)]);
     }
 
     #[test]
     fn a_sequence_held() {
-        let mut run = Run::default();
+        let mut run = Run::codes();
         run.tap(4, 1000).hold(9, 1400);
         assert_eq!(
             run.sent,
@@ -213,7 +234,7 @@ mod tests {
         // The hold starts 0.7 s after the first tap's lift, in time, but is
         // only recognised 0.6 s later, well after the wait. The UI loop
         // woke at the deadline with the finger down, so held off.
-        let mut run = Run::default();
+        let mut run = Run::codes();
         run.tap(4, 1000);
         run.expire(1000 + WAIT_SECOND.as_millis(), true);
         assert!(run.sent.is_empty(), "a finger is down: it may continue");
@@ -225,14 +246,14 @@ mod tests {
     fn a_touch_too_late_starts_afresh() {
         // The UI loop didn't get to expire the first (a finger was down,
         // but its touch began after the deadline): that touch sends it.
-        let mut run = Run::default();
+        let mut run = Run::codes();
         run.tap(4, 1000);
         run.expire(1000 + WAIT_SECOND.as_millis(), true);
         run.touch(9, Touch::Tap, 1900, 1980);
         assert_eq!(run.presses(), [(4, Tap)]);
         assert_eq!(run.grid.waiting(), (Some(9), None));
         // A late hold: both at once.
-        let mut run = Run::default();
+        let mut run = Run::codes();
         run.tap(4, 1000);
         run.expire(1000 + WAIT_SECOND.as_millis(), true);
         run.touch(9, Touch::Hold, 1900, 2500);
@@ -241,7 +262,7 @@ mod tests {
 
     #[test]
     fn a_double_tap_must_start_in_time() {
-        let mut run = Run::default();
+        let mut run = Run::codes();
         run.tap(2, 1000).tap(3, 1500);
         run.expire(1500 + WAIT_DOUBLE.as_millis(), true);
         // The third tap began after the wait: 23, then 3 waits on its own.
@@ -251,7 +272,7 @@ mod tests {
 
     #[test]
     fn another_button_after_a_sequence_starts_the_next() {
-        let mut run = Run::default();
+        let mut run = Run::codes();
         run.tap(2, 1000).tap(3, 1500).tap(4, 1700);
         assert_eq!(run.presses(), [(23, Tap)]);
         assert_eq!(run.grid.waiting(), (Some(4), None));
@@ -263,14 +284,14 @@ mod tests {
     fn a_hold_after_a_sequence_is_a_single_hold() {
         // 2, 3, then holding 3: the tap was the sequence's, and the hold
         // can't extend it.
-        let mut run = Run::default();
+        let mut run = Run::codes();
         run.tap(2, 1000).tap(3, 1500).hold(3, 1600);
         assert_eq!(run.presses(), [(23, Tap), (3, Hold)]);
     }
 
     #[test]
     fn cancelling_sends_nothing() {
-        let mut run = Run::default();
+        let mut run = Run::codes();
         run.tap(2, 1000);
         assert!(run.grid.cancel());
         run.until(10_000);
@@ -284,7 +305,7 @@ mod tests {
 
     #[test]
     fn expiring_early_does_nothing() {
-        let mut run = Run::default();
+        let mut run = Run::codes();
         run.tap(6, 1000);
         run.expire(1000 + WAIT_SECOND.as_millis() - 1, false);
         assert!(run.sent.is_empty());
@@ -300,7 +321,7 @@ mod tests {
             at
         };
         for a in 1..=9 {
-            let mut run = Run::default();
+            let mut run = Run::codes();
             let t = next();
             run.tap(a, t).until(t + 5000);
             let t = next();
@@ -348,6 +369,7 @@ mod tests {
 
     #[test]
     fn the_grid_is_a_keypad() {
+        let at = |x, y| at(Layout::TwoLayers, x, y);
         assert_eq!(at(0, 0), 1);
         assert_eq!(at(40, 0), 2);
         assert_eq!(at(79, 0), 3);
@@ -361,6 +383,154 @@ mod tests {
         assert_eq!(at(54, 54), 9);
         // Off the edge (a touch's start can't be, but still).
         assert_eq!(at(-5, 200), 7);
+    }
+
+    #[test]
+    fn six_buttons_are_two_rows_of_three() {
+        let at = |x, y| at(Layout::Six, x, y);
+        assert_eq!(at(0, 0), 1);
+        assert_eq!(at(40, 39), 2);
+        assert_eq!(at(79, 0), 3);
+        assert_eq!(at(0, 40), 4);
+        assert_eq!(at(40, 79), 5);
+        assert_eq!(at(79, 79), 6);
+        // Off the edge.
+        assert_eq!(at(-5, 200), 4);
+        assert_eq!(at(200, -5), 3);
+    }
+
+    // ==========================================================================
+    // Six buttons
+    // ==========================================================================
+
+    #[test]
+    fn six_a_tap_waits_only_for_a_double_tap() {
+        let mut run = Run::six();
+        run.tap(5, 1000);
+        assert!(run.sent.is_empty(), "it may be double-tapped");
+        assert_eq!(run.grid.waiting(), (Some(5), None));
+        assert_eq!(run.grid.deadline(), Some(ms(1000) + WAIT_DOUBLE));
+        run.until(10_000);
+        assert_eq!(
+            run.sent,
+            [(
+                1000 + WAIT_DOUBLE.as_millis(),
+                Press {
+                    code: 5,
+                    gesture: Tap
+                }
+            )]
+        );
+    }
+
+    #[test]
+    fn six_a_double_tap_is_the_same_button_twice() {
+        let mut run = Run::six();
+        run.tap(1, 1000).tap(1, 1250);
+        assert_eq!(
+            run.sent,
+            [(
+                1250,
+                Press {
+                    code: 1,
+                    gesture: DoubleTap
+                }
+            )]
+        );
+        assert_eq!(run.grid.deadline(), None, "nothing more to wait for");
+        // A third tap starts afresh, rather than making a triple.
+        run.tap(1, 1450).until(10_000);
+        assert_eq!(run.presses(), [(1, DoubleTap), (1, Tap)]);
+    }
+
+    #[test]
+    fn six_another_button_is_two_taps() {
+        // No sequences: 2 then 3 is 2 tapped, then 3 tapped, the first
+        // sent the moment the second lands.
+        let mut run = Run::six();
+        run.tap(2, 1000).tap(3, 1200);
+        assert_eq!(run.presses(), [(2, Tap)]);
+        assert_eq!(run.sent[0].0, 1200);
+        assert_eq!(run.grid.waiting(), (Some(3), None));
+        run.until(10_000);
+        assert_eq!(run.presses(), [(2, Tap), (3, Tap)]);
+    }
+
+    #[test]
+    fn six_a_double_tap_must_start_in_time() {
+        let mut run = Run::six();
+        run.tap(4, 1000);
+        run.expire(1000 + WAIT_DOUBLE.as_millis(), true);
+        assert!(run.sent.is_empty(), "a finger is down: it may continue");
+        // The second tap began after the wait: two taps.
+        run.touch(4, Touch::Tap, 1000 + WAIT_DOUBLE.as_millis() + 1, 1500)
+            .until(10_000);
+        assert_eq!(run.presses(), [(4, Tap), (4, Tap)]);
+    }
+
+    #[test]
+    fn six_a_hold_goes_at_once_and_releases() {
+        let mut run = Run::six();
+        run.hold(6, 1000);
+        assert_eq!(run.presses(), [(6, Hold)]);
+        assert_eq!(run.grid.deadline(), None);
+        run.lift(2500);
+        assert_eq!(run.presses(), [(6, Hold), (6, Release)]);
+    }
+
+    #[test]
+    fn six_a_hold_after_a_tap_sends_both() {
+        // There's no "tap, then hold": the tap goes as it stood, the hold
+        // after it, whichever button.
+        let mut run = Run::six();
+        run.tap(3, 1000).hold(3, 1100);
+        assert_eq!(run.presses(), [(3, Tap), (3, Hold)]);
+        let mut run = Run::six();
+        run.tap(3, 1000).hold(4, 1100);
+        assert_eq!(run.presses(), [(3, Tap), (4, Hold)]);
+    }
+
+    #[test]
+    fn six_cancelling_sends_nothing() {
+        let mut run = Run::six();
+        run.tap(2, 1000);
+        assert!(run.grid.cancel());
+        run.until(10_000);
+        assert!(run.sent.is_empty());
+    }
+
+    #[test]
+    fn six_every_event_is_distinct() {
+        let mut events = HashSet::new();
+        let mut run = Run::six();
+        let mut at = 1000;
+        for button in 1..=6 {
+            at += 10_000;
+            run.tap(button, at).until(at + 5000);
+            at += 10_000;
+            run.tap(button, at).tap(button, at + 200);
+            at += 10_000;
+            run.hold(button, at).lift(at + 1000);
+        }
+        for (code, gesture) in run.presses() {
+            assert!(
+                events.insert((code, gesture.name())),
+                "{code} {gesture:?} twice"
+            );
+        }
+        assert_eq!(events.len(), 6 * 4);
+        assert!(events.iter().all(|&(code, _)| (1..=6).contains(&code)));
+    }
+
+    #[test]
+    fn the_layout_round_trips() {
+        assert_eq!(Layout::default(), Layout::Six);
+        for layout in [Layout::Six, Layout::TwoLayers] {
+            assert_eq!(Layout::from_byte(layout.to_byte()), layout);
+            assert_ne!(layout.next(), layout);
+            assert_eq!(layout.next().next(), layout);
+        }
+        assert_eq!(Layout::from_byte(200), Layout::Six);
     }
 
     #[test]

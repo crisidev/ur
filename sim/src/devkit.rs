@@ -460,6 +460,7 @@ impl Follower {
         app.phone_alarms = alarm::Phone::from_bytes(boot.phone_alarms);
         app.brightness = brightness::Setting::from_byte(boot.brightness);
         app.buttons = crate::buttons::Setting::from_byte(boot.buttons);
+        app.grid_layout = crate::buttons::Layout::from_byte(boot.grid);
         eprintln!(
             "following the dev kit from its boot at {} s of uptime",
             boot.at / 32_768

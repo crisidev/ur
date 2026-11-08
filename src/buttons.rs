@@ -1,7 +1,19 @@
-//! The button grid: nine unlabelled buttons below the clock face, and the
-//! 90 "buttons" they make, for Home Assistant or the phone to act on.
+//! The button grid: unlabelled buttons below the clock face, for Home
+//! Assistant or the phone to act on, in one of two [`Layout`]s.
 //!
-//! The grid is a phone's keypad, numbered in reading order:
+//! **Six buttons**, one layer ([`Layout::Six`], the default): two rows of
+//! three, numbered in reading order, each its own [`Press`], code 1–6.
+//!
+//! ```text
+//!   1 2 3
+//!   4 5 6
+//! ```
+//!
+//! Each can be tapped, double-tapped, or held: 6 × 3 = 18 events. A
+//! double tap is unambiguous here, as nothing else starts with a tap.
+//!
+//! **Two layers** ([`Layout::TwoLayers`]): nine buttons, a phone's
+//! keypad, numbered in reading order:
 //!
 //! ```text
 //!   1 2 3
@@ -12,8 +24,9 @@
 //! A **single** button is one of the nine on its own; a **sequence** is
 //! one tapped, then another (or the same one again). Each is a [`Press`],
 //! with a code that reads as what was pressed: 1–9 for a single, and the
-//! two digits for a sequence, 23 for 2 then 3 (11–99, never a 0). That
-//! makes 9 + 81 = 90 codes. On the last button:
+//! two digits for a sequence, 23 for 2 then 3: the first button the tens,
+//! the second the ones. So codes run 1–99, and none ends in 0 (nor has a
+//! 0 at all): 9 + 81 of them. On the last button:
 //!
 //! - **A single** can be tapped, or held. Not double-tapped: tapping 1
 //!   twice is the sequence 1 then 1 (code 11).
@@ -23,26 +36,29 @@
 //! That's 9 × 2 + 81 × 3 = 261 distinct events. What each does is up to
 //! whoever receives them (see `crate::bthome` and `gb::Outgoing::Button`).
 //!
-//! A hold also says when it ends: lifting the finger sends a
-//! [`Gesture::Release`] with the same code (see [`Grid::lift`]), for what
-//! should last as long as the finger stays down, like dimming a light.
+//! A hold also says when it ends, in either layout: lifting the finger
+//! sends a [`Gesture::Release`] with the same code (see [`Grid::lift`]),
+//! for what should last as long as the finger stays down, like dimming a
+//! light.
 //!
 //! Telling them apart takes waiting, since every tap might be the start of
 //! something longer: [`Grid`] holds a tap until it can't be anything else.
 //!
-//! - After a first tap, another touch that *starts* within [`WAIT_SECOND`]
-//!   of its lift makes a sequence; otherwise it was a single tap, sent
-//!   then. So single taps arrive that much late, which the grid shows (the
-//!   button stays lit while it waits).
-//! - After a sequence's second tap, a tap on the same button starting
+//! - With two layers, after a first tap, another touch that *starts* within
+//!   [`WAIT_SECOND`] of its lift makes a sequence; otherwise it was a
+//!   single tap, sent then. So single taps arrive that much late, which
+//!   the grid shows (the button stays lit while it waits).
+//! - After the tap that could be double-tapped (a sequence's second, or
+//!   with six buttons, any first tap), a tap on the same button starting
 //!   within [`WAIT_DOUBLE`] makes it a double tap; otherwise it was a
 //!   tap, sent then.
 //! - A hold needs no waiting: it's sent the moment it's recognised, while
 //!   the finger is still down (see [`crate::gesture::LONG_PRESS`]). It can
 //!   only be a single's, or end a sequence: nothing follows it.
 //! - Anything that can't continue what's waiting (a touch that started
-//!   too late, a tap on another button after a sequence's second) sends
-//!   what was waiting as it stood, and starts afresh.
+//!   too late, a tap on another button, or a hold, after a tap that only
+//!   a double tap could continue) sends what was waiting as it stood, and
+//!   starts afresh.
 //! - A swipe, or the side button, cancels what's waiting: nothing is sent
 //!   (see [`Grid::cancel`]). A hold's release is never cancelled: once
 //!   its start went, something may be waiting for its end.
@@ -65,9 +81,10 @@ use embassy_time::{Duration, Instant};
 ///
 /// TODO: tune from field logs (`buttons:` lines), once there are some.
 pub const WAIT_SECOND: Duration = Duration::from_millis(800);
-/// After a sequence's second tap, how long a tap on the same button has
-/// to start for a double tap: a quick double tap leaves 100–200 ms
-/// between lift and press.
+/// After a tap that a double tap could continue (a sequence's second; with
+/// six buttons, any), how long a tap on the same button has to start for
+/// a double tap: a quick double tap leaves 100–200 ms between lift and
+/// press.
 pub const WAIT_DOUBLE: Duration = Duration::from_millis(400);
 
 /// What the last button of a [`Press`] did.
@@ -75,7 +92,7 @@ pub const WAIT_DOUBLE: Duration = Duration::from_millis(400);
 #[cfg_attr(target_os = "none", derive(defmt::Format))]
 pub enum Gesture {
     Tap,
-    /// Only ever the end of a sequence.
+    /// With two layers, only ever the end of a sequence.
     DoubleTap,
     /// Held down: sent the moment it's recognised, while the finger is
     /// still down.
@@ -98,13 +115,13 @@ impl Gesture {
     }
 }
 
-/// One of the 261 events (or a hold's release): which of the 90 codes,
-/// and what its last button did.
+/// One of the events (or a hold's release): which code, and what its last
+/// button did.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(target_os = "none", derive(defmt::Format))]
 pub struct Press {
-    /// 1–9 for a single, 11–99 (no 0s) for a sequence: its two buttons as
-    /// digits.
+    /// The button, 1–6, with six buttons. With two layers, 1–9 for a
+    /// single, 11–99 (no 0s) for a sequence: its two buttons as digits.
     pub code: u8,
     pub gesture: Gesture,
 }
@@ -130,12 +147,17 @@ impl Press {
     }
 }
 
-/// Which button (1–9) a touch at (`x`, `y`), in canvas pixels, is on: the
-/// screen in thirds, each way, so even the gaps between the buttons as
-/// drawn belong to one.
-pub fn at(x: i32, y: i32) -> u8 {
+/// Which button a touch at (`x`, `y`), in canvas pixels, is on: the
+/// screen in thirds across, and in halves (six buttons) or thirds (two
+/// layers) down, so even the gaps between the buttons as drawn belong to
+/// one.
+pub fn at(layout: Layout, x: i32, y: i32) -> u8 {
     let third = |v: i32| (v.clamp(0, 79) * 3 / 80) as u8;
-    third(y) * 3 + third(x) + 1
+    let row = match layout {
+        Layout::Six => (y.clamp(0, 79) / 40) as u8,
+        Layout::TwoLayers => third(y),
+    };
+    row * 3 + third(x) + 1
 }
 
 /// What a touch on a button was, for [`Grid::touch`].
@@ -149,7 +171,8 @@ pub enum Touch {
 enum State {
     Idle,
     /// One tap, on `button`: a single tap, unless another touch starts
-    /// by `until`.
+    /// by `until` (with six buttons, a tap on the same button: a double
+    /// tap).
     First {
         button: u8,
         until: Instant,
@@ -182,12 +205,14 @@ impl Default for Grid {
 }
 
 impl Grid {
-    /// A touch on `button` (1–9), which started at `started`, and was
-    /// recognised `now` (a tap's lift; a hold, while still down). Returns
-    /// what that completes, in order: at most two presses, one that was
-    /// waiting and can't go on, and one this touch completes.
+    /// A touch on `button` (see [`at`]) in `layout`, which started at
+    /// `started`, and was recognised `now` (a tap's lift; a hold, while
+    /// still down). Returns what that completes, in order: at most two
+    /// presses, one that was waiting and can't go on, and one this touch
+    /// completes.
     pub fn touch(
         &mut self,
+        layout: Layout,
         button: u8,
         touch: Touch,
         started: Instant,
@@ -206,18 +231,27 @@ impl Grid {
         if self.deadline().is_some_and(|until| started > until) {
             done[0] = self.flush();
         }
-        // What was waiting can't go on: complete as it stood, and this
-        // touch starts afresh.
-        if let State::Second { button: second, .. } = self.state
-            && (touch == Touch::Hold || button != second)
-        {
+        // A tap only a double tap can continue (a sequence's second; with
+        // six buttons, any first), and this isn't one: what was waiting
+        // completes as it stood, and this touch starts afresh.
+        let last = match (self.state, layout) {
+            (State::Second { button, .. }, _) | (State::First { button, .. }, Layout::Six) => {
+                Some(button)
+            }
+            _ => None,
+        };
+        if last.is_some_and(|last| touch == Touch::Hold || button != last) {
             done[0] = self.flush();
         }
         let (state, press) = match (self.state, touch) {
             (State::Idle | State::Held { .. }, Touch::Tap) => (
                 State::First {
                     button,
-                    until: now + WAIT_SECOND,
+                    until: now
+                        + match layout {
+                            Layout::Six => WAIT_DOUBLE,
+                            Layout::TwoLayers => WAIT_SECOND,
+                        },
                 },
                 None,
             ),
@@ -225,6 +259,11 @@ impl Grid {
                 State::Held { code: button },
                 Some(Press::single(button, Gesture::Hold)),
             ),
+            // With six buttons, the same button again (anything else was
+            // flushed above): a double tap.
+            (State::First { .. }, Touch::Tap) if layout == Layout::Six => {
+                (State::Idle, Some(Press::single(button, Gesture::DoubleTap)))
+            }
             (State::First { button: first, .. }, Touch::Tap) => (
                 State::Second {
                     first,
@@ -297,7 +336,7 @@ impl Grid {
     }
 
     /// What's waiting, for the screen: the first button tapped, and, once
-    /// there's a second, that one.
+    /// there's a second (with two layers), that one.
     pub fn waiting(&self) -> (Option<u8>, Option<u8>) {
         match self.state {
             State::Idle | State::Held { .. } => (None, None),
@@ -317,6 +356,51 @@ impl Grid {
         };
         self.state = State::Idle;
         press
+    }
+}
+
+/// How the grid is laid out, and so what its presses are (see the module
+/// docs): six buttons, each tapped, double-tapped or held, or nine that
+/// make codes 1–99 (none ending in 0), alone or in pairs: two layers.
+///
+/// Six by default: they suit Home Assistant best (each button and gesture
+/// its own trigger in its automation editor, no YAML), and press at once
+/// rather than waiting to see whether a second button follows. Two
+/// layers are for those who want more than six things at hand.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+#[cfg_attr(target_os = "none", derive(defmt::Format))]
+pub enum Layout {
+    #[default]
+    Six,
+    TwoLayers,
+}
+
+impl Layout {
+    /// As stored (`storage::key::GRID`). Unknown values read as six.
+    pub fn from_byte(byte: u8) -> Self {
+        match byte {
+            1 => Self::TwoLayers,
+            _ => Self::Six,
+        }
+    }
+
+    pub fn to_byte(self) -> u8 {
+        self as u8
+    }
+
+    /// The other one (a tap on the Settings screen).
+    pub fn next(self) -> Self {
+        match self {
+            Self::Six => Self::TwoLayers,
+            Self::TwoLayers => Self::Six,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Six => "6 BUTTONS",
+            Self::TwoLayers => "2 LAYERS",
+        }
     }
 }
 

@@ -34,7 +34,7 @@ use defmt::{debug, info};
 use embassy_time::{Duration, Instant};
 
 use crate::battery::Battery;
-use crate::bthome::Identity;
+use crate::bthome::{self, Identity};
 use crate::buttons::Press;
 use crate::canvas::{self, Canvas, Sweep};
 use crate::display::Display;
@@ -128,8 +128,14 @@ pub trait Board {
     /// The button grid's key and address for Home Assistant
     /// (`bthome::identity`), for the Settings screen.
     fn bthome(&mut self) -> Option<Identity>;
-    /// Advertises a press of the button grid (`bthome::send`).
-    fn send_press(&mut self, press: Press, battery: u8) -> impl Future<Output = ()>;
+    /// Advertises a press of the button grid, laid out as `layout`, or
+    /// with none, the battery alone (`bthome::send`).
+    fn advertise(
+        &mut self,
+        press: Option<Press>,
+        layout: buttons::Layout,
+        battery: u8,
+    ) -> impl Future<Output = ()>;
 
     /// Switches the watch off ([`crate::system_off::shut_down`]), showing
     /// why. On the watch this never returns: the next thing that happens is
@@ -159,6 +165,7 @@ pub struct Settings {
     themes: ThemeChoice,
     brightness: brightness::Setting,
     buttons: buttons::Setting,
+    grid: buttons::Layout,
     alarms: alarm::Settings,
 }
 
@@ -168,6 +175,7 @@ impl Settings {
             themes: app.themes,
             brightness: app.brightness,
             buttons: app.buttons,
+            grid: app.grid_layout,
             alarms: app.alarms,
         }
     }
@@ -177,6 +185,7 @@ impl Settings {
         let mut app = App::new(now, self.themes, self.alarms);
         app.brightness = self.brightness;
         app.buttons = self.buttons;
+        app.grid_layout = self.grid;
         app
     }
 }
@@ -211,6 +220,7 @@ impl Stored {
             .unwrap_or_default();
         let brightness = brightness::Setting::from_byte(load_u8(storage::key::BRIGHTNESS).await);
         let buttons = buttons::Setting::from_byte(load_u8(storage::key::BUTTONS).await);
+        let grid = buttons::Layout::from_byte(load_u8(storage::key::GRID).await);
         if let Some(location) = storage::load(storage::key::LOCATION).await {
             // An old fix, for the sunrise: not one to judge the room
             // sensors by.
@@ -225,6 +235,7 @@ impl Stored {
                 themes,
                 brightness,
                 buttons,
+                grid,
                 alarms,
             },
             phone_alarms,
@@ -248,6 +259,10 @@ pub async fn save_changes(before: Settings, app: &mut App) {
     if app.buttons != before.buttons {
         info!("buttons: {}", app.buttons);
         storage::save(storage::key::BUTTONS, &[app.buttons.to_byte()]).await;
+    }
+    if app.grid_layout != before.grid {
+        info!("grid: {=str}", app.grid_layout.name());
+        storage::save(storage::key::GRID, &[app.grid_layout.to_byte()]).await;
     }
     // Edited, switched, or (a one-off alarm) rung and switched off.
     if app.alarms != before.alarms {
@@ -311,6 +326,10 @@ pub struct UiLoop {
     sighting_seen: Option<u64>,
     /// [`geo::times_set`] as last looked at, to notice a new location.
     location_seen: u8,
+    /// The battery as last advertised on its own to Home Assistant, for
+    /// six buttons (see [`bthome::battery_due`]); `None` while they're not
+    /// on for it, so turning them on sends it.
+    battery_sent: Option<u8>,
 }
 
 impl UiLoop {
@@ -340,6 +359,7 @@ impl UiLoop {
             calibration_saved: now,
             sighting_seen: None,
             location_seen: 0,
+            battery_sent: None,
         };
         (app, ui)
     }
@@ -696,11 +716,29 @@ impl UiLoop {
             }
         }
         let battery = self.battery.percent() as u8;
+        // Six buttons' presses leave the battery out (see `bthome`), so
+        // Home Assistant hears it on its own: once the reading has had a
+        // minute from boot to settle, or as soon as they're turned on for
+        // it, then at each 5% step. Sent from here rather than from
+        // `pass`, as this future already sends presses: there, it would
+        // grow the UI loop's future (static RAM).
+        let mut battery_due = false;
+        if !(app.buttons.ha() && app.grid_layout == buttons::Layout::Six) {
+            self.battery_sent = None;
+        } else if Instant::now().as_secs() >= 60 && bthome::battery_due(self.battery_sent, battery)
+        {
+            info!("bthome: battery {=u8}%", battery);
+            self.battery_sent = Some(battery);
+            battery_due = true;
+        }
         async move {
             // The button grid's presses for Home Assistant, from an input
             // or its wait running out.
             while let Some(press) = app.take_ha_press() {
-                board.send_press(press, battery).await;
+                board.advertise(Some(press), app.grid_layout, battery).await;
+            }
+            if battery_due {
+                board.advertise(None, app.grid_layout, battery).await;
             }
             save_changes(before, app).await;
         }

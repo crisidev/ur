@@ -102,25 +102,33 @@ button
 wait 1s
 
 # Right, past the alarms: the settings, turning on the button grid
-# (docs/buttons.md). Then below: the grid, just after 2, then 3
-# double-tapped.
+# (docs/buttons.md). Then below: the grid, just after 2 double-tapped;
+# and with two layers, just after 2, then 3 double-tapped.
 left
 left
 wait 1s
-tap 40,54
+tap 40,44
 wait 1s
 shot settings.png
 button
 wait 1s
 up
 wait 1s
+tap 40,20
+wait 150ms
+tap 40,20
+wait 100ms
+shot buttons.png
+wait 2s
+grid 99
 tap 40,13
 wait 300ms
 tap 67,13
 wait 150ms
 tap 67,13
 wait 100ms
-shot buttons.png
+shot buttons-layers.png
+grid 6
 button
 wait 1s
 

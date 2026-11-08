@@ -25,7 +25,7 @@ use embassy_time::{Duration, Instant, Timer};
 use crate::aranet::Sighting;
 use crate::brightness;
 use crate::bthome::{self, Identity};
-use crate::buttons::Press;
+use crate::buttons::{Gesture, Layout, Press};
 use crate::canvas::Canvas;
 use crate::case::Pulse;
 use crate::clock;
@@ -666,24 +666,37 @@ impl Board for Hardware<'_> {
     }
 
     /// What `bthome::send` would advertise, with the demo key, printed.
-    fn send_press(&mut self, press: Press, battery: u8) -> impl Future<Output = ()> {
+    fn advertise(
+        &mut self,
+        press: Option<Press>,
+        layout: Layout,
+        battery: u8,
+    ) -> impl Future<Output = ()> {
         let counter = *self.bthome_counter;
         *self.bthome_counter += 1;
-        let (data, len) = bthome::advert(press, battery, counter, &DEMO_IDENTITY);
+        let (data, len) = bthome::advert(press, layout, battery, counter, &DEMO_IDENTITY);
         let hex: String = data[..len].iter().map(|b| format!("{b:02x}")).collect();
         // What Home Assistant fires for it (see `bthome`'s docs).
-        let dimmer = match press.gesture {
-            crate::buttons::Gesture::Tap => Some(1),
-            crate::buttons::Gesture::DoubleTap => Some(2),
-            crate::buttons::Gesture::Hold => Some(3),
-            crate::buttons::Gesture::Release => None,
+        let events = match (press, layout) {
+            (None, _) => format!("battery {battery}%"),
+            (Some(press), Layout::Six) => {
+                format!("button_{} {}", press.code, press.gesture.name())
+            }
+            (Some(press), Layout::TwoLayers) => {
+                let dimmer = match press.gesture {
+                    Gesture::Tap => Some(1),
+                    Gesture::DoubleTap => Some(2),
+                    Gesture::Hold => Some(3),
+                    Gesture::Release => None,
+                };
+                let dimmer = dimmer.map_or(String::new(), |slot| {
+                    format!(", dimmer_{slot} rotate_right steps {}", press.code)
+                });
+                format!("button {}{dimmer}", press.gesture.name())
+            }
         };
-        let dimmer = dimmer.map_or(String::new(), |slot| {
-            format!(", dimmer_{slot} rotate_right steps {}", press.code)
-        });
         log(format!(
-            "to Home Assistant: button {}{dimmer} (counter {counter}): {hex}",
-            press.gesture.name()
+            "to Home Assistant: {events} (counter {counter}): {hex}"
         ));
         async {}
     }

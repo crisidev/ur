@@ -290,8 +290,13 @@ impl Board for Hardware {
         bthome::identity()
     }
 
-    fn send_press(&mut self, press: buttons::Press, battery: u8) -> impl Future<Output = ()> {
-        bthome::send(press, battery)
+    fn advertise(
+        &mut self,
+        press: Option<buttons::Press>,
+        layout: buttons::Layout,
+        battery: u8,
+    ) -> impl Future<Output = ()> {
+        bthome::send(press, layout, battery)
     }
 
     async fn switch_off(

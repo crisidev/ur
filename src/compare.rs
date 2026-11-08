@@ -130,6 +130,7 @@ pub struct Boot {
     pub theme_dark: u8,
     pub brightness: u8,
     pub buttons: u8,
+    pub grid: u8,
     pub alarms: [u8; alarm::Settings::BYTES],
     pub phone_alarms: [u8; alarm::Phone::BYTES],
 }
@@ -371,6 +372,7 @@ pub static UR_COMPARE: Shared = Shared(UnsafeCell::new(Export {
             theme_dark: 0,
             brightness: 0,
             buttons: 0,
+            grid: 0,
             alarms: [0; alarm::Settings::BYTES],
             phone_alarms: [0; alarm::Phone::BYTES],
         },
@@ -422,6 +424,7 @@ pub fn boot(at: Instant, app: &crate::ui::App) {
             theme_dark: app.themes.dark,
             brightness: app.brightness.to_byte(),
             buttons: app.buttons.to_byte(),
+            grid: app.grid_layout.to_byte(),
             alarms: app.alarms.to_bytes(),
             phone_alarms: app.phone_alarms.to_bytes(),
         };
