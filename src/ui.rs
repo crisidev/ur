@@ -42,6 +42,19 @@
 //! - Calls: take over the screen, ringing, until the phone says the call is
 //!   over (answered, rejected, ended) or the user acts.
 //! - Media info: enables the music screen.
+//!
+//! The quiet night (see [`sleep::Night`] for when it starts and ends: from
+//! falling asleep until the morning's first alarm, or [`sleep::QUIET_AWAKE`]
+//! minutes awake):
+//!
+//! - Notifications neither buzz nor light the screen. The last one waits
+//!   as a banner for the next time the screen is properly on.
+//! - Touches don't wake the screen (pillows and bedding tap it); the button
+//!   and turning the wrist still do. Once it's on, touches work as usual.
+//! - Everything shows in the dim white-on-black look, at the glance's low
+//!   backlight.
+//! - Alarms (which end the night), timers, "find my watch", and calls still
+//!   ring and buzz.
 
 use core::fmt::Write as _;
 
@@ -57,6 +70,7 @@ use crate::clock::DateTime;
 use crate::font;
 use crate::gb::{CallAction, MusicCommand, Outgoing};
 use crate::motor::{self, Pattern};
+use crate::sleep::{self, Change, Over};
 use crate::theme::{self, Theme};
 use crate::touch::{Gesture, Touch};
 
@@ -89,6 +103,10 @@ const DELIBERATE_TAP: Duration = Duration::from_millis(40);
 const TAP_MARGIN: i32 = 8;
 /// How long a notification banner shows.
 const BANNER_TIME: Duration = Duration::from_secs(4);
+/// A banner's `until` while it waits to be seen: a notification that came
+/// in the quiet night. Its time starts once it's on screen (see
+/// [`App::on_tick`]).
+const UNSEEN: Instant = Instant::MAX;
 /// Stop ringing after this long, in case the phone never says the call is
 /// over (e.g. the connection dropped mid-call).
 const MAX_RING: Duration = Duration::from_secs(45);
@@ -256,6 +274,9 @@ pub struct App {
     /// With the screen off: when the last tap was, as the possible first
     /// of a double tap (see [`DOUBLE_TAP`]).
     wake_tap: Option<Instant>,
+    /// Whether it's the quiet night, and what decides when it ends. (8
+    /// bytes, in a build with little RAM to spare.)
+    night: sleep::Night,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -287,6 +308,7 @@ impl App {
             local_second: None,
             glance_until: None,
             wake_tap: None,
+            night: sleep::Night::default(),
         }
     }
 
@@ -301,10 +323,11 @@ impl App {
         self.brief_wake && self.banner.is_some()
     }
 
-    /// Whether the screen shows the dim white-on-black look (a glance, or a
-    /// notification that arrived with the screen off), for the backlight.
+    /// Whether the screen shows the dim white-on-black look (a glance, a
+    /// notification that arrived with the screen off, or anything in the
+    /// quiet night), for the backlight.
     pub fn dim(&self) -> bool {
-        self.glancing() || self.quiet_notification()
+        self.glancing() || self.quiet_notification() || self.night.quiet()
     }
 
     /// Whether the clock face is on screen for someone to read: awake, and
@@ -337,8 +360,15 @@ impl App {
 
     pub fn theme(&self) -> &'static Theme {
         if self.dim() {
-            return &theme::GLANCE;
+            &theme::GLANCE
+        } else {
+            self.chosen_theme()
         }
+    }
+
+    /// The theme chosen for the time of day, whether or not it's showing
+    /// (it isn't while dim).
+    fn chosen_theme(&self) -> &'static Theme {
         let (group, choice): (&[&Theme], u8) = if self.daytime {
             (&theme::LIGHT, self.themes.light)
         } else {
@@ -419,6 +449,13 @@ impl App {
         if !self.awake
             && let InputEvent::Touch(touch) = event
         {
+            // In the quiet night, none does: bedding and pillows make
+            // deliberate-looking taps, and pairs of them (one night, a
+            // 193 ms tap mid-screen, and two taps 150 ms apart, both lit
+            // the screen). The button and a glance still wake it.
+            if self.night.quiet() {
+                return;
+            }
             let second = self.wake_tap.is_some_and(|tap| now - tap <= DOUBLE_TAP);
             if !(deliberate(&touch) || touch.gesture == Gesture::Tap && second) {
                 self.wake_tap = (touch.gesture == Gesture::Tap).then_some(now);
@@ -608,30 +645,37 @@ impl App {
     }
 
     fn on_phone(&mut self, event: PhoneEvent, now: Instant) {
-        // Anything from the phone gets the full screen.
+        // In the quiet night, a notification makes no sound or light: it's
+        // only kept, as a banner that waits until the screen is properly on
+        // (see `on_tick`), even if that's now. Only the latest is kept.
+        //
+        // TODO: a count of the notifications that came in the night, if
+        // one banner turns out not to be enough of a hint.
+        if self.night.quiet()
+            && let PhoneEvent::Notification { app, who } = event
+        {
+            self.banner = Some(Banner {
+                app,
+                who,
+                since: now,
+                until: UNSEEN,
+            });
+            return;
+        }
+        // Anything else from the phone gets the full screen.
         if self.glance_until.take().is_some() {
             self.last_input = now;
         }
         match event {
             PhoneEvent::Notification { app, who } => {
-                // Long enough to read, and for long lines to scroll through
-                // once. With the screen off, the sender is wrapped over the
-                // whole screen (see `quiet_layout`), and only scrolls if
-                // even that won't do.
-                let who_overflow = if self.awake {
-                    font::small_text_width(&who)
-                } else if quiet_layout(&who).is_some() {
-                    0
-                } else {
-                    font::small_text_width(&who) * 2
-                };
-                let overflow = font::small_text_width(&app).max(who_overflow) - BANNER_TEXT_WIDTH;
-                let shown_for = BANNER_TIME.max(marquee_cycle(overflow));
+                // With the screen off, the notification gets the whole
+                // screen.
+                let until = now + shown_for(&app, &who, !self.awake);
                 self.banner = Some(Banner {
                     app,
                     who,
                     since: now,
-                    until: now + shown_for,
+                    until,
                 });
                 motor::buzz(Pattern::NOTIFY);
                 if !self.awake {
@@ -640,6 +684,10 @@ impl App {
                     self.screen = Screen::Clock;
                 }
             }
+            // Calls ring and light the screen even in the quiet night: one
+            // at night is likely to matter. (In the dim look, though.)
+            // TODO: make this a setting, if calls at night should be quiet
+            // too.
             PhoneEvent::IncomingCall { caller } => {
                 self.call = Some(Call {
                     caller,
@@ -678,11 +726,34 @@ impl App {
         }
     }
 
-    /// Once a second: rings any alarm that's due. `local_second` is the
-    /// time, if known; `stirring` whether the wearer just moved (for smart
-    /// wake).
-    pub fn check_alarms(&mut self, now: Instant, local_second: Option<i64>, stirring: bool) {
-        self.local_second = local_second;
+    /// Once a second: starts or ends the quiet night, and rings any alarm
+    /// that's due. `local_second` is the time, if known; `stirring` whether
+    /// the wearer just moved (for smart wake); `asleep` whether they're
+    /// asleep (see [`crate::activity::asleep`]).
+    pub fn check_alarms(
+        &mut self,
+        now: Instant,
+        local_second: Option<i64>,
+        stirring: bool,
+        asleep: bool,
+    ) {
+        let before = core::mem::replace(&mut self.local_second, local_second);
+        let noon = match (before, local_second) {
+            (Some(before), Some(now)) => sleep::noon_between(before, now),
+            _ => false,
+        };
+        // Truncated to 32 bits to keep `Night` small; that's 136 years.
+        let nap_hours = sleep::nap_hours(local_second);
+        match self
+            .night
+            .update(asleep, now.as_secs() as u32, noon, nap_hours)
+        {
+            Some(Change::Quiet { nap: false }) => defmt::info!("night: quiet"),
+            Some(Change::Quiet { nap: true }) => defmt::info!("night: quiet (nap)"),
+            Some(Change::Over(Over::Awake)) => defmt::info!("night: over (awake)"),
+            Some(Change::Over(Over::Noon)) => defmt::info!("night: over (noon)"),
+            None => {}
+        }
         let Some(second) = local_second else {
             return;
         };
@@ -696,6 +767,12 @@ impl App {
             && let Some(kind) = self.alarm_state.due(&mut self.alarms, second, stirring)
         {
             defmt::info!("alarm: ringing ({})", kind);
+            // The morning's first alarm (a snooze is still the morning)
+            // ends the night, so it rings with the screen bright. Not a
+            // timer: that rings in the dim look, and the night goes on.
+            if !matches!(kind, alarm::Kind::Timer(_)) && self.night.alarm() {
+                defmt::info!("night: over (alarm)");
+            }
             self.ringing = Some(Ringing { kind, since: now });
             self.editing = None;
             motor::buzz(Pattern::ALARM);
@@ -716,6 +793,19 @@ impl App {
                 self.awake = false;
             }
             return;
+        }
+        // A banner waiting to be seen (see `UNSEEN`) starts its time once
+        // it's on screen: awake, and not covered by something that takes
+        // over the screen.
+        if self.awake
+            && self.call.is_none()
+            && self.ringing.is_none()
+            && self.editing.is_none()
+            && let Some(banner) = &mut self.banner
+            && banner.until == UNSEEN
+        {
+            banner.since = now;
+            banner.until = now + shown_for(&banner.app, &banner.who, false);
         }
         if self.banner.as_ref().is_some_and(|b| now >= b.until) {
             self.banner = None;
@@ -813,7 +903,7 @@ impl App {
                 Some(music) => render_music(canvas, music, now),
                 None => render_clock(canvas, status, next_alarm),
             },
-            Screen::Info => render_info(canvas, status, self.theme()),
+            Screen::Info => render_info(canvas, status, self.chosen_theme()),
         }
         if let Some(banner) = &self.banner {
             render_banner(canvas, banner, now);
@@ -1441,6 +1531,22 @@ fn render_update(canvas: &mut Canvas, percent: u8, now: Instant) {
 
 /// Text columns of the banner: 3..77.
 const BANNER_TEXT_WIDTH: i32 = 74;
+
+/// How long a notification shows: long enough to read, and for long lines
+/// to scroll through once. With the `whole_screen` to itself (it arrived
+/// with the screen off), the sender is wrapped over it (see
+/// [`quiet_layout`]), and only scrolls if even that won't do.
+fn shown_for(app: &str, who: &str, whole_screen: bool) -> Duration {
+    let who_overflow = if !whole_screen {
+        font::small_text_width(who)
+    } else if quiet_layout(who).is_some() {
+        0
+    } else {
+        font::small_text_width(who) * 2
+    };
+    let overflow = font::small_text_width(app).max(who_overflow) - BANNER_TEXT_WIDTH;
+    BANNER_TIME.max(marquee_cycle(overflow))
+}
 
 /// Across the bottom rows (free on the clock face): app, then sender.
 fn render_banner(canvas: &mut Canvas, banner: &Banner, now: Instant) {

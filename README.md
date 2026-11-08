@@ -31,6 +31,11 @@ timepiece.)
 - **Notifications:** which app, and who from, briefly. With the screen off
   they're full-screen and dim. Calls take over the screen, and you can
   answer or decline.
+- **Quiet nights:** from when you fall asleep until the morning's first
+  alarm (or until you've been up for 22 minutes), notifications neither
+  buzz nor light the screen; the latest waits on the clock face for you.
+  The screen is dim all night. Alarms, timers, calls, and "find my watch"
+  still ring.
 - **Media controls:** play, pause, next, and previous, while something is
   playing.
 - **Updates:** over Bluetooth, with automatic rollback if an update doesn't
@@ -55,7 +60,7 @@ hardware by a human.
   screen firmly (or twice). Brief touches and touches at the edge don't
   wake it, so brushing against something doesn't either. Turning your
   wrist to look shows the time on its own; tap then to wake the screen
-  fully.
+  fully. During a quiet night, taps don't wake it at all: use the button.
 - **Button:** with the screen on, back to the clock, or off from the
   clock. Also silences a call, and stops a ringing alarm.
 - **Swipe left and right:** between the clock, alarms, music (while

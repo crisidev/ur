@@ -32,6 +32,9 @@
 //! 8192-per-g; ~25 lying on a desk, hundreds when handled), to be tuned from
 //! field logs of real nights.
 //!
+//! [`Night`] builds on the classifier's verdict to decide when the quiet
+//! night (no buzzing or lit screen for notifications) starts and ends.
+//!
 //! This module knows nothing about the hardware or the clock, so it can be
 //! tested on a computer (see `tmp/sleep-test`).
 
@@ -286,4 +289,154 @@ pub fn last_sleep(kinds: &[Kind]) -> Option<(usize, usize, usize)> {
         .filter(|k| matches!(k, Kind::Light | Kind::Deep))
         .count();
     Some((start, end, asleep))
+}
+
+// ==============================================================================
+// The quiet night
+// ==============================================================================
+
+/// The quiet night: from falling asleep until the morning, during which the
+/// UI keeps notifications from buzzing or lighting the screen (see
+/// `crate::ui`). This decides only when it starts and ends.
+///
+/// It starts when the wearer falls asleep: when [`Night::update`] first
+/// sees `asleep` turn true. It ends at the first of:
+///
+/// - **An alarm** ringing ([`Night::alarm`]): the morning has come. (Not
+///   a timer: one ringing at night is no sign of morning.)
+/// - **Being awake for longer than [`QUIET_AWAKE`]**: the morning came
+///   without an alarm. Being awake per the classifier isn't enough by
+///   itself: getting up and walking (to the bathroom, say) ends sleep at
+///   once there, and the wearer is likely back in bed within minutes.
+/// - **Local noon** ([`noon_between`]), a backstop for a classifier stuck
+///   on "asleep" (e.g. a watch lying still off the wrist, before the heart
+///   rate sensor has said so), so that quiet can't last all day. Noon,
+///   because it's past any morning, and well before any night.
+///
+/// Starting needs `asleep` to *turn* true, not just be true: after an alarm
+/// (or noon) ends the night with the wearer still asleep, it stays over
+/// until they've been awake and then fallen asleep again. Otherwise the
+/// alarm would end the night only for it to start again the next minute.
+///
+/// A **nap** is quiet too, but ends sooner: sleep that starts in the
+/// daytime ([`nap_hours`]) ends after [`NAP_AWAKE`] minutes awake, not
+/// [`QUIET_AWAKE`]. Waking from a nap is waking up, not a trip to the
+/// bathroom; and noon, which ends any night, would cut a nap short anyway.
+///
+/// Nothing here survives a reset. That fails safe: after one, the night is
+/// over, and starts again once the classifier (whose history is lost too)
+/// sees [`ONSET`] minutes of stillness. So a reset at night costs ~20
+/// minutes of the screen lighting up for notifications, and a reset can't
+/// leave the watch quiet through the day.
+///
+/// Times are in monotonic seconds (since boot), as `u32` to keep this to 8
+/// bytes in RAM; that lasts 136 years of uptime.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Night {
+    quiet: bool,
+    /// Whether the wearer was asleep at the last update, to see them fall
+    /// asleep.
+    asleep: bool,
+    /// When the wearer was last asleep. Meaningful only while quiet: it's
+    /// set on falling asleep, which starts the night.
+    last_asleep: u32,
+    /// Whether this is a nap (see [`nap_hours`]), which ends sooner.
+    nap: bool,
+}
+
+/// Minutes awake that end a quiet night without an alarm. Long enough for a
+/// trip to the bathroom and back to sleep, short enough that a morning
+/// without an alarm isn't silent for long. (The user's pick; shorter than
+/// the classifier's [`SAME_NIGHT_GAP`], which only decides what counts as
+/// one night in the summary.)
+pub const QUIET_AWAKE: usize = 22;
+
+/// Minutes awake that end a nap's quiet: once up from a nap, the wearer is
+/// most likely up for the day, so a few minutes of being awake (enough to
+/// tell a stir that the classifier calls waking from actually getting up)
+/// are enough.
+pub const NAP_AWAKE: usize = 7;
+
+/// Whether falling asleep at `local_second` (local seconds since 1970)
+/// makes a nap rather than a night: between 09:00 and 20:00. Clock hours,
+/// not daylight: an Oslo summer has the sun up until 23:00, and its winter
+/// sets at 15:30. Unknown time is a night (the longer quiet).
+pub fn nap_hours(local_second: Option<i64>) -> bool {
+    const HOUR: i64 = 60 * 60;
+    local_second.is_some_and(|s| (9 * HOUR..20 * HOUR).contains(&s.rem_euclid(24 * HOUR)))
+}
+
+/// How a quiet night changed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Change {
+    /// The wearer fell asleep: the night (or a nap) starts.
+    Quiet { nap: bool },
+    /// The night ended this way.
+    Over(Over),
+}
+
+/// Why a night ended (other than an alarm, which [`Night::alarm`] reports).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Over {
+    /// Awake for longer than [`QUIET_AWAKE`] (or [`NAP_AWAKE`]).
+    Awake,
+    /// Local noon came.
+    Noon,
+}
+
+impl Night {
+    /// Whether it's the quiet night now.
+    pub fn quiet(&self) -> bool {
+        self.quiet
+    }
+
+    /// Call regularly (every second or minute; it only compares times) with
+    /// whether the wearer is asleep (`crate::activity::asleep`), the time in
+    /// monotonic seconds, whether local noon has passed since the last
+    /// call ([`noon_between`]), and whether falling asleep now would make a
+    /// nap ([`nap_hours`]). Returns what changed, if anything.
+    pub fn update(
+        &mut self,
+        asleep: bool,
+        now: u32,
+        noon: bool,
+        nap_hours: bool,
+    ) -> Option<Change> {
+        let fell_asleep = asleep && !self.asleep;
+        self.asleep = asleep;
+        if asleep {
+            self.last_asleep = now;
+        }
+        if !self.quiet {
+            self.quiet = fell_asleep;
+            self.nap = nap_hours;
+            return fell_asleep.then_some(Change::Quiet { nap: nap_hours });
+        }
+        let awake_limit = if self.nap { NAP_AWAKE } else { QUIET_AWAKE };
+        let over = if noon {
+            Over::Noon
+        } else if now.wrapping_sub(self.last_asleep) > awake_limit as u32 * 60 {
+            Over::Awake
+        } else {
+            return None;
+        };
+        self.quiet = false;
+        Some(Change::Over(over))
+    }
+
+    /// Call when an alarm rings (not a timer): the night is over. Returns
+    /// whether it was quiet until now.
+    pub fn alarm(&mut self) -> bool {
+        core::mem::replace(&mut self.quiet, false)
+    }
+}
+
+/// Whether local noon falls in `(before, now]` (local seconds since 1970,
+/// as in `crate::alarm`).
+pub fn noon_between(before: i64, now: i64) -> bool {
+    const DAY: i64 = 24 * 60 * 60;
+    const NOON: i64 = 12 * 60 * 60;
+    // The last noon at or before `now`.
+    let noon = (now - NOON).div_euclid(DAY) * DAY + NOON;
+    before < noon
 }

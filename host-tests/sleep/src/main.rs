@@ -163,6 +163,48 @@ fn incremental(minutes: &[Minute]) -> Vec<Kind> {
     kinds
 }
 
+/// What the firmware's `activity::asleep()` says each minute: whether the
+/// newest minute of that minute's pass (the leading edge, where unfinished
+/// movement is still restless) is sleep.
+fn leading_edge(minutes: &[Minute]) -> Vec<bool> {
+    let mut kinds = vec![Kind::Unknown; minutes.len()];
+    let mut asleep = Vec::with_capacity(minutes.len());
+    for now in 0..minutes.len() {
+        let window = (now + 1).saturating_sub(sleep::WINDOW);
+        let start = window.saturating_sub(sleep::CONTEXT);
+        let before = if start == 0 {
+            Kind::Unknown
+        } else {
+            kinds[start - 1]
+        };
+        let mut out = vec![Kind::Unknown; now + 1 - start];
+        sleep::classify(before, &minutes[start..=now], &mut out);
+        kinds[window..=now].copy_from_slice(&out[window - start..]);
+        asleep.push(kinds[now].is_sleep());
+    }
+    asleep
+}
+
+/// Runs [`sleep::Night`] over a day of `asleep` verdicts (one a minute,
+/// from 18:00 as in [`a_night`]), with an alarm ringing at minute `alarm`
+/// if given. Returns whether each minute was quiet.
+fn nights(asleep: &[bool], alarm: Option<usize>) -> Vec<bool> {
+    // Local seconds of 18:00 on some day.
+    const EVENING: i64 = 20_000 * 24 * 60 * 60 + 18 * 60 * 60;
+    let mut night = sleep::Night::default();
+    let mut quiet = Vec::with_capacity(asleep.len());
+    for (t, &asleep) in asleep.iter().enumerate() {
+        let local = EVENING + t as i64 * 60;
+        let noon = t > 0 && sleep::noon_between(local - 60, local);
+        night.update(asleep, t as u32 * 60, noon, sleep::nap_hours(Some(local)));
+        if alarm == Some(t) {
+            night.alarm();
+        }
+        quiet.push(night.quiet());
+    }
+    quiet
+}
+
 fn timeline(kinds: &[Kind]) -> String {
     kinds
         .iter()
@@ -478,5 +520,200 @@ mod tests {
         }
         let kinds = incremental(&minutes);
         assert!(kinds[400..460].iter().all(|k| *k == Kind::Unknown));
+    }
+
+    // ==========================================================================
+    // The quiet night
+    // ==========================================================================
+
+    /// `asleep()` (the leading edge, restless counting as sleep) holds
+    /// through a night's stirs: it turns false on getting up, and on the odd
+    /// run of [`sleep::WAKE_RUN`] restless minutes. When only light and deep
+    /// sleep counted, these synthetic nights flipped it 6 to 18 times.
+    #[test]
+    fn asleep_holds_through_stirs() {
+        for seed in 0..20 {
+            let mut rng = Rng::new(seed);
+            let (truth, minutes) = a_night(&mut rng);
+            let asleep = leading_edge(&minutes);
+            // From well into the night (onset takes 20 minutes) to 07:00.
+            let wakes = (330..781)
+                .filter(|&t| asleep[t - 1] && !asleep[t])
+                .collect::<Vec<_>>();
+            let up = truth.iter().position(|t| *t == Truth::Up).expect("a trip");
+            assert!(
+                wakes.len() <= 4 && wakes.iter().any(|w| w.abs_diff(up) <= 5),
+                "seed {seed}: wakes at {wakes:?}, up at {up}"
+            );
+        }
+    }
+
+    /// A night from the classifier: quiet from falling asleep, through the
+    /// bathroom trip, until [`sleep::QUIET_AWAKE`] after getting up in
+    /// the morning, and not again during the day.
+    #[test]
+    fn a_night_is_quiet() {
+        for seed in 0..20 {
+            let mut rng = Rng::new(seed);
+            let (_, minutes) = a_night(&mut rng);
+            let asleep = leading_edge(&minutes);
+            let quiet = nights(&asleep, None);
+            let start = quiet.iter().position(|&q| q).expect("a quiet night");
+            let end = quiet.iter().rposition(|&q| q).expect("an end") + 1;
+            // Asleep at 23:00 (300), recognised 20 minutes later.
+            assert!((300..=330).contains(&start), "seed {seed}: from {start}");
+            // Quiet whenever asleep in between. (The classifier can wake
+            // for longer than `QUIET_AWAKE` within the night, which ends
+            // the quiet; falling asleep again starts it again.)
+            assert!(
+                (start..end).all(|t| quiet[t] || !asleep[t]),
+                "seed {seed}: asleep but not quiet"
+            );
+            // Up at 07:00 (781), and `QUIET_AWAKE` minutes awake after that.
+            let gap = sleep::QUIET_AWAKE;
+            assert!(
+                (781 + gap..=781 + gap + 5).contains(&end),
+                "seed {seed}: until {end}"
+            );
+            assert!(!quiet[end..].contains(&true), "seed {seed}: quiet again");
+        }
+    }
+
+    /// An alarm ends the night, even if the wearer sleeps on through it.
+    #[test]
+    fn an_alarm_ends_the_night() {
+        for seed in 0..20 {
+            let mut rng = Rng::new(seed);
+            let (_, minutes) = a_night(&mut rng);
+            // 06:45, still asleep.
+            let quiet = nights(&leading_edge(&minutes), Some(765));
+            assert!(quiet[764], "seed {seed}");
+            assert!(!quiet[765..].contains(&true), "seed {seed}");
+        }
+    }
+
+    /// A watch the classifier thinks is asleep all day (still, off the
+    /// wrist, before the heart rate sensor's verdict) is quiet until noon,
+    /// and then not again.
+    #[test]
+    fn noon_ends_a_night_that_never_wakes() {
+        let mut rng = Rng::new(1);
+        let (_, mut minutes) = build(
+            &mut rng,
+            &[(Truth::Active, 240), (Truth::OffWrist, 24 * 60 - 240)],
+        );
+        for m in &mut minutes {
+            m.worn = None;
+        }
+        let asleep = leading_edge(&minutes);
+        assert!(asleep[1080..].iter().all(|&a| a), "asleep all morning");
+        let quiet = nights(&asleep, None);
+        // 22:00 plus onset, until noon (18 hours after 18:00).
+        assert!(quiet[300..1080].iter().all(|&q| q));
+        assert!(!quiet[1080..].contains(&true));
+    }
+
+    /// Minute by minute: being awake ends the night only after more than
+    /// [`sleep::QUIET_AWAKE`] minutes, and only falling asleep (again)
+    /// starts it.
+    #[test]
+    fn night_rules() {
+        use sleep::{Change, Night, Over};
+        let gap = sleep::QUIET_AWAKE as u32 * 60;
+        let mut night = Night::default();
+        assert!(!night.quiet(), "not quiet after a reset");
+        assert_eq!(night.update(false, 0, false, false), None);
+        assert_eq!(
+            night.update(true, 60, false, false),
+            Some(Change::Quiet { nap: false })
+        );
+        // Up for a while in the night, and back to sleep.
+        assert_eq!(night.update(false, 120, false, false), None);
+        assert_eq!(night.update(false, 60 + gap, false, false), None);
+        assert_eq!(night.update(true, 120 + gap, false, false), None);
+        assert!(night.quiet());
+        // Up for good.
+        let up = 180 + gap;
+        assert_eq!(night.update(false, up, false, false), None);
+        assert_eq!(night.update(false, up + gap - 60, false, false), None);
+        assert_eq!(
+            night.update(false, up + gap, false, false),
+            Some(Change::Over(Over::Awake))
+        );
+        // Asleep again: a new night, which an alarm ends.
+        assert_eq!(
+            night.update(true, 100_000, false, false),
+            Some(Change::Quiet { nap: false })
+        );
+        assert!(night.alarm());
+        assert!(!night.alarm(), "already over");
+        // Still asleep after the alarm: no new night until awake and
+        // asleep again.
+        assert_eq!(night.update(true, 100_060, false, false), None);
+        assert_eq!(night.update(false, 100_120, false, false), None);
+        assert_eq!(
+            night.update(true, 100_180, false, false),
+            Some(Change::Quiet { nap: false })
+        );
+        // Noon ends it, asleep or not.
+        assert_eq!(
+            night.update(true, 100_240, true, false),
+            Some(Change::Over(Over::Noon))
+        );
+        assert_eq!(night.update(true, 100_300, false, false), None);
+    }
+
+    /// A nap (falling asleep in the daytime) ends after [`sleep::NAP_AWAKE`]
+    /// minutes awake, not [`sleep::QUIET_AWAKE`]; the night after it
+    /// doesn't inherit that.
+    #[test]
+    fn naps_end_sooner() {
+        use sleep::{Change, Night, Over};
+        let nap = sleep::NAP_AWAKE as u32 * 60;
+        let mut night = Night::default();
+        assert_eq!(
+            night.update(true, 60, false, true),
+            Some(Change::Quiet { nap: true })
+        );
+        assert_eq!(night.update(false, 120, false, true), None);
+        assert_eq!(night.update(false, 120 + nap - 60, false, true), None);
+        assert_eq!(
+            night.update(false, 120 + nap + 60, false, true),
+            Some(Change::Over(Over::Awake))
+        );
+        // A night, later: the longer limit.
+        assert_eq!(
+            night.update(true, 50_000, false, false),
+            Some(Change::Quiet { nap: false })
+        );
+        assert_eq!(night.update(false, 50_060, false, false), None);
+        assert_eq!(night.update(false, 50_060 + nap + 60, false, false), None);
+        assert!(night.quiet());
+    }
+
+    #[test]
+    fn nap_hours_are_daytime() {
+        const DAY: i64 = 24 * 60 * 60;
+        let at = |hh: i64, mm: i64| Some(20_000 * DAY + (hh * 60 + mm) * 60);
+        assert!(!sleep::nap_hours(at(8, 59)));
+        assert!(sleep::nap_hours(at(9, 0)));
+        assert!(sleep::nap_hours(at(15, 30)));
+        assert!(!sleep::nap_hours(at(20, 0)));
+        assert!(!sleep::nap_hours(at(1, 25)));
+        assert!(!sleep::nap_hours(None), "unknown time is a night");
+    }
+
+    #[test]
+    fn noon_is_found() {
+        const DAY: i64 = 24 * 60 * 60;
+        let at = |day: i64, hh: i64, mm: i64| day * DAY + (hh * 60 + mm) * 60;
+        assert!(sleep::noon_between(at(5, 11, 59), at(5, 12, 0)));
+        assert!(!sleep::noon_between(at(5, 12, 0), at(5, 12, 1)));
+        assert!(!sleep::noon_between(at(5, 13, 0), at(5, 23, 0)));
+        assert!(!sleep::noon_between(at(5, 23, 0), at(6, 11, 0)));
+        // Over a gap (say, the phone setting the clock), still found.
+        assert!(sleep::noon_between(at(5, 23, 0), at(6, 13, 0)));
+        // Before 1970, too.
+        assert!(sleep::noon_between(at(-3, 11, 0), at(-3, 12, 30)));
     }
 }

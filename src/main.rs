@@ -619,7 +619,7 @@ async fn main(spawner: Spawner) {
             Either3::First(()) => {
                 // A stir after stillness: what a smart alarm waits for.
                 let stirring = activity::movement() >= sleep::STILL_LIMIT;
-                app.check_alarms(Instant::now(), local_second(), stirring);
+                app.check_alarms(Instant::now(), local_second(), stirring, activity::asleep());
                 // Pairing and updates need the user to watch the screen.
                 let watching = ble::PASSKEY.lock(Cell::get).is_some()
                     || dfu::PROGRESS.lock(Cell::get).is_some();
