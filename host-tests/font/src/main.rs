@@ -123,9 +123,9 @@ mod tests {
     }
 
     /// A notification's sender in large type, as the full-screen
-    /// notification lays it out: 2×, in the banner's 74 px.
+    /// notification lays it out: 2×, in the banner's 72 px.
     fn sender(text: &str) -> Option<Large<'_>> {
-        large(text, 74, 2)
+        large(text, 72, 2)
     }
 
     /// Nine 3-wide letters (or spaces) fit on a line at 2×, ten don't.
@@ -207,9 +207,8 @@ mod tests {
             Some(Large::Two("Bjørn", "Ødegård"))
         );
         assert_eq!(sender("Åse Øvrebø"), None);
-        // Æ's two extra columns fill the line exactly; one more letter
-        // and it's two.
-        assert_eq!(sender("Ærle Holm"), Some(Large::One("Ærle Holm")));
+        // Nine letters fit on a line, but not with Æ's two extra columns.
+        assert_eq!(sender("Ærle Holm"), Some(Large::Two("Ærle", "Holm")));
         assert_eq!(sender("Ærle Holme"), Some(Large::Two("Ærle", "Holme")));
         assert_eq!(sender("Æsa Holmsen"), None);
     }

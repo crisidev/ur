@@ -3117,8 +3117,13 @@ fn render_update(canvas: &mut Canvas, percent: u8, now: Instant) {
 // Notifications, calls, and music
 // ==============================================================================
 
-/// Text columns of the banner: 3..77.
-const BANNER_TEXT_WIDTH: i32 = 74;
+/// Text columns of the banner, and of a whole-screen notification, as of a
+/// call: four columns (12 of the panel's pixels) clear of each edge, for a
+/// little more air than the three there were. Four still leave room for
+/// 18 letters at 1× and 9 at 2×, as three did; a fifth would take a
+/// letter off each.
+const BANNER_TEXT: core::ops::Range<i32> = 4..76;
+const BANNER_TEXT_WIDTH: i32 = BANNER_TEXT.end - BANNER_TEXT.start;
 
 /// How long a notification shows: long enough to read, and for long lines
 /// to scroll through once. With the `whole_screen` to itself (it arrived
@@ -3141,8 +3146,8 @@ fn shown_for(app: &str, who: &str, whole_screen: bool) -> Duration {
 fn render_banner(canvas: &mut Canvas, app: &str, who: &str, elapsed: Duration) {
     canvas.fill_rect(0, 63, 80, 17, BACKGROUND);
     canvas.fill_rect(0, 63, 80, 1, Color::ACCENT);
-    canvas.marquee(3..3 + BANNER_TEXT_WIDTH, 67, app, Color::ACCENT, 1, elapsed);
-    canvas.marquee(3..3 + BANNER_TEXT_WIDTH, 74, who, Color::TEXT, 1, elapsed);
+    canvas.marquee(BANNER_TEXT, 67, app, Color::ACCENT, 1, elapsed);
+    canvas.marquee(BANNER_TEXT, 74, who, Color::TEXT, 1, elapsed);
 }
 
 /// Where a quiet notification's sender goes: everything below the app
@@ -3257,14 +3262,7 @@ fn wrap(text: &str, width: i32, scale: i32, max_lines: usize, lines: &mut Lines)
 /// only if it's longer still). `elapsed` is how long it's been showing.
 fn render_quiet_notification(canvas: &mut Canvas, app: &str, who: &str, elapsed: Duration) {
     canvas.clear(BACKGROUND);
-    canvas.marquee(
-        3..3 + BANNER_TEXT_WIDTH,
-        3,
-        app,
-        Color::TEXT_DIM,
-        1,
-        elapsed,
-    );
+    canvas.marquee(BANNER_TEXT, 3, app, Color::TEXT_DIM, 1, elapsed);
     let mut lines = Lines::new();
     match quiet_layout(who, &mut lines) {
         Some(scale) => {
@@ -3284,7 +3282,7 @@ fn render_quiet_notification(canvas: &mut Canvas, app: &str, who: &str, elapsed:
                 canvas.text_scaled(x, y, line, Color::TEXT, scale);
             }
         }
-        None => canvas.marquee(3..3 + BANNER_TEXT_WIDTH, 44, who, Color::TEXT, 2, elapsed),
+        None => canvas.marquee(BANNER_TEXT, 44, who, Color::TEXT, 2, elapsed),
     }
 }
 
