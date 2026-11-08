@@ -49,6 +49,10 @@ missing below were test builds for the dev kit.
 
 ### Fixed
 
+- Keep today's steps, and the activity the phone hasn't fetched yet, across updates, and say in the field log when an update resets the watch (3f55661)
+- Stop reading a heart rate sensor that shifts on the skin as a slow pulse (it read 42 BPM at a desk while a Garmin said 67) (1651aa5)
+- Measure the heart rate in the background only once the wrist has kept still for a few seconds, and give up early on a wrist that keeps moving, so desk work no longer spends minutes of LED an hour on failed measurements (77be9c2)
+- Learn the resting heart rate during the day too, not only asleep, and stop a single misreading from setting it (77be9c2)
 - Ignore touches while pairing or an update fills the screen, which could change the screen beneath unseen (0b74bd9)
 - Stop the watch crashing while a phone pairs, which made updates from the nRF DFU app fail on a link that wasn't paired (d7ca4d1)
 - Keep a ringing alarm buzzing when a notification arrives, instead of silencing it (c1e45cb)
