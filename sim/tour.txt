@@ -69,7 +69,8 @@ lift
 wait 200ms
 shot 09-paused.png
 
-# Below the music, the info screen; tapping THEME switches theme.
+# Below the music, the settings; tapping THEME switches theme. Then the
+# info screen, below that.
 press 40,40
 wait 50ms
 press 40,10
@@ -78,13 +79,53 @@ lift
 wait 1s
 up
 wait 1s
-shot 10-info.png
-tap 40,58
+shot 10-settings.png
+tap 40,20
 wait 1s
-shot 11-info-theme.png
-tap 40,58
+shot 11-settings-theme.png
+tap 40,20
+wait 1s
+up
+wait 1s
+shot 11a-info.png
 button
 wait 1s
+
+# The button grid: off until the settings' BUTTONS row says where its
+# presses go; then it's first below the clock.
+up
+up
+wait 1s
+tap 40,54
+wait 1s
+shot 11b-settings-buttons.png
+button
+wait 1s
+up
+wait 1s
+shot 11c-grid.png
+# 2, then 3: lit while it waits for a double tap, then sent.
+tap 40,13
+wait 300ms
+tap 67,13
+wait 100ms
+shot 11d-grid-waiting.png
+wait 310ms
+expect buzzing
+shot 11e-grid-sent.png
+# 5 held: at once.
+wait 2s
+long 40,40
+expect buzzing
+wait 100ms
+shot 11f-grid-held.png
+# 1, then a swipe: cancelled, nothing sent.
+wait 2s
+tap 13,13
+down
+wait 2s
+expect not buzzing
+buttons off
 
 # ==============================================================================
 # The phone wants attention
@@ -163,8 +204,9 @@ shot 19-morning.png
 # Switching off
 # ==============================================================================
 
-# Storage mode: a long press on the info screen (below the music's)
-# offers it, a tap confirms.
+# Storage mode: a long press on the info screen (below the music's, and
+# the settings) offers it, a tap confirms.
+up
 up
 up
 wait 1s

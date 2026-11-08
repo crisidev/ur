@@ -14,7 +14,8 @@
 //!   some.
 //! - Above: the last [`HISTORY`] notifications, newest nearest, one a page,
 //!   with when each arrived (see [`crate::arrival`]).
-//! - Below: Music, while the phone has media, then Info.
+//! - Below: the button grid (see [`buttons`]), if it's on; Music, while
+//!   the phone has media; then Settings, and Info.
 //!
 //! Screens away from the clock show a short bar, a handle, in the middle of
 //! each edge a swipe leads somewhere from: the one facing the clock (home),
@@ -45,11 +46,19 @@
 //!   on the info screen, offer storage mode (see [`crate::system_off`]),
 //!   which a tap then confirms, and anything else cancels. Elsewhere,
 //!   nothing.
-//! - On the info screen, tap the theme ("THEME") row for the next colour
-//!   theme within the current group (dark themes after sunset, light ones
-//!   after sunrise; each group remembers its own), or the brightness
-//!   ("LIGHT") row to switch between auto and soft (see
-//!   [`crate::brightness`]).
+//! - On the settings screen, tap a row for its next value: the colour
+//!   theme ("THEME", the next within the current group: dark themes after
+//!   sunset, light ones after sunrise; each group remembers its own), the
+//!   brightness ("LIGHT", auto or soft; see [`crate::brightness`]), the
+//!   button grid ("BUTTONS": off, or where its presses go), and, on the
+//!   last row ("HA KEY"), a page with the key Home Assistant needs for
+//!   them (see [`crate::bthome`]), which any touch closes.
+//! - On the button grid, taps and holds are the grid's (see [`buttons`]
+//!   for how they become presses). While a press waits to see whether
+//!   more follows, its buttons stay lit; once sent, the last one shows the
+//!   code, in the "good" colour (or "bad", if the phone was all it could
+//!   go to, and it wasn't connected), with a buzz. A swipe, or the
+//!   button, cancels what's waiting.
 //! - Screens that take over (the alarm editor, a ringing alarm, a call,
 //!   pairing, an update, the storage prompt) get every touch: swipes there
 //!   don't navigate.
@@ -142,6 +151,8 @@ use crate::arrival;
 use crate::battery::Battery;
 use crate::ble;
 use crate::brightness;
+use crate::bthome::Identity;
+use crate::buttons::{self, Press};
 use crate::canvas::{Canvas, Color, Sweep, marquee_cycle};
 use crate::clock::DateTime;
 use crate::day::Day;
@@ -216,6 +227,9 @@ pub struct Status<'a> {
     /// known.
     pub local_second: Option<i64>,
     pub battery: &'a Battery,
+    /// Home Assistant's key for the button grid, and the address it comes
+    /// from, once loaded (see [`crate::bthome`]).
+    pub bthome: Option<Identity>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -228,14 +242,21 @@ enum Screen {
     /// One of the [`Notifications`], by its index (0 the newest).
     Notification(u8),
     Music,
+    /// The button grid (see [`buttons`]).
+    Buttons,
+    Settings,
     Info,
     /// Asking whether to switch to storage mode: in no line, only reached
     /// by a long press on the info screen.
     Storage,
+    /// Home Assistant's key, for the button grid: in no line, only reached
+    /// by a tap on the settings screen's last row.
+    HaKey,
 }
 
-/// The most screens in a line (the notifications' is the longest).
-const LONGEST_LINE: usize = if HISTORY > 2 { HISTORY } else { 2 };
+/// The most screens in a line: the notifications', or the one below (the
+/// grid, music, settings, and info).
+const LONGEST_LINE: usize = if HISTORY > 4 { HISTORY } else { 4 };
 type Screens = heapless::Vec<Screen, LONGEST_LINE>;
 
 /// An alarm ringing.
@@ -285,6 +306,9 @@ enum Shows {
     /// [`PhoneEvent::TextAsBitmaps`]), and where the README says how to
     /// turn it off.
     TextAsBitmaps,
+    /// That Gadgetbridge didn't pass a grid press on (see
+    /// [`PhoneEvent::IntentsOff`]).
+    IntentsOff,
 }
 
 /// How many notifications the history above the clock keeps. Each costs
@@ -451,7 +475,22 @@ pub struct App {
     /// Bitmaps" (see [`PhoneEvent::TextAsBitmaps`]): once is enough, when
     /// every message may carry them.
     told_bitmaps: bool,
+    /// The button grid's setting, as stored (`main` saves it when it
+    /// changes).
+    pub buttons: buttons::Setting,
+    /// What the grid's waiting on (see [`buttons::Grid`]).
+    grid: buttons::Grid,
+    /// The grid's last press, for the screen: until when it shows, and
+    /// whether it went anywhere.
+    sent: Option<(Press, Instant, bool)>,
+    /// Presses for Home Assistant, for `main` to send (see
+    /// [`App::take_ha_press`]): sealing them needs flash, which is async.
+    /// Two, as one touch can complete two (see [`buttons::Grid::touch`]).
+    ha_presses: heapless::Vec<Press, 2>,
 }
+
+/// How long the grid shows a press it sent.
+const SENT_TIME: Duration = Duration::from_millis(800);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ThemeChoice {
@@ -494,6 +533,10 @@ impl App {
             media_hint: None,
             route: None,
             told_bitmaps: false,
+            buttons: buttons::Setting::Off,
+            grid: buttons::Grid::default(),
+            sent: None,
+            ha_presses: heapless::Vec::new(),
         }
     }
 
@@ -631,9 +674,13 @@ impl App {
                 }
             }
             Side::Below => {
+                if self.buttons.on() {
+                    add(Screen::Buttons);
+                }
                 if self.music.is_some() {
                     add(Screen::Music);
                 }
+                add(Screen::Settings);
                 add(Screen::Info);
             }
         }
@@ -641,10 +688,11 @@ impl App {
     }
 
     /// Where the current screen is. The storage prompt counts as the info
-    /// screen it came from.
+    /// screen it came from, and the key as the settings.
     fn place(&self) -> Place {
         let screen = match self.screen {
             Screen::Storage => Screen::Info,
+            Screen::HaKey => Screen::Settings,
             screen => screen,
         };
         Side::ALL
@@ -672,6 +720,11 @@ impl App {
     /// Switches screens, with a transition.
     fn go_to(&mut self, screen: Screen, sweep: Sweep) {
         if screen != self.screen {
+            // Leaving the grid (by a swipe or the button) cancels what it
+            // was waiting on.
+            if self.grid.cancel() {
+                defmt::info!("buttons: cancelled");
+            }
             self.screen = screen;
             self.transition = Some(sweep);
         }
@@ -704,6 +757,7 @@ impl App {
                 .map_or(("", ""), |n| (&n.app, &n.who)),
             Shows::Unpaired(why) => (why.title(), why.hint()),
             Shows::TextAsBitmaps => ("TEXT AS BITMAPS", "SEE FAQ N02"),
+            Shows::IntentsOff => ("INTENTS OFF", "SEE FAQ C04"),
         }
     }
 
@@ -947,6 +1001,8 @@ impl App {
                     self.go_to(Screen::Storage, Sweep::RightToLeft);
                     motor::buzz(Pattern::NOTIFY);
                 }
+                (_, Screen::HaKey) => self.go_to(Screen::Settings, Sweep::LeftToRight),
+                (Gesture::Tap | Gesture::LongPress, Screen::Buttons) => self.on_grid(touch, now),
                 (Gesture::SwipeLeft, _) => self.navigate(nav::Swipe::Left),
                 (Gesture::SwipeRight, _) => self.navigate(nav::Swipe::Right),
                 (Gesture::SwipeUp, _) => self.navigate(nav::Swipe::Up),
@@ -978,12 +1034,13 @@ impl App {
                         motor::buzz(Pattern::NOTIFY);
                     }
                 }
-                (Gesture::Tap, Screen::Info) if INFO_THEME_TAP.contains(&touch.y) => {
-                    self.next_theme();
-                }
-                (Gesture::Tap, Screen::Info) if INFO_LIGHT_TAP.contains(&touch.y) => {
-                    self.brightness = self.brightness.next();
-                }
+                (Gesture::Tap, Screen::Settings) => match settings_row(touch.y) {
+                    Some(Row::Theme) => self.next_theme(),
+                    Some(Row::Light) => self.brightness = self.brightness.next(),
+                    Some(Row::Buttons) => self.buttons = self.buttons.next(),
+                    Some(Row::HaKey) => self.go_to(Screen::HaKey, Sweep::RightToLeft),
+                    None => {}
+                },
                 // TODO: remove once something real uses the motor; for now
                 // this is how we check it works.
                 (Gesture::Tap, Screen::Info) => motor::buzz(Pattern::NOTIFY),
@@ -1000,6 +1057,82 @@ impl App {
                 },
                 _ => {}
             },
+        }
+    }
+
+    /// A tap or hold on the button grid.
+    fn on_grid(&mut self, touch: crate::touch::Touch, now: Instant) {
+        let kind = match touch.gesture {
+            Gesture::LongPress => buttons::Touch::Hold,
+            _ => buttons::Touch::Tap,
+        };
+        let started = now
+            .checked_sub(Duration::from_millis(touch.held_ms.into()))
+            .unwrap_or(now);
+        let button = buttons::at(touch.x, touch.y);
+        for press in self
+            .grid
+            .touch(button, kind, started, now)
+            .into_iter()
+            .flatten()
+        {
+            self.send_press(press, now);
+        }
+    }
+
+    /// When [`App::on_timer`] next has something to do: the grid's wait
+    /// running out, or its last press to stop showing.
+    pub fn deadline(&self) -> Option<Instant> {
+        let shown = self.sent.map(|(_, until, _)| until);
+        self.grid.deadline().into_iter().chain(shown).min()
+    }
+
+    /// The UI loop woke for [`App::deadline`] (or near it): sends what the
+    /// grid was waiting on, if it's waited long enough, unless a finger is
+    /// down (`finger_down`; see [`buttons::Grid::expire`]).
+    pub fn on_timer(&mut self, now: Instant, finger_down: bool) {
+        if self.sent.is_some_and(|(_, until, _)| now >= until) {
+            self.sent = None;
+        }
+        // Gone from the grid (the screen off, say) without going through
+        // `go_to`: nothing waits.
+        if !(self.awake && self.screen == Screen::Buttons) {
+            self.grid.cancel();
+            return;
+        }
+        if let Some(press) = self.grid.expire(now, finger_down) {
+            self.send_press(press, now);
+        }
+    }
+
+    /// Sends a grid press wherever the setting says, and shows it went.
+    /// To the phone, it's sent from here, as media commands are; for Home
+    /// Assistant, `main` picks it up (see [`App::take_ha_press`]).
+    fn send_press(&mut self, press: Press, now: Instant) {
+        defmt::info!("buttons: {=u8} {=str}", press.code, press.gesture.name());
+        let to_phone = self.buttons.phone() && self.connected;
+        if to_phone {
+            send(Outgoing::Button {
+                code: press.code,
+                gesture: press.gesture.name(),
+            });
+        }
+        if self.buttons.ha() {
+            let _ = self.ha_presses.push(press);
+        }
+        // Somewhere it could go. (Home Assistant can't say whether it
+        // heard; Gadgetbridge only says if it didn't pass it on.)
+        let sent = to_phone || self.buttons.ha();
+        self.sent = Some((press, now + SENT_TIME, sent));
+        motor::buzz(if sent { Pattern::NOTIFY } else { Pattern::TURN });
+    }
+
+    /// A grid press for Home Assistant, if any are waiting to be sent.
+    pub fn take_ha_press(&mut self) -> Option<Press> {
+        if self.ha_presses.is_empty() {
+            None
+        } else {
+            Some(self.ha_presses.remove(0))
         }
     }
 
@@ -1170,6 +1303,7 @@ impl App {
                 }
                 return;
             }
+            PhoneEvent::IntentsOff => return self.show_banner(Shows::IntentsOff, now),
             event => event,
         };
         // Anything else from the phone gets the full screen, bar media
@@ -1186,6 +1320,7 @@ impl App {
             PhoneEvent::Notification { .. }
             | PhoneEvent::Unpaired(_)
             | PhoneEvent::TextAsBitmaps
+            | PhoneEvent::IntentsOff
             | PhoneEvent::Alarms(_)
             | PhoneEvent::Route(_) => unreachable!("handled above"),
             // Calls ring and light the screen even in the quiet night: one
@@ -1613,8 +1748,16 @@ impl App {
                 Some(music) => render_music(canvas, music, now),
                 None => render_clock(canvas, status, next_alarm, None),
             },
-            Screen::Info => render_info(canvas, status, self.chosen_theme(), self.brightness),
+            Screen::Buttons => {
+                let sent = self.sent.filter(|&(_, until, _)| now < until);
+                render_buttons(canvas, &self.grid, sent.map(|(press, _, ok)| (press, ok)));
+            }
+            Screen::Settings => {
+                render_settings(canvas, self.chosen_theme(), self.brightness, self.buttons)
+            }
+            Screen::Info => render_info(canvas, status),
             Screen::Storage => render_storage_prompt(canvas),
+            Screen::HaKey => render_ha_key(canvas, status.bthome.as_ref()),
         }
         match self.place() {
             // Notifications nobody has seen: an accent-coloured handle on
@@ -1624,7 +1767,9 @@ impl App {
             Place::Clock if self.notifications.unseen => {
                 edge_bar(canvas, Side::Above, Color::ACCENT);
             }
-            Place::Line { side, index } if self.screen != Screen::Storage => {
+            Place::Line { side, index }
+                if !matches!(self.screen, Screen::Storage | Screen::HaKey) =>
+            {
                 render_hint(canvas, side, index, self.line(side).len());
             }
             _ => {}
@@ -2530,16 +2675,10 @@ fn render_battery(canvas: &mut Canvas, battery: &Battery, uptime_secs: u64) {
 /// First value row, and the spacing between rows.
 const INFO_TOP: i32 = 12;
 const INFO_LINE: i32 = 8;
-/// The rows a tap changes, theme then brightness, at the bottom below a
-/// hairline, and further apart than the others: a fingertip covers a few
-/// rows, and a row alone is only ~3 mm tall. Each one's tap area runs to
-/// halfway to the other, and to the hairline or the edge.
-const INFO_THEME: i32 = 57;
-const INFO_LIGHT: i32 = 69;
-const INFO_THEME_TAP: core::ops::Range<i32> = 50..65;
-const INFO_LIGHT_TAP: core::ops::Range<i32> = 65..80;
 
-fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme, light: brightness::Setting) {
+/// The watch's state, for a look (and for bug reports). The settings that
+/// used to be at its foot have a screen of their own, before it.
+fn render_info(canvas: &mut Canvas, status: &Status) {
     canvas.clear(BACKGROUND);
     // The version without its build metadata (`0.9.0-pr.12`); the commit
     // goes in the BUILD row (see `build.rs`).
@@ -2596,17 +2735,163 @@ fn render_info(canvas: &mut Canvas, status: &Status, theme: &Theme, light: brigh
         canvas.text_right(77, y, value, Color::TEXT);
     }
 
-    // The settings a tap changes. (Last night's sleep, which used to be
-    // here, has a screen of its own.)
-    // TODO: tapping elsewhere still buzzes (a motor test); drop that once
-    // alarms exercise the motor.
-    canvas.fill_rect(4, INFO_THEME_TAP.start + 1, 72, 1, Color::TEXT_FAINT);
-    for (y, label, value) in [
-        (INFO_THEME, "THEME", theme.name),
-        (INFO_LIGHT, "LIGHT", light.name()),
-    ] {
+    // Storage mode is a long press here, which nothing else would show.
+    // TODO: tapping still buzzes (a motor test); drop that once alarms
+    // exercise the motor.
+    canvas.text_centered(40, 68, "HOLD: STORAGE MODE", Color::TEXT_FAINT);
+}
+
+// ==============================================================================
+// Settings
+// ==============================================================================
+//
+// One setting a row, each a tap for its next value, with the rows as tall
+// as a fingertip (17 canvas pixels, ~6 mm), between hairlines.
+
+/// Where the rows start, and how tall each is.
+const SETTINGS_TOP: i32 = 12;
+const SETTINGS_ROW: i32 = 17;
+
+/// The settings screen's rows, top to bottom.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Row {
+    Theme,
+    Light,
+    Buttons,
+    HaKey,
+}
+
+const ROWS: [Row; 4] = [Row::Theme, Row::Light, Row::Buttons, Row::HaKey];
+
+/// Which row a tap at `y` is on.
+fn settings_row(y: i32) -> Option<Row> {
+    let row = y.checked_sub(SETTINGS_TOP)? / SETTINGS_ROW;
+    ROWS.get(usize::try_from(row).ok()?).copied()
+}
+
+fn render_settings(
+    canvas: &mut Canvas,
+    theme: &Theme,
+    light: brightness::Setting,
+    grid: buttons::Setting,
+) {
+    canvas.clear(BACKGROUND);
+    canvas.text(4, 3, "SETTINGS", Color::ACCENT);
+    for (i, row) in ROWS.into_iter().enumerate() {
+        let top = SETTINGS_TOP + SETTINGS_ROW * i as i32;
+        if i > 0 {
+            canvas.fill_rect(4, top, 72, 1, Color::TEXT_FAINT);
+        }
+        let (label, value, color) = match row {
+            Row::Theme => ("THEME", theme.name, Color::TEXT),
+            Row::Light => ("LIGHT", light.name(), Color::TEXT),
+            Row::Buttons => ("BUTTONS", grid.name(), Color::TEXT),
+            // Not a value, but somewhere to go.
+            Row::HaKey => ("HA KEY", "SHOW", Color::TEXT_DIM),
+        };
+        let y = top + (SETTINGS_ROW - 5) / 2 + 1;
         canvas.text(4, y, label, Color::TEXT_DIM);
-        canvas.text_right(77, y, value, Color::TEXT);
+        canvas.text_right(77, y, value, color);
+    }
+}
+
+/// Home Assistant's key, for typing into its BTHome integration: 32 hex
+/// digits, big, in four rows of two groups of four, and the address it'll
+/// find the watch at, for picking it out among what it discovers.
+fn render_ha_key(canvas: &mut Canvas, identity: Option<&Identity>) {
+    canvas.clear(BACKGROUND);
+    canvas.text_centered(40, 3, "HA KEY", Color::ACCENT);
+    let Some(identity) = identity else {
+        canvas.text_centered(40, 36, "NO KEY YET", Color::TEXT_DIM);
+        return;
+    };
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let digit = |byte: u8, high: bool| HEX[usize::from(if high { byte >> 4 } else { byte & 15 })];
+    for (row, bytes) in identity.key.chunks(4).enumerate() {
+        let mut text = [b' '; 9];
+        for (i, &byte) in bytes.iter().enumerate() {
+            // A space between the two groups.
+            let at = 2 * i + usize::from(i >= 2);
+            text[at] = digit(byte, true);
+            text[at + 1] = digit(byte, false);
+        }
+        let text = core::str::from_utf8(&text).expect("ASCII");
+        // 2×: 8 px a character, so 72 px (bar the last one's gap).
+        canvas.text_scaled(5, 13 + 13 * row as i32, text, Color::TEXT, 2);
+    }
+    // As people write it: most significant byte first.
+    let mut address = heapless::String::<17>::new();
+    for (i, &byte) in identity.address.iter().rev().enumerate() {
+        if i > 0 {
+            let _ = address.push(':');
+        }
+        let _ = address.push(char::from(digit(byte, true)));
+        let _ = address.push(char::from(digit(byte, false)));
+    }
+    canvas.text_centered(40, 69, &address, Color::TEXT_DIM);
+}
+
+// ==============================================================================
+// The button grid
+// ==============================================================================
+//
+// Nine squares in a 3×3 grid, unlabelled: each 22 px (~8 mm) in the middle
+// of its third of the screen, which is what a touch hits (see
+// `buttons::at`), so the gaps between them belong to the nearest. They
+// stay clear of the edges' handles.
+
+/// The grid: idle buttons in the track colour, outlined (so they show in
+/// the dim look too, where the track is black); the first button of what's
+/// waiting filled in the accent colour, and once there's a second, that one
+/// instead, the first left only outlined in it. A press just sent shows on
+/// its last button: its code, and how (2X a double tap), in the "good"
+/// colour, or "bad" if it went nowhere.
+fn render_buttons(canvas: &mut Canvas, grid: &buttons::Grid, sent: Option<(Press, bool)>) {
+    const SIZE: i32 = 22;
+    canvas.clear(BACKGROUND);
+    let (first, second) = grid.waiting();
+    for button in 1..=9u8 {
+        let x = 2 + 27 * i32::from((button - 1) % 3);
+        let y = 2 + 27 * i32::from((button - 1) / 3);
+        let shown = sent.filter(|(press, _)| press.last() == button);
+        // The outline, how thick, and the inside.
+        let (edge, width, inside) = match (shown, second) {
+            (Some((_, true)), _) => (Color::GOOD, 0, Color::GOOD),
+            (Some((_, false)), _) => (Color::BAD, 0, Color::BAD),
+            (None, Some(second)) if second == button => (Color::ACCENT, 0, Color::ACCENT),
+            (None, Some(_)) if first == Some(button) => (Color::ACCENT, 3, Color::TRACK),
+            (None, None) if first == Some(button) => (Color::ACCENT, 0, Color::ACCENT),
+            _ => (Color::TEXT_FAINT, 1, Color::TRACK),
+        };
+        canvas.fill_rect(x, y, SIZE, SIZE, edge);
+        canvas.fill_rect(
+            x + width,
+            y + width,
+            SIZE - 2 * width,
+            SIZE - 2 * width,
+            inside,
+        );
+        // Rounded off, a pixel at each corner.
+        for (cx, cy) in [
+            (x, y),
+            (x + SIZE - 1, y),
+            (x, y + SIZE - 1),
+            (x + SIZE - 1, y + SIZE - 1),
+        ] {
+            canvas.pixel(cx, cy, BACKGROUND);
+        }
+        if let Some((press, _)) = shown {
+            let mut code = heapless::String::<2>::new();
+            write!(code, "{}", press.code).expect("at most 2 digits");
+            let width = font::small_text_width(&code) * 2;
+            canvas.text_scaled(x + (SIZE - width) / 2, y + 3, &code, BACKGROUND, 2);
+            let how = match press.gesture {
+                buttons::Gesture::Tap => "TAP",
+                buttons::Gesture::DoubleTap => "2X",
+                buttons::Gesture::Hold => "HOLD",
+            };
+            canvas.text_centered(x + SIZE / 2, y + 15, how, BACKGROUND);
+        }
     }
 }
 

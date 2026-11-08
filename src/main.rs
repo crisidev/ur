@@ -7,6 +7,8 @@
 //! - [`display`]: the async LCD driver the canvas pushes pixels through.
 //! - [`spi`] / [`spi_flash`]: the bus the LCD shares with the external flash.
 //! - [`ui`] / [`nav`]: screens, navigation, and screen power.
+//! - [`buttons`] / [`bthome`]: the button grid, and its presses as
+//!   advertisements for Home Assistant.
 //! - [`brightness`]: how bright the backlight is.
 //! - [`touch`] / [`gesture`], the button task here: input, delivered
 //!   through [`INPUT`].
@@ -45,6 +47,8 @@ mod arrival;
 mod battery;
 mod ble;
 mod brightness;
+mod bthome;
+mod buttons;
 mod canvas;
 mod clock;
 #[cfg(feature = "compare")]
@@ -415,6 +419,19 @@ async fn main(spawner: Spawner) {
     let rng = RNG.init(rng::Rng::new(p.RNG, Irqs));
     interrupt::RNG.set_priority(APP_PRIORITY);
 
+    // A stable address, so the phone recognises us after a reboot. FICR holds
+    // a factory-random 48-bit address per chip; static random addresses need
+    // the top two bits set.
+    let ficr = embassy_nrf::pac::FICR;
+    let (lo, hi) = (ficr.deviceaddr(0).read(), ficr.deviceaddr(1).read());
+    let mut address = [0u8; 6];
+    address[..4].copy_from_slice(&lo.to_le_bytes());
+    address[4..].copy_from_slice(&hi.to_le_bytes()[..2]);
+    address[5] |= 0xC0;
+    // The button grid's key for Home Assistant, made from the RNG on first
+    // boot: before the controller takes the RNG over.
+    bthome::init(rng, address).await;
+
     // The controller's memory needs depend on its configuration; `build`
     // logs the required size if this is wrong (and fails if it's too small).
     static SDC_MEM: StaticCell<nrf_sdc::Mem<5184>> = StaticCell::new();
@@ -436,16 +453,6 @@ async fn main(spawner: Spawner) {
         .and_then(|b| b.buffer_cfg(packet_size, packet_size, 3, 3))
         .and_then(|b| b.build(sdc_peripherals, rng, mpsl, sdc_mem))
         .expect("controller configuration is valid and its memory is large enough");
-
-    // A stable address, so the phone recognises us after a reboot. FICR holds
-    // a factory-random 48-bit address per chip; static random addresses need
-    // the top two bits set.
-    let ficr = embassy_nrf::pac::FICR;
-    let (lo, hi) = (ficr.deviceaddr(0).read(), ficr.deviceaddr(1).read());
-    let mut address = [0u8; 6];
-    address[..4].copy_from_slice(&lo.to_le_bytes());
-    address[4..].copy_from_slice(&hi.to_le_bytes()[..2]);
-    address[5] |= 0xC0;
     spawner.spawn(ble::host_task(controller, address).expect("spawned once"));
 
     // ==========================================================================
@@ -501,6 +508,7 @@ async fn main(spawner: Spawner) {
         app.phone_alarms = alarm::Phone::from_bytes(phone_alarms);
     }
     app.brightness = brightness::Setting::from_byte(load_u8(storage::key::BRIGHTNESS).await);
+    app.buttons = buttons::Setting::from_byte(load_u8(storage::key::BUTTONS).await);
     if let Some(location) = storage::load(storage::key::LOCATION).await {
         geo::set_location(geo::Location::from_bytes(location));
     }
@@ -614,6 +622,7 @@ async fn main(spawner: Spawner) {
                 heart_rate: heart::current(now),
                 temperature,
                 battery: &battery,
+                bthome: bthome::identity(),
             };
             let daytime = geo::is_daytime();
             app.set_daytime(daytime);
@@ -701,18 +710,28 @@ async fn main(spawner: Spawner) {
         }
         clock::checkpoint();
 
-        // Wake for the next second, the next input, or, while text is
-        // scrolling, the next animation frame (which only redraws).
-        let frame = async {
-            if app.animating() {
-                Timer::after(canvas::MARQUEE_FRAME).await;
-            } else {
-                core::future::pending::<()>().await;
+        // Wake for the next second, the next input, while text is
+        // scrolling, the next animation frame (which only redraws), and
+        // when the button grid has something due (see `App::deadline`),
+        // unless a finger is down: that touch decides, and its event
+        // wakes us.
+        let frame = (app.animating()).then(|| Instant::now() + canvas::MARQUEE_FRAME);
+        let due = app.deadline().filter(|_| !touch::finger_down());
+        let timer = async {
+            match frame.into_iter().chain(due).min() {
+                Some(at) => Timer::at(at).await,
+                None => core::future::pending::<()>().await,
             }
         };
         let alarms_before = app.alarms;
-        match select3(ticker.next(), INPUT.receive(), frame).await {
-            Either3::Third(()) => {}
+        match select3(ticker.next(), INPUT.receive(), timer).await {
+            Either3::Third(()) => {
+                // Maybe only a frame; then this does nothing.
+                let (at, finger_down) = (Instant::now(), touch::finger_down());
+                #[cfg(feature = "compare")]
+                compare::timer(at, finger_down);
+                app.on_timer(at, finger_down);
+            }
             Either3::First(()) => {
                 // A stir after stillness: what a smart alarm waits for.
                 let stirring = activity::movement() >= sleep::STILL_LIMIT;
@@ -740,6 +759,7 @@ async fn main(spawner: Spawner) {
                 let was_awake = app.awake;
                 let before = app.themes;
                 let brightness_before = app.brightness;
+                let buttons_before = app.buttons;
                 let at = Instant::now();
                 #[cfg(feature = "compare")]
                 compare::input(&event, at);
@@ -757,7 +777,16 @@ async fn main(spawner: Spawner) {
                     info!("brightness: {=str}", app.brightness.name());
                     storage::save(storage::key::BRIGHTNESS, &[app.brightness.to_byte()]).await;
                 }
+                if app.buttons != buttons_before {
+                    info!("buttons: {}", app.buttons);
+                    storage::save(storage::key::BUTTONS, &[app.buttons.to_byte()]).await;
+                }
             }
+        }
+        // The button grid's presses for Home Assistant, from an input or
+        // its wait running out.
+        while let Some(press) = app.take_ha_press() {
+            bthome::send(press, battery.percent() as u8).await;
         }
         // Edited, switched, or (a one-off alarm) rung and switched off.
         if app.alarms != alarms_before {

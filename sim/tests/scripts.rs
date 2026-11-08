@@ -45,7 +45,7 @@ fn the_tour() {
     let dir = out("tour");
     let (ok, log) = run("tour.txt", &["--out", dir.to_str().expect("UTF-8")]);
     assert!(ok, "{log}");
-    assert_eq!(pngs(&dir), 21, "{log}");
+    assert_eq!(pngs(&dir), 27, "{log}");
 }
 
 #[test]

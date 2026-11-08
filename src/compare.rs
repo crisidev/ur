@@ -71,6 +71,7 @@ pub struct Boot {
     pub theme_light: u8,
     pub theme_dark: u8,
     pub brightness: u8,
+    pub buttons: u8,
     pub alarms: [u8; alarm::Settings::BYTES],
     pub phone_alarms: [u8; alarm::Phone::BYTES],
 }
@@ -83,6 +84,8 @@ pub mod kind {
     pub const ATTENTION: u8 = 4;
     pub const PHONE: u8 = 5;
     pub const GLANCE: u8 = 6;
+    /// The UI loop's timer (see `App::on_timer`).
+    pub const TIMER: u8 = 7;
 }
 
 /// What [`Event::phone`] says the phone sent: the content isn't kept (the
@@ -99,13 +102,16 @@ pub mod phone {
     pub const ALARMS: u8 = 9;
     pub const ROUTE: u8 = 10;
     pub const TEXT_AS_BITMAPS: u8 = 11;
+    pub const INTENTS_OFF: u8 = 12;
 }
 
-/// Tick flags: what `App::check_alarms` and `App::on_tick` were told.
+/// Tick flags: what `App::check_alarms` and `App::on_tick` were told;
+/// and for the timer, `App::on_timer`.
 pub mod flag {
     pub const STIRRING: u8 = 1;
     pub const ASLEEP: u8 = 2;
     pub const WATCHING: u8 = 4;
+    pub const FINGER_DOWN: u8 = 8;
 }
 
 #[repr(C)]
@@ -289,6 +295,7 @@ pub static UR_COMPARE: Shared = Shared(UnsafeCell::new(Export {
             theme_light: 0,
             theme_dark: 0,
             brightness: 0,
+            buttons: 0,
             alarms: [0; alarm::Settings::BYTES],
             phone_alarms: [0; alarm::Phone::BYTES],
         },
@@ -322,6 +329,7 @@ pub fn boot(at: Instant, app: &crate::ui::App) {
             theme_light: app.themes.light,
             theme_dark: app.themes.dark,
             brightness: app.brightness.to_byte(),
+            buttons: app.buttons.to_byte(),
             alarms: app.alarms.to_bytes(),
             phone_alarms: app.phone_alarms.to_bytes(),
         };
@@ -370,6 +378,14 @@ pub fn tick(
     });
 }
 
+/// The UI loop's timer went off, about to call `App::on_timer` with `at`.
+pub fn timer(at: Instant, finger_down: bool) {
+    push(Event {
+        flags: u8::from(finger_down) * flag::FINGER_DOWN,
+        ..event(kind::TIMER, at)
+    });
+}
+
 /// An input, about to be handed to `App::on_input` with `at`.
 pub fn input(input: &InputEvent, at: Instant) {
     let event = match input {
@@ -396,6 +412,7 @@ pub fn input(input: &InputEvent, at: Instant) {
                 PhoneEvent::Alarms(_) => phone::ALARMS,
                 PhoneEvent::Route(_) => phone::ROUTE,
                 PhoneEvent::TextAsBitmaps => phone::TEXT_AS_BITMAPS,
+                PhoneEvent::IntentsOff => phone::INTENTS_OFF,
             },
             ..event(kind::PHONE, at)
         },

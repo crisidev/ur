@@ -1156,9 +1156,37 @@ mod tests {
                 Outgoing::Music(MusicCommand::PlayPause),
                 r#"{"t":"music","n":"playpause"}"#,
             ),
+            // The longest a grid press gets.
+            (
+                Outgoing::Button {
+                    code: 99,
+                    gesture: "double_tap",
+                },
+                r#"{"t":"intent","action":"ur.watch.BUTTON","extra":{"button":99,"gesture":"double_tap"}}"#,
+            ),
         ];
         for (message, json) in cases {
             assert_eq!(message.to_line().as_str(), format!("{json}\r\n"));
         }
+    }
+
+    #[test]
+    fn intents_off() {
+        // What Gadgetbridge answers a grid press with, its "Allow Intents"
+        // setting off (`uartTxJSONError`).
+        assert_eq!(
+            parse(
+                br#"GB({"t":"intent","err":"Android Intents not enabled, check Gadgetbridge Device Settings"})"#
+            ),
+            Some(Incoming::Phone {
+                event: PhoneEvent::IntentsOff,
+                text_as_bitmaps: false
+            })
+        );
+        // Anything else about intents isn't for us.
+        assert_eq!(
+            parse(br#"GB({"t":"intent","action":"x"})"#),
+            Some(Incoming::Ignored("intent"))
+        );
     }
 }

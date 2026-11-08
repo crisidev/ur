@@ -27,10 +27,11 @@ use core::task::{Context, Poll};
 
 use defmt::{debug, info, warn};
 use embassy_futures::join::join3;
-use embassy_futures::select::{Either3, Either4, select, select3, select4};
+use embassy_futures::select::{Either, Either3, Either4, select, select3, select4};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
 use embassy_sync::channel::{Channel, TrySendError};
+use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use heapless::Vec;
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
@@ -68,6 +69,48 @@ pub struct BatteryReport {
     pub percent: u8,
     pub charging: bool,
     pub millivolts: u32,
+}
+
+/// A BTHome advertisement for the button grid (see [`burst`]): its data
+/// and length, and until when to send it.
+#[derive(Clone, Copy)]
+struct Burst {
+    data: [u8; 31],
+    len: u8,
+    until: Instant,
+}
+
+static BURST: Mutex<CriticalSectionRawMutex, Cell<Option<Burst>>> = Mutex::new(Cell::new(None));
+/// A new [`BURST`], for whichever slot is advertising to switch to it.
+static BURST_NEW: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// How long each grid press is advertised for. Home Assistant drops
+/// repeats of a press by its packet id, but only for 4 s, so a burst must
+/// end well before; scanners that listen a tenth of the time (an ESPHome
+/// proxy, sharing its radio with Wi-Fi) still catch one of its ~50
+/// advertisements almost surely.
+const BURST_TIME: Duration = Duration::from_millis(1200);
+/// How often a burst advertises: the fastest Bluetooth allows.
+const BURST_INTERVAL: Duration = Duration::from_millis(20);
+
+/// Advertises `data` (a BTHome advertisement from [`crate::bthome`]) for
+/// [`BURST_TIME`], instead of the usual advertising data, replacing any
+/// burst under way.
+///
+/// It rides on the connectable advertising the watch does anyway
+/// (whichever slot is advertising; see `host_task`), only faster, and with
+/// the name moved to the scan response: so a phone can still connect
+/// mid-burst, and there's no second advertising set, which our
+/// SoftDevice Controller library hasn't got.
+///
+/// TODO: while both slots serve a connection (the phone and an update, or
+/// a log fetch), neither advertises, and a burst that ends meanwhile is
+/// never sent.
+pub fn burst(data: [u8; 31], len: usize) {
+    let until = Instant::now() + BURST_TIME;
+    let len = len as u8;
+    BURST.lock(|b| b.set(Some(Burst { data, len, until })));
+    BURST_NEW.signal(());
 }
 
 /// Messages for the phone, from anywhere in the firmware; sent while
@@ -424,20 +467,41 @@ fn advertising_interval(last_disconnect: Option<Instant>) -> Duration {
 }
 
 /// Advertises at `interval` until something connects, or until
-/// [`ADVERTISING_REVIEW`] passes (`None`).
+/// [`ADVERTISING_REVIEW`] passes (`None`). During a [`burst`], its data
+/// instead, until it ends, or another starts (`None` either way).
 async fn advertise<'values, 'server, C: trouble_host::Controller>(
     peripheral: &mut Peripheral<'values, C, Pool>,
     server: &'server Server<'values>,
     interval: Duration,
 ) -> Result<Option<GattConnection<'values, 'server, Pool>>, BleHostError<C::Error>> {
+    // Only a burst set from here on interrupts this one.
+    BURST_NEW.reset();
+    let now = Instant::now();
+    let burst = BURST.lock(Cell::get).filter(|b| b.until > now);
     let mut data = [0; 31];
-    let len = AdStructure::encode_slice(
-        &[
-            AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-            AdStructure::CompleteLocalName(NAME.as_bytes()),
-        ],
-        &mut data,
+    let mut name = [0; 31];
+    let name_len = AdStructure::encode_slice(
+        &[AdStructure::CompleteLocalName(NAME.as_bytes())],
+        &mut name,
     )?;
+    let (adv_data, scan_data, interval, review) = match &burst {
+        Some(burst) => (
+            &burst.data[..usize::from(burst.len)],
+            &name[..name_len],
+            BURST_INTERVAL,
+            burst.until - now,
+        ),
+        None => {
+            let len = AdStructure::encode_slice(
+                &[
+                    AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
+                    AdStructure::CompleteLocalName(NAME.as_bytes()),
+                ],
+                &mut data,
+            )?;
+            (&data[..len], &[][..], interval, ADVERTISING_REVIEW)
+        }
+    };
     let parameters = AdvertisementParameters {
         interval_min: interval,
         interval_max: interval,
@@ -447,15 +511,16 @@ async fn advertise<'values, 'server, C: trouble_host::Controller>(
         .advertise(
             &parameters,
             Advertisement::ConnectableScannableUndirected {
-                adv_data: &data[..len],
-                scan_data: &[],
+                adv_data,
+                scan_data,
             },
         )
         .await?;
-    // Dropping the advertiser (on timeout) stops advertising.
-    match with_timeout(ADVERTISING_REVIEW, advertiser.accept()).await {
-        Ok(conn) => Ok(Some(conn?.with_attribute_server(server)?)),
-        Err(_) => Ok(None),
+    // Dropping the advertiser (on timeout, or for a new burst) stops
+    // advertising.
+    match select(with_timeout(review, advertiser.accept()), BURST_NEW.wait()).await {
+        Either::First(Ok(conn)) => Ok(Some(conn?.with_attribute_server(server)?)),
+        Either::First(Err(_)) | Either::Second(()) => Ok(None),
     }
 }
 

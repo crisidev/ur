@@ -50,6 +50,12 @@ pub mod key {
     pub const PHONE_ALARMS: u8 = 24;
     /// The brightness setting; see [`crate::brightness::Setting`].
     pub const BRIGHTNESS: u8 = 25;
+    /// The button grid's setting; see [`crate::buttons::Setting`].
+    pub const BUTTONS: u8 = 30;
+    /// Home Assistant's key for the grid's presses; see [`crate::bthome`].
+    pub const BTHOME_KEY: u8 = 31;
+    /// How far the BTHome counter is reserved (see `bthome::send`).
+    pub const BTHOME_COUNTER: u8 = 32;
 }
 
 /// Big enough for the largest item (a 43-byte bond) plus its key, rounded up

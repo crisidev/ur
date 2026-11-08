@@ -46,6 +46,9 @@ pub enum PhoneEvent {
     Alarms(alarm::Phone),
     /// The next turn while the phone navigates; `None` once it stops.
     Route(Option<route::Step>),
+    /// Gadgetbridge didn't pass a button grid press on, as its "Allow
+    /// Intents" setting is off. Shown like a notification.
+    IntentsOff,
 }
 
 /// Why a connected client can't use the watch: its link never became
@@ -91,6 +94,7 @@ impl defmt::Format for PhoneEvent {
             Self::TextAsBitmaps => "TextAsBitmaps",
             Self::Alarms(_) => "Alarms",
             Self::Route(_) => "Route",
+            Self::IntentsOff => "IntentsOff",
         };
         defmt::write!(f, "{=str}", kind)
     }

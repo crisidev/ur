@@ -70,6 +70,16 @@ const LIFT_TIMEOUT: Duration = Duration::from_millis(250);
 /// it's lifted. [`touch_task`] treats each like a report from the chip.
 pub static SIMULATED: Signal<CriticalSectionRawMutex, Option<(u8, u8)>> = Signal::new();
 
+/// Whether a finger is down, for the button grid: a wait for a second
+/// button can't run out while one is (see [`crate::buttons::Grid::expire`]).
+static DOWN: AtomicBool = AtomicBool::new(false);
+
+/// Whether a finger is on the screen right now (a touch begun, and not yet
+/// over).
+pub fn finger_down() -> bool {
+    DOWN.load(Ordering::Relaxed)
+}
+
 /// Whether the chip should be asleep, as last asked (see [`set_asleep`]).
 static ASLEEP: AtomicBool = AtomicBool::new(false);
 /// A change to [`ASLEEP`], for the task.
@@ -122,6 +132,8 @@ pub async fn touch_task(
 
     let mut tracking: Option<Tracking> = None;
     loop {
+        // Every change to `tracking` comes back here before awaiting.
+        DOWN.store(tracking.is_some(), Ordering::Relaxed);
         // While a touch is in progress, also wake up when it's been held
         // long enough to be a long press, and if reports dry up, so a
         // missed lift can't leave us stuck mid-touch. Whether it's the
@@ -278,6 +290,9 @@ async fn configure(i2c: &mut Device) -> bool {
 }
 
 async fn finish(touch: &Tracking) {
+    // Over, as of now: the UI may act on the event before the loop comes
+    // round to say so.
+    DOWN.store(false, Ordering::Relaxed);
     // A long press was reported while held, and that was the touch's one
     // event, whatever the finger did after.
     if touch.held {

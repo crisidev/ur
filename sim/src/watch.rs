@@ -23,6 +23,7 @@ use crate::activity;
 use crate::battery::Battery;
 use crate::ble;
 use crate::brightness;
+use crate::bthome::{self, Identity};
 use crate::canvas::{Canvas, MARQUEE_FRAME, Sweep};
 use crate::clock;
 use crate::display::{Display, PANEL};
@@ -43,6 +44,16 @@ const OFF_SCREEN: Duration = Duration::from_secs(3);
 
 /// The battery's voltage until told otherwise: about 70%.
 const DEFAULT_BATTERY_MV: u32 = 3990;
+
+/// The simulated watch's key for Home Assistant (bthome.io's example), and
+/// its address (the README's example).
+pub const DEMO_IDENTITY: Identity = Identity {
+    key: [
+        0x23, 0x1d, 0x39, 0xc1, 0xd7, 0xcc, 0x1a, 0xb1, 0xae, 0xe2, 0x24, 0xcd, 0x09, 0x6d, 0xb9,
+        0x32,
+    ],
+    address: [0x9A, 0x78, 0x56, 0x34, 0x12, 0xE5],
+};
 
 pub struct Watch {
     pub app: App,
@@ -81,6 +92,9 @@ pub struct Watch {
     /// The watch switched itself off (storage mode, or an empty battery):
     /// only the button (storage mode) or the charger wakes it.
     pub off: Option<Reason>,
+    /// The BTHome counter (see `bthome::send`), for the advertisements
+    /// printed.
+    bthome_counter: u32,
 
     /// Called while a transition animates, after each millisecond of it,
     /// for the window to show its frames.
@@ -123,6 +137,7 @@ impl Watch {
             motor: None,
             finger: None,
             off: None,
+            bthome_counter: 256,
             on_frame: None,
             verbose: false,
         }
@@ -143,9 +158,11 @@ impl Watch {
         let alarms = self.app.alarms;
         let phone_alarms = self.app.phone_alarms;
         let brightness = self.app.brightness;
+        let buttons = self.app.buttons;
         self.app = App::new(Instant::now(), themes, alarms);
         self.app.phone_alarms = phone_alarms;
         self.app.brightness = brightness;
+        self.app.buttons = buttons;
         self.battery = Battery::new();
         self.off = None;
         self.first_frame = true;
@@ -171,14 +188,17 @@ impl Watch {
     // Time
     // ==========================================================================
 
-    /// Lets `duration` pass: every tick, marquee frame, and long press due
-    /// in it happens, in order.
+    /// Lets `duration` pass: every tick, marquee frame, long press, and
+    /// button grid deadline due in it happens, in order.
     pub fn advance(&mut self, duration: Duration) {
         self.power_on();
         let end = Instant::now() + duration;
         loop {
             let frame = self.app.animating().then(|| self.last_pass + MARQUEE_FRAME);
             let press = self.finger.as_ref().and_then(Tracking::long_press_at);
+            // As `main.rs`: not while a finger is down.
+            let due = self.app.deadline().filter(|_| self.finger.is_none());
+            let frame = frame.into_iter().chain(due).min();
             let next = [Some(self.next_tick), frame, press]
                 .into_iter()
                 .flatten()
@@ -195,6 +215,7 @@ impl Watch {
                 self.next_tick += TICK;
                 self.tick();
             } else {
+                self.app.on_timer(next, self.finger.is_some());
                 self.after_event();
                 self.pass();
             }
@@ -256,12 +277,16 @@ impl Watch {
         self.log(format!("input: {}", describe(&event)));
         let themes = self.app.themes;
         let brightness = self.app.brightness;
+        let buttons = self.app.buttons;
         self.app.on_input(event, Instant::now());
         if self.app.themes != themes {
             self.log(format!("theme: {}", self.app.theme().name));
         }
         if self.app.brightness != brightness {
             self.log(format!("brightness: {}", self.app.brightness.name()));
+        }
+        if self.app.buttons != buttons {
+            self.log(format!("buttons: {}", self.app.buttons.name()));
         }
         self.after_event();
         self.pass();
@@ -326,6 +351,24 @@ impl Watch {
         }
         if self.app.take_phone_alarms_changed() {
             self.log("phone alarms changed");
+        }
+        // What `main.rs` would hand `bthome::send`: the advertisement, as
+        // the watch would send it, with the demo key.
+        while let Some(press) = self.app.take_ha_press() {
+            let counter = self.bthome_counter;
+            self.bthome_counter += 1;
+            let battery = self.battery.percent() as u8;
+            let (data, len) = bthome::advert(press, battery, counter, &DEMO_IDENTITY);
+            let hex: String = data[..len].iter().map(|b| format!("{b:02x}")).collect();
+            let slot = match press.gesture {
+                crate::buttons::Gesture::Tap => 1,
+                crate::buttons::Gesture::DoubleTap => 2,
+                crate::buttons::Gesture::Hold => 3,
+            };
+            self.log(format!(
+                "to Home Assistant: dimmer_{slot} rotate_right steps {} (counter {counter}): {hex}",
+                press.code
+            ));
         }
     }
 
@@ -407,6 +450,7 @@ impl Watch {
                 heart_rate: self.heart_rate,
                 temperature: self.temperature,
                 battery: &self.battery,
+                bthome: Some(DEMO_IDENTITY),
             };
             self.app
                 .set_daytime(self.daytime.unwrap_or_else(geo::is_daytime));
@@ -619,6 +663,7 @@ fn describe(event: &InputEvent) -> String {
                 )
             }
             PhoneEvent::Route(None) => "navigation over".into(),
+            PhoneEvent::IntentsOff => "Gadgetbridge: intents not allowed".into(),
         },
     }
 }

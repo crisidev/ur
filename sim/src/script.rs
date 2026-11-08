@@ -56,6 +56,8 @@ The wearer and the watch:
   demo-day                   fill today's history so far with a typical day
   alarm 1|2 HH:MM [on|off] | smart on|off [HH:MM [HH:MM]] | timer 1|2 MIN
   theme NAME|auto            pick a theme, and its time of day (auto: the sun's)
+  buttons off|ha|phone|both  the button grid, and where its presses go (as
+                             the Settings screen's BUTTONS row)
 Time:
   wait DURATION              e.g. 1.5s, 300ms, 10m, 2h (a bare number: seconds)
   until HH:MM                to the next time the clock shows HH:MM (and
@@ -372,6 +374,17 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
             }
             name => watch.choose_theme(name)?,
         },
+        "buttons" => {
+            use crate::buttons::Setting;
+            watch.app.buttons = match need(0, "off|ha|phone|both")? {
+                "off" => Setting::Off,
+                "ha" => Setting::Ha,
+                "phone" => Setting::Phone,
+                "both" => Setting::Both,
+                other => return Err(format!("buttons: {other}? (off, ha, phone, or both)")),
+            };
+            watch.refresh();
+        }
 
         // ======================================================================
         // Time and output

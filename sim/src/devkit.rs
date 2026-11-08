@@ -401,6 +401,7 @@ impl Follower {
         );
         app.phone_alarms = alarm::Phone::from_bytes(boot.phone_alarms);
         app.brightness = brightness::Setting::from_byte(boot.brightness);
+        app.buttons = crate::buttons::Setting::from_byte(boot.buttons);
         eprintln!(
             "following the dev kit from its boot at {} s of uptime",
             boot.at / 32_768
@@ -611,6 +612,11 @@ impl Follower {
                 held_ms: event.held_ms,
             })),
             kind::PHONE => Some(InputEvent::Phone(self.phone(event.phone)?)),
+            kind::TIMER => {
+                let finger_down = event.flags & compare::flag::FINGER_DOWN != 0;
+                self.app.on_timer(at, finger_down);
+                None
+            }
             other => return Err(format!("the dev kit logged an unknown event ({other})")),
         };
         if let Some(input) = input {
@@ -621,6 +627,7 @@ impl Follower {
         // phone) isn't drawn: drop it here, so it doesn't pile up.
         while crate::motor::take_request().is_some() {}
         while crate::ble::OUTBOX.try_receive().is_ok() {}
+        while self.app.take_ha_press().is_some() {}
         Ok(())
     }
 
@@ -781,6 +788,8 @@ impl Follower {
             }),
             local_second: (pass.local_second != compare::NONE_I64).then_some(pass.local_second),
             battery: &battery,
+            // The dev kit's own isn't exported: the key page differs.
+            bthome: Some(crate::watch::DEMO_IDENTITY),
         };
         self.canvas.set_theme(self.app.theme());
         self.app.render(&mut self.canvas, &status, now);

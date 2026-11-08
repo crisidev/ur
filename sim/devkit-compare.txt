@@ -49,16 +49,20 @@ compare 08-alarm-off
 button
 wait 500ms
 
-# Below: the info screen; its THEME row, tapped twice, goes round.
+# Below: the settings; their THEME row, tapped twice, goes round. Then
+# the info screen.
 up
 wait 1s
-compare 09-info
-tap 40,58
+compare 09-settings
+tap 40,20
 wait 1s
-compare 10-info-next-theme
-tap 40,58
+compare 10-settings-next-theme
+tap 40,20
 wait 1s
-compare 11-info-theme-back
+compare 11-settings-theme-back
+up
+wait 1s
+compare 11a-info
 long 40,40
 wait 1s
 compare 12-storage-prompt

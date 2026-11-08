@@ -215,6 +215,10 @@ fn phone_event(kind: &str, object: Object<'_>, bitmaps: &mut bool) -> Option<Pho
         "musicstate" => PhoneEvent::MusicState {
             playing: object.get("state").and_then(|v| v.as_raw_str()) == Some("play"),
         },
+        // Gadgetbridge's answer to an intent (a button grid press) when
+        // its "Allow Intents" setting is off: `{"t":"intent","err":"…"}`.
+        // It never sends one otherwise.
+        "intent" if object.get("err").is_some() => PhoneEvent::IntentsOff,
         "find" => PhoneEvent::Find {
             on: object.get("n").and_then(|v| v.as_bool()) == Some(true),
         },
@@ -663,6 +667,13 @@ pub enum Outgoing {
     Call(CallAction),
     /// Control the phone's media player.
     Music(MusicCommand),
+    /// A press on the button grid (see [`crate::buttons`]), as an Android
+    /// broadcast intent for Tasker and the like: Gadgetbridge sends any
+    /// `intent` message on as one, if its "Allow Intents" setting is on
+    /// (and answers [`PhoneEvent::IntentsOff`] if not). Action
+    /// `ur.watch.BUTTON`, with the extras `button` (the code, a number)
+    /// and `gesture` (`tap`, `double_tap`, or `hold`).
+    Button { code: u8, gesture: &'static str },
 }
 
 #[derive(Clone, Copy, Format)]
@@ -745,6 +756,11 @@ impl Outgoing {
                     MusicCommand::Next => "next",
                     MusicCommand::Previous => "previous",
                 }
+            ),
+            Self::Button { code, gesture } => write!(
+                line,
+                r#"{{"t":"intent","action":"ur.watch.BUTTON","extra":{{"button":{},"gesture":"{}"}}}}"#,
+                code, gesture
             ),
         };
         result

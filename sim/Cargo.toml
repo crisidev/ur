@@ -22,6 +22,7 @@ default = ["window"]
 window = ["dep:minifb"]
 
 [dependencies]
+aes = "0.8.4"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 critical-section = { version = "1", features = ["std"] }
 defmt = "1.2.0"

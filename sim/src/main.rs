@@ -32,6 +32,12 @@ mod battery;
 #[path = "../../src/brightness.rs"]
 #[allow(dead_code)]
 mod brightness;
+#[path = "../../src/bthome.rs"]
+#[allow(dead_code)]
+mod bthome;
+#[path = "../../src/buttons.rs"]
+#[allow(dead_code)]
+mod buttons;
 #[path = "../../src/canvas.rs"]
 #[allow(dead_code)]
 mod canvas;
