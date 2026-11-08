@@ -1463,7 +1463,7 @@ impl App {
         // wrap; a banner's, if it won't fit on its line.
         let scrolls = |app: &str, who: &str, whole_screen: bool| {
             let who = if whole_screen {
-                quiet_layout(who, QUIET_LINES_2X).is_none()
+                quiet_layout(who, QUIET_LINES_2X, &mut Lines::new()).is_none()
             } else {
                 overflows(who, 1, BANNER_TEXT_WIDTH)
             };
@@ -1911,8 +1911,9 @@ fn render_route_glance(canvas: &mut Canvas, status: &Status, step: &route::Step)
     };
     centred(canvas, DISTANCE_Y, &step.distance, scale, Color::TEXT);
 
-    match wrap(&step.street, 76, 1, 2) {
-        Some(lines) => {
+    let mut lines = Lines::new();
+    match wrap(&step.street, 76, 1, 2, &mut lines) {
+        Some(()) => {
             for (i, line) in lines.iter().enumerate() {
                 centred(canvas, STREET_Y + i as i32 * 7, line, 1, Color::TEXT_DIM);
             }
@@ -2641,7 +2642,7 @@ const BANNER_TEXT_WIDTH: i32 = 74;
 fn shown_for(app: &str, who: &str, whole_screen: bool) -> Duration {
     let who_overflow = if !whole_screen {
         font::small_text_width(who)
-    } else if quiet_layout(who, QUIET_LINES_2X).is_some() {
+    } else if quiet_layout(who, QUIET_LINES_2X, &mut Lines::new()).is_some() {
         0
     } else {
         font::small_text_width(who) * 2
@@ -2675,29 +2676,31 @@ const QUIET_LINES: usize = 7;
 /// One wrapped line: the longest sender line at 1× is 18 characters, plus
 /// a hyphen; room for multi-byte letters.
 type Line = heapless::String<48>;
+/// Wrapped lines. At 0.4 KB, these are filled in where the caller keeps
+/// them rather than returned: returned (in an `Option`, and again through
+/// `quiet_layout`), each function on the way built its own copy, and
+/// kept a frame for it.
+type Lines = heapless::Vec<Line, QUIET_LINES>;
 
-/// How a quiet notification's sender fits on the screen: wrapped lines,
-/// and the scale to draw them at. Big (2×) if it fits in `lines_2x` lines
-/// (at most [`QUIET_LINES_2X`]), else normal size (1×); `None` if it's too
-/// long even for that, and has to scroll.
-fn quiet_layout(who: &str, lines_2x: usize) -> Option<(heapless::Vec<Line, QUIET_LINES>, i32)> {
-    wrap(who, BANNER_TEXT_WIDTH, 2, lines_2x)
-        .map(|lines| (lines, 2))
-        .or_else(|| wrap(who, BANNER_TEXT_WIDTH, 1, QUIET_LINES).map(|lines| (lines, 1)))
+/// How a quiet notification's sender fits on the screen: wrapped into
+/// `lines`, and the scale to draw them at. Big (2×) if it fits in
+/// `lines_2x` lines (at most [`QUIET_LINES_2X`]), else normal size (1×);
+/// `None` if it's too long even for that, and has to scroll.
+fn quiet_layout(who: &str, lines_2x: usize, lines: &mut Lines) -> Option<i32> {
+    if wrap(who, BANNER_TEXT_WIDTH, 2, lines_2x, lines).is_some() {
+        Some(2)
+    } else {
+        wrap(who, BANNER_TEXT_WIDTH, 1, QUIET_LINES, lines).map(|()| 1)
+    }
 }
 
-/// `text` broken at spaces into lines of at most `width` pixels at
-/// `scale`, if it fits in `max_lines` (at most [`QUIET_LINES`]). A word
-/// too long for a line of its own is hyphenated, keeping at least three
-/// letters for the next line ("KRISTIAN-" / "SEN").
-fn wrap(
-    text: &str,
-    width: i32,
-    scale: i32,
-    max_lines: usize,
-) -> Option<heapless::Vec<Line, QUIET_LINES>> {
+/// `text` broken at spaces into `lines` of at most `width` pixels at
+/// `scale`; `None` if it doesn't fit in `max_lines` (at most
+/// [`QUIET_LINES`]). A word too long for a line of its own is hyphenated,
+/// keeping at least three letters for the next line ("KRISTIAN-" / "SEN").
+fn wrap(text: &str, width: i32, scale: i32, max_lines: usize, lines: &mut Lines) -> Option<()> {
     let fits = |s: &str| font::small_text_width(s) * scale <= width;
-    let mut lines = heapless::Vec::new();
+    lines.clear();
     let mut rest = text.trim();
     while !rest.is_empty() {
         // The longest prefix that fits, and the last space within it.
@@ -2753,7 +2756,7 @@ fn wrap(
         }
         lines.push(line).ok()?;
     }
-    Some(lines)
+    Some(())
 }
 
 /// A notification that arrived with the screen off (or a page of the
@@ -2778,8 +2781,9 @@ fn render_quiet_notification(
         1,
         elapsed,
     );
-    match quiet_layout(who, lines_2x) {
-        Some((lines, scale)) => {
+    let mut lines = Lines::new();
+    match quiet_layout(who, lines_2x, &mut lines) {
+        Some(scale) => {
             // The capitals centred on the screen, which is where the eye
             // expects a name (centring the space below the app name put
             // two lines 8 px low), unless that would run into the app name:
