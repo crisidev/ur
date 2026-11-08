@@ -38,12 +38,21 @@ const DIAERESIS: [u8; 2] = [0b101, 0b000];
 const RING: [u8; 2] = [0b111, 0b101];
 
 /// The glyph for any character. Names in notifications arrive as Latin-1
-/// (Gadgetbridge's encoding; anything beyond it is already `?`), so this
-/// covers every Latin-1 letter. Lowercase is drawn as uppercase: 3×5 has no
-/// room for distinct lowercase forms.
+/// (Gadgetbridge's encoding), so this covers all of printable ASCII and
+/// every Latin-1 letter. Anything beyond Latin-1 arrives escaped (`\u2019`,
+/// see [`crate::gb`]); of that, the punctuation phones like to use (curly
+/// quotes, dashes, the ellipsis) is drawn as its ASCII look-alike, and the
+/// rest as `?`. Lowercase is drawn as uppercase: 3×5 has no room for
+/// distinct lowercase forms.
 pub fn glyph(c: char) -> Glyph {
     let plain = |rows: [u8; 5]| Glyph {
         width: 3,
+        rows: [0, 0, rows[0], rows[1], rows[2], rows[3], rows[4]],
+    };
+    // A few symbols need a fourth column to read as themselves: at 3 wide,
+    // `#` is an H with an extra bar, `&` an 8 with a foot, and `@` an e.
+    let wide = |rows: [u8; 5]| Glyph {
+        width: 4,
         rows: [0, 0, rows[0], rows[1], rows[2], rows[3], rows[4]],
     };
     let accented = |base: char, [a, b]: [u8; 2]| {
@@ -53,8 +62,15 @@ pub fn glyph(c: char) -> Glyph {
             rows: [a, b, r[0], r[1], r[2], r[3], r[4]],
         }
     };
-    if c.is_ascii() {
-        return plain(small_glyph(c));
+    match c {
+        // Leaning, as a handwritten one does: upright, it's a grid of dots.
+        '#' => return wide([0b0101, 0b1111, 0b1010, 0b1111, 0b1010]),
+        // Two loops, the lower one open to the right for the tail.
+        '&' => return wide([0b0100, 0b1010, 0b0100, 0b1010, 0b0101]),
+        // An `a` (the 2×2 block) in a ring open at the bottom right.
+        '@' => return wide([0b0110, 0b1001, 0b1011, 0b1000, 0b0110]),
+        _ if c.is_ascii() => return plain(small_glyph(c)),
+        _ => {}
     }
     match c.to_uppercase().next().unwrap_or(c) {
         'À' => accented('A', GRAVE),
@@ -99,13 +115,32 @@ pub fn glyph(c: char) -> Glyph {
         // A little ring at the top, for the clock face's temperature (and
         // any notification that mentions one).
         '°' => plain([0b010, 0b101, 0b010, 0b000, 0b000]),
+        // Typographic punctuation, which phones (and keyboards' smart
+        // quotes) put in names and titles, as the ASCII it stands in for.
+        // The same table as Gadgetbridge's own (`renderUnicodeAsImage`),
+        // which it only applies when it renders text as images.
+        '\u{2018}' | '\u{2019}' | '\u{201b}' | '\u{2032}' | '\u{2b9}' => plain(small_glyph('\'')),
+        '\u{201c}' | '\u{201d}' | '\u{201e}' | '\u{201f}' | '\u{2033}' => plain(small_glyph('"')),
+        '\u{201a}' => plain(small_glyph(',')),
+        // Hyphens, dashes, and the minus sign.
+        '\u{2010}'..='\u{2015}' | '\u{2212}' => plain(small_glyph('-')),
+        // Three dots, as tight as the font's own `...` but one glyph.
+        // (Gadgetbridge already sends `...` for it; other phones' apps may
+        // not.)
+        '\u{2026}' => Glyph {
+            width: 5,
+            rows: [0, 0, 0, 0, 0, 0, 0b10101],
+        },
+        // TODO: other common symbols beyond ASCII (•, ·, «, », ×, €, …)
+        // still show as `?`; add them as notifications turn them up.
         _ => plain(small_glyph('?')),
     }
 }
 
-/// Looks up a glyph for an ASCII character (see [`fold`] for the rest).
-/// Lowercase is drawn as uppercase (3×5 has no room for distinct lowercase
-/// forms), and anything else unknown becomes `?`.
+/// Looks up a 3-wide glyph for an ASCII character ([`glyph`] has the wider
+/// ones, and the rest of Latin-1). Lowercase is drawn as uppercase (3×5 has
+/// no room for distinct lowercase forms), and anything else unknown becomes
+/// `?`.
 pub fn small_glyph(c: char) -> [u8; 5] {
     match c.to_ascii_uppercase() {
         ' ' => [0b000, 0b000, 0b000, 0b000, 0b000],
@@ -159,7 +194,28 @@ pub fn small_glyph(c: char) -> [u8; 5] {
         '<' => [0b001, 0b010, 0b100, 0b010, 0b001],
         '>' => [0b100, 0b010, 0b001, 0b010, 0b100],
         '_' => [0b000, 0b000, 0b000, 0b000, 0b111],
-        _ => [0b110, 0b001, 0b010, 0b000, 0b010], // '?'
+        // Two strokes, like `'`.
+        '"' => [0b101, 0b101, 0b000, 0b000, 0b000],
+        // An S with a stroke through its middle.
+        '$' => [0b011, 0b110, 0b111, 0b011, 0b110],
+        // Raised, as in print, so it isn't taken for an x.
+        '*' => [0b101, 0b010, 0b101, 0b000, 0b000],
+        ';' => [0b000, 0b010, 0b000, 0b010, 0b100],
+        '=' => [0b000, 0b111, 0b000, 0b111, 0b000],
+        // Brackets and braces share the parentheses' middle column.
+        '[' => [0b011, 0b010, 0b010, 0b010, 0b011],
+        ']' => [0b110, 0b010, 0b010, 0b010, 0b110],
+        '{' => [0b011, 0b010, 0b110, 0b010, 0b011],
+        '}' => [0b110, 0b010, 0b011, 0b010, 0b110],
+        '\\' => [0b100, 0b100, 0b010, 0b001, 0b001],
+        '|' => [0b010, 0b010, 0b010, 0b010, 0b010],
+        // The circumflex and grave accents, on the line instead of above it.
+        '^' => [0b010, 0b101, 0b000, 0b000, 0b000],
+        '`' => [0b100, 0b010, 0b000, 0b000, 0b000],
+        // The tilde accent, its lower stroke level with `-`.
+        '~' => [0b000, 0b011, 0b110, 0b000, 0b000],
+        // `?` itself, and anything unknown.
+        _ => [0b110, 0b001, 0b010, 0b000, 0b010],
     }
 }
 
