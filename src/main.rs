@@ -654,7 +654,14 @@ async fn main(spawner: Spawner) {
         // Someone looking at the clock face gets a fresh heart rate, but one
         // is enough: the LED (3–8 mA) needn't stay on for the rest of the
         // glance once there's a reading from the last few minutes.
-        let fresh = heart::latest().is_some_and(|(_, at)| now - at < Duration::from_secs(5 * 60));
+        //
+        // Saturating: `now` was read at the top of this pass, and the heart
+        // task may have recorded a reading during one of the awaits since,
+        // timestamped after it. `now - at` then panicked (embassy-time's
+        // `Instant` subtraction `unwrap!`s), which a field log caught right
+        // after a redraw.
+        let fresh = heart::latest()
+            .is_some_and(|(_, at)| now.saturating_duration_since(at) < Duration::from_secs(5 * 60));
         heart::set_watching(app.showing_clock() && !fresh);
         glance::set_screen_on(app.awake);
         // Taps don't wake the screen in the quiet night (see `ui`), so the
