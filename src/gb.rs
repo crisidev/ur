@@ -22,11 +22,21 @@
 //!
 //! **Watch → phone** is lines of plain JSON ending in `\r\n`. (Gadgetbridge
 //! drops the character before each `\n`, expecting a `\r`.)
+//!
+//! This module is the whole protocol, and hardware-free: [`LineBuffer`]
+//! reassembles lines from what the UART receives, [`parse`] says what each
+//! means ([`Incoming`]: a request for [`crate::ble`] to act on, or a
+//! [`PhoneEvent`] for the UI), and [`Outgoing`] renders our replies.
+//! `ble` only moves the bytes. So the host tests (`host-tests/gb`) can
+//! feed it Gadgetbridge's lines as sent, and so can the simulator (`gb`).
 
 use core::fmt::Write as _;
 
 use defmt::{Format, debug, warn};
 use heapless::String;
+
+use crate::phone::PhoneEvent;
+use crate::{alarm, route};
 
 // ==============================================================================
 // Incoming: line assembly
@@ -89,8 +99,10 @@ impl LineBuffer {
 // Incoming: messages
 // ==============================================================================
 
-/// The messages we act on. Everything else Gadgetbridge sends (calendar,
-/// weather, …) is logged and ignored.
+/// What a line from the phone means. The first few need the connection
+/// (they set the clock, or want a reply), so [`crate::ble`] handles them;
+/// [`Incoming::Phone`] is for the UI.
+#[derive(Debug, PartialEq)]
 pub enum Incoming<'a> {
     /// From `setTime(…);E.setTimeZone(…)`.
     SetTime {
@@ -104,12 +116,16 @@ pub enum Incoming<'a> {
     /// `{"t":"actfetch","ts":…}`: send activity samples since `ts` (UTC
     /// milliseconds).
     ActivityFetch { since_ms: i64 },
-    /// Anything else in `GB(…)`, for the caller to dispatch on `t` (the
-    /// object is still available to read fields from).
-    Other { kind: &'a str, object: Object<'a> },
+    /// A notification, call, music, find-my-watch, alarm, or navigation
+    /// message, translated for the UI (see [`phone_event`]).
+    Phone(PhoneEvent),
+    /// Any other `GB(…)` message (calendar, weather, …), by its `t`: we
+    /// don't act on it.
+    Ignored(&'a str),
 }
 
-/// Parses one line. `None` for lines that aren't one of the two shapes.
+/// Parses one line (as [`LineBuffer`] hands it over). `None` for lines that
+/// aren't one of the two shapes, or lack what their kind needs.
 pub fn parse(line: &[u8]) -> Option<Incoming<'_>> {
     if let Some(rest) = line.strip_prefix(b"setTime(") {
         return parse_set_time(rest);
@@ -126,7 +142,117 @@ pub fn parse(line: &[u8]) -> Option<Incoming<'_>> {
         "actfetch" => Incoming::ActivityFetch {
             since_ms: object.get("ts").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64,
         },
-        _ => Incoming::Other { kind, object },
+        _ => match phone_event(kind, object) {
+            Some(event) => Incoming::Phone(event),
+            None => Incoming::Ignored(kind),
+        },
+    })
+}
+
+/// Translates the phone's notification, call, music, find-my-watch, alarm,
+/// and navigation messages for the UI. Only the fields we show are copied; in
+/// particular a notification's body never leaves this function.
+fn phone_event(kind: &str, object: Object<'_>) -> Option<PhoneEvent> {
+    fn text<const N: usize>(object: Object<'_>, key: &str) -> String<N> {
+        let mut out = String::new();
+        if let Some(value) = object.get(key) {
+            let _ = value.decode_into(&mut out);
+        }
+        out
+    }
+    Some(match kind {
+        "notify" => {
+            // Messaging apps usually put the sender's name in the title and
+            // leave `sender` empty.
+            let sender: String<40> = text(object, "sender");
+            let who = if sender.is_empty() {
+                text(object, "title")
+            } else {
+                sender
+            };
+            PhoneEvent::Notification {
+                app: text(object, "src"),
+                who,
+            }
+        }
+        "call" => match object.get("cmd").and_then(|v| v.as_raw_str()) {
+            Some("incoming") => {
+                let name: String<40> = text(object, "name");
+                let caller = if name.is_empty() {
+                    text(object, "number")
+                } else {
+                    name
+                };
+                PhoneEvent::IncomingCall { caller }
+            }
+            // Answered, rejected, ended, …: the call no longer needs us.
+            _ => PhoneEvent::CallOver,
+        },
+        "musicinfo" => PhoneEvent::MusicInfo {
+            artist: text(object, "artist"),
+            track: text(object, "track"),
+        },
+        "musicstate" => PhoneEvent::MusicState {
+            playing: object.get("state").and_then(|v| v.as_raw_str()) == Some("play"),
+        },
+        "find" => PhoneEvent::Find {
+            on: object.get("n").and_then(|v| v.as_bool()) == Some(true),
+        },
+        // `{"t":"alarm","d":[{"h":7,"m":30,"rep":31,"on":true},…]}`: every
+        // alarm set in Gadgetbridge's alarm screen, whenever one changes
+        // there (see `onSetAlarms` in its driver). `rep` has a bit per
+        // weekday, Monday first; 0 is once.
+        "alarm" => {
+            let mut alarms = alarm::Phone::default();
+            let items = object.get("d").map(|d| d.items()).into_iter().flatten();
+            for alarm in items.filter_map(|v| v.as_object()) {
+                let number = |key| alarm.get(key).and_then(|v| v.as_f64());
+                let (Some(hour), Some(minute)) = (number("h"), number("m")) else {
+                    continue;
+                };
+                let days = number("rep").unwrap_or(0.0) as u8;
+                // A Bangle.js takes a missing `on` as on.
+                let on = alarm.get("on").and_then(|v| v.as_bool()) != Some(false);
+                if !alarms.push(hour as u16, minute as u16, days, on) {
+                    warn!("gb: dropped an alarm ({}:{})", hour as u16, minute as u16);
+                }
+            }
+            PhoneEvent::Alarms(alarms)
+        }
+        // `{"t":"nav","instr":"Storgata","distance":"150 m","action":"left",
+        // "eta":"11:55"}`: the next turn while the phone navigates, every
+        // field optional; `{"t":"nav"}` when navigation ends (see `route`).
+        "nav" => {
+            // Decoded at a size `text` is already used with (each size is
+            // a copy of the decoder, ~1 KB of flash), then copied over, with
+            // Google Maps' no-break spaces (between number and unit), which
+            // the font lacks, as plain ones.
+            fn spaced<const N: usize>(object: Object<'_>, key: &str) -> String<N> {
+                let decoded: String<40> = text(object, key);
+                let mut out: String<N> = String::new();
+                for c in decoded.chars() {
+                    let c = if c == '\u{a0}' { ' ' } else { c };
+                    // Trimmed, in case they come padded.
+                    if c != ' ' || !out.is_empty() {
+                        let _ = out.push(c);
+                    }
+                }
+                while out.ends_with(' ') {
+                    out.pop();
+                }
+                out
+            }
+            let street = spaced::<{ route::STREET_LEN }>(object, "instr");
+            let distance = spaced::<{ route::DISTANCE_LEN }>(object, "distance");
+            let action = object.get("action").and_then(|v| v.as_raw_str());
+            let navigating = !street.is_empty() || !distance.is_empty() || action.is_some();
+            PhoneEvent::Route(navigating.then(|| route::Step {
+                turn: route::Turn::from_action(action),
+                street,
+                distance,
+            }))
+        }
+        _ => return None,
     })
 }
 

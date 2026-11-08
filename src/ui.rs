@@ -149,6 +149,9 @@ use crate::font;
 use crate::gb::{CallAction, MusicCommand, Outgoing};
 use crate::motor::{self, Pattern};
 use crate::nav::{self, Place, Side};
+// Defined apart from the UI, so that `gb` (which decodes them) builds
+// without it, in host tests; see `phone`.
+pub use crate::phone::{PhoneEvent, Unpaired};
 use crate::route::{self, Route, Turn};
 use crate::sleep::{self, Change, Over};
 use crate::theme::{self, Theme};
@@ -213,84 +216,6 @@ pub struct Status<'a> {
     /// known.
     pub local_second: Option<i64>,
     pub battery: &'a Battery,
-}
-
-/// Things the phone tells the UI, via [`crate::ble`].
-pub enum PhoneEvent {
-    Notification {
-        app: String<24>,
-        who: String<40>,
-    },
-    IncomingCall {
-        caller: String<40>,
-    },
-    /// The call was answered, rejected, or ended, on either side.
-    CallOver,
-    MusicInfo {
-        artist: String<40>,
-        track: String<40>,
-    },
-    MusicState {
-        playing: bool,
-    },
-    /// "Find my watch" from the phone: ring until told to stop.
-    Find {
-        on: bool,
-    },
-    /// A client connected but never secured the link (see
-    /// `ble::not_paired`). Shown like a notification.
-    Unpaired(Unpaired),
-    /// The alarms set in Gadgetbridge, all of them.
-    Alarms(alarm::Phone),
-    /// The next turn while the phone navigates; `None` once it stops.
-    Route(Option<route::Step>),
-}
-
-/// Why a connected client can't use the watch: its link never became
-/// encrypted.
-#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub enum Unpaired {
-    /// Not a device we have a bond with: it has to pair.
-    NotPaired,
-    /// A device we have a bond with, which didn't use it: the phone forgot
-    /// its side of the bond, and has to forget the watch and pair again.
-    PairingLost,
-}
-
-impl Unpaired {
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::NotPaired => "NOT PAIRED",
-            Self::PairingLost => "PAIRING LOST",
-        }
-    }
-
-    /// What to do about it: README.md's FAQ entry, by its ID only, as the
-    /// steps don't fit on the screen.
-    fn hint(self) -> &'static str {
-        match self {
-            Self::NotPaired => "SEE FAQ C01",
-            Self::PairingLost => "SEE FAQ C02",
-        }
-    }
-}
-
-/// Logged without contents: names and titles stay out of the logs.
-impl defmt::Format for PhoneEvent {
-    fn format(&self, f: defmt::Formatter) {
-        let kind = match self {
-            Self::Notification { .. } => "Notification",
-            Self::IncomingCall { .. } => "IncomingCall",
-            Self::CallOver => "CallOver",
-            Self::MusicInfo { .. } => "MusicInfo",
-            Self::MusicState { .. } => "MusicState",
-            Self::Find { .. } => "Find",
-            Self::Unpaired(_) => "Unpaired",
-            Self::Alarms(_) => "Alarms",
-            Self::Route(_) => "Route",
-        };
-        defmt::write!(f, "{=str}", kind)
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]

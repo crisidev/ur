@@ -63,6 +63,7 @@ mod i2c;
 mod motor;
 mod nav;
 mod packet_pool;
+mod phone;
 mod power;
 mod ppg;
 mod route;

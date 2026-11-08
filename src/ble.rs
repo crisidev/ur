@@ -28,7 +28,7 @@ use embassy_futures::join::join3;
 use embassy_futures::select::{Either4, select, select4};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
-use embassy_sync::channel::Channel;
+use embassy_sync::channel::{Channel, TrySendError};
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use heapless::Vec;
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
@@ -38,8 +38,8 @@ use trouble_host::prelude::*;
 use crate::gb::{self, Incoming, LineBuffer, Outgoing};
 use crate::geo::{self, GpsPolicy, Location};
 use crate::packet_pool::Pool;
-use crate::ui::{PhoneEvent, Unpaired};
-use crate::{activity, clock, dfu, route, storage};
+use crate::phone::{PhoneEvent, Unpaired};
+use crate::{activity, clock, dfu, storage};
 
 /// The advertised and GAP device name. Gadgetbridge's Bangle.js support
 /// recognises `Bangle.js.*` (among a few other Espruino names).
@@ -837,7 +837,9 @@ fn not_paired(conn: &GattConnection<'_, '_, Pool>, security: &mut Security) {
     let _ = crate::INPUT.try_send(crate::InputEvent::Phone(PhoneEvent::Unpaired(why)));
 }
 
-/// Parses one line from the phone into actions; logs what we ignore.
+/// Dispatches one line from the phone, as [`gb::parse`] reads it: the UI's
+/// events go straight to the UI, what needs the connection into `actions`
+/// (see [`Action`]). Logs what we ignore.
 fn interpret(line: &[u8], actions: &mut Vec<Action, 4>) {
     let action = match gb::parse(line) {
         Some(Incoming::SetTime {
@@ -856,18 +858,16 @@ fn interpret(line: &[u8], actions: &mut Vec<Action, 4>) {
         },
         Some(Incoming::IsGpsActive) => Action::ReportGps,
         Some(Incoming::ActivityFetch { since_ms }) => Action::ActivityFetch { since_ms },
-        Some(Incoming::Other { kind, object }) => {
-            match phone_event(kind, object) {
-                Some(event) => {
-                    if crate::INPUT
-                        .try_send(crate::InputEvent::Phone(event))
-                        .is_err()
-                    {
-                        warn!("ble: UI busy; dropped a {=str} message", kind);
-                    }
-                }
-                None => debug!("ble: ignoring {=str} message", kind),
+        Some(Incoming::Phone(event)) => {
+            if let Err(TrySendError::Full(event)) =
+                crate::INPUT.try_send(crate::InputEvent::Phone(event))
+            {
+                warn!("ble: UI busy; dropped {}", event);
             }
+            return;
+        }
+        Some(Incoming::Ignored(kind)) => {
+            debug!("ble: ignoring {=str} message", kind);
             return;
         }
         None => {
@@ -878,113 +878,6 @@ fn interpret(line: &[u8], actions: &mut Vec<Action, 4>) {
     if actions.push(action).is_err() {
         warn!("ble: too many messages in one write; dropping one");
     }
-}
-
-/// Translates the phone's notification, call, music, find-my-watch, alarm,
-/// and navigation messages for the UI. Only the fields we show are copied; in
-/// particular a notification's body never leaves this function.
-fn phone_event(kind: &str, object: gb::Object<'_>) -> Option<PhoneEvent> {
-    fn text<const N: usize>(object: gb::Object<'_>, key: &str) -> heapless::String<N> {
-        let mut out = heapless::String::new();
-        if let Some(value) = object.get(key) {
-            let _ = value.decode_into(&mut out);
-        }
-        out
-    }
-    Some(match kind {
-        "notify" => {
-            // Messaging apps usually put the sender's name in the title and
-            // leave `sender` empty.
-            let sender: heapless::String<40> = text(object, "sender");
-            let who = if sender.is_empty() {
-                text(object, "title")
-            } else {
-                sender
-            };
-            PhoneEvent::Notification {
-                app: text(object, "src"),
-                who,
-            }
-        }
-        "call" => match object.get("cmd").and_then(|v| v.as_raw_str()) {
-            Some("incoming") => {
-                let name: heapless::String<40> = text(object, "name");
-                let caller = if name.is_empty() {
-                    text(object, "number")
-                } else {
-                    name
-                };
-                PhoneEvent::IncomingCall { caller }
-            }
-            // Answered, rejected, ended, …: the call no longer needs us.
-            _ => PhoneEvent::CallOver,
-        },
-        "musicinfo" => PhoneEvent::MusicInfo {
-            artist: text(object, "artist"),
-            track: text(object, "track"),
-        },
-        "musicstate" => PhoneEvent::MusicState {
-            playing: object.get("state").and_then(|v| v.as_raw_str()) == Some("play"),
-        },
-        "find" => PhoneEvent::Find {
-            on: object.get("n").and_then(|v| v.as_bool()) == Some(true),
-        },
-        // `{"t":"alarm","d":[{"h":7,"m":30,"rep":31,"on":true},…]}`: every
-        // alarm set in Gadgetbridge's alarm screen, whenever one changes
-        // there (see `onSetAlarms` in its driver). `rep` has a bit per
-        // weekday, Monday first; 0 is once.
-        "alarm" => {
-            let mut alarms = crate::alarm::Phone::default();
-            let items = object.get("d").map(|d| d.items()).into_iter().flatten();
-            for alarm in items.filter_map(|v| v.as_object()) {
-                let number = |key| alarm.get(key).and_then(|v| v.as_f64());
-                let (Some(hour), Some(minute)) = (number("h"), number("m")) else {
-                    continue;
-                };
-                let days = number("rep").unwrap_or(0.0) as u8;
-                // A Bangle.js takes a missing `on` as on.
-                let on = alarm.get("on").and_then(|v| v.as_bool()) != Some(false);
-                if !alarms.push(hour as u16, minute as u16, days, on) {
-                    warn!("ble: dropped an alarm ({}:{})", hour as u16, minute as u16);
-                }
-            }
-            PhoneEvent::Alarms(alarms)
-        }
-        // `{"t":"nav","instr":"Storgata","distance":"150 m","action":"left",
-        // "eta":"11:55"}`: the next turn while the phone navigates, every
-        // field optional; `{"t":"nav"}` when navigation ends (see `route`).
-        "nav" => {
-            // Decoded at a size `text` is already used with (each size is
-            // a copy of the decoder, ~1 KB of flash), then copied over, with
-            // Google Maps' no-break spaces (between number and unit), which
-            // the font lacks, as plain ones.
-            fn spaced<const N: usize>(object: gb::Object<'_>, key: &str) -> heapless::String<N> {
-                let decoded: heapless::String<40> = text(object, key);
-                let mut out: heapless::String<N> = heapless::String::new();
-                for c in decoded.chars() {
-                    let c = if c == '\u{a0}' { ' ' } else { c };
-                    // Trimmed, in case they come padded.
-                    if c != ' ' || !out.is_empty() {
-                        let _ = out.push(c);
-                    }
-                }
-                while out.ends_with(' ') {
-                    out.pop();
-                }
-                out
-            }
-            let street = spaced::<{ route::STREET_LEN }>(object, "instr");
-            let distance = spaced::<{ route::DISTANCE_LEN }>(object, "distance");
-            let action = object.get("action").and_then(|v| v.as_raw_str());
-            let navigating = !street.is_empty() || !distance.is_empty() || action.is_some();
-            PhoneEvent::Route(navigating.then(|| route::Step {
-                turn: route::Turn::from_action(action),
-                street,
-                distance,
-            }))
-        }
-        _ => return None,
-    })
 }
 
 /// Adopts a new location, saving it only when it moved noticeably (about a

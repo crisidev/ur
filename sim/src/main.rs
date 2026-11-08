@@ -62,6 +62,8 @@ mod motor;
 #[path = "../../src/nav.rs"]
 #[allow(dead_code)]
 mod nav;
+#[path = "../../src/phone.rs"]
+mod phone;
 #[path = "../../src/route.rs"]
 #[allow(dead_code)]
 mod route;
