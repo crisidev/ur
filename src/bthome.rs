@@ -1,0 +1,259 @@
+//! The button grid's presses as BTHome v2 advertisements, for Home
+//! Assistant's BTHome integration (see docs/buttons.md for setting it up,
+//! and docs/bthome-design.md for the reasoning).
+//!
+//! BTHome is one-way: the watch advertises service data under UUID
+//! 0xFCD2, and Home Assistant, listening through any of its Bluetooth
+//! adapters or proxies, decodes it. No pairing, no phone.
+//!
+//! **What a press looks like.** BTHome's only objects that make Home
+//! Assistant fire *events* (rather than update a sensor's state, which a
+//! second identical press wouldn't change) are the button (`0x3A`, an
+//! event type and nothing else) and the dimmer (`0x3C`, rotate left or
+//! right, by a number of steps). Home Assistant tells repeated objects
+//! apart only by their position in the advertisement (`button_1`,
+//! `button_2`, …), and a legacy advertisement has room for a handful, not
+//! 90. So the code rides in a dimmer's steps, and the gesture picks which
+//! of three dimmers turns:
+//!
+//! | Object    | Home Assistant's event class | For        |
+//! |-----------|------------------------------|------------|
+//! | `3C ...`  | `dimmer_1`                   | a tap      |
+//! | `3C ...`  | `dimmer_2`                   | a double tap |
+//! | `3C ...`  | `dimmer_3`                   | a hold     |
+//!
+//! The one that fires turns right (`02`) by the press's code (`23` for 2
+//! then 3); the others carry `00 00`, which fires nothing. Before them come
+//! the packet id (`00`, which Home Assistant uses to drop the repeats of
+//! one press) and the battery (`01`, a battery sensor that updates with
+//! each press). All three dimmers are in every advertisement, so their
+//! positions, and with them Home Assistant's names, never change.
+//!
+//! **Encrypted**, with AES-CCM and a key made on the watch at first boot
+//! (shown on the Settings screen, for typing into Home Assistant). Home
+//! Assistant then ignores anything from the watch's address it can't
+//! decrypt, and drops replays of a press, and stale copies of one (which
+//! Bluetooth stacks re-report from their caches) rather than firing again.
+//! The counter in the nonce never repeats: it's reserved in flash ahead of
+//! use (see `device::send`).
+//!
+//! The encoding and encryption are hardware-free, and run in host tests
+//! (`host-tests/bthome`, against BTHome's published test vector) and the
+//! simulator, which prints what the watch would send. `device` keeps the
+//! key and counter, and hands each advertisement to [`crate::ble`].
+
+use aes::Aes128;
+use aes::cipher::{BlockEncrypt, KeyInit};
+
+use crate::buttons::{Gesture, Press};
+
+/// BTHome's 16-bit service UUID, as sent (little-endian).
+const UUID: [u8; 2] = [0xD2, 0xFC];
+/// The device information byte: encrypted (bit 0), sent irregularly, on
+/// presses (bit 2: Home Assistant treats the watch as a "sleepy" device,
+/// whose entities don't go unavailable between presses), BTHome v2 (bits
+/// 5–7).
+const INFO: u8 = 0x45;
+
+/// What identifies the watch to Home Assistant: the key, and the address
+/// it advertises from (the nonce includes it).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Identity {
+    pub key: [u8; 16],
+    /// As on the air, least significant byte first (as `main` builds it).
+    pub address: [u8; 6],
+}
+
+/// The advertising data for `press` (flags, then the service data), and
+/// its length. `counter` must never repeat for one key.
+pub fn advert(press: Press, battery: u8, counter: u32, identity: &Identity) -> ([u8; 31], usize) {
+    // The objects, in ascending id order, as BTHome asks.
+    let mut objects = [0u8; 13];
+    objects[..4].copy_from_slice(&[0x00, counter as u8, 0x01, battery.min(100)]);
+    let slot = match press.gesture {
+        Gesture::Tap => 0,
+        Gesture::DoubleTap => 1,
+        Gesture::Hold => 2,
+    };
+    for i in 0..3 {
+        let (event, steps) = if i == slot {
+            // Rotate right, by the code.
+            (0x02, press.code)
+        } else {
+            (0x00, 0x00)
+        };
+        objects[4 + 3 * i..7 + 3 * i].copy_from_slice(&[0x3C, event, steps]);
+    }
+
+    // The nonce: the address as people write it (most significant byte
+    // first, unlike on the air), the UUID, the info byte, and the counter.
+    let counter = counter.to_le_bytes();
+    let mut nonce = [0u8; 13];
+    for (out, byte) in nonce[..6].iter_mut().zip(identity.address.iter().rev()) {
+        *out = *byte;
+    }
+    nonce[6..8].copy_from_slice(&UUID);
+    nonce[8] = INFO;
+    nonce[9..].copy_from_slice(&counter);
+    let mic = seal(&identity.key, &nonce, &mut objects);
+
+    let mut data = [0u8; 31];
+    let service_data = 1 + UUID.len() + 1 + objects.len() + counter.len() + mic.len();
+    let mut len = 0;
+    for part in [
+        // Flags: LE general discoverable, no BR/EDR. Home Assistant's
+        // Bluetooth stack (BlueZ) wants them before it reads BTHome.
+        &[0x02, 0x01, 0x06][..],
+        &[service_data as u8, 0x16],
+        &UUID,
+        &[INFO],
+        &objects,
+        &counter,
+        &mic,
+    ] {
+        data[len..len + part.len()].copy_from_slice(part);
+        len += part.len();
+    }
+    (data, len)
+}
+
+/// Encrypts `data` (at most a block) in place with AES-128-CCM, as BTHome
+/// does: a 13-byte nonce (so a 2-byte length), no associated data, and a
+/// 4-byte tag, which it returns.
+///
+/// By hand rather than through the `ccm` crate: for a single block, CCM is
+/// four AES blocks, two for the tag (CBC-MAC) and two for the keystream
+/// (CTR), and `aes` is already in the firmware, for Bluetooth pairing.
+/// Not async, so the expanded key lives on the stack, briefly, rather than
+/// in a task's future (static RAM).
+fn seal(key: &[u8; 16], nonce: &[u8; 13], data: &mut [u8]) -> [u8; 4] {
+    assert!(data.len() <= 16, "one block");
+    let cipher = Aes128::new(key.into());
+    let encrypt = |mut block: [u8; 16]| {
+        cipher.encrypt_block((&mut block).into());
+        block
+    };
+    // A block of the nonce, with flags first and a two-byte number last:
+    // the message's length (for B0), or the counter (for A_i).
+    let block = |flags: u8, number: u16| {
+        let mut block = [0u8; 16];
+        block[0] = flags;
+        block[1..14].copy_from_slice(nonce);
+        block[14..].copy_from_slice(&number.to_be_bytes());
+        block
+    };
+    // CBC-MAC over B0 (flags: a 4-byte tag, (4 - 2) / 2 << 3, and a
+    // 2-byte length, 2 - 1) and the data, zero-padded.
+    let mut mac = encrypt(block(0x09, data.len() as u16));
+    for (m, d) in mac.iter_mut().zip(data.iter()) {
+        *m ^= d;
+    }
+    let mac = encrypt(mac);
+    // CTR: A1's keystream encrypts the data, A0's the tag.
+    let stream = encrypt(block(0x01, 1));
+    for (d, s) in data.iter_mut().zip(stream) {
+        *d ^= s;
+    }
+    let s0 = encrypt(block(0x01, 0));
+    core::array::from_fn(|i| mac[i] ^ s0[i])
+}
+
+/// For the host tests: [`seal`] on its own, against BTHome's example.
+#[cfg(not(target_os = "none"))]
+pub fn seal_for_test(key: &[u8; 16], nonce: &[u8; 13], data: &mut [u8]) -> [u8; 4] {
+    seal(key, nonce, data)
+}
+
+// ==============================================================================
+// On the watch: the key, the counter, and sending
+// ==============================================================================
+
+#[cfg(target_os = "none")]
+pub use device::{identity, init, send};
+
+#[cfg(target_os = "none")]
+mod device {
+    use core::cell::Cell;
+
+    use defmt::{info, warn};
+    use embassy_nrf::rng::Rng;
+    use embassy_sync::blocking_mutex::Mutex;
+    use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+
+    use super::{Identity, advert};
+    use crate::buttons::Press;
+    use crate::storage;
+
+    /// The key and address, once [`init`] has loaded or made them.
+    static IDENTITY: Mutex<CriticalSectionRawMutex, Cell<Option<Identity>>> =
+        Mutex::new(Cell::new(None));
+    /// The next counter to use, and how far flash has reserved (see
+    /// [`send`]).
+    static COUNTER: Mutex<CriticalSectionRawMutex, Cell<(u32, u32)>> =
+        Mutex::new(Cell::new((0, 0)));
+
+    /// How many counters one flash write reserves: one small write per
+    /// this many presses.
+    const RESERVE: u32 = 64;
+    /// Where the counter starts on a watch that never sent one. Home
+    /// Assistant only rejects a counter that went backwards from 100 up, so
+    /// starting here keeps that check on from the first press.
+    const FIRST: u32 = 256;
+
+    /// Loads the key (or makes one, from the hardware RNG, on first boot)
+    /// and the counter. Before the Bluetooth controller takes the RNG.
+    pub async fn init(rng: &mut Rng<'static, embassy_nrf::mode::Async>, address: [u8; 6]) {
+        let key = match storage::load::<16>(storage::key::BTHOME_KEY).await {
+            Some(key) => key,
+            None => {
+                let mut key = [0u8; 16];
+                // Bias correction, for a key's worth of good bits; slower,
+                // but this is once.
+                rng.set_bias_correction(true);
+                rng.fill_bytes(&mut key).await;
+                rng.set_bias_correction(false);
+                if storage::save(storage::key::BTHOME_KEY, &key).await {
+                    info!("bthome: made a key");
+                }
+                key
+            }
+        };
+        IDENTITY.lock(|i| i.set(Some(Identity { key, address })));
+        // Whatever was left of the last reserved block is skipped: it may
+        // have been used.
+        let reserved = storage::load::<4>(storage::key::BTHOME_COUNTER)
+            .await
+            .map_or(FIRST, u32::from_le_bytes)
+            .max(FIRST);
+        COUNTER.lock(|c| c.set((reserved, reserved)));
+    }
+
+    /// The key and address, for the Settings screen's key page.
+    pub fn identity() -> Option<Identity> {
+        IDENTITY.lock(Cell::get)
+    }
+
+    /// Advertises `press` for a moment (see `ble::burst`). The counter is
+    /// reserved in flash before it's used, so a reset can never make it
+    /// repeat with another press: a repeat would let anyone listening
+    /// decrypt both (CTR mode). If flash can't reserve one, nothing is sent.
+    pub async fn send(press: Press, battery: u8) {
+        let Some(identity) = identity() else {
+            warn!("bthome: no key");
+            return;
+        };
+        let (next, reserved) = COUNTER.lock(Cell::get);
+        if next >= reserved {
+            let reserve = next + RESERVE;
+            if !storage::save(storage::key::BTHOME_COUNTER, &reserve.to_le_bytes()).await {
+                warn!("bthome: couldn't reserve a counter; not sent");
+                return;
+            }
+            COUNTER.lock(|c| c.set((next, reserve)));
+        }
+        COUNTER.lock(|c| c.set((next + 1, c.get().1)));
+        let (data, len) = advert(press, battery, next, &identity);
+        info!("bthome: {=u32} {=[u8]:02x}", next, data[..len]);
+        crate::ble::burst(data, len);
+    }
+}

@@ -1,0 +1,15 @@
+[package]
+name = "bthome-test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Host-side tests for `src/bthome.rs` (included via `#[path]`, with the
+# `buttons` module it uses), against BTHome's published encryption
+# example. Not part of the firmware workspace: run `cargo test` from this
+# directory.
+[workspace]
+
+[dependencies]
+aes = "0.8.4"
+embassy-time = "0.5.1"
