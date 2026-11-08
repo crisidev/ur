@@ -281,9 +281,10 @@ most once an hour, and again when the time zone changes), and keeps the
 last one it got. Gadgetbridge only passes on fresh locations, never the
 last known one, and drops them unless all of these are on:
 
-1. In the watch's settings in Gadgetbridge: "Use phone GPS data". Leave
-   "Only use network to determine location" off unless you'd rather spare
-   the GPS; network location works indoors, GPS needs the sky.
+1. In the watch's settings in Gadgetbridge: "Use phone GPS data", with
+   "Only use network to determine location" off. With it on, no location
+   ever arrived in testing, even indoors; with it off, Gadgetbridge uses
+   both GPS and network location, and a network fix came within a second.
 2. In Gadgetbridge's own settings, under Location: "Keep location
    updated".
 3. In Android's settings for the Gadgetbridge app: location permission
