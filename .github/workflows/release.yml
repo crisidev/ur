@@ -90,23 +90,26 @@ jobs:
           path: dist
       - name: release notes
         env:
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.plan.outputs.version }}
           TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
         run: |
-          cat >notes.md <<EOF
+          # The tag's message names what's new (see CONTRIBUTING), so it
+          # leads the notes; its first line is already the release's title.
+          # It comes from the API rather than a checkout, since the release
+          # doesn't otherwise need the source.
+          tag_object=$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq .object.sha)
+          gh api "repos/$REPO/git/tags/$tag_object" --jq .message | tail -n +3 >notes.md
+          # GitHub shows every newline in release notes as a line break, so
+          # each paragraph below is one line.
+          cat >>notes.md <<EOF
+
           ## Installing
 
-          Send \`ur-$VERSION-dfu.zip\` to the watch over Bluetooth, from a phone
-          with Nordic's nRF Device Firmware Update app or from a computer with
-          \`scripts/dfu.py\`. It installs over InfiniTime and updates ur alike;
-          see the README's [Installing](https://github.com/$REPO#installing)
-          section.
+          Send \`ur-$VERSION-dfu.zip\` to the watch over Bluetooth, from a phone with Nordic's [nRF Device Firmware Update](https://play.google.com/store/apps/details?id=no.nordicsemi.android.dfu) app or from a computer with \`scripts/dfu.py\`. It installs over InfiniTime and updates ur alike; see the README's [Installing](https://github.com/$REPO#installing) section.
 
-          \`ur-logging-$VERSION-dfu.zip\` is the same firmware keeping a log in
-          the watch's flash, which \`scripts/fetch-log.py\` fetches over
-          Bluetooth, for reporting problems. It writes to flash constantly and
-          costs a little battery.
+          \`ur-logging-$VERSION-dfu.zip\` is the same firmware keeping a log in the watch's flash, which \`scripts/fetch-log.py\` fetches over Bluetooth, for reporting problems. It writes to flash constantly and costs a little battery.
 
           ## Files
 
@@ -115,22 +118,17 @@ jobs:
           - \`-dfu.zip\`: the Bluetooth update package.
           - \`.img\`: the raw MCUBoot image.
           - \`-slot.elf\`: the image as an ELF, for flashing a dev kit over SWD.
-          - \`.elf\`: the firmware with symbols, which decodes the watch's logs
-            (\`defmt-print -e\`).
+          - \`.elf\`: the firmware with symbols, which decodes the watch's logs (\`defmt-print -e\`).
 
           \`sha256.sum\` has their checksums.
 
           ## Verifying
 
-          Every file has a build provenance attestation from GitHub Actions. To
-          check that a download was built by this repository's release
-          workflow, unmodified:
+          Every file has a build provenance attestation from GitHub Actions. To check that a download was built by this repository's release workflow, unmodified:
 
               gh attestation verify ur-$VERSION-dfu.zip --repo $REPO
 
-          The build is also reproducible: the same files, byte for byte, come
-          out of building the tag again, which this checks against this
-          release's checksums:
+          The build is also reproducible: the same files, byte for byte, come out of building the tag again, which this checks against this release's checksums:
 
               git checkout $TAG
               scripts/release.sh

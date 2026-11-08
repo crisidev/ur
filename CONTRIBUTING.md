@@ -343,13 +343,18 @@ Cargo.toml's version is the source of truth. To release:
 2. Set the version in Cargo.toml, and run any cargo build without
    `--locked` (e.g. `cargo check`) to update Cargo.lock to match.
 3. Commit, then tag (annotated, with a very brief summary of what changed
-   since the last release: the key user-facing effects, and any
-   particularly impactful change behind the scenes) and push:
+   since the last release: the key user-facing effects, naming new
+   concepts as the README does, and any particularly impactful change
+   behind the scenes) and push:
 
    ```sh
-   git tag -a v0.9.0 -m "ur 0.9.0: <headline>" -m "<two or three short lines>"
+   git tag -a v0.9.0 -m "ur 0.9.0: <headline>" -m "New: <…>" -m "Also: <…>"
    git push origin main v0.9.0
    ```
+
+   Each `-m` is a paragraph: don't wrap them. GitHub shows every newline
+   in a tag's message as a line break, and the message (minus its first
+   line) leads the release's notes.
 
 The release workflow refuses a tag that doesn't match Cargo.toml. It
 builds with `scripts/release.sh`, attests every file's build provenance
