@@ -16,7 +16,7 @@ missing below were test builds for the dev kit.
 
 ### Changed
 
-- Redesign the clock face's lower half: the date with small seconds under the time, the heart rate and the next alarm or timer in one row, and the day's steps as ten blocks of 1,000 towards a fixed goal of 10,000 rather than a number (the exact count is on Today, a swipe right) (a02d355)
+- Redesign the clock face's lower half: the date with small seconds under the time, the heart rate and the next alarm or timer in one row, and the day's steps as ten blocks rather than a number: 1,000 a block (×1K) towards a fixed goal of 10,000, then 10,000 a block (×10K) past it, full at 100,000 (the exact count is on Today, a swipe right) (a02d355, e268ba3)
 
 ### Deprecated
 
@@ -24,8 +24,8 @@ missing below were test builds for the dev kit.
 
 ### Fixed
 
+- Show `&`, `#`, `@`, `"`, `*` and the rest of ASCII's symbols (and `×`) in notifications, and curly quotes, dashes and ellipses as their plain look-alikes, instead of `?` (929a956)
 - Make releases rebuild byte for byte whether or not the builder already has the dependencies downloaded; 0.9.0 only reproduces from an empty cargo home (introduced in 0.9.0) (e49cb26)
-- Show `&`, `#`, `@`, `"`, `*` and the rest of ASCII's symbols in notifications, and curly quotes, dashes and ellipses as their plain look-alikes, instead of `?` (929a956)
 
 ### Security
 
