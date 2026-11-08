@@ -6,15 +6,17 @@ integration through [Gadgetbridge]. ("Ur" is an older Norwegian word for a
 timepiece.)
 
 <p align="center">
-  <img src="docs/screenshots/clock-arcade.png" width="180" alt="The clock face in the Arcade theme, for night: temperature and battery along the top, then time, seconds, heart rate, date and steps, white and red on black">
-  <img src="docs/screenshots/clock-terminal.png" width="180" alt="The clock face in the Terminal theme, for night: green on black">
-  <img src="docs/screenshots/clock-handheld.png" width="180" alt="The clock face in the Handheld theme, for day: dark green on pale green, like an old handheld">
-  <img src="docs/screenshots/clock-parchment.png" width="180" alt="The clock face in the Parchment theme, for day: brown on cream">
+  <img src="docs/screenshots/clock-arcade.png" width="150" alt="The clock face in the Arcade theme, white and red on black: Bluetooth, a note for music playing, and 31° along the top, with the battery; then the time, seconds, heart rate, date, and steps; a short red bar on the top edge means unseen notifications">
+  <img src="docs/screenshots/clock-terminal.png" width="150" alt="The same clock face in the Terminal theme: green on black">
+  <img src="docs/screenshots/clock-handheld.png" width="150" alt="The same clock face in the Handheld theme, for the day: dark green on pale green, like an old handheld">
+  <img src="docs/screenshots/clock-parchment.png" width="150" alt="The same clock face in the Parchment theme, for the day: brown on cream">
+  <img src="docs/screenshots/info.png" width="150" alt="The Info screen: version, battery, power, uptime, phone, and build, then the THEME and LIGHT settings, which a tap changes">
   <br>
-  <img src="docs/screenshots/alarms.png" width="180" alt="The alarms screen: smart wake, two alarms, two timers">
-  <img src="docs/screenshots/notification.png" width="180" alt="A notification that arrived with the screen off: the app at the top, the sender large in the middle, white on black">
-  <img src="docs/screenshots/glance.png" width="180" alt="A glance: just the time, the hours above the minutes, large, white on black">
-  <img src="docs/screenshots/info.png" width="180" alt="The info screen: version, battery, uptime, theme, brightness, phone, last night's sleep, and build">
+  <img src="docs/screenshots/history.png" width="150" alt="A notification in the history above the clock: the app, the sender large, and when it arrived, 14:38">
+  <img src="docs/screenshots/today.png" width="150" alt="The Today screen: the day's steps, by the hour since midnight, and its resting heart rate, with each hour's range">
+  <img src="docs/screenshots/last-night.png" width="150" alt="The Last night screen: 7:20 asleep, from 23:20 to 06:55, and a bar of deep, REM, and light sleep with each one's time">
+  <img src="docs/screenshots/alarms.png" width="150" alt="The Alarms screen, in the Handheld theme: smart wake on, for 06:30 on weekdays and 08:30 at weekends, then two alarms and two timers">
+  <img src="docs/screenshots/directions.png" width="150" alt="A glance while the phone navigates: the time, a right-turn arrow, 150 m, and the street">
 </p>
 
 - **Clock face:** time with seconds, date, battery, steps, heart rate, and
