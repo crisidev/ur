@@ -106,6 +106,12 @@ command -v llvm-objcopy >/dev/null ||
 # holds some sixty (3 KB). rustc applies the last remap that matches, so
 # these come after the one for all of cargo's home.
 cargo_home=$(realpath "${CARGO_HOME:-$HOME/.cargo}")
+# The registries' directories only exist once the dependencies have been
+# downloaded: fetch first, so a fresh cargo home (as in the release
+# workflow, which builds without a cache) gets the same remaps as one that
+# has built before. (Without this, v0.9.0's published images kept the
+# longer /cargo/registry/src/… paths, and didn't match a local rebuild.)
+cargo fetch --locked >&2
 remap="target.thumbv7em-none-eabihf.rustflags = [
   '--remap-path-prefix=$cargo_home=/cargo',"
 for registry in "$cargo_home"/registry/src/*/; do
