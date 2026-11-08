@@ -201,9 +201,11 @@ impl Canvas {
     /// wipe" that sweeps in `direction`.
     ///
     /// The screen is cut into a 10×10 grid of 8×8-canvas-pixel blocks. A
-    /// wavefront of dithered blocks sweeps across; each block shows the dither
-    /// for one step, then the new screen. Rows are staggered so the front is a
-    /// chevron pointing the way the content is moving (middle rows lead).
+    /// wavefront of dithered blocks sweeps across (or down, or up); each
+    /// block shows the dither for one step, then the new screen. The lanes
+    /// the front moves along (rows for a sideways sweep, columns for a
+    /// vertical one) are staggered so the front is a chevron pointing the
+    /// way the content is moving (middle lanes lead).
     ///
     /// Every block is sent twice (dither, then final), so this costs about two
     /// full frames of SPI time (~230 ms), spread over the steps. That's far
@@ -212,40 +214,49 @@ impl Canvas {
     pub async fn transition(&mut self, display: &mut Display, direction: Sweep) {
         const BLOCK: usize = 8;
         const BLOCKS: usize = WIDTH / BLOCK;
-        /// How many steps behind the leading rows each block row trails:
-        /// 2 1 1 0 0 0 0 1 1 2 from top to bottom, i.e. a shallow chevron.
-        /// (A deeper one, 4…0…4, read nicely but added steps.)
-        const fn row_delay(row: usize) -> usize {
-            (2 * row).abs_diff(BLOCKS - 1) / 4
+        /// How many steps behind the leading lanes each lane of blocks
+        /// trails: 2 1 1 0 0 0 0 1 1 2 from one edge to the other, i.e. a
+        /// shallow chevron. (A deeper one, 4…0…4, read nicely but added
+        /// steps.)
+        const fn lane_delay(lane: usize) -> usize {
+            (2 * lane).abs_diff(BLOCKS - 1) / 4
         }
-        const LAST_STEP: usize = (BLOCKS - 1) + row_delay(0) + 1;
+        const LAST_STEP: usize = (BLOCKS - 1) + lane_delay(0) + 1;
         /// A floor on each step's duration, so steps that send little data
         /// still read as animation frames rather than a blur.
         const STEP: Duration = Duration::from_millis(10);
 
         let started = Instant::now();
         let mut ticker = Ticker::every(STEP);
-        let column_at = |n: usize| match direction {
-            Sweep::LeftToRight => n,
-            Sweep::RightToLeft => BLOCKS - 1 - n,
+        // The canvas rows and columns of the `n`th block along `lane`,
+        // counted from the side the sweep starts on.
+        let block = |lane: usize, n: usize| {
+            let (row, column) = match direction {
+                Sweep::LeftToRight => (lane, n),
+                Sweep::RightToLeft => (lane, BLOCKS - 1 - n),
+                Sweep::TopToBottom => (n, lane),
+                Sweep::BottomToTop => (BLOCKS - 1 - n, lane),
+            };
+            (
+                row * BLOCK..(row + 1) * BLOCK,
+                column * BLOCK..(column + 1) * BLOCK,
+            )
         };
         for step in 0..=LAST_STEP {
-            for block_row in 0..BLOCKS {
-                // How far the dither front has got in this row, counted in
-                // blocks from the side the sweep starts on.
-                let Some(reached) = step.checked_sub(row_delay(block_row)) else {
+            for lane in 0..BLOCKS {
+                // How far the dither front has got along this lane.
+                let Some(reached) = step.checked_sub(lane_delay(lane)) else {
                     continue;
                 };
-                let rows = block_row * BLOCK..(block_row + 1) * BLOCK;
                 if reached < BLOCKS {
-                    let x = column_at(reached) * BLOCK;
-                    self.push_dither(display, rows.clone(), x..x + BLOCK).await;
+                    let (rows, columns) = block(lane, reached);
+                    self.push_dither(display, rows, columns).await;
                 }
                 if let Some(revealed) = reached.checked_sub(1)
                     && revealed < BLOCKS
                 {
-                    let x = column_at(revealed) * BLOCK;
-                    self.push(display, rows, x..x + BLOCK).await;
+                    let (rows, columns) = block(lane, revealed);
+                    self.push(display, rows, columns).await;
                 }
             }
             ticker.next().await;
@@ -358,11 +369,14 @@ async fn start_pixels(display: &mut Display, rows: Range<usize>, columns: Range<
     display.start_pixels(panel(columns), panel(rows)).await;
 }
 
-/// Direction a [`Canvas::transition`] sweeps across the panel.
+/// Direction a [`Canvas::transition`] sweeps across the panel: the way the
+/// content moves, so the new screen comes in from where the sweep starts.
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum Sweep {
     LeftToRight,
     RightToLeft,
+    TopToBottom,
+    BottomToTop,
 }
 
 /// Pixel `i` of a packed 4-bit buffer.
