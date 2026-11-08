@@ -38,7 +38,13 @@ bench = false
 debug = 2
 lto = "fat"
 codegen-units = 1
-opt-level = "s"
+# Flash, not speed, is what runs out: "z" is ~31 KB (7%) smaller than "s".
+# Measured on the dev kit, a heart rate window takes as long either way
+# (~4 ms), and a display flush is SPI-bound once `Canvas::changed_span`
+# skips unchanged rows; the deepest stack grew by ~0.3 KB, to 8.9 KB of 11.
+# With fat LTO, the root crate's level applies to everything, so
+# per-package overrides (say, "s" for hot code) would change nothing.
+opt-level = "z"
 
 [profile.dev]
 # Unoptimized embassy code is both large and slow enough to miss SPI timing.
