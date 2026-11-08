@@ -10,22 +10,31 @@
 # code. What it gets from that run, an artifact, is the PR's to write, so
 # it's untrusted: the PR must exist and be at the commit the run was for
 # (so a PR can't post on another), every file must be a PNG with a plain
-# name (they become paths and URLs), and there are only so many, of only
-# so large. Nothing from it reaches a shell command but through
-# variables, after those checks.
+# name (they become paths, upload names and alt text), and there are
+# only so many, of only so large. Nothing from it reaches a shell
+# command but through variables, after those checks.
 #
-# PR comments can't embed artifacts, so the images go to the
-# `pr-screenshots` branch, under `pr-<number>/<commit>/`, and the comment
-# links them by that branch's commit on raw.githubusercontent.com: a
-# later push, or the branch moving on, doesn't change what an older
-# comment shows. (The repository is public, so the links work for
-# anyone; GitHub proxies them through its image cache.) Each commit there
-# holds only its own run's images, but the branch's history keeps them
-# all: it only grows, by a few kilobytes a PR push that changes a screen.
+# PR comments can't embed artifacts, and the images aren't kept in the
+# repository: they're uploaded as comment attachments, as dragging an
+# image into a comment on github.com does, and the comment links each by
+# the `https://github.com/user-attachments/assets/…` URL GitHub gives
+# back. A later push uploads its own, so an older revision of the
+# comment still shows what it showed.
 #
-# TODO: prune `pr-screenshots`, say by squashing the images of merged or
-# closed PRs out of its history now and then. That breaks those PRs'
-# comments' images, which is why it isn't done automatically.
+# The upload is what `gh pr comment --attach` (gh 2.99+) does, but made
+# with `gh api`, because `--attach` can only create a comment or edit
+# the token's *last* one, and this bot's last comment on a PR may be
+# size-report.yml's. gh's own code (internal/attachments/client.go, as of
+# v2.103.3) POSTs the file's bytes to
+# `https://uploads.github.com/user-attachments/assets` with the query
+# `name`, `content_type` and `repository_id`, `Content-Type:
+# application/octet-stream`, and the same `Authorization: token …` as
+# any API call; the reply is `{"url": …}`. So: upload each image, then
+# edit our comment by its id, in place, as before. That endpoint isn't
+# in GitHub's REST docs, only behind `--attach`, so it could change
+# under us; if it does (or this token can't upload at all, which nothing
+# documents either way), the comment still goes up, with the summary,
+# without images, and saying so.
 on:
   workflow_run:
     workflows: [screenshots]
@@ -45,7 +54,11 @@ jobs:
     permissions:
       # To download the other run's artifact.
       actions: read
-      # To push the images to `pr-screenshots`.
+      # To upload the images. Nothing is pushed: the upload endpoint
+      # wants push access to the repository it attaches to (gh checks
+      # for WRITE, MAINTAIN or ADMIN first, and the endpoint answers 404
+      # without it), and for this token push access is `contents:
+      # write`.
       contents: write
       # To comment.
       pull-requests: write
@@ -67,14 +80,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          # What the uploads are attached to (GitHub's, as the rest).
+          REPO_ID: ${{ github.event.repository.id }}
           # GitHub's, not the artifact's: the commit the run was for.
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          # The screenshots run, whose artifact the comment can point to
+          # when the images can't be attached.
+          RUN: ${{ github.event.workflow_run.id }}
           ARTIFACT: ${{ runner.temp }}/artifact
-          WORK: ${{ runner.temp }}/work
         run: |
           set -euo pipefail
           marker='<!-- ur:screenshots -->'
-          branch='pr-screenshots'
           fail() {
             echo "::error::$1"
             exit 1
@@ -133,6 +149,8 @@ jobs:
           # The comment so far, if any
           # ====================================================================
 
+          # By this bot, and starting with the marker: the bot's last
+          # comment may well be size-report.yml's instead.
           comment=$(gh api --paginate "repos/$REPO/issues/$pr/comments" --jq \
             ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" |
             sed -n 1p)
@@ -143,43 +161,70 @@ jobs:
           fi
 
           # ====================================================================
-          # The images, on the pr-screenshots branch
+          # The images, attached
           # ====================================================================
 
-          # A commit of just this run's images, on top of the branch (or
-          # starting it), pushed without force: if another run pushed
-          # first, fetch its commit and try again on top of it.
+          # Each image uploaded as `gh pr comment --attach` would (see the
+          # top of this file), for a URL to put in the comment. All or
+          # nothing: at the first failure, the comment goes up without
+          # images, saying why, rather than with some of them, where a
+          # missing one would look like a removed screen. What did upload
+          # stays on GitHub, unreferenced: there's no endpoint to delete
+          # an upload.
+          #
+          # gh comes with the runner image (2.103.3 on both ubuntu-24.04
+          # and 26.04, as of their 20261101 images). This needs only `gh
+          # api` with an absolute URL and `--input`, which long predate
+          # `--attach`, so no particular gh is installed; its version goes
+          # in the log, for when an upload fails.
+          #
+          # TODO: GitHub limits content-creating requests to about 80 a
+          # minute. A PR that changes more screens than that may need the
+          # uploads paced; for now, it gets the comment without images.
+          declare -A urls=()
+          attached=
           if ((${#shots[@]} > 0)); then
-            dest="pr-$pr/$HEAD_SHA"
-            git init -q "$WORK"
-            cd "$WORK"
-            git remote add origin "https://github.com/$REPO"
-            git config http.https://github.com/.extraheader \
-              "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+            [[ $REPO_ID =~ ^[1-9][0-9]*$ ]] || fail "odd repository id"
+            gh --version | head -n 1
+            attached=1
             for rel in "${shots[@]}"; do
-              mkdir -p "$dest/$(dirname "$rel")"
-              cp "$images/$rel" "$dest/$rel"
-            done
-            git add -A
-            tree=$(git write-tree)
-            pushed=
-            for attempt in 1 2 3 4 5; do
-              parent=()
-              if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
-                git fetch -q --depth=1 origin "$branch"
-                parent=(-p FETCH_HEAD)
+              # The `-f` fields go into the query, as `--input` is the body;
+              # gh sends the file's size as its Content-Length. On failure
+              # gh prints GitHub's status and message, which hold nothing
+              # of the artifact's.
+              rc=0
+              reply=$(gh api --method POST https://uploads.github.com/user-attachments/assets \
+                -H 'Content-Type: application/octet-stream' \
+                -H 'Accept: application/vnd.github+json' \
+                -f name="${rel##*/}" -f content_type=image/png -f repository_id="$REPO_ID" \
+                --input "$images/$rel" --jq .url) || rc=$?
+              # GitHub's reply, but it goes into the comment, so it must
+              # be what an attachment's URL looks like, and nothing else.
+              if ((rc == 0)) && [[ $reply =~ ^https://github\.com/user-attachments/assets/[A-Za-z0-9-]+$ ]]; then
+                urls[$rel]=$reply
+                continue
               fi
-              commit=$(git -c user.name='github-actions[bot]' \
-                -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-                commit-tree "$tree" "${parent[@]}" -m "PR #$pr at $HEAD_SHA")
-              if git push -q origin "$commit:refs/heads/$branch"; then
-                pushed=1
-                break
+              if ((rc == 0)); then
+                echo "::warning::uploading $rel got a reply that isn't an attachment's URL"
+              else
+                echo "::warning::couldn't upload $rel (gh exited with $rc): posting without images"
               fi
-              sleep $((attempt * 5))
+              attached=
+              break
             done
-            [[ -n $pushed ]] || fail "couldn't push to $branch"
-            url="https://raw.githubusercontent.com/$REPO/$commit/$dest"
+          fi
+
+          # Where the images are when they couldn't be attached: the
+          # screenshots run's artifact, if GitHub names it, else the run.
+          if ((${#shots[@]} > 0)) && [[ -z $attached ]]; then
+            [[ $RUN =~ ^[1-9][0-9]*$ ]] || fail "odd run id"
+            runs="$GITHUB_SERVER_URL/$REPO/actions/runs"
+            artifact_url="$runs/$RUN"
+            artifact_id=$(gh api "repos/$REPO/actions/runs/$RUN/artifacts" \
+              --jq '.artifacts[] | select(.name == "screenshots-comment") | .id' || true)
+            if [[ $artifact_id =~ ^[1-9][0-9]*$ ]]; then
+              artifact_url="$runs/$RUN/artifacts/$artifact_id"
+            fi
           fi
 
           # ====================================================================
@@ -203,6 +248,15 @@ jobs:
             else
               echo "$(count changed) changed, $(count added) added, $(count removed) removed."
             fi
+            if ((${#shots[@]} > 0)) && [[ -z $attached ]]; then
+              echo
+              printf '> [!WARNING]\n'
+              printf '> **The images couldn'\''t be attached** (see [this run'\''s log](%s)). ' \
+                "$runs/$GITHUB_RUN_ID"
+              # shellcheck disable=SC2016 # The backticks are Markdown's.
+              printf 'They'\''re in the [`screenshots-comment` artifact](%s) ' "$artifact_url"
+              printf 'of the run that drew them, kept for 7 days after it.\n'
+            fi
             for kind in changed added removed; do
               n=$(count "$kind")
               ((n > 0)) || continue
@@ -221,14 +275,18 @@ jobs:
                 else
                   echo "\`$shot\`"
                 fi
-                echo
-                echo "<img src=\"$url/$rel\" alt=\"$shot ($kind)\">"
+                if [[ -n $attached ]]; then
+                  echo
+                  echo "<img src=\"${urls[$rel]}\" alt=\"$shot ($kind)\">"
+                fi
               done
               echo
               echo "</details>"
             done
           } >"$body"
 
+          # Edited in place by its id when there is one, so a push
+          # notifies no one; created only the first time.
           payload="$RUNNER_TEMP/payload.json"
           jq -n --rawfile body "$body" '{body: $body}' >"$payload"
           if [[ -n $comment ]]; then

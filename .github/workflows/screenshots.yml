@@ -4,9 +4,9 @@
 # with the PR's number, for screenshots-comment.yml to post on the PR.
 #
 # This runs the PR's code (its simulator and scripts, maybe from a fork),
-# so it only reads, and posts nothing itself: commenting needs write
-# access, which only screenshots-comment.yml has, and that never runs
-# the PR's code.
+# so it only reads, and posts nothing itself: commenting, and uploading
+# the images to show in the comment, need write access, which only
+# screenshots-comment.yml has, and that never runs the PR's code.
 #
 # Against where the PR branched off (the merge base), not the base
 # branch's tip, so what main has gained since doesn't show up as the PR's
@@ -93,6 +93,8 @@ jobs:
           fi
           echo "$PR" >"$out/pr"
           echo "$MERGE_BASE" >"$out/base"
+      # When the images can't be attached, the comment links this
+      # artifact instead, and says it's kept for 7 days.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # tag=v7.0.2
         with:
           name: screenshots-comment

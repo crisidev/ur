@@ -218,17 +218,15 @@ write access:
   default branch's copy of itself, never the PR's code. It treats the
   artifact as untrusted: the PR must exist and have the commit the run
   was for, and every file must be a PNG with a plain name, of limited
-  size and number. It pushes the images to the `pr-screenshots`
-  branch, under `pr-<number>/<commit>/`, and links them from the comment
-  by that branch's commit, so a later push (or the branch moving on)
-  doesn't change what an older comment shows. It skips Dependabot's
-  PRs, whose runs only get read access.
+  size and number. It uploads the images as comment attachments (what
+  `gh pr comment --attach` does, nothing stored in the repository), then
+  edits its comment in place to show them. It skips Dependabot's PRs,
+  whose runs only get read access.
 
-The `pr-screenshots` branch only ever grows: each push of a PR that
-changes a screen adds a commit with its images (a few kilobytes; each
-commit holds only its own run's images, not the branch's past ones).
-Deleting the branch reclaims the space, but breaks the images in every
-comment so far.
+If the images can't be uploaded, the comment still says what changed,
+with each screen's name and how many pixels differ, notes that the
+images couldn't be attached, and links the artifact of the run that
+drew them (kept for 7 days).
 
 ## A dev kit
 
