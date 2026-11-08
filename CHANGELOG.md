@@ -26,7 +26,8 @@ missing below were test builds for the dev kit.
 - Redesign the clock face's lower half: the date with small seconds under the time, the heart rate and the next alarm or timer in one row, and the day's steps as ten blocks rather than a number: 1,000 a block (×1K) towards a fixed goal of 10,000, then 10,000 a block (×10K) past it, full at 100,000 (the exact count is on Today, a swipe right) (a02d355, 718c01d)
 - Show a crossed-out Bluetooth rune on the clock face while the phone isn't connected, rather than a Bluetooth rune while it is; the note for music playing moves to the top left corner in its place (2e1f1e1)
 - Move THEME and LIGHT from Info to the new Settings screen, leaving Info to the watch's status (3f335fe)
-- Show a notification's sender big (with the screen off, and in the history) only if it fits on one line, or on two of about the same width, as a two-word name often does; anything else goes small, rather than as a big short word over a long one, or a big word broken with a hyphen (116942b)
+- Redesign notifications: show the app and the notification's title (in a chat, who it's from), as it comes, rather than Gadgetbridge's sender field (now only when there's no title); set the title big if it fits on one line, and otherwise in a new bold medium face over as few balanced lines as it takes, never small; show it with the screen off, and in the history, as one card, the app top left and the time (now, or when it arrived, as `SUN 20:13`) top right over a rule; and make the banner taller, its title in the medium face, with an ellipsis rather than scrolling (86ebb6a)
+- Show labels, titles, the seconds and other secondary marks in red in the dim look (glances, notifications with the screen off, and the quiet night), rather than in the same white as the text; on Last night, REM and light sleep are red and deep sleep white (30fb455)
 - Leave a column more margin either side of notification text, as for a call's (0eaa4c1)
 
 ### Deprecated
@@ -36,6 +37,7 @@ missing below were test builds for the dev kit.
 ### Fixed
 
 - Leave no gap between Bluetooth and the temperature once media is paused or stopped (introduced in 0.9.0) (fcd0a6d)
+- Keep notification titles of up to 40 characters whole, however many æ, ø and å they have (20 of them filled it), and end one that's cut with an ellipsis rather than passing it off as whole; leave emoji out, rather than showing each as `?`, and draw Ø so it doesn't read as an 8 (86ebb6a)
 - Show `&`, `#`, `@`, `"`, `*` and the rest of ASCII's symbols (and `×`) in notifications, and curly quotes, dashes and ellipses as their plain look-alikes, instead of `?` (929a956)
 - Make releases rebuild byte for byte whether or not the builder already has the dependencies downloaded; 0.9.0 only reproduces from an empty cargo home (introduced in 0.9.0) (e49cb26)
 - Draw deep, REM, and light sleep on Last night in three distinct colours in every theme; deep and REM were the same red in Arcade and Parchment (introduced in 0.9.0) (a1f642d)
