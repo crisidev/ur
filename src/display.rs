@@ -199,6 +199,6 @@ impl Display {
             .held
             .as_mut()
             .expect("the bus is locked around every transfer");
-        bus.write(data).await.expect(spi::WRITE_CANNOT_FAIL);
+        spi::write(bus, data).await;
     }
 }

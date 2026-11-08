@@ -53,6 +53,12 @@ impl LineBuffer {
         }
     }
 
+    /// Forgets any partial line, e.g. one cut off by a disconnect.
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+        self.overflowed = false;
+    }
+
     /// Adds received bytes, calling `on_line` for each completed line
     /// (without the leading `\x10` and trailing `\r\n`).
     pub fn push(&mut self, data: &[u8], mut on_line: impl FnMut(&[u8])) {

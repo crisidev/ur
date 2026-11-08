@@ -29,8 +29,12 @@ pub const SCALE: usize = 3;
 
 /// Two pixels per byte (4-bit colour roles), low nibble first.
 const BYTES: usize = WIDTH * HEIGHT / 2;
-/// Two full-width canvas rows of panel pixel bytes.
-const BATCH: usize = 2 * WIDTH * SCALE * SCALE * 2;
+/// One full-width canvas row of panel pixel bytes: the most [`stream`]
+/// needs to send any rectangle whole rows at a time, and enough for a
+/// transition's 8×8 blocks (1152 bytes) in one transfer. Two rows (as it
+/// once was) halved the transfers of a full-width flush, but cost 1.4 KB of
+/// RAM to save ~40 transfers' setup on the rare full-frame push.
+const BATCH: usize = WIDTH * SCALE * SCALE * 2;
 
 /// `repr(C)`, so `scripts/screenshot.py` can find `front` and `theme` (see
 /// [`crate::debug`]).

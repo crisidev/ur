@@ -114,13 +114,17 @@ struct UartService {
         permissions(authenticated)
     )]
     rx: Vec<u8, 244>,
-    /// Watch to phone, as notifications.
+    /// Watch to phone, as notifications of up to MTU − 3 bytes. Sent with
+    /// `notify_raw` and never stored, so the type only sizes a stored value
+    /// that's never used: 20 bytes or less keeps it inside the attribute
+    /// table, rather than in a static of its own (245 bytes for a
+    /// `Vec<u8, 244>`).
     #[characteristic(
         uuid = "6e400003-b5a3-f393-e0a9-e50e24dcca9e",
         notify,
         permissions(authenticated)
     )]
-    tx: Vec<u8, 244>,
+    tx: Vec<u8, 20>,
 }
 
 /// Nordic's legacy DFU service, for firmware updates; see [`dfu`]. Only for
@@ -169,12 +173,13 @@ struct LogService {
         permissions(authenticated)
     )]
     control: Vec<u8, 4>,
+    /// Up to 243 bytes per notification; sized like `UartService::tx`.
     #[characteristic(
         uuid = "75726c00-6f67-4c6f-8000-000000000003",
         notify,
         permissions(authenticated)
     )]
-    data: Vec<u8, 244>,
+    data: Vec<u8, 20>,
 }
 
 // ==============================================================================
@@ -253,6 +258,12 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
         }
     };
     let gps = RefCell::new(GpsPolicy::default());
+    // The phone's incoming lines, shared by the connection slots rather than
+    // one per slot: it's 1 KB, and only the phone writes to the UART. (Were
+    // two clients to write at once, their lines would mingle and be
+    // dropped as unparseable.) Borrowed only while a write is parsed, never
+    // across an await.
+    let lines = RefCell::new(LineBuffer::new());
     // When the phone last left, for `advertising_interval`. Booting counts:
     // the phone is waiting to reconnect then too.
     let last_disconnect: Cell<Option<Instant>> = Cell::new(Some(Instant::now()));
@@ -304,7 +315,7 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
                 let _ = active.borrow_mut().push(peer);
             });
             select(
-                serve(stack, server, &conn, &gps, &phone),
+                serve(stack, server, &conn, &gps, &lines, &phone),
                 report_status(&phone),
             )
             .await;
@@ -400,8 +411,7 @@ async fn send_log_sector(
     index: u16,
 ) {
     let notify = async |bytes: &[u8]| {
-        let value = Vec::<u8, 244>::from_slice(bytes).expect("sized to fit");
-        if let Err(e) = server.log.data.notify(conn, &value, false).await {
+        if let Err(e) = server.log.data.notify_raw(conn, bytes, false).await {
             warn!(
                 "ble: sending the field log failed: {}",
                 defmt::Debug2Format(&e)
@@ -533,13 +543,13 @@ async fn serve(
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
     gps: &RefCell<GpsPolicy>,
+    lines: &RefCell<LineBuffer>,
     phone: &Cell<bool>,
 ) {
     let rx = server.uart.rx.handle;
     let dfu_control = server.dfu.control_point.handle;
     let dfu_packet = server.dfu.packet.handle;
     let log_control = server.log.control.handle;
-    let mut lines = LineBuffer::new();
     let mut update = dfu::Session::new();
     // While we've asked the phone for GPS: when to give up waiting.
     let mut gps_deadline: Option<Instant> = None;
@@ -638,9 +648,14 @@ async fn serve(
                     if handle == rx {
                         if !phone.get() {
                             become_phone(phone, gps, &mut gps_deadline, request_gps);
+                            // Whatever an earlier connection left half-sent
+                            // would garble this one's first line.
+                            lines.borrow_mut().clear();
                         }
                         write.with_data(|_offset, data| {
-                            lines.push(data, |line| interpret(line, &mut actions))
+                            lines
+                                .borrow_mut()
+                                .push(data, |line| interpret(line, &mut actions))
                         });
                     } else if handle == log_control {
                         write.with_data(|_offset, data| {
@@ -668,18 +683,19 @@ async fn serve(
                     }
                     send_log_sector(server, conn, index).await;
                 }
-                if let Some((handle, data)) = dfu_write {
+                if let Some((handle, data)) = &dfu_write {
                     let was_updating = update.active();
-                    let notification = if handle == dfu_control {
-                        update.on_control(&data).await
+                    let notification = if *handle == dfu_control {
+                        update.on_control(data).await
                     } else {
-                        update.on_packet(&data).await
+                        update.on_packet(data).await
                     };
-                    let value = notification.map(|n| {
-                        Vec::<u8, 20>::from_slice(&n).expect("notifications are at most 8 bytes")
-                    });
-                    if let Some(value) = value
-                        && let Err(e) = server.dfu.control_point.notify(conn, &value, false).await
+                    if let Some(value) = notification
+                        && let Err(e) = server
+                            .dfu
+                            .control_point
+                            .notify_raw(conn, &value, false)
+                            .await
                     {
                         warn!("dfu: notifying failed: {}", defmt::Debug2Format(&e));
                     }
@@ -958,7 +974,9 @@ async fn send_activity(
 ) {
     send(server, conn, Outgoing::ActivityFetch { done: false }).await;
     // Copy out in small batches: the history can't be borrowed across the
-    // awaits while sending.
+    // awaits while sending. Small, because the batch lives in the host
+    // task's static storage (twice: once per connection slot); a few
+    // samples per lock is plenty.
     //
     // Start a sleep window early: the recent past's sleep classes may have
     // been revised since the last sync (sleep is only recognised after the
@@ -966,8 +984,8 @@ async fn send_activity(
     let mut next = since_ms.div_euclid(60_000) - crate::sleep::WINDOW as i64;
     let mut sent = 0;
     loop {
-        let batch: Vec<(i64, activity::Sample), 16> =
-            activity::HISTORY.lock(|history| history.borrow().since(next).take(16).collect());
+        let batch: Vec<(i64, activity::Sample), 4> =
+            activity::HISTORY.lock(|history| history.borrow().since(next).take(4).collect());
         let Some(&(last, _)) = batch.last() else {
             break;
         };
@@ -1032,9 +1050,11 @@ async fn send(
 ) {
     let line = message.to_line();
     let chunk = usize::from(conn.raw().att_mtu().saturating_sub(3)).clamp(20, 244);
+    // `notify_raw` sends the bytes as they are, where `notify` would want
+    // them copied into the characteristic's type (a 244-byte `Vec`) first,
+    // which then sat in every future that sends.
     for piece in line.as_bytes().chunks(chunk) {
-        let value = Vec::from_slice(piece).expect("chunks are at most 244 bytes");
-        if let Err(e) = server.uart.tx.notify(conn, &value, false).await {
+        if let Err(e) = server.uart.tx.notify_raw(conn, piece, false).await {
             warn!("ble: send failed: {}", defmt::Debug2Format(&e));
             return;
         }

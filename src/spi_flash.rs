@@ -171,8 +171,8 @@ impl SpiFlash {
             // to avoid copying the data into a combined buffer.
             let mut bus = spi::BUS.get().await.lock().await;
             self.cs.set_low();
-            bus.write(&header).await.expect(spi::WRITE_CANNOT_FAIL);
-            bus.write(data).await.expect(spi::WRITE_CANNOT_FAIL);
+            spi::write(&mut bus, &header).await;
+            spi::write(&mut bus, data).await;
             self.cs.set_high();
         }
         // Datasheet maximum: 2.4 ms.
@@ -201,9 +201,9 @@ impl SpiFlash {
     async fn command(&mut self, command: &[u8], response: &mut [u8]) {
         let mut bus = spi::BUS.get().await.lock().await;
         self.cs.set_low();
-        bus.write(command).await.expect(spi::WRITE_CANNOT_FAIL);
+        spi::write(&mut bus, command).await;
         if !response.is_empty() {
-            bus.read(response).await.expect(spi::WRITE_CANNOT_FAIL);
+            spi::read(&mut bus, response).await;
         }
         self.cs.set_high();
     }

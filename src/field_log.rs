@@ -103,37 +103,65 @@ fn waiting() -> usize {
 }
 
 #[cfg(feature = "field-log")]
-/// Copies whatever whole frames are waiting in the RTT buffer to `out`, and
-/// marks them read. Returns how many bytes were copied.
-fn drain(out: &mut [u8]) -> usize {
+/// The whole frames waiting in the RTT buffer, as many as fit in `room`
+/// bytes, as the (at most two) pieces of the buffer they're in: the second
+/// is where they continue after wrapping around its end. `None` if no whole
+/// frame is waiting; empty pieces if the next one doesn't fit in `room`.
+///
+/// Read in place rather than copied out, which would take a buffer of its
+/// own (it was 512 bytes in this task's static storage). They stay put until
+/// [`consume`]d: defmt-rtt only writes at its write cursor, and stops short
+/// of our read cursor.
+fn frames(room: usize) -> Option<(&'static [u8], &'static [u8])> {
     let channel = rtt();
     let size = channel.size as usize;
     let write = channel.write.load(Ordering::Acquire) as usize;
     let read = channel.read.load(Ordering::Relaxed) as usize;
     let waiting = (write + size - read) % size;
-    let n = waiting.min(out.len());
-    for (i, byte) in out[..n].iter_mut().enumerate() {
-        // SAFETY: Bytes between the read and write cursors are written and
-        // left alone by defmt-rtt until we move the read cursor past them.
-        *byte = unsafe { channel.buffer.add((read + i) % size).read_volatile() };
-    }
-    // Frames end in a zero byte; anything after the last one is a frame
-    // still being written (or one too big for `out`, which we drop rather
-    // than stall on).
-    let take = match out[..n].iter().rposition(|&b| b == 0) {
-        Some(end) => end + 1,
-        None if n == out.len() => {
-            channel
-                .read
-                .store(((read + n) % size) as u32, Ordering::Release);
-            return 0;
-        }
-        None => 0,
+    let first = waiting.min(size - read);
+    // SAFETY: Bytes between the read and write cursors are written, and left
+    // alone by defmt-rtt until we move the read cursor past them (which
+    // only `consume` does, after the caller is done with these).
+    let (first, second) = unsafe {
+        (
+            core::slice::from_raw_parts(channel.buffer.add(read), first),
+            core::slice::from_raw_parts(channel.buffer, waiting - first),
+        )
     };
+    // Frames end in a zero byte; anything after the last one is a frame
+    // still being written.
+    let mut ends = first
+        .iter()
+        .chain(second)
+        .enumerate()
+        .filter(|&(_, &b)| b == 0)
+        .map(|(i, _)| i + 1);
+    let Some(next) = ends.next() else {
+        if waiting == size - 1 {
+            // Full, without a frame end: a frame too big for the buffer,
+            // which we drop rather than stall on.
+            consume(waiting);
+        }
+        return None;
+    };
+    let fits = if next > room {
+        0
+    } else {
+        ends.take_while(|&end| end <= room).last().unwrap_or(next)
+    };
+    let in_first = fits.min(first.len());
+    Some((&first[..in_first], &second[..fits - in_first]))
+}
+
+#[cfg(feature = "field-log")]
+/// Marks `n` bytes (from [`frames`]) read, for defmt-rtt to reuse.
+fn consume(n: usize) {
+    let channel = rtt();
+    let size = channel.size as usize;
+    let read = channel.read.load(Ordering::Relaxed) as usize;
     channel
         .read
-        .store(((read + take) % size) as u32, Ordering::Release);
-    take
+        .store(((read + n) % size) as u32, Ordering::Release);
 }
 
 // ==============================================================================
@@ -227,7 +255,6 @@ pub async fn task() {
     CURSOR.lock(|c| c.set(Some((sector, used))));
     info!("field log: writing sector {} (#{})", sector, sequence);
 
-    let mut buffer = [0u8; 512];
     let mut last_flush = embassy_time::Instant::now();
     loop {
         Timer::after_secs(1).await;
@@ -250,8 +277,7 @@ pub async fn task() {
             continue;
         }
         last_flush = embassy_time::Instant::now();
-        let n = drain(&mut buffer);
-        if n == 0 {
+        if frames(usize::MAX).is_none() {
             continue;
         }
         let mut flash = FLASH.lock().await;
@@ -259,27 +285,35 @@ pub async fn task() {
         if flash.wake().await.is_err() {
             continue;
         }
-        // Whole frames only per sector, so every sector decodes on its own.
-        for frame in buffer[..n].split_inclusive(|&b| b == 0) {
-            if used + frame.len() as u32 > SECTOR {
+        // Everything waiting, including what's logged while this runs (the
+        // erase of a new sector, especially). Whole frames only per sector,
+        // so every sector decodes on its own.
+        while let Some((first, second)) = frames((SECTOR - used) as usize) {
+            if first.is_empty() {
                 let address = sector_address(sector);
                 let _ = flash
                     .program(address + 12, &(used - HEADER).to_le_bytes())
                     .await;
                 sector = (sector + 1) % SECTORS;
                 sequence = sequence.wrapping_add(1);
-                if open(flash, sector, sequence).await.is_err() {
-                    // Leave it; the reader trims at frame boundaries.
-                    continue;
-                }
+                // If this fails, leave it; the reader trims at frame
+                // boundaries.
+                let _ = open(flash, sector, sequence).await;
                 used = HEADER;
+                continue;
             }
-            if program(flash, sector_address(sector) + used, frame)
-                .await
-                .is_ok()
-            {
-                used += frame.len() as u32;
+            let address = sector_address(sector) + used;
+            let n = first.len() + second.len();
+            let programmed = match program(flash, address, first).await {
+                Ok(()) if !second.is_empty() => {
+                    program(flash, address + first.len() as u32, second).await
+                }
+                result => result,
+            };
+            if programmed.is_ok() {
+                used += n as u32;
             }
+            consume(n);
         }
         flash.sleep().await;
         CURSOR.lock(|c| c.set(Some((sector, used))));
