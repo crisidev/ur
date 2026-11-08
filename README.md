@@ -179,12 +179,10 @@ gh attestation verify ur-<version>-dfu.zip --repo jonhoo/ur
 
 Use whichever of these suits you:
 
-**Nordic's nRF Device Firmware Update app** (Android and iOS; first
-install and updates):
+**Nordic's [nRF Device Firmware Update][nrf-dfu-android] app** (Android,
+also on the [App Store][nrf-dfu-ios]; first install and updates):
 
-1. Install "nRF Device Firmware Update" by Nordic Semiconductor from the
-   [Play Store][nrf-dfu-android] or [App Store][nrf-dfu-ios], and copy the
-   zip onto the phone.
+1. Install the app, and copy the zip onto the phone.
 2. On the first install, if Gadgetbridge is connected to InfiniTime,
    disconnect it there first: InfiniTime takes one connection at a time,
    so the app wouldn't find it. (ur takes a second connection
