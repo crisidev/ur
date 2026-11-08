@@ -11,6 +11,9 @@
 //! power, against a clock it controls ([`time`], ticking at the watch's
 //! rate), so scripts are deterministic and can skip hours ahead.
 //!
+//! A library, so the browser's build (a WebAssembly module) shares all of
+//! it with the command line's (`src/main.rs`).
+//!
 //! See README.md here for how to use it, and what it can't simulate.
 
 // ==============================================================================
@@ -220,6 +223,7 @@ mod watch;
 #[cfg(feature = "window")]
 mod window;
 
-fn main() -> std::process::ExitCode {
+/// The command line (see `src/main.rs`, which is only this).
+pub fn main() -> std::process::ExitCode {
     cli::main()
 }

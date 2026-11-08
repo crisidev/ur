@@ -4,8 +4,6 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
-# Only the binary, from `src/lib.rs`, for now.
-autolib = false
 
 # A desktop simulator for the firmware's UI: runs `src/ui.rs` and the
 # hardware-free modules it needs (included via `#[path]`) on the host, with
@@ -13,9 +11,14 @@ autolib = false
 # run it from this directory. See README.md here.
 [workspace]
 
+# Everything is in the library, for other front ends to share; the binary
+# is the command line.
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "ur-sim"
-path = "src/lib.rs"
+path = "src/main.rs"
 
 [features]
 default = ["window"]

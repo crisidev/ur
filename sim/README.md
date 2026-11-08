@@ -207,7 +207,7 @@ can reach (and puts back what it changes).
 
 ## How it works
 
-`src/main.rs` includes the firmware's hardware-free modules with
+`src/lib.rs` includes the firmware's hardware-free modules with
 `#[path]`, as the host tests do, at the crate root where their `crate::…`
 paths expect each other. Stand-ins replace the rest:
 
