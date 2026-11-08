@@ -1720,10 +1720,13 @@ impl App {
                     }
                     _ => None,
                 };
-                // The slot stays while the phone has media at all, playing
-                // or not, so the temperature beside it doesn't shift as
-                // the icon changes (or goes, when paused).
-                let media = (self.music.is_some() || self.media_hint.is_some()).then_some(icon);
+                // The slot is there only while an icon is: a fixed width
+                // (see `render_clock`) so the temperature doesn't shift as
+                // one icon replaces another (a gesture's, then the note),
+                // but no empty gap once the media is paused or stopped
+                // and the gesture's icon has gone. The temperature moves
+                // over once then, which reads as the icon going away.
+                let media = icon.is_some().then_some(icon);
                 render_clock(canvas, status, next_alarm, media)
             }
             // From the day's history, only while it shows: walking it
