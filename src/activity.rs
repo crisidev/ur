@@ -765,6 +765,25 @@ pub fn take_active_polls() -> u8 {
 
 static ACTIVE_POLLS: AtomicU8 = AtomicU8::new(0);
 
+/// How many polls in a row, up to the latest, were calm enough to measure
+/// the heart rate through ([`crate::heart::CALM`]); saturating. Whether
+/// the wrist has *stayed* calm, for starting a session (see
+/// [`crate::heart_schedule::START_CALM_POLLS`]).
+pub fn calm_polls() -> u8 {
+    CALM_POLLS.load(Ordering::Relaxed)
+}
+
+static CALM_POLLS: AtomicU8 = AtomicU8::new(0);
+
+/// How many polls in a row, up to the latest, counted no steps;
+/// saturating. Whether a heart rate reading is a resting one (see
+/// [`crate::heart_schedule::RESTING_STEPLESS_POLLS`]).
+pub fn stepless_polls() -> u8 {
+    STEPLESS_POLLS.load(Ordering::Relaxed)
+}
+
+static STEPLESS_POLLS: AtomicU8 = AtomicU8::new(0);
+
 /// Set once the accelerometer is configured; nothing else may talk to it
 /// before (setup soft-resets it and uploads its program).
 static READY: AtomicBool = AtomicBool::new(false);
@@ -1075,6 +1094,13 @@ pub async fn activity_task(i2c: Device) {
                 polls.saturating_add(1)
             });
         }
+        let run = |counts: bool| move |polls: u8| if counts { polls.saturating_add(1) } else { 0 };
+        CALM_POLLS.update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            run(recent <= crate::heart::CALM),
+        );
+        STEPLESS_POLLS.update(Ordering::Relaxed, Ordering::Relaxed, run(new_steps == 0));
 
         // Per-minute history needs wall-clock time.
         let Some(utc_minute) = clock::now_utc_seconds().map(|s| s.div_euclid(60)) else {

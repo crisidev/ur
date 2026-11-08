@@ -7,6 +7,11 @@
 #[allow(dead_code)]
 mod ppg;
 
+/// For [`heart_schedule::give_up`], which the replay applies.
+#[path = "../../../src/heart_schedule.rs"]
+#[allow(dead_code)]
+mod heart_schedule;
+
 use ppg::{Consensus, Conversions, Ppg, Rejection};
 
 // ==============================================================================
@@ -492,6 +497,8 @@ const MOTION_LIMIT: u16 = 1500;
 /// Samples per level check in the firmware (`heart::LEVEL_CHECK_SAMPLES`):
 /// one movement reading each.
 const LEVEL_CHECK_SAMPLES: usize = 27;
+/// What `heart::CALM` is: movement above which the wrist is busy.
+const CALM: u16 = 150;
 
 /// A session extracted from a field log by `scripts/ppg_sessions.py`, one
 /// per line: UTC start, a reference rate (another watch's, or 0), the
@@ -559,17 +566,41 @@ fn windows(session: &Recorded) -> Vec<(usize, Verdict)> {
     verdicts
 }
 
+/// When a background session would give up on a busy wrist (see
+/// [`heart_schedule::give_up`]), in seconds, if it would.
+fn gives_up_at(session: &Recorded, windows: &[(usize, Verdict)]) -> Option<u32> {
+    let (mut checks, mut busy) = (0u8, 0u8);
+    for (k, &moved) in session.movement.iter().enumerate() {
+        checks += 1;
+        busy += u8::from(moved > CALM);
+        // The firmware looks at the top of its next poll.
+        let at = (k as u32 + 1) * LEVEL_CHECK_SAMPLES as u32;
+        let accepted = windows
+            .iter()
+            .any(|(i, verdict)| *i < at as usize && matches!(verdict, Verdict::Window(Ok(_))));
+        let seconds = (at as f32 * session.period / 1e6) as u32;
+        if heart_schedule::give_up(seconds, accepted, busy, checks) {
+            return Some(seconds);
+        }
+    }
+    None
+}
+
 /// Replays sessions extracted from a field log through `Ppg` and
 /// `Consensus`, vetoing windows on movement as the firmware does, and
-/// prints each window's verdict next to the reference.
+/// prints each window's verdict next to the reference, and when the
+/// session would now give up on a busy wrist.
 fn replay(path: &str) {
     let text = std::fs::read_to_string(path).expect("readable sessions file");
     let (mut sessions, mut read, mut right) = (0, 0, 0);
+    let (mut gave_up, mut saved, mut lost) = (0, 0.0, 0);
     for session in parse_sessions(&text) {
         let mut consensus = Consensus::new();
         let mut reading = None;
         let mut verdicts = Vec::new();
-        for (i, verdict) in windows(&session) {
+        let windows = windows(&session);
+        let give_up = gives_up_at(&session, &windows);
+        for (i, verdict) in windows {
             verdicts.push(match verdict {
                 Verdict::Moving => "moving".into(),
                 Verdict::Window(Ok(estimate)) => {
@@ -596,6 +627,15 @@ fn replay(path: &str) {
             });
         }
         sessions += 1;
+        let length = session.samples.len() as f32 * session.period / 1e6;
+        if let Some(at) = give_up {
+            gave_up += 1;
+            saved += length - at as f32;
+            if session.outcome.parse::<u8>().is_ok() {
+                lost += 1;
+            }
+            verdicts.insert(0, format!("[gives up at {at} s]"));
+        }
         let verdict = match reading {
             Some((bpm, at)) => {
                 read += 1;
@@ -615,6 +655,10 @@ fn replay(path: &str) {
         );
     }
     println!("{read}/{sessions} sessions read, {right} within 8 BPM of the reference");
+    println!(
+        "{gave_up} would give up on a busy wrist, saving {saved:.0} s of LED; \
+         {lost} of them had read (if in the background, now lost)"
+    );
 }
 
 fn main() {

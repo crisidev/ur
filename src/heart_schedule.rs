@@ -41,6 +41,13 @@
 //! looking, so `heart` measures right away), but their readings count as
 //! measurements, and their LED time comes out of the budget.
 //!
+//! Two rules about the sessions themselves live here too, being as
+//! hardware-free: a background session only starts once the wrist has
+//! been calm for a few seconds ([`START_CALM_POLLS`]), and gives up early
+//! if it stays busy ([`give_up`]). At a desk, a hand rests for a moment
+//! between movements, and sessions started in that moment spent their
+//! 30 s of LED on a wrist that was soon moving again.
+//!
 //! Time is whole seconds since boot, as `u32` (136 years). Like
 //! [`crate::sleep`], this knows nothing of hardware or the clock, so it
 //! runs in host tests (`host-tests/heart_schedule`).
@@ -103,6 +110,48 @@ pub const MAX_FAILED_INTERVAL: u32 = 60 * 60;
 /// TODO: tune from a field log with walking and desk work in it; a long
 /// interval at a desk can collect six stray polls too.
 pub const MOVED_POLLS: u8 = 6;
+
+/// Accelerometer polls in a row (2 s each) calm enough to measure through
+/// (`heart::CALM`) before a background session may start.
+///
+/// One calm poll used to be enough, and at a desk it rarely lasted: in a
+/// field log of an afternoon there (2026-11-08), 10 of 13 failed
+/// background sessions had started within two calm polls of movement, as
+/// had the one that misread 42 BPM (see `ppg::MAX_SLOW_DRIFT`), and the
+/// wrist averaged 245-1906 through them (the calm limit is 150). Three
+/// polls, ~6 s, would have held those eleven back, and cost a still wrist
+/// nothing: asleep, or at rest, nearly every poll is calm.
+pub const START_CALM_POLLS: u8 = 3;
+
+/// Seconds into a background session at which it gives up if no window
+/// has passed the signal checks yet and the wrist has been busy (above
+/// `heart::CALM`) at most of its level checks (see [`give_up`]).
+///
+/// The first two windows end at ~9 and ~11 s. Replaying 129 field-log
+/// sessions (`host-tests/ppg`), giving up at 12 s cut 45 failing sessions
+/// short, saving ~860 s of LED (~19 s each), and lost three background
+/// readings (at a desk, from windows that only passed after 15 s of a busy
+/// wrist); at 10 s it would have lost six.
+pub const GIVE_UP_AFTER: u32 = 12;
+
+/// Polls (2 s each) without steps after which a reading counts as resting
+/// (see [`Schedule::ended`]): three minutes, by when the heart rate has
+/// mostly come down after a walk.
+///
+/// Steps, not movement: at a desk, polls too vigorous to measure through
+/// come every minute or two (gestures, typing), while steps stop for many
+/// minutes (in a field log, stretches of 2-250 s without vigorous polls,
+/// against 400-1600 s without steps). Counting either kept the resting
+/// estimate empty all afternoon, as every reading followed some movement.
+///
+/// TODO: exercise without steps (cycling, weights) counts as rest this way;
+/// its readings only nudge the estimate up a beat each (see
+/// `track_resting`), but a long session could.
+pub const RESTING_STEPLESS_POLLS: u8 = 90;
+
+/// How far apart (BPM) the first two resting readings may be for the
+/// estimate to start from them.
+const SEED_AGREEMENT: u8 = 6;
 
 /// LED seconds per hour that sessions may spend, background and watched
 /// alike. 180 s is what the fixed schedule this replaced spent at worst
@@ -167,6 +216,29 @@ pub enum Outcome {
     OffWrist,
 }
 
+/// What the wrist had been doing when a session started, from `activity`;
+/// for [`Schedule::ended`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Before {
+    /// Polls with steps or vigorous movement since the last session (as
+    /// for [`Schedule::due`]).
+    pub active_polls: u8,
+    /// Polls in a row without steps, up to the session (saturating).
+    pub stepless_polls: u8,
+    /// Whether the sleep classifier thought the wearer asleep.
+    pub asleep: bool,
+}
+
+/// A resting heart rate estimate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Resting {
+    /// In BPM; 0 before it has started.
+    bpm: u8,
+    /// Before it has: the last resting reading, waiting for another to
+    /// agree with it (0: none yet).
+    candidate: u8,
+}
+
 /// The scheduling state, 20 bytes: the heart task holds it across every
 /// await, so it lives in that task's static future, where RAM is tight.
 #[derive(Clone, Debug)]
@@ -183,9 +255,9 @@ pub struct Schedule {
     /// Whether the last reading was elevated (so `interval` is
     /// [`ELEVATED_INTERVAL`] for that reason; for [`Why`]).
     elevated: bool,
-    /// Resting estimates, awake and asleep, in BPM; 0 before the first.
-    resting_awake: u8,
-    resting_asleep: u8,
+    /// Resting estimates, awake and asleep.
+    resting_awake: Resting,
+    resting_asleep: Resting,
     /// LED seconds left in the budget as of `refilled_at`.
     tokens: u16,
     /// When `tokens` was last brought up to date.
@@ -206,8 +278,14 @@ impl Schedule {
             failures: 0,
             off_wrist: false,
             elevated: false,
-            resting_awake: 0,
-            resting_asleep: 0,
+            resting_awake: Resting {
+                bpm: 0,
+                candidate: 0,
+            },
+            resting_asleep: Resting {
+                bpm: 0,
+                candidate: 0,
+            },
             tokens: LED_BUDGET as u16,
             refilled_at: 0,
         }
@@ -262,17 +340,21 @@ impl Schedule {
 
     /// Records a session that ended at `now`, having had the LED on for
     /// `led_seconds`. `background` says whether the schedule started it
-    /// (rather than someone looking at the clock face); `active_polls` and
-    /// `asleep` are as for [`Self::due`], as they stood when it started.
+    /// (rather than someone looking at the clock face); `before`, what the
+    /// wrist had been doing when it started.
     pub fn ended(
         &mut self,
         now: u32,
         led_seconds: u32,
         outcome: Outcome,
         background: bool,
-        active_polls: u8,
-        asleep: bool,
+        before: Before,
     ) {
+        let Before {
+            active_polls,
+            stepless_polls,
+            asleep,
+        } = before;
         self.refill(now);
         self.tokens = self
             .tokens
@@ -296,15 +378,22 @@ impl Schedule {
                 // Asleep before a sleeping estimate exists, the awake one
                 // stands in: sleep only lowers the heart rate, so it can't
                 // make a reading look elevated that isn't.
-                let resting = match (asleep, self.resting_asleep) {
+                let resting = match (asleep, self.resting_asleep.bpm) {
                     (true, r) if r != 0 => r,
-                    _ => self.resting_awake,
+                    _ => self.resting_awake.bpm,
                 };
                 self.elevated = resting != 0 && bpm >= resting.saturating_add(ELEVATED_BY);
-                // Only a background reading of a wrist that has been still
-                // since the last session is a resting one. (A watched
-                // reading comes right after the wrist turned to look.)
-                if background && !moved {
+                // Resting readings: asleep, background ones (a watched one
+                // means the wearer is awake after all); awake, any reading
+                // once the wearer has taken no steps for a few minutes
+                // (see `RESTING_STEPLESS_POLLS`), watched ones included:
+                // turning the wrist to look doesn't raise the heart rate.
+                let at_rest = if asleep {
+                    background
+                } else {
+                    stepless_polls >= RESTING_STEPLESS_POLLS
+                };
+                if at_rest {
                     let estimate = if asleep {
                         &mut self.resting_asleep
                     } else {
@@ -343,7 +432,7 @@ impl Schedule {
 
     /// The resting heart rate estimates, awake and asleep (0: none yet).
     pub fn resting(&self) -> (u8, u8) {
-        (self.resting_awake, self.resting_asleep)
+        (self.resting_awake.bpm, self.resting_asleep.bpm)
     }
 
     /// LED seconds left in the budget at `now`.
@@ -379,6 +468,17 @@ fn moved(active_polls: u8, asleep: bool) -> bool {
     !asleep && active_polls >= MOVED_POLLS
 }
 
+/// Whether a background session should give up now, `seconds` in, with no
+/// reading: no window has passed the signal checks yet (`accepted`), and
+/// the wrist was busy at more than half of the `checks` (one a second) so
+/// far (`busy`). A busy wrist's next windows would hold most of that
+/// movement, so they'd be rejected too, and the session's remaining LED
+/// time would likely be spent for nothing. It counts as a session without
+/// a reading, so the schedule backs off as after any other.
+pub fn give_up(seconds: u32, accepted: bool, busy: u8, checks: u8) -> bool {
+    seconds >= GIVE_UP_AFTER && !accepted && u16::from(busy) * 2 > u16::from(checks)
+}
+
 /// Moves a resting estimate towards a resting reading: the running median
 /// estimator (one step towards each reading), which needs one byte where a
 /// window of readings would need dozens, and which a few readings taken
@@ -398,12 +498,26 @@ fn moved(active_polls: u8, asleep: bool) -> bool {
 /// reading after would count as elevated. This way a reading
 /// [`ELEVATED_BY`] + n over the estimate stops counting after about n
 /// readings.
-fn track_resting(estimate: &mut u8, bpm: u8) {
-    if *estimate == 0 {
-        *estimate = bpm;
-    } else if bpm > *estimate {
-        *estimate += 1;
-    } else if bpm < *estimate {
-        *estimate -= (*estimate - bpm).div_ceil(4);
+///
+/// It starts from the mean of the first two resting readings that agree
+/// (within [`SEED_AGREEMENT`]), not the first alone: starting from one
+/// misreading low (a field log's desk afternoon had a 42 against a
+/// Garmin's 67), it would take ~20 readings to climb back, all of them
+/// counting as elevated meanwhile.
+fn track_resting(estimate: &mut Resting, bpm: u8) {
+    let Resting {
+        bpm: current,
+        candidate,
+    } = estimate;
+    if *current == 0 {
+        if *candidate != 0 && candidate.abs_diff(bpm) <= SEED_AGREEMENT {
+            *current = (u16::from(*candidate) + u16::from(bpm)).div_ceil(2) as u8;
+        } else {
+            *candidate = bpm;
+        }
+    } else if bpm > *current {
+        *current += 1;
+    } else if bpm < *current {
+        *current -= (*current - bpm).div_ceil(4);
     }
 }
