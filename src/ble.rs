@@ -104,10 +104,22 @@ static BURST_NEW: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 const BURST_TIME: Duration = Duration::from_millis(1200);
 /// How often a burst advertises: the fastest Bluetooth allows.
 const BURST_INTERVAL: Duration = Duration::from_millis(20);
+/// How long a burst keeps the air before another may replace it: each
+/// advertisement carries one press, so one cut short after a few
+/// advertisements would likely be missed. Two presses can come together
+/// (one touch can complete two; a hold's release can follow it within
+/// moments), and the second then waits. ~32 advertisements: a scanner
+/// listening a tenth of the time misses them all 3% of the time, against
+/// 0.6% for a whole burst; a hold's release comes at most this late,
+/// where it'd stop a light dimming.
+///
+/// TODO: tune from what Home Assistant misses, once there's a record.
+const BURST_FIRST: Duration = Duration::from_millis(800);
 
 /// Advertises `data` (a BTHome advertisement from [`crate::bthome`]) for
 /// [`BURST_TIME`], instead of the usual advertising data, replacing any
-/// burst under way.
+/// burst under way once that's had [`BURST_FIRST`]. Only the latest
+/// waits: a third press within that time replaces the second, unsent.
 ///
 /// It rides on the connectable advertising the watch does anyway
 /// (whichever slot is advertising; see `host_task`), only faster, and with
@@ -119,9 +131,19 @@ const BURST_INTERVAL: Duration = Duration::from_millis(20);
 /// a log fetch), neither advertises, and a burst that ends meanwhile is
 /// never sent.
 pub fn burst(data: [u8; 31], len: usize) {
-    let until = Instant::now() + BURST_TIME;
+    let now = Instant::now();
     let len = len as u8;
-    BURST.lock(|b| b.set(Some(Burst { data, len, until })));
+    BURST.lock(|b| {
+        // When this one may start: when the one under way (or waiting)
+        // has had its share, if it hasn't yet. A burst's start is its end
+        // less `BURST_TIME`, so that's all a waiting one needs to say.
+        let start = b
+            .get()
+            .filter(|b| b.until > now)
+            .map_or(now, |b| (b.until - BURST_TIME + BURST_FIRST).max(now));
+        let until = start + BURST_TIME;
+        b.set(Some(Burst { data, len, until }));
+    });
     BURST_NEW.signal(());
 }
 
@@ -546,8 +568,15 @@ async fn advertise<'values, 'server, C: trouble_host::Controller>(
         )
         .await?;
     // Dropping the advertiser (on timeout, or for a new burst) stops
-    // advertising.
-    match select(with_timeout(review, advertiser.accept()), BURST_NEW.wait()).await {
+    // advertising. A new burst that must wait (see `burst`) leaves this
+    // one on the air until it may start.
+    let new_burst = async {
+        BURST_NEW.wait().await;
+        if let Some(next) = BURST.lock(Cell::get) {
+            Timer::at(next.until - BURST_TIME).await;
+        }
+    };
+    match select(with_timeout(review, advertiser.accept()), new_burst).await {
         Either::First(Ok(conn)) => Ok(Some(conn?.with_attribute_server(server)?)),
         Either::First(Err(_)) | Either::Second(()) => Ok(None),
     }
