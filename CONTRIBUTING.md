@@ -237,6 +237,20 @@ in Claude Code does this). Releases are cut now and then, when there's
 something worth having, not for every build tried on a watch; CI's
 snapshot packages cover those.
 
+Which number to bump, from what `[Unreleased]` holds:
+
+- **Patch** (0.9.0 → 0.9.1): everything that isn't one of the below: fixes,
+  tuning, small improvements, documentation.
+- **Minor** (0.9.0 → 0.10.0): significant new features that keep working
+  with what's already on a watch.
+- **Major** (1.0.0 → 2.0.0): only when upgrading may lose configuration or
+  data (settings, bonds, unsynced activity), or substantially changes how
+  the watch is used, and only with the maintainer's say-so.
+
+While ur is in early testing and development, it stays on 0.x: a change
+that would be major is a minor bump instead (still flagged to the
+maintainer first, and called out in the changelog).
+
 Cargo.toml's version is the source of truth. To release:
 
 1. Finalise `[Unreleased]` (`/populate-changelog` audits it against the
@@ -244,10 +258,12 @@ Cargo.toml's version is the source of truth. To release:
    for the new version and update the compare links at the bottom.
 2. Set the version in Cargo.toml, and run any cargo build without
    `--locked` (e.g. `cargo check`) to update Cargo.lock to match.
-3. Commit, then tag and push:
+3. Commit, then tag (annotated, with a very brief summary of what changed
+   since the last release: the key user-facing effects, and any
+   particularly impactful change behind the scenes) and push:
 
    ```sh
-   git tag v0.9.0
+   git tag -a v0.9.0 -m "ur 0.9.0: <headline>" -m "<two or three short lines>"
    git push origin main v0.9.0
    ```
 
