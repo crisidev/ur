@@ -90,7 +90,7 @@ impl LineBuffer {
 // ==============================================================================
 
 /// The messages we act on. Everything else Gadgetbridge sends (calendar,
-/// weather, navigation, …) is logged and ignored.
+/// weather, …) is logged and ignored.
 pub enum Incoming<'a> {
     /// From `setTime(…);E.setTimeZone(…)`.
     SetTime {

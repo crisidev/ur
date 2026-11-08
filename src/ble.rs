@@ -38,7 +38,7 @@ use trouble_host::prelude::*;
 use crate::gb::{self, Incoming, LineBuffer, Outgoing};
 use crate::geo::{self, GpsPolicy, Location};
 use crate::ui::{PhoneEvent, Unpaired};
-use crate::{activity, clock, dfu, storage};
+use crate::{activity, clock, dfu, route, storage};
 
 /// The advertised and GAP device name. Gadgetbridge's Bangle.js support
 /// recognises `Bangle.js.*` (among a few other Espruino names).
@@ -897,8 +897,8 @@ fn interpret(line: &[u8], actions: &mut Vec<Action, 4>) {
     }
 }
 
-/// Translates the phone's notification, call, music, find-my-watch, and
-/// alarm messages for the UI. Only the fields we show are copied; in
+/// Translates the phone's notification, call, music, find-my-watch, alarm,
+/// and navigation messages for the UI. Only the fields we show are copied; in
 /// particular a notification's body never leaves this function.
 fn phone_event(kind: &str, object: gb::Object<'_>) -> Option<PhoneEvent> {
     fn text<const N: usize>(object: gb::Object<'_>, key: &str) -> heapless::String<N> {
@@ -966,6 +966,39 @@ fn phone_event(kind: &str, object: gb::Object<'_>) -> Option<PhoneEvent> {
                 }
             }
             PhoneEvent::Alarms(alarms)
+        }
+        // `{"t":"nav","instr":"Storgata","distance":"150 m","action":"left",
+        // "eta":"11:55"}`: the next turn while the phone navigates, every
+        // field optional; `{"t":"nav"}` when navigation ends (see `route`).
+        "nav" => {
+            // Decoded at a size `text` is already used with (each size is
+            // a copy of the decoder, ~1 KB of flash), then copied over, with
+            // Google Maps' no-break spaces (between number and unit), which
+            // the font lacks, as plain ones.
+            fn spaced<const N: usize>(object: gb::Object<'_>, key: &str) -> heapless::String<N> {
+                let decoded: heapless::String<40> = text(object, key);
+                let mut out: heapless::String<N> = heapless::String::new();
+                for c in decoded.chars() {
+                    let c = if c == '\u{a0}' { ' ' } else { c };
+                    // Trimmed, in case they come padded.
+                    if c != ' ' || !out.is_empty() {
+                        let _ = out.push(c);
+                    }
+                }
+                while out.ends_with(' ') {
+                    out.pop();
+                }
+                out
+            }
+            let street = spaced::<{ route::STREET_LEN }>(object, "instr");
+            let distance = spaced::<{ route::DISTANCE_LEN }>(object, "distance");
+            let action = object.get("action").and_then(|v| v.as_raw_str());
+            let navigating = !street.is_empty() || !distance.is_empty() || action.is_some();
+            PhoneEvent::Route(navigating.then(|| route::Step {
+                turn: route::Turn::from_action(action),
+                street,
+                distance,
+            }))
         }
         _ => return None,
     })

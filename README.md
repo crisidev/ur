@@ -25,6 +25,10 @@ timepiece.)
   your skin's, around 30 °C; off the wrist, it drifts towards the room's.
 - **Glance:** turn your wrist to look, and the time shows dimly for a few
   seconds, without lighting the whole screen. Not while you're asleep.
+- **Directions:** while Google Maps, OsmAnd, or CoMaps navigates on the
+  phone, a glance shows the next turn: an arrow, the distance, and the
+  street, with the time above. The watch taps twice as a turn comes within
+  50 m, and shows it.
 - **Alarms:** smart wake (rings in the half hour before your time, as soon
   as you stir from light sleep, with separate times for weekdays and
   weekends), two alarms, and two timers, plus up to ten alarms set in
@@ -125,6 +129,10 @@ hardware by a human.
   location, notifications, activity, sleep, and heart rate on its own. For
   sun-based themes away from Oslo, turn on "Use phone GPS data" in the
   watch's Gadgetbridge settings.
+- **Directions:** Gadgetbridge forwards them by default, from Google Maps
+  (it reads its navigation notification) and OsmAnd; CoMaps needs turning
+  on, under Settings, "Navigation apps". Directions disappear when
+  navigation ends, or after three minutes without an update.
 
 ## Installing
 

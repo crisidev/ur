@@ -118,6 +118,28 @@ impl Canvas {
         }
     }
 
+    /// Like [`Canvas::sprite`], for the 16-wide turn arrows (see
+    /// [`font::TURN_W`]), optionally mirrored left to right: the left turns
+    /// are the right ones' mirror images.
+    pub fn sprite16(
+        &mut self,
+        x: i32,
+        y: i32,
+        rows: &[u16],
+        mirror: bool,
+        scale: i32,
+        color: Color,
+    ) {
+        for (dy, &row) in rows.iter().enumerate() {
+            let row = if mirror { row.reverse_bits() } else { row };
+            for dx in 0..16 {
+                if row & (1 << (15 - dx)) != 0 {
+                    self.fill_rect(x + dx * scale, y + dy as i32 * scale, scale, scale, color);
+                }
+            }
+        }
+    }
+
     /// Draws text in the 3×5 font and returns the x just past its end.
     pub fn text(&mut self, x: i32, y: i32, text: &str, color: Color) -> i32 {
         self.text_scaled(x, y, text, color, 1)

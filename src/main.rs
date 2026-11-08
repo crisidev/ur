@@ -60,6 +60,7 @@ mod motor;
 mod nav;
 mod power;
 mod ppg;
+mod route;
 mod sleep;
 mod snapshot;
 mod spi;

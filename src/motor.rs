@@ -36,6 +36,12 @@ impl Pattern {
         steps: &[60],
         repeat_from: None,
     };
+    /// The next turn is near (see [`crate::route`]): two taps, so it isn't
+    /// taken for a notification.
+    pub const TURN: Self = Self {
+        steps: &[60, 120, 60],
+        repeat_from: None,
+    };
     /// Incoming call: rings until stopped.
     pub const RING: Self = Self {
         steps: &[400, 600],

@@ -55,8 +55,9 @@
 //! - No input for [`SCREEN_TIMEOUT`]: turn the screen off.
 //! - Turning the wrist to look (see [`crate::glance`]) while the screen is
 //!   off: a glance, just the time in white on black at a low backlight,
-//!   for [`GLANCE_TIME`]. A tap or press during it (one is enough: the
-//!   wearer is looking) wakes the screen properly.
+//!   for [`GLANCE_TIME`]. While the phone navigates, the next turn instead,
+//!   with the time smaller above it. A tap or press during it (one is
+//!   enough: the wearer is looking) wakes the screen properly.
 //!
 //! Alarms (see [`crate::alarm`] for when they ring):
 //!
@@ -83,6 +84,9 @@
 //! - Calls: take over the screen, ringing, until the phone says the call is
 //!   over (answered, rejected, ended) or the user acts.
 //! - Media info: enables the music screen.
+//! - Directions, while the phone navigates (see [`crate::route`]): only on
+//!   a glance. As a turn comes near, a double tap, and with the screen off
+//!   a glance at it.
 //!
 //! The quiet night (see [`sleep::Night`] for when it starts and ends: from
 //! falling asleep until the morning's first alarm, or [`sleep::QUIET_AWAKE`]
@@ -117,6 +121,7 @@ use crate::font;
 use crate::gb::{CallAction, MusicCommand, Outgoing};
 use crate::motor::{self, Pattern};
 use crate::nav::{self, Place, Side};
+use crate::route::{self, Route, Turn};
 use crate::sleep::{self, Change, Over};
 use crate::theme::{self, Theme};
 use crate::touch::{Gesture, Touch};
@@ -218,6 +223,8 @@ pub enum PhoneEvent {
     Unpaired(Unpaired),
     /// The alarms set in Gadgetbridge, all of them.
     Alarms(alarm::Phone),
+    /// The next turn while the phone navigates; `None` once it stops.
+    Route(Option<route::Step>),
 }
 
 /// Why a connected client can't use the watch: its link never became
@@ -261,6 +268,7 @@ impl defmt::Format for PhoneEvent {
             Self::Find { .. } => "Find",
             Self::Unpaired(_) => "Unpaired",
             Self::Alarms(_) => "Alarms",
+            Self::Route(_) => "Route",
         };
         defmt::write!(f, "{=str}", kind)
     }
@@ -447,6 +455,8 @@ pub struct App {
     /// Just after a media gesture on the clock: what it did, as a media
     /// control's icon, and for how many more ticks to show it.
     media_hint: Option<(&'static [u8; 5], u8)>,
+    /// The phone's directions, while it navigates (see [`crate::route`]).
+    route: Option<Route>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -487,6 +497,7 @@ impl App {
             storage_mode: false,
             takeover: false,
             media_hint: None,
+            route: None,
         }
     }
 
@@ -997,6 +1008,19 @@ impl App {
             }
             return;
         }
+        // Directions only show on a glance; a turn coming up buzzes, and
+        // shows itself if the screen is off.
+        if let PhoneEvent::Route(step) = event {
+            let was_navigating = self.route.is_some();
+            let near = Route::update(&mut self.route, step, now.as_millis());
+            if self.route.is_some() != was_navigating {
+                defmt::info!("route: navigating: {}", self.route.is_some());
+            }
+            if near {
+                self.turn_near(now);
+            }
+            return;
+        }
         // Both of these show as a banner: a notification (kept in the
         // history, too), or that a client can't connect.
         let event = match event {
@@ -1012,9 +1036,10 @@ impl App {
             self.last_input = now;
         }
         match event {
-            PhoneEvent::Notification { .. } | PhoneEvent::Unpaired(_) | PhoneEvent::Alarms(_) => {
-                unreachable!("handled above")
-            }
+            PhoneEvent::Notification { .. }
+            | PhoneEvent::Unpaired(_)
+            | PhoneEvent::Alarms(_)
+            | PhoneEvent::Route(_) => unreachable!("handled above"),
             // Calls ring and light the screen even in the quiet night: one
             // at night is likely to matter. (In the dim look, though.)
             // TODO: make this a setting, if calls at night should be quiet
@@ -1054,6 +1079,28 @@ impl App {
                     self.last_input = now;
                 }
             }
+        }
+    }
+
+    /// The next turn is near (see [`route::NEAR_METRES`]): a double tap on
+    /// the wrist, and, with the screen off, a glance at the turn, so a
+    /// look is enough even when the wrist didn't turn the way a glance
+    /// needs (on handlebars, say). Not in the quiet night (no one
+    /// navigates in their sleep; a stale route shouldn't wake them), nor
+    /// over a call or a ringing alarm, which need the motor and screen
+    /// more.
+    fn turn_near(&mut self, now: Instant) {
+        if self.night.quiet() || self.call.is_some() || self.ringing.is_some() {
+            return;
+        }
+        if let Some(route) = &self.route {
+            defmt::info!("route: turn near ({})", route.step.turn);
+        }
+        motor::buzz(Pattern::TURN);
+        if !self.awake {
+            self.awake = true;
+            self.screen = Screen::Clock;
+            self.glance_until = Some(now + GLANCE_TIME);
         }
     }
 
@@ -1198,6 +1245,9 @@ impl App {
             Some((icon, ticks)) if ticks > 1 => Some((icon, ticks - 1)),
             _ => None,
         };
+        if Route::expire(&mut self.route, now.as_millis()) {
+            defmt::info!("route: no update for a while; dropped");
+        }
         // A glance has its own timer: it isn't input, so the screen timeout
         // (which counts from the last input) would end it at once.
         if let Some(until) = self.glance_until {
@@ -1307,7 +1357,10 @@ impl App {
             return;
         }
         if self.glancing() {
-            render_glance(canvas, status);
+            match &self.route {
+                Some(route) => render_route_glance(canvas, status, &route.step),
+                None => render_glance(canvas, status),
+            }
             return;
         }
         if self.quiet_notification()
@@ -1628,6 +1681,73 @@ fn render_glance(canvas: &mut Canvas, status: &Status) {
             SCALE,
             Color::TEXT,
         );
+    }
+}
+
+/// The glance while the phone navigates: the next turn takes the middle of
+/// the screen, as an arrow with the distance under it, then the street
+/// (two lines of the small font at most, as Gadgetbridge gives it). The
+/// time stays, smaller, at the top: a glance is still for the time too,
+/// but on the way somewhere, the turn is what a look at the wrist is for.
+///
+/// From the top: the time (2×, 10 px), the arrow (16×16 at 2×), the
+/// distance (2×), and the street (1×), with 4 px between them; it just
+/// fits, with the street's second line ending a pixel above the bottom.
+fn render_route_glance(canvas: &mut Canvas, status: &Status, step: &route::Step) {
+    canvas.clear(BACKGROUND);
+    const TIME_Y: i32 = 3;
+    const ARROW_Y: i32 = 17;
+    const DISTANCE_Y: i32 = ARROW_Y + 32 + 4;
+    const STREET_Y: i32 = DISTANCE_Y + 10 + 4;
+    let centred = |canvas: &mut Canvas, y: i32, text: &str, scale: i32, color: Color| {
+        let width = font::small_text_width(text) * scale;
+        canvas.text_scaled(40 - width / 2, y, text, color, scale);
+    };
+    if let Some(t) = &status.local_time {
+        let time = hhmm(i64::from(t.hour) * 60 + i64::from(t.minute));
+        centred(canvas, TIME_Y, &time, 2, Color::TEXT_DIM);
+    }
+
+    let (arrow, mirror) = match step.turn {
+        Turn::Straight => (&font::TURN_STRAIGHT, false),
+        Turn::Right => (&font::TURN_RIGHT, false),
+        Turn::Left => (&font::TURN_RIGHT, true),
+        Turn::SlightRight | Turn::KeepRight => (&font::TURN_SLIGHT_RIGHT, false),
+        Turn::SlightLeft | Turn::KeepLeft => (&font::TURN_SLIGHT_RIGHT, true),
+        Turn::SharpRight => (&font::TURN_SHARP_RIGHT, false),
+        Turn::SharpLeft => (&font::TURN_SHARP_RIGHT, true),
+        // Gadgetbridge doesn't know which side the traffic keeps to, so a
+        // U-turn at a roundabout is drawn as a plain one, going round left.
+        Turn::UturnLeft | Turn::RoundaboutUturn => (&font::TURN_UTURN_LEFT, false),
+        Turn::UturnRight => (&font::TURN_UTURN_LEFT, true),
+        Turn::RoundaboutRight => (&font::TURN_ROUNDABOUT_RIGHT, false),
+        Turn::RoundaboutLeft => (&font::TURN_ROUNDABOUT_RIGHT, true),
+        Turn::RoundaboutStraight => (&font::TURN_ROUNDABOUT_STRAIGHT, false),
+        Turn::Finish => (&font::TURN_FINISH, false),
+        Turn::OffRoute => (&font::TURN_OFF_ROUTE, false),
+        Turn::Unknown => (&font::TURN_UNKNOWN, false),
+    };
+    let arrow_x = 40 - font::TURN_W as i32;
+    canvas.sprite16(arrow_x, ARROW_Y, arrow, mirror, 2, Color::TEXT);
+
+    // "1,234 km" fits at 2× (62 px); the 1× fallback is for safety.
+    let scale = if font::small_text_width(&step.distance) * 2 <= 76 {
+        2
+    } else {
+        1
+    };
+    centred(canvas, DISTANCE_Y, &step.distance, scale, Color::TEXT);
+
+    match wrap(&step.street, 76, 1, 2) {
+        Some(lines) => {
+            for (i, line) in lines.iter().enumerate() {
+                centred(canvas, STREET_Y + i as i32 * 7, line, 1, Color::TEXT_DIM);
+            }
+        }
+        // Too long even for two lines (one very long word): its start.
+        None => {
+            canvas.text(2, STREET_Y, &step.street, Color::TEXT_DIM);
+        }
     }
 }
 
