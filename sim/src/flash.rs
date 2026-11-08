@@ -28,7 +28,9 @@
 //! stays well within it.
 
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
+use std::path::PathBuf;
 
 use embedded_storage_async::nor_flash::{
     ErrorType, MultiwriteNorFlash, NorFlash, NorFlashError, NorFlashErrorKind, ReadNorFlash,
@@ -85,6 +87,10 @@ impl Flash {
 
     /// The flash kept in `path`: what's there, or erased flash if there's
     /// no file yet (it's written at the first change).
+    ///
+    /// Only for the command line's `--flash`: the browser has no files,
+    /// and starts erased (see `web.rs`).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn open(path: &Path) -> Result<Self, String> {
         let bytes = match std::fs::read(path) {
             Ok(bytes) if bytes.len() == REGION_BYTES => bytes,
