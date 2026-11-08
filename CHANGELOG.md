@@ -40,6 +40,7 @@ missing below were test builds for the dev kit.
 - Measure the heart rate in the background every 2 to 20 minutes, adapting to movement and sleep, rather than every 10 (4979861)
 - Stack the glance's hours above its minutes, in bigger digits (999279a)
 - Use less battery: lower panel voltages, a low-power mode for the dim look (now pure black and white), and sleeping touch and motion sensors while they aren't needed (ec80454)
+- Shrink the firmware by a sixth (from 90% of the bootloader's slot to 75%), so updates over Bluetooth send 70 KB less and there's room for more features (0804e1a)
 - Show the firmware's version, and the commit it was built from, on the Info screen, in place of the hint to hold for the next theme (63215e2)
 
 ### Deprecated
