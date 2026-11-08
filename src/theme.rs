@@ -179,14 +179,14 @@ pub static PARCHMENT: Theme = theme("PARCHMENT", [
 /// Only black, white and red: the panel shows the dim look in idle mode
 /// (see `display::Display::set_idle`), which keeps just the top bit of
 /// each of red, green, and blue, so greys would come out white or black
-/// (faint text black, i.e. invisible), bar the one half-tone below. Pure red is one of the eight
-/// colours it can show, and the one that keeps the night's dark
-/// adaptation, as astronomers' and cockpits' lights do. So the text is
-/// white, and labels, titles, hints and accents (`TEXT_DIM`,
-/// `TEXT_FAINT`, `ACCENT`) are red: a notification's app and time, the
-/// clock's seconds and colon, the step blocks, the missing phone's rune.
-/// That's the one step of hierarchy the dark themes get from their greys
-/// and their accent. The heart and a low battery are red, as in the
+/// (faint text black, i.e. invisible), bar the one half-tone below.
+/// Pure red is one of the eight colours it can show, and the one that
+/// keeps the night's dark adaptation, as astronomers' and cockpits'
+/// lights do. So the text is white, and labels, titles, hints and
+/// accents (`TEXT_DIM`, `TEXT_FAINT`, `ACCENT`) are red: a
+/// notification's app and time, the clock's seconds and colon, the step
+/// blocks. That's the one step of hierarchy the dark themes get from
+/// their greys and their accent. The heart and a low battery are red, as in the
 /// other themes; shadows black.
 ///
 /// Last night's stages are red, white and grey: deep white, the heaviest

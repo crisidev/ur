@@ -1782,7 +1782,7 @@ impl App {
                 // and the gesture's icon has gone. The temperature moves
                 // over once then, which reads as the icon going away.
                 let media = icon.is_some().then_some(icon);
-                render_clock(canvas, status, next_alarm, media)
+                render_clock(canvas, status, next_alarm, media, self.dim())
             }
             // From the day's history, only while it shows: walking it
             // costs a little time, while keeping it up to date would cost
@@ -1805,15 +1805,15 @@ impl App {
                     n.who.write_to(&mut who);
                     render_card(canvas, &app, &who, &arrived);
                 }
-                None => render_clock(canvas, status, next_alarm, None),
+                None => render_clock(canvas, status, next_alarm, None, self.dim()),
             },
             Screen::Music => match &self.music {
                 Some(music) => render_music(canvas, music, now),
-                None => render_clock(canvas, status, next_alarm, None),
+                None => render_clock(canvas, status, next_alarm, None, self.dim()),
             },
             Screen::Air => match &status.air {
                 Some(sighting) => render_air(canvas, sighting, now),
-                None => render_clock(canvas, status, next_alarm, None),
+                None => render_clock(canvas, status, next_alarm, None, self.dim()),
             },
             Screen::Buttons => {
                 let sent = self.sent.filter(|&(_, until, _)| now < until);
@@ -1935,7 +1935,7 @@ const BACKGROUND: Color = Color::BACKGROUND;
 const STEP_GOAL: u32 = 10_000;
 
 /// `media` is an icon for the status bar's left end, while a phone is
-/// connected: its width, rows, and top.
+/// connected: its width, rows, and top. `dim`: in the dim look.
 fn render_clock(
     canvas: &mut Canvas,
     status: &Status,
@@ -1943,20 +1943,21 @@ fn render_clock(
     // `None` without media; otherwise the icon to show in the media slot,
     // if any: (width, rows, y).
     media: Option<Option<(u32, &[u8], i32)>>,
+    dim: bool,
 ) {
     canvas.clear(BACKGROUND);
     render_battery(canvas, status.battery, status.uptime_secs);
 
     // Status bar, left: the media icon while a phone is connected (media
-    // comes from the phone); without one, a crossed-out Bluetooth rune,
-    // and "NO TIME" if we don't know the time (in which case the clock
-    // shows time since boot). A connected phone is the usual state, so it
-    // gets no icon: what's worth a look is its absence.
+    // comes from the phone); without one, a faded Bluetooth rune struck
+    // through in red, and "NO TIME" if we don't know the time (in which
+    // case the clock shows time since boot). A connected phone is the
+    // usual state, so it gets no icon: what's worth a look is its absence.
     //
     // "Connected" is the phone's link (`ble::CONNECTED`): a client that
     // never authenticated (see `Status::unpaired`), or a bonded phone
-    // that's out of range, both get the cross, as neither delivers
-    // anything.
+    // that's out of range, both get the struck-out rune, as neither
+    // delivers anything.
     let temperature_x = if status.connected {
         // One width for every media icon (the widest, the note's), each
         // centred in it, so nothing after it moves as the icon changes.
@@ -1972,13 +1973,25 @@ fn render_clock(
             None => Some(3),
         }
     } else {
-        canvas.sprite(3, 2, font::BLUETOOTH_W, &font::BLUETOOTH, 1, Color::ACCENT);
-        let cross_x = 3 + font::BLUETOOTH_W as i32 + 1;
-        canvas.sprite(cross_x, 6, font::CROSS_W, &font::CROSS, 1, Color::ACCENT);
-        let x = cross_x + font::CROSS_W as i32;
+        // The rune in the faintest ink, so it reads as "not there", and a
+        // slash over it, a pixel past it at both ends, in the low
+        // battery's colour: red, but for Terminal's near-white, its one
+        // alarm colour. The slash is a diagonal beside the rune's own
+        // diagonals; it only stands apart from them by its colour, so the
+        // rune must be a different one. In the dim look, the faint ink is
+        // red, like the slash, so the rune is grey there instead
+        // (`Color::GREY`, a half-tone the dim look can show).
+        // A 3×3 × after the rune said the same in the rune's own colour,
+        // and a slash through a rune in full ink merged with it.
+        let faded = if dim { Color::GREY } else { Color::TEXT_FAINT };
+        canvas.sprite(4, 2, font::BLUETOOTH_W, &font::BLUETOOTH, 1, faded);
+        for i in 0..7 {
+            canvas.pixel(3 + i, 2 + i, Color::BAD);
+        }
+        let x = 3 + 7;
         if status.local_time.is_none() {
             // 2 px rather than the usual 3, so "NO TIME" (27 px) ends at
-            // x = 40, clear of the battery's widest (charging at 100%: the
+            // x = 38, clear of the battery's widest (charging at 100%: the
             // bolt starts at x = 43).
             canvas.text(x + 2, 3, "NO TIME", Color::TEXT_FAINT);
             None
@@ -1989,7 +2002,7 @@ fn render_clock(
 
     // Then the temperature, in whole °C, packed against the left. The
     // widest ("-10°", 15 px; nothing in the sensor's -40 to 85 °C is
-    // wider) ends at x = 29 after the crossed-out rune, and x = 26 after
+    // wider) ends at x = 27 after the struck-out rune, and x = 26 after
     // the widest media icon (the note, 6 px), clear of the battery's
     // widest (charging at 100%: the bolt starts at x = 43). "NO TIME" and
     // a temperature can't both fit beside that, so until the phone sets

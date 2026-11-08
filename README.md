@@ -107,8 +107,8 @@ alarm or timer, and the room's temperature: a nearby room sensor's
 wrist, or the watch's own off it. Steps fill ten blocks of 1,000 (×1K)
 towards 10,000, then of 10,000 (×10K); Today has the exact count. A bar
 along the top means unseen notifications; a note in the top left, that
-music is playing; a crossed-out Bluetooth rune there, that the phone
-isn't connected.
+music is playing; a faded Bluetooth rune struck through in red there,
+that the phone isn't connected.
 
 **Notifications** show the app and the notification's title (in a
 chat, who it's from), never what it says, and without emoji. One that

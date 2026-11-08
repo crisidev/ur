@@ -277,8 +277,8 @@ expect not off
 # Without the phone
 # ==============================================================================
 
-# A crossed-out Bluetooth rune, at the status bar's left end, where a note
-# shows while music plays.
+# A faded Bluetooth rune, struck through in red, at the status bar's left
+# end, where a note shows while music plays.
 disconnect
 wait 1s
 expect clock
@@ -297,6 +297,10 @@ wait 2m
 expect quiet-night
 button
 wait 1s
+# Still without the phone: the rune is grey here, as the faint ink is
+# red like the slash.
+expect dim
+shot 22b-quiet-no-phone.png
 right
 wait 1s
 right

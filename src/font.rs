@@ -739,18 +739,12 @@ pub const HEART_SHINE: [u8; 6] = [
     0b0000000, 0b0100000, 0b0000000, 0b0000000, 0b0000000, 0b0000000,
 ];
 
-/// 5×7 Bluetooth rune.
+/// 5×7 Bluetooth rune, for "no phone" on the clock face, struck through
+/// (see `ui::render_clock`).
 pub const BLUETOOTH_W: u32 = 5;
 pub const BLUETOOTH: [u8; 7] = [
     0b00100, 0b00110, 0b10101, 0b01110, 0b10101, 0b00110, 0b00100,
 ];
-/// 3×3 cross, drawn a pixel after [`BLUETOOTH`], level with its foot, for
-/// "no phone": the rune with a small ×, like a subscript. A slash through
-/// the rune itself, the usual "Bluetooth off" icon, doesn't survive 5×7:
-/// the rune is diagonals already, so the slash merges into them (and with
-/// pixels cut back around it, what's left of the rune is unrecognisable).
-pub const CROSS_W: u32 = 3;
-pub const CROSS: [u8; 3] = [0b101, 0b010, 0b101];
 
 /// 6×7 beamed pair of eighth notes (♫), for the clock face while media
 /// plays: a beam two pixels thick, as a printed one is heavier than the
