@@ -56,9 +56,9 @@ tap                               # snooze
 - **Inputs:** `button` (`button 2`: a double press), `glance`, `tap`,
   `long`, `up`/`down`/`left`/`right` (at `X,Y`), or a finger: `press X,Y`
   (again to move it), `lift`.
-- **The phone:** `connect`, `time`, `location`, `notify`, `call`,
-  `music`, `find`, `phone-alarms`, `nav`, `unpaired`, `passkey`,
-  `update`.
+- **The phone:** `gb` (see below), `connect`, `time`, `location`,
+  `notify`, `call`, `music`, `find`, `phone-alarms`, `nav`, `unpaired`,
+  `passkey`, `update`.
 - **The wearer and the watch:** `battery` (and charging), `steps`,
   `heart`, `temperature`, `asleep`, `movement`, `last-night`,
   `demo-day` (a day of steps and heart rates so far), `alarm`, `smart`,
@@ -67,11 +67,26 @@ tap                               # snooze
 - **Output:** `shot FILE.png [THEME]` (with a theme: in its colours, as
   `screenshot.py --theme`), `expect`.
 
+`gb` takes a line exactly as Gadgetbridge sends it (less the `\x10`
+before it), say from Gadgetbridge's log, and runs it through the
+firmware's own parser (`src/gb.rs`), then acts on it as `src/ble.rs`
+would; the other phone commands hand the UI its events directly. The
+rest of the line is taken as it is (no quoting, no `#` comments), and
+must be ISO-8859-1, as on the wire: escape anything else as
+Gadgetbridge does (`\u20ac`). The first `gb` connects the phone, as
+its first write does on the watch. `gadgetbridge.txt` replays one of
+each kind.
+
+```text
+gb setTime(1794150000);E.setTimeZone(1.0);
+gb GB({"t":"notify","id":1,"src":"Signal","title":"\xc5se","body":"Hi"})
+```
+
 Screenshots are the 240×240 the panel would show: the canvas's pixels
 as pushed to the panel, in the same colours `screenshot.py` gives, so the
 two match pixel for pixel. `readme-screenshots.txt` makes the README's;
-`tour.txt` goes round most screens, checking itself as it goes, and is
-what `cargo test` runs.
+`tour.txt` goes round most screens, checking itself as it goes; `cargo
+test` runs it, and `gadgetbridge.txt`.
 
 ## How it works
 
@@ -97,10 +112,10 @@ a change to the UI loop there may need one here.
   whatever you set: the accelerometer and heart rate processing, the
   sleep classifier, and the wrist-turn detector don't run (`asleep on`
   says the classifier decided; `glance` that the wrist turned).
-- **Bluetooth.** The phone's messages arrive as the UI gets them, not as
-  Gadgetbridge's text, so `ble.rs`'s parsing isn't exercised. Pairing,
-  bonds, updates and the activity sync don't run; `passkey` and `update`
-  only show their screens.
+- **Bluetooth.** Only the phone's messages: `gb` parses its lines as the
+  watch does, but no radio, GATT, or MTU-sized pieces carry them.
+  Pairing, bonds, updates, GPS requests and the activity sync don't run;
+  `passkey` and `update` only show their screens.
 - **Flash.** Nothing is saved between runs. After switching off, the
   watch reboots with its settings, and the clock and uptime keep running
   (on the watch, uptime starts again, and the time is lost until the

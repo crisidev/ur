@@ -144,3 +144,30 @@ fn a_double_press_ends_the_quiet_night() {
     let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
     assert!(ok, "{log}");
 }
+
+/// Gadgetbridge's own lines, through the firmware's parser: each reaches
+/// the UI as what it says.
+#[test]
+fn gadgetbridge_lines() {
+    let dir = out("gadgetbridge");
+    let (ok, log) = run("gadgetbridge.txt", &["--out", dir.to_str().expect("UTF-8")]);
+    assert!(ok, "{log}");
+    assert_eq!(pngs(&dir), 3, "{log}");
+    for line in [
+        "time set (UTC offset 60 min)",
+        r#"to the phone: {"t":"gps_power","status":false}"#,
+        "location set: 59.9127, 10.7461",
+        "notification: Signal: Åse Nordmann",
+        "music: Ida Moreau: Night Signals",
+        "incoming call: Kari Nordmann",
+        "call over",
+        "2 alarms from the phone",
+        "navigation: Left 150 m Storgata",
+        "navigation over",
+        "find my watch: true",
+        "ignoring weather message",
+        "not a line the watch understands",
+    ] {
+        assert!(log.contains(line), "{line:?} missing from:\n{log}");
+    }
+}

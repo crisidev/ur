@@ -12,6 +12,7 @@ use embassy_time::Duration;
 
 use crate::activity;
 use crate::clock;
+use crate::gb::{self, Incoming, LineBuffer, Outgoing};
 use crate::geo;
 use crate::gesture::{Gesture, Touch};
 use crate::route;
@@ -28,6 +29,11 @@ Inputs (X,Y in canvas pixels, 0-79; 40,40 if left out):
                             touch task's recogniser, so holding it still
                             for 0.6 s is a long press, and moving it a swipe
 The phone:
+  gb LINE                    a line as Gadgetbridge sends it, through the
+                             firmware's parser, e.g.
+                             gb GB({\"t\":\"notify\",\"src\":\"Signal\",\"title\":\"Kari\"})
+                             (the rest of the line as is: no quotes needed,
+                             and no # comment)
   connect | disconnect
   time YYYY-MM-DD HH:MM[:SS] [+HH:MM] | time now     the phone sets the time
   location LAT LON                                   a GPS fix
@@ -76,6 +82,12 @@ pub struct Output {
 
 /// Runs one line. Blank lines and `#` comments do nothing.
 pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, String> {
+    // `gb` takes the rest of the line as it is, unsplit: Gadgetbridge's
+    // lines are full of quotes, and a `#` in one is text.
+    if let Some(rest) = line.trim_start().strip_prefix("gb ") {
+        gadgetbridge(watch, rest.trim())?;
+        return Ok(Next::Continue);
+    }
     let words = split(line)?;
     let Some((command, args)) = words.split_first() else {
         return Ok(Next::Continue);
@@ -133,6 +145,7 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
         // ======================================================================
         // The phone
         // ======================================================================
+        "gb" => return Err("gb: needs a line, as Gadgetbridge sends it".into()),
         "connect" | "disconnect" => {
             watch.connected = command == "connect";
             watch.log(format!("{command}ed"));
@@ -391,6 +404,68 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
         other => return Err(format!("unknown command {other:?} (try `help`)")),
     }
     Ok(Next::Continue)
+}
+
+/// `gb LINE`: a line as Gadgetbridge writes it to the watch, through the
+/// firmware's own line buffer and parser (`src/gb.rs`), and acted on as
+/// `src/ble.rs` acts on it: the clock and location set, events to the UI,
+/// replies printed. What `ble` would do over the radio (GPS requests, the
+/// activity sync) isn't simulated.
+fn gadgetbridge(watch: &mut Watch, line: &str) -> Result<(), String> {
+    // On the wire, the line is ISO-8859-1, between Espruino's "don't echo
+    // this" and a newline: each of the script's characters up to U+00FF is
+    // one byte, and Gadgetbridge escapes the rest.
+    let mut bytes = vec![0x10];
+    for c in line.chars() {
+        let byte = u8::try_from(u32::from(c)).map_err(|_| {
+            format!("gb: {c:?} isn't ISO-8859-1; escape it as Gadgetbridge does (\\uXXXX)")
+        })?;
+        bytes.push(byte);
+    }
+    bytes.push(b'\n');
+
+    // As `ble`: whoever writes to the UART is the phone.
+    if !watch.connected {
+        watch.connected = true;
+        watch.log("connected");
+    }
+    let mut buffer = LineBuffer::new();
+    buffer.push(&bytes, |line| match gb::parse(line) {
+        Some(Incoming::SetTime {
+            utc_seconds,
+            offset_minutes,
+        }) => {
+            clock::set(utc_seconds, offset_minutes);
+            watch.log(format!("time set (UTC offset {offset_minutes} min)"));
+            watch.refresh();
+        }
+        Some(Incoming::Gps {
+            latitude,
+            longitude,
+        }) => match geo::Location::from_degrees(latitude, longitude) {
+            Some(location) => {
+                geo::set_location(location);
+                watch.log(format!("location set: {latitude}, {longitude}"));
+                watch.refresh();
+            }
+            None => watch.log("location out of range; ignored"),
+        },
+        // `ble` says whether it's waiting for a fix; the simulator never
+        // asks for one.
+        Some(Incoming::IsGpsActive) => {
+            let _ = crate::ble::OUTBOX.try_send(Outgoing::GpsPower(false));
+            watch.refresh();
+        }
+        Some(Incoming::ActivityFetch { since_ms }) => {
+            watch.log(format!(
+                "activity since {since_ms} ms asked for; not simulated"
+            ));
+        }
+        Some(Incoming::Phone(event)) => watch.input(InputEvent::Phone(event)),
+        Some(Incoming::Ignored(kind)) => watch.log(format!("ignoring {kind} message")),
+        None => watch.log("not a line the watch understands; ignored"),
+    });
+    Ok(())
 }
 
 /// Runs a script file, line by line, stopping at the first error.

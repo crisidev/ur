@@ -102,9 +102,10 @@ cargo run --release -- tour.txt --out ../tmp/tour
 It renders exactly what the panel would, so most UI work can be checked
 there before a dev kit, and its screenshots match `screenshot.py`'s pixel
 for pixel; `sim/readme-screenshots.txt` makes the README's. It takes the
-dev kit's inputs, every message from the phone, and sensor readings, and
-skips ahead in time, for alarms and the quiet night. CI runs its tour
-and uploads screenshots of every PR's UI. See [sim/README.md] for its
+dev kit's inputs, every message from the phone (also as Gadgetbridge's
+own lines), and sensor readings, and skips ahead in time, for alarms and
+the quiet night. CI runs its tour and uploads screenshots of every PR's
+UI. See [sim/README.md] for its
 commands, and what it can't simulate (sensors, Bluetooth, flash).
 
 ## A dev kit
