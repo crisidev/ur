@@ -25,7 +25,13 @@ concurrency:
 name: size report
 jobs:
   comment:
-    if: github.event.workflow_run.event == 'pull_request'
+    # Not for Dependabot's PRs: GitHub gives runs whose actor is Dependabot
+    # a read-only token, so posting would only fail the run (as
+    # screenshots-comment.yml also assumes; inferred from GitHub's
+    # Dependabot docs, which don't name `workflow_run` explicitly).
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.actor.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     permissions:
       # To download the other run's artifact.
