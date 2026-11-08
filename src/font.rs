@@ -222,6 +222,11 @@ pub const BLUETOOTH: [u8; 7] = [
     0b00100, 0b00110, 0b10101, 0b01110, 0b10101, 0b00110, 0b00100,
 ];
 
+/// 4×7 eighth note, for the clock face while media plays: flag, stem, and
+/// a 2×2 head, as tall as the Bluetooth rune beside it.
+pub const NOTE_W: u32 = 4;
+pub const NOTE: [u8; 7] = [0b0110, 0b0101, 0b0100, 0b0100, 0b0100, 0b1100, 0b1100];
+
 /// 5×5 media controls.
 pub const PREVIOUS: [u8; 5] = [0b10001, 0b10011, 0b10111, 0b10011, 0b10001];
 pub const NEXT: [u8; 5] = [0b10001, 0b11001, 0b11101, 0b11001, 0b10001];

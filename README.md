@@ -44,7 +44,7 @@ timepiece.)
   The screen is dim all night. Alarms, timers, calls, and "find my watch"
   still ring.
 - **Media controls:** play, pause, next, and previous, while something is
-  playing.
+  playing; play, pause, and next from the clock face, too.
 - **Updates:** over Bluetooth, with automatic rollback if an update doesn't
   work out.
 
@@ -86,9 +86,12 @@ hardware by a human.
   back. The dots on a screen's edge point back to the clock, one for each
   screen that way. A dot at the top of the clock means notifications you
   haven't seen.
-- **Long-press:** on the clock, the next theme (or tap THEME on the info
-  screen). On the alarms screen, long-pressing an alarm or timer switches
-  it on or off; on the info screen, it offers storage mode.
+- **Media, from the clock:** while the phone is playing (a note shows
+  beside the Bluetooth icon) or paused, long-press to play or pause, and
+  double-tap for the next track.
+- **Long-press:** on the alarms screen, an alarm or timer switches it on
+  or off; on the info screen, it offers storage mode.
+- **Themes:** tap THEME on the info screen for the next one.
 - **Brightness:** brightest while the sun is up, dim from midnight until
   you get up, and in between, medium. For less (and a longer battery),
   tap LIGHT on the info screen to switch from AUTO to SOFT: medium while

@@ -29,13 +29,19 @@
 //!   the content moves.
 //! - Button: back to the clock, sweeping towards it; on the clock, turn the
 //!   screen off. While a call rings: silence it.
-//! - Long press: on the clock, the next colour theme within the current
-//!   group (dark themes after sunset, light ones after sunrise; each group
-//!   remembers its own). On the alarms screen, switch an alarm on or off.
-//!   On the info screen, offer storage mode (see [`crate::system_off`]); a
-//!   tap then confirms, anything else cancels. Elsewhere, nothing.
-//! - On the info screen, tap the theme ("THEME") row for the next theme, or
-//!   the brightness ("LIGHT") row to switch between auto and soft (see
+//! - On the clock, while the phone has media (as for the music screen):
+//!   long press to play or pause, double tap (two taps within
+//!   [`DOUBLE_TAP`]) for the next track. Each buzzes, and shows what it did
+//!   for a moment where a note shows while media plays, beside the
+//!   Bluetooth rune. Without media, neither does anything.
+//! - Long press elsewhere: on the alarms screen, switch an alarm on or off;
+//!   on the info screen, offer storage mode (see [`crate::system_off`]),
+//!   which a tap then confirms, and anything else cancels. Elsewhere,
+//!   nothing.
+//! - On the info screen, tap the theme ("THEME") row for the next colour
+//!   theme within the current group (dark themes after sunset, light ones
+//!   after sunrise; each group remembers its own), or the brightness
+//!   ("LIGHT") row to switch between auto and soft (see
 //!   [`crate::brightness`]).
 //! - Screens that take over (the alarm editor, a ringing alarm, a call,
 //!   pairing, an update, the storage prompt) get every touch: swipes there
@@ -150,6 +156,9 @@ const UNSEEN: Instant = Instant::MAX;
 /// Stop ringing after this long, in case the phone never says the call is
 /// over (e.g. the connection dropped mid-call).
 const MAX_RING: Duration = Duration::from_secs(45);
+/// How many ticks (seconds) a media gesture's icon shows on the clock face:
+/// 1–2 s, depending on when in the second it came.
+const MEDIA_HINT_TICKS: u8 = 2;
 
 /// Everything screens may display that the UI doesn't own itself.
 pub struct Status<'a> {
@@ -390,7 +399,8 @@ pub struct App {
     /// Whether it's daylight, which picks the light or dark theme group.
     daytime: bool,
     /// The chosen theme within each group: indices into [`theme::LIGHT`] and
-    /// [`theme::DARK`]. Long press advances the one currently in use.
+    /// [`theme::DARK`]. Tapping THEME on the info screen advances the one
+    /// in use.
     pub themes: ThemeChoice,
     connected: bool,
     notifications: Notifications,
@@ -414,9 +424,12 @@ pub struct App {
     local_second: Option<i64>,
     /// While glancing: until when.
     glance_until: Option<Instant>,
-    /// With the screen off: when the last tap was, as the possible first
-    /// of a double tap (see [`DOUBLE_TAP`]).
-    wake_tap: Option<Instant>,
+    /// When the last tap was, as the possible first of a double tap (see
+    /// [`DOUBLE_TAP`]): with the screen off, to wake it; on the clock, for
+    /// the next track. One field for both, as RAM is tight: a tap only
+    /// counts while the screen is in the same state (on or off) as for
+    /// the first, as waking or any other input clears it.
+    last_tap: Option<Instant>,
     /// Whether it's the quiet night, and what decides when it ends. (8
     /// bytes, in a build with little RAM to spare.)
     night: sleep::Night,
@@ -430,6 +443,9 @@ pub struct App {
     /// Pairing or an update has the screen (as of the last tick), and so
     /// every touch (see the module docs).
     takeover: bool,
+    /// Just after a media gesture on the clock: what it did, as a media
+    /// control's icon, and for how many more ticks to show it.
+    media_hint: Option<(&'static [u8; 5], u8)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -463,12 +479,13 @@ impl App {
             editing: None,
             local_second: None,
             glance_until: None,
-            wake_tap: None,
+            last_tap: None,
             night: sleep::Night::default(),
             brightness: brightness::Setting::default(),
             small_hours: false,
             storage_mode: false,
             takeover: false,
+            media_hint: None,
         }
     }
 
@@ -558,7 +575,7 @@ impl App {
         group[usize::from(choice) % group.len()]
     }
 
-    /// Long press: the next theme in the group currently in use.
+    /// The next theme in the group currently in use.
     fn next_theme(&mut self) {
         let (choice, count) = if self.daytime {
             (&mut self.themes.light, theme::LIGHT.len())
@@ -709,6 +726,7 @@ impl App {
         // with any wake-up, don't also act on it).
         if self.glance_until.take().is_some() {
             self.last_input = now;
+            self.last_tap = None;
             return;
         }
         // With the screen off, a touch only wakes it if it's a deliberate
@@ -725,19 +743,28 @@ impl App {
             if self.night.quiet() {
                 return;
             }
-            let second = self.wake_tap.is_some_and(|tap| now - tap <= DOUBLE_TAP);
+            let second = self.last_tap.is_some_and(|tap| now - tap <= DOUBLE_TAP);
             if !(deliberate(&touch) || touch.gesture == Gesture::Tap && second) {
-                self.wake_tap = (touch.gesture == Gesture::Tap).then_some(now);
+                self.last_tap = (touch.gesture == Gesture::Tap).then_some(now);
                 return;
             }
-            self.wake_tap = None;
         }
+        // The first of a double tap on the clock, if this may be the
+        // second. (Never the tap that woke the screen: waking clears it.)
+        let first_tap = self
+            .last_tap
+            .take()
+            .filter(|&tap| self.awake && now - tap <= DOUBLE_TAP);
         // A user input (or a request for attention) from here on. Touching
         // or pressing while a notification shows means the wearer saw it.
         if self.banner_showing() && self.banner_newest() && !matches!(event, InputEvent::Attention)
         {
             self.notifications.unseen = false;
         }
+        // A notification that has the screen to itself (it arrived with
+        // the screen off) isn't the clock face, whose gestures it doesn't
+        // take: a touch there only makes it a proper wake-up.
+        let notification_shown = self.quiet_notification();
         self.last_input = now;
         self.brief_wake = false;
         if !self.awake {
@@ -850,13 +877,45 @@ impl App {
                 // TODO: remove once something real uses the motor; for now
                 // this is how we check it works.
                 (Gesture::Tap, Screen::Info) => motor::buzz(Pattern::NOTIFY),
-                // The theme's shortcut, on the clock only: elsewhere a long
-                // press is the screen's own (or nothing), so one meant for
-                // a screen can't change the theme by missing.
-                (Gesture::LongPress, Screen::Clock) => self.next_theme(),
+                // Media, from the clock face, while the phone has some (see
+                // `media`): long press to play or pause, double tap for the
+                // next track. A single tap does nothing, so it needn't wait
+                // to see whether a second follows.
+                (Gesture::LongPress, Screen::Clock) if !notification_shown => {
+                    self.media(MusicCommand::PlayPause)
+                }
+                (Gesture::Tap, Screen::Clock) if !notification_shown => match first_tap {
+                    Some(_) => self.media(MusicCommand::Next),
+                    None => self.last_tap = Some(now),
+                },
                 _ => {}
             },
         }
+    }
+
+    /// Controls the phone's media from the clock face, if it has some:
+    /// buzzes, and shows what it did in the media icon's place for a
+    /// moment (see [`MEDIA_HINT_TICKS`]), so the wearer knows it took.
+    fn media(&mut self, command: MusicCommand) {
+        let Some(music) = &mut self.music else {
+            return;
+        };
+        send(Outgoing::Music(command));
+        let icon = match command {
+            // As the music screen does, the new state straight away.
+            MusicCommand::PlayPause => {
+                music.playing = !music.playing;
+                if music.playing {
+                    &font::PLAY
+                } else {
+                    &font::PAUSE
+                }
+            }
+            MusicCommand::Next => &font::NEXT,
+            MusicCommand::Previous => &font::PREVIOUS,
+        };
+        self.media_hint = Some((icon, MEDIA_HINT_TICKS));
+        motor::buzz(Pattern::NOTIFY);
     }
 
     /// Switches a row's alarm on or off; for the timer, starts or stops it.
@@ -1134,6 +1193,10 @@ impl App {
     pub fn on_tick(&mut self, now: Instant, keep_awake: bool) {
         // That's pairing or an update, which take every touch too.
         self.takeover = keep_awake;
+        self.media_hint = match self.media_hint {
+            Some((icon, ticks)) if ticks > 1 => Some((icon, ticks - 1)),
+            _ => None,
+        };
         // A glance has its own timer: it isn't input, so the screen timeout
         // (which counts from the last input) would end it at once.
         if let Some(until) = self.glance_until {
@@ -1268,7 +1331,18 @@ impl App {
                 .next(&self.alarms, &self.phone_alarms, minute)
         });
         match self.screen {
-            Screen::Clock => render_clock(canvas, status, next_alarm),
+            Screen::Clock => {
+                // While media plays, a note; just after a media gesture,
+                // what it did.
+                let media = match (self.media_hint, &self.music) {
+                    (Some((icon, _)), _) => Some((5, &icon[..], 3)),
+                    (None, Some(music)) if music.playing => {
+                        Some((font::NOTE_W, &font::NOTE[..], 2))
+                    }
+                    _ => None,
+                };
+                render_clock(canvas, status, next_alarm, media)
+            }
             // From the day's history, only while it shows: walking it
             // costs a little time, while keeping it up to date would cost
             // RAM.
@@ -1288,11 +1362,11 @@ impl App {
                     now - self.last_input,
                     QUIET_LINES_2X - 1,
                 ),
-                None => render_clock(canvas, status, next_alarm),
+                None => render_clock(canvas, status, next_alarm, None),
             },
             Screen::Music => match &self.music {
                 Some(music) => render_music(canvas, music, now),
-                None => render_clock(canvas, status, next_alarm),
+                None => render_clock(canvas, status, next_alarm, None),
             },
             Screen::Info => render_info(canvas, status, self.chosen_theme(), self.brightness),
             Screen::Storage => render_storage_prompt(canvas),
@@ -1375,15 +1449,30 @@ fn render_hint(canvas: &mut Canvas, side: Side, index: usize, count: usize) {
 
 const BACKGROUND: Color = Color::BACKGROUND;
 
-fn render_clock(canvas: &mut Canvas, status: &Status, next_alarm: Option<(alarm::Kind, i64)>) {
+/// `media` is an icon for the status bar, beside the Bluetooth rune: its
+/// width, rows, and top.
+fn render_clock(
+    canvas: &mut Canvas,
+    status: &Status,
+    next_alarm: Option<(alarm::Kind, i64)>,
+    media: Option<(u32, &[u8], i32)>,
+) {
     canvas.clear(BACKGROUND);
     render_battery(canvas, status.battery, status.uptime_secs);
 
-    // Status bar, left: Bluetooth when connected; a note if we don't know
-    // the time (in which case the clock shows time since boot).
+    // Status bar, left: Bluetooth when connected, and then the media icon
+    // (media comes from the phone, so only while connected); a note if we
+    // don't know the time (in which case the clock shows time since boot).
     let temperature_x = if status.connected {
         canvas.sprite(3, 2, font::BLUETOOTH_W, &font::BLUETOOTH, 1, Color::ACCENT);
-        Some(3 + font::BLUETOOTH_W as i32 + 3)
+        let x = 3 + font::BLUETOOTH_W as i32 + 3;
+        match media {
+            Some((width, rows, y)) => {
+                canvas.sprite(x, y, width, rows, 1, Color::ACCENT);
+                Some(x + width as i32 + 3)
+            }
+            None => Some(x),
+        }
     } else if status.local_time.is_none() {
         canvas.text(3, 3, "NO TIME", Color::TEXT_FAINT);
         None
@@ -1393,9 +1482,9 @@ fn render_clock(canvas: &mut Canvas, status: &Status, next_alarm: Option<(alarm:
 
     // Then the watch's own temperature, in whole °C, packed against the
     // left. The widest ("-10°", 15 px; nothing in the sensor's -40 to
-    // 85 °C is wider) after the Bluetooth icon ends at x = 25, well clear
-    // of the battery's widest (charging at 100%: the bolt starts at
-    // x = 43). "NO TIME" (27 px) and a temperature can't both fit beside
+    // 85 °C is wider) after the Bluetooth icon and the widest media icon
+    // (5 px) ends at x = 33, clear of the battery's widest (charging at
+    // 100%: the bolt starts at x = 43). "NO TIME" (27 px) and a temperature can't both fit beside
     // that, so until the phone sets the clock (just after a cold boot),
     // the note wins.
     // TODO: °F, for those who'd want it.
