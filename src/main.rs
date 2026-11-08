@@ -28,9 +28,10 @@
 //! - [`ble`] / [`gb`]: Bluetooth, speaking Gadgetbridge's Bangle.js protocol.
 //! - [`clock`] / [`geo`]: wall-clock time and location, both from the phone,
 //!   and the sunrise/sunset derived from them.
-//! - [`temperature`] / [`aranet`]: the room's temperature for the clock
-//!   face, from a nearby Aranet4 air monitor (whose CO₂ and other readings
-//!   get a screen of their own) or estimated from the watch's own.
+//! - [`temperature`] / [`aranet`] / [`bthome_sensor`]: the room's
+//!   temperature for the clock face, from a nearby room sensor (an Aranet4
+//!   air monitor, or a BTHome thermometer; their readings get a screen of
+//!   their own) or estimated from the watch's own.
 //! - [`storage`]: settings and Bluetooth bonds in flash.
 //! - [`firmware`] / [`dfu`] / [`mcuboot`]: cooperating with the bootloader,
 //!   and receiving updates over Bluetooth, checked before they're installed.
@@ -53,6 +54,7 @@ mod battery;
 mod ble;
 mod brightness;
 mod bthome;
+mod bthome_sensor;
 mod buttons;
 mod canvas;
 mod clock;
@@ -536,7 +538,7 @@ async fn main(spawner: Spawner) {
         .and_then(|b| {
             b.support_adv()
                 .support_peripheral()
-                // Passive scanning for Aranet4s (see `ble::scan`), which
+                // Passive scanning for room sensors (see `ble::scan`), which
                 // takes the multirole library.
                 .support_scan()
                 .peripheral_count(ble::CONNECTIONS as u8)

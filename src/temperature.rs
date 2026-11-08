@@ -5,22 +5,24 @@
 //! chip (the nRF52832's die sensor), which measures the watch itself. So
 //! the temperature shown comes from the best of three sources ([`pick`]):
 //!
-//! 1. **A nearby Aranet4** ([`crate::aranet`]), the strongest heard, if
-//!    its reading is recent: a real air temperature, to 0.3 °C.
-//!    Underlined, at the degree sign, on the clock face.
+//! 1. **A nearby room sensor**, the strongest heard ([`crate::aranet`]),
+//!    if its reading is recent: an Aranet4, or a BTHome thermometer
+//!    ([`crate::bthome_sensor`]). A real air temperature, to 0.3 °C or so
+//!    (both kinds' sensors are rated about that). Underlined, at the
+//!    degree sign, on the clock face.
 //! 2. **On the wrist, an estimate** from the die temperature
 //!    ([`Calibration`]). The watch sits between the skin (32–34 °C) and
 //!    the air, so the die reads well above the room (27–28 °C on the
 //!    wrist indoors, against ~21 °C), and the estimate takes the skin's
-//!    share back out. It learns from the Aranet4: whenever one is near
-//!    and the watch has been on the wrist a while, each (die, Aranet)
+//!    share back out. It learns from the room sensors: whenever one is
+//!    near and the watch has been on the wrist a while, each (die, room)
 //!    pair refines the fit.
 //! 3. **Off the wrist, the die temperature as it is**: with no skin
 //!    warming it, it settles to the room's within some minutes (until
 //!    then it reads a little warm).
 //!
 //! How good the estimate is, honestly: with the defaults alone (never
-//! near an Aranet4), expect ±3–5 °C, mostly the die sensor's own offset,
+//! near a room sensor), expect ±3–5 °C, mostly the die sensor's own offset,
 //! which Nordic only specifies to within a few degrees and which differs
 //! from chip to chip. Once calibrated, about ±2–3 °C sitting indoors, at
 //! the temperatures it was calibrated at (an expectation from the model,
@@ -29,8 +31,9 @@
 //! doesn't follow), in sun, during exercise (a warm wrist reads as a warm
 //! room), in the first ~20 minutes after putting the watch on or walking
 //! into a different room (the watch takes that long to settle), and under
-//! a sleeve or a duvet (which isn't the room's air at all). The Aranet4's
-//! reading has none of these problems, which is why it wins when near.
+//! a sleeve or a duvet (which isn't the room's air at all). A room
+//! sensor's reading has none of these problems, which is why it wins when
+//! near.
 //!
 //! Whether the watch is on the wrist ([`Wear`]) is itself a guess, from
 //! the heart rate sensor and stillness.
@@ -88,8 +91,8 @@ pub fn shown(previous: Option<i8>, quarters: i32) -> i8 {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(target_os = "none", derive(defmt::Format))]
 pub enum Source {
-    /// A nearby Aranet4.
-    Aranet,
+    /// A nearby room sensor: an Aranet4, or a BTHome thermometer.
+    Sensor,
     /// Estimated from the die temperature, on the wrist.
     Wrist,
     /// The die temperature, off the wrist.
@@ -97,12 +100,12 @@ pub enum Source {
 }
 
 /// The temperature to show, in quarter degrees, and where it comes from:
-/// a recent Aranet4 reading if there is one (`aranet`, quarter degrees),
-/// otherwise the estimate on the wrist, otherwise the die's own (`die`,
-/// quarter degrees).
-pub fn pick(aranet: Option<i32>, worn: bool, die: i32, calibration: &Calibration) -> (i32, Source) {
-    match aranet {
-        Some(quarters) => (quarters, Source::Aranet),
+/// a recent room sensor's reading if there is one (`sensor`, quarter
+/// degrees), otherwise the estimate on the wrist, otherwise the die's own
+/// (`die`, quarter degrees).
+pub fn pick(sensor: Option<i32>, worn: bool, die: i32, calibration: &Calibration) -> (i32, Source) {
+    match sensor {
+        Some(quarters) => (quarters, Source::Sensor),
         None if worn => (calibration.estimate(die), Source::Wrist),
         None => (die, Source::Watch),
     }
@@ -198,9 +201,9 @@ impl Wear {
 // skin cools in the cold, exercise warms the wrist), which is the accuracy
 // the module docs admit to.
 //
-// The fit is a least-squares line through (die, Aranet) pairs, with a
-// prior: it starts at a guess, and moves as far as the pairs say. Pairs
-// only come at the temperatures of rooms with an Aranet4, often within a
+// The fit is a least-squares line through (die, room sensor) pairs, with
+// a prior: it starts at a guess, and moves as far as the pairs say. Pairs
+// only come at the temperatures of rooms with a sensor, often within a
 // few degrees, which pins the line's height (c, where the offset is) well
 // but its slope (k) poorly, so the prior holds the slope much harder than
 // the height. Older pairs fade (`FORGET`), so seasons and a changed strap
@@ -230,7 +233,7 @@ const PRIOR_SLOPE: f32 = 1.6;
 const HEIGHT_WEIGHT: f32 = 1.0;
 const SLOPE_WEIGHT: f32 = 60.0;
 /// Each new pair weighs the old ones down by this much: a half-life of
-/// ~70 pairs, a few days of wear near an Aranet4.
+/// ~70 pairs, a few days of wear near a room sensor.
 const FORGET: f32 = 0.99;
 /// The slope stays physical whatever the pairs say: at least 1 (the die
 /// never moves more than the air), and at most 3 (the die over two
@@ -369,17 +372,17 @@ impl Default for Calibration {
 /// says anything about the room: it takes about this long to warm up to
 /// the wrist.
 const SETTLED: u64 = 20 * MINUTE;
-/// An Aranet4 reading measured longer ago than this (seconds) is too old
-/// to pair with the die's temperature now. Its longest measurement
-/// interval is 10 minutes.
+/// A room sensor's reading measured longer ago than this (seconds) is too
+/// old to pair with the die's temperature now. An Aranet4's longest
+/// measurement interval is 10 minutes (a BTHome thermometer's reading is
+/// as old as the scan that heard it).
 pub const PAIR_AGE: u64 = 10 * 60;
 /// Two pairs in a row this close together (ms) whose temperatures agree
 /// within [`STEADY`] show that the wearer is settled in one room.
 const PAIR_GAP: u64 = 25 * MINUTE;
 /// Quarter degrees: 1 °C.
 const STEADY: i32 = 4;
-
-/// Decides which (die, Aranet) pairs are fit to learn from: only on a
+/// Decides which (die, room sensor) pairs are fit to learn from: only on a
 /// wrist that has settled ([`SETTLED`]), and only when the pair before,
 /// at most [`PAIR_GAP`] earlier, had both temperatures within [`STEADY`]
 /// of this one's. That leaves out walking between rooms (the die lags the

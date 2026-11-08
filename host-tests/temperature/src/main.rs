@@ -90,16 +90,16 @@ mod tests {
     const MIN: u64 = 60 * 1000;
 
     #[test]
-    fn a_nearby_aranet_wins_then_the_wrist_then_the_watch() {
+    fn a_nearby_sensor_wins_then_the_wrist_then_the_watch() {
         let calibration = Calibration::new();
         let die = q(27.5);
         assert_eq!(
             pick(Some(q(20.0)), true, die, &calibration),
-            (q(20.0), Source::Aranet)
+            (q(20.0), Source::Sensor)
         );
         assert_eq!(
             pick(Some(q(20.0)), false, die, &calibration),
-            (q(20.0), Source::Aranet)
+            (q(20.0), Source::Sensor)
         );
         assert_eq!(
             pick(None, true, die, &calibration),

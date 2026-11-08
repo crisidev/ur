@@ -1,5 +1,6 @@
-//! Nearby Aranet4 air monitors: what their Bluetooth advertisements say,
-//! which one is nearest, and when to listen for them.
+//! Nearby room sensors: what an Aranet4 air monitor's Bluetooth
+//! advertisements say, which sensor is nearest (an Aranet4 or a BTHome
+//! thermometer, see [`crate::bthome_sensor`]), and when to listen for them.
 //!
 //! An Aranet4 with "Smart Home integrations" switched on (in the Aranet
 //! Home app; firmware 1.2.0 or later) puts its latest measurement in every
@@ -29,11 +30,18 @@ const MANUFACTURER_DATA: u8 = 0xFF;
 /// The manufacturer-specific data of SAF Tehnika (Aranet's maker) in an
 /// advertisement's AD structures, after the company ID; `None` if there's
 /// none, or the structures are malformed before it.
+pub fn manufacturer_payload(ad: &[u8]) -> Option<&[u8]> {
+    find(ad, MANUFACTURER_DATA, &COMPANY)
+}
+
+/// The first AD structure of type `kind` whose data starts with `prefix`
+/// (a company ID, a service UUID), after the prefix; `None` if there's
+/// none, or the structures are malformed before it.
 ///
 /// Every advertisement the scan hears comes through here, hundreds a
 /// second in a busy place, so it does nothing but walk the length-prefixed
 /// structures.
-pub fn manufacturer_payload(mut ad: &[u8]) -> Option<&[u8]> {
+pub fn find<'a>(mut ad: &'a [u8], kind: u8, prefix: &[u8]) -> Option<&'a [u8]> {
     while let [length, rest @ ..] = ad {
         let length = usize::from(*length);
         // A zero length ends the data early (the rest is padding); one
@@ -42,10 +50,11 @@ pub fn manufacturer_payload(mut ad: &[u8]) -> Option<&[u8]> {
             return None;
         }
         let (structure, next) = rest.split_at(length);
-        if let [MANUFACTURER_DATA, company @ ..] = structure
-            && company.starts_with(&COMPANY)
+        if let [first, data @ ..] = structure
+            && *first == kind
+            && data.starts_with(prefix)
         {
-            return Some(&company[COMPANY.len()..]);
+            return Some(&data[prefix.len()..]);
         }
         ad = next;
     }
@@ -66,8 +75,9 @@ pub enum Band {
 
 impl Band {
     /// From the advertisement's status byte (1 green, 2 yellow, 3 red), or
-    /// for anything else (0 is "error"), from the default thresholds.
-    fn from_status(status: u8, co2: Option<u16>) -> Option<Self> {
+    /// for anything else (0 is "error", and BTHome has none), from the
+    /// default thresholds.
+    pub fn from_status(status: u8, co2: Option<u16>) -> Option<Self> {
         match (status, co2) {
             (1, _) => Some(Self::Good),
             (2, _) => Some(Self::Fair),
@@ -88,38 +98,71 @@ impl Band {
     }
 }
 
-/// One measurement, as an Aranet4 advertises it.
+/// Which kind of sensor a reading is from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(target_os = "none", derive(defmt::Format))]
+pub enum Kind {
+    /// An Aranet4: CO₂, temperature, humidity and pressure, advertised
+    /// about twice a second.
+    Aranet4,
+    /// A BTHome sensor with a thermometer ([`crate::bthome_sensor`]),
+    /// perhaps with humidity, pressure or CO₂ too. `irregular` if it says
+    /// it only advertises when something happens (BTHome's "trigger
+    /// based" flag), so a scan can't expect to hear it.
+    BTHome { irregular: bool },
+}
+
+impl Kind {
+    /// How long (ms) a scan may listen for a sensor of this kind that it
+    /// heard last time, before giving up on it (see [`Nearby::limit`]).
+    fn patience(self) -> u16 {
+        match self {
+            Self::Aranet4 => SCAN_LIMIT as u16,
+            Self::BTHome { irregular: false } => SLOW_SCAN_LIMIT as u16,
+            Self::BTHome { irregular: true } => 0,
+        }
+    }
+}
+
+/// One measurement, as a room sensor advertises it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Reading {
-    /// CO₂ in ppm; `None` while the sensor calibrates.
+    pub kind: Kind,
+    /// CO₂ in ppm; `None` while an Aranet4 calibrates, or from a sensor
+    /// without CO₂.
     pub co2: Option<u16>,
-    /// Temperature in twentieths of a degree (the device's own unit);
-    /// `None` if the device marks it invalid.
-    pub twentieths: Option<u16>,
-    /// Pressure in tenths of a hectopascal; `None` if marked invalid.
+    /// Temperature in hundredths of a degree (BTHome's finest unit; an
+    /// Aranet4's twentieths are exact in it), signed, as a BTHome
+    /// thermometer may be outdoors; `None` if the device marks it invalid.
+    pub hundredths: Option<i16>,
+    /// Pressure in tenths of a hectopascal; `None` if marked invalid, or
+    /// not measured.
     pub pressure: Option<u16>,
-    /// Relative humidity, %.
-    pub humidity: u8,
-    /// The device's battery, %.
-    pub battery: u8,
+    /// Relative humidity, %; `None` if not measured.
+    pub humidity: Option<u8>,
+    /// The device's battery, %; `None` if not sent.
+    pub battery: Option<u8>,
     /// The CO₂ band, `None` when there's neither a status nor a CO₂ value.
     pub band: Option<Band>,
-    /// Seconds between measurements: 60, 120, 300 (the default), or 600.
+    /// Seconds between an Aranet4's measurements: 60, 120, 300 (the
+    /// default), or 600. 0 for BTHome, which doesn't say.
     pub interval: u16,
-    /// Seconds since this measurement, when advertised.
+    /// Seconds since this measurement, when advertised. 0 for BTHome,
+    /// whose adverts carry the latest measurement.
     pub age: u16,
 }
 
 impl Reading {
     /// The temperature in tenths of a degree, rounded half up.
     pub fn tenths(&self) -> Option<i32> {
-        self.twentieths.map(|t| (i32::from(t) + 1) / 2)
+        self.hundredths.map(|h| (i32::from(h) + 5).div_euclid(10))
     }
 
     /// The temperature in quarter degrees (the die sensor's unit, for
-    /// [`crate::temperature`]), rounded to nearest.
+    /// [`crate::temperature`]), rounded to nearest (half up).
     pub fn quarters(&self) -> Option<i32> {
-        self.twentieths.map(|t| (i32::from(t) * 4 + 10) / 20)
+        self.hundredths
+            .map(|h| (i32::from(h) * 4 + 50).div_euclid(100))
     }
 }
 
@@ -179,11 +222,14 @@ pub fn parse(payload: &[u8]) -> Result<Reading, Skip> {
     let valid = |value: u16, invalid: u16| (value & invalid == 0).then_some(value);
     let co2 = valid(u16_at(8), 1 << 15);
     Ok(Reading {
+        kind: Kind::Aranet4,
         co2,
-        twentieths: valid(u16_at(10), 1 << 14),
+        // Twentieths, five hundredths each. Above 327.67 °C doesn't fit,
+        // and an Aranet4 (rated to 50 °C) never says so: that's `None`.
+        hundredths: valid(u16_at(10), 1 << 14).and_then(|t| i16::try_from(i32::from(t) * 5).ok()),
         pressure: valid(u16_at(12), 1 << 15),
-        humidity: payload[14],
-        battery: payload[15],
+        humidity: Some(payload[14]),
+        battery: Some(payload[15]),
         band: Band::from_status(payload[16], co2),
         interval: u16_at(17),
         age: u16_at(19),
@@ -194,8 +240,10 @@ pub fn parse(payload: &[u8]) -> Result<Reading, Skip> {
 // Which one is nearest
 // ==============================================================================
 
-/// The most sensors told apart at once. A home rarely has more than a
-/// couple; beyond this, the weakest newcomers are ignored.
+/// The most sensors told apart at once, of either kind. A home rarely has
+/// more than a few; beyond this, the weakest newcomers are ignored (a
+/// block of flats may well have more BTHome thermometers in range, but
+/// the strongest are the ones that matter).
 pub const SENSORS: usize = 4;
 
 /// A Bluetooth device address, as received (least significant byte
@@ -227,6 +275,10 @@ impl Sighting {
 struct Known {
     address: Address,
     heard: u64,
+    /// How long (ms) the next scan may wait for it ([`Kind::patience`]):
+    /// 0 if the last scan didn't hear it, or it advertises irregularly.
+    /// (In what would be padding after the address.)
+    patience: u16,
 }
 
 /// What the scans have heard: the nearest sensor's latest reading, and
@@ -278,12 +330,25 @@ pub const LOOKED_AT: u64 = 10 * 60 * 1000;
 /// Opening the Air screen scans if the last scan is this old.
 pub const OPENED: u64 = 60 * 1000;
 
-/// How long a scan listens, at most, in ms. Two Aranet4s (firmware 2.0.7)
+/// How long a scan listens, at most, in ms, unless it waits for a BTHome
+/// sensor ([`SLOW_SCAN_LIMIT`]). Two Aranet4s (firmware 2.0.7)
 /// advertised every ~0.57 s, and a dev kit, scanning while connected to a
 /// phone, heard them at most 2.3 s apart (90% within 1.2 s): this hears
 /// every sensor around, with room for a slower one; most scans stop well
 /// before (see [`Nearby::heard_everyone`]).
 pub const SCAN_LIMIT: u64 = 3_000;
+
+/// How long a scan listens, at most, in ms, when it waits for a BTHome
+/// thermometer it heard last time. The commonest, a Xiaomi LYWSD03MMC on
+/// pvvx's firmware, advertises every 2.5 s by default, but alternates its
+/// temperature with its battery voltage, so the temperature comes every
+/// 5 s: this hears it whatever the phase. Scans that wait for none (to
+/// find sensors, or with only Aranet4s around) keep to [`SCAN_LIMIT`].
+///
+/// Sensors that advertise more seldom aren't caught by any scan short
+/// enough to be cheap (a Shelly BLU H&T sends once a minute): a scan
+/// hears them now and then, and their reading lasts until [`STALE`].
+pub const SLOW_SCAN_LIMIT: u64 = 6_000;
 
 /// With no sensor heard recently, a scan listens at least this long (ms)
 /// before stopping at the first it hears (see [`Nearby::heard_everyone`]).
@@ -381,7 +446,7 @@ impl Nearby {
         self.scanning = true;
     }
 
-    /// An Aranet4 was heard, with its signal strength.
+    /// A sensor was heard, with its signal strength.
     pub fn hear(&mut self, address: Address, rssi: i8, reading: Reading, now: u64) {
         let sighting = Sighting {
             address,
@@ -415,18 +480,36 @@ impl Nearby {
         }
     }
 
-    /// Whether the scan has heard every sensor heard within [`RECENT`]
+    /// How long the scan under way may listen, at most, in ms:
+    /// [`SCAN_LIMIT`], or longer while it waits for a slower sensor (see
+    /// [`SLOW_SCAN_LIMIT`]).
+    pub fn limit(&self, now: u64) -> u64 {
+        self.awaited(now)
+            .map(|k| u64::from(k.patience))
+            .fold(SCAN_LIMIT, u64::max)
+    }
+
+    /// The sensors a scan waits for: those the last scan heard, within
+    /// [`RECENT`], that advertise regularly.
+    ///
+    /// Not every sensor heard within the hour: one the last scan missed
+    /// has likely gone out of range (or advertises too seldom to catch),
+    /// and waiting for it would hold every scan to its limit, for the
+    /// hour, for nothing. If it's there, the scan may hear it anyway.
+    fn awaited(&self, now: u64) -> impl Iterator<Item = &Known> {
+        self.known
+            .iter()
+            .filter(move |k| k.patience > 0 && now.saturating_sub(k.heard) < RECENT)
+    }
+
+    /// Whether the scan has heard every sensor it waits for ([`Self::awaited`])
     /// (and at least one), so listening longer would only cost power.
     ///
-    /// With none heard recently, the first one heard isn't enough: a
-    /// nearer one may not have advertised yet, so it listens for at least
+    /// Waiting for none, the first one heard isn't enough: a nearer one
+    /// may not have advertised yet, so it listens for at least
     /// [`LOOK_AROUND`], two of an Aranet4's advertising periods.
     pub fn heard_everyone(&self, now: u64) -> bool {
-        let mut recent = self
-            .known
-            .iter()
-            .filter(|k| now.saturating_sub(k.heard) < RECENT)
-            .peekable();
+        let mut recent = self.awaited(now).peekable();
         let looked_around = recent.peek().is_some()
             || self
                 .last_scan
@@ -441,13 +524,21 @@ impl Nearby {
     /// Returns whether anything was heard.
     pub fn end(&mut self, now: u64) -> bool {
         self.scanning = false;
+        // What this scan missed, the next doesn't wait for.
+        for known in &mut self.known {
+            known.patience = 0;
+        }
         for sighting in &self.heard {
+            let patience = sighting.reading.kind.patience();
             match self
                 .known
                 .iter_mut()
                 .find(|k| k.address == sighting.address)
             {
-                Some(known) => known.heard = sighting.heard,
+                Some(known) => {
+                    known.heard = sighting.heard;
+                    known.patience = patience;
+                }
                 None => {
                     // Room for it, or in place of the longest unheard.
                     if self.known.is_full() {
@@ -463,6 +554,7 @@ impl Nearby {
                     let _ = self.known.push(Known {
                         address: sighting.address,
                         heard: sighting.heard,
+                        patience,
                     });
                 }
             }

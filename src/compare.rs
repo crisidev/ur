@@ -545,8 +545,8 @@ pub fn rendering(now: Instant, status: &Status, daytime: bool, today: Option<Day
             update_progress: status.update_progress.unwrap_or(255),
             heart_rate: status.heart_rate.unwrap_or(0),
             temperature: status.temperature.unwrap_or(0),
-            // 2: from a nearby Aranet4 (underlined on the clock face).
-            has_temperature: match (status.temperature, status.temperature_from_aranet) {
+            // 2: from a nearby room sensor (underlined on the clock face).
+            has_temperature: match (status.temperature, status.temperature_from_sensor) {
                 (None, _) => 0,
                 (Some(_), false) => 1,
                 (Some(_), true) => 2,

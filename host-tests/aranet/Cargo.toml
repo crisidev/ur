@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-# Host-side tests for `src/aranet.rs` (included via `#[path]`): Aranet4
-# advertisements, from Aranet4-Python's own test vectors, and choosing the
-# nearest sensor. Not part of the firmware workspace: run `cargo test` from
+# Host-side tests for `src/aranet.rs` and `src/bthome_sensor.rs` (included
+# via `#[path]`): Aranet4 advertisements, from Aranet4-Python's own test
+# vectors, BTHome thermometers', and choosing the nearest sensor. Not part of the firmware workspace: run `cargo test` from
 # this directory.
 [workspace]
 

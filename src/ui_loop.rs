@@ -8,7 +8,7 @@
 //! button grid's advertisements, and switching off. `main` implements it
 //! with the real thing; the simulator with stand-ins. Everything else (the
 //! decisions) is here, once, so the two can't drift apart. What other
-//! tasks share with the loop (the phone's connection, the Aranet4s heard,
+//! tasks share with the loop (the phone's connection, the room sensors heard,
 //! today's activity, the heart rate) it reads from their modules, as on
 //! the watch; the simulator includes or stands in for those.
 //!
@@ -293,7 +293,7 @@ pub struct UiLoop {
     /// The clock face's temperature, once read, and where from; and what
     /// goes into it (see `temperature`): the die's own, in quarter degrees,
     /// whether the watch is worn, and the estimate's calibration, which a
-    /// nearby Aranet4 teaches.
+    /// nearby room sensor teaches.
     temperature: Option<(i8, temperature::Source)>,
     die: Option<i32>,
     wear: temperature::Wear,
@@ -303,7 +303,7 @@ pub struct UiLoop {
     /// when that was (see [`UiLoop::pass`]).
     calibration_unsaved: bool,
     calibration_saved: Instant,
-    /// When the Aranet4 reading last looked at was heard, so each is
+    /// When the room sensor's reading last looked at was heard, so each is
     /// looked at once.
     sighting_seen: Option<u64>,
 }
@@ -437,8 +437,8 @@ impl UiLoop {
                 local_second: local_second(),
                 heart_rate: heart::current(now),
                 temperature: temperature.map(|(degrees, _)| degrees),
-                temperature_from_aranet: temperature
-                    .is_some_and(|(_, source)| source == temperature::Source::Aranet),
+                temperature_from_sensor: temperature
+                    .is_some_and(|(_, source)| source == temperature::Source::Sensor),
                 // Read again rather than kept from above: kept, it would
                 // sit in this task's future across every await between.
                 air: ble::NEARBY.lock(|nearby| nearby.borrow().best()),
@@ -519,7 +519,7 @@ impl UiLoop {
         let fresh = heart::latest()
             .is_some_and(|(_, at)| now.saturating_duration_since(at) < Duration::from_secs(5 * 60));
         heart::set_watching(app.showing_clock() && !fresh);
-        // Listen for Aranet4s, when it's time (see `aranet::Nearby::due`).
+        // Listen for room sensors, when it's time (see `aranet::Nearby::due`).
         let context = aranet::Context {
             quiet_night: app.quiet_night(),
             off_wrist: !self.wear.worn(),
@@ -548,9 +548,9 @@ impl UiLoop {
         None
     }
 
-    /// The temperature for the clock face: from a nearby Aranet4, the
+    /// The temperature for the clock face: from a nearby room sensor, the
     /// wrist's estimate, or the die's own (see `temperature::pick`); and
-    /// what an Aranet4's reading teaches the estimate.
+    /// what a room sensor's reading teaches the estimate.
     ///
     /// Not an `async fn` (saving what it learnt is the pass's): a state
     /// machine of its own would cost flash.
@@ -579,8 +579,10 @@ impl UiLoop {
         if let Some(die) = self.die
             && (sample || new_sighting)
         {
-            // A new Aranet4 reading, recent enough to pair with the die's
-            // temperature now, on a settled wrist: learn from it.
+            // A new room sensor's reading (an Aranet4's or a BTHome
+            // thermometer's: both measure the air), recent enough to pair
+            // with the die's temperature now, on a settled wrist: learn
+            // from it.
             if new_sighting
                 && let Some(sighting) = best
                 && sighting.age(now_ms) <= temperature::PAIR_AGE
@@ -601,9 +603,9 @@ impl UiLoop {
                     self.calibration.pairs()
                 );
             }
-            let aranet = fresh.and_then(|s| s.reading.quarters());
+            let sensor = fresh.and_then(|s| s.reading.quarters());
             let (quarters, source) =
-                temperature::pick(aranet, self.wear.worn(), die, &self.calibration);
+                temperature::pick(sensor, self.wear.worn(), die, &self.calibration);
             // A change of source shows the new value at once, rather than
             // holding the old within a degree.
             let previous = self

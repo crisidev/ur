@@ -1,11 +1,17 @@
-//! Host tests for the firmware's `aranet` module: Aranet4 advertisements,
-//! from the test vectors of Aranet4-Python (the decoder behind Home
-//! Assistant's integration), and choosing the nearest sensor. `cargo test`
-//! runs them.
+//! Host tests for the firmware's `aranet` and `bthome_sensor` modules:
+//! Aranet4 advertisements, from the test vectors of Aranet4-Python (the
+//! decoder behind Home Assistant's integration), BTHome thermometers'
+//! (`bthome.rs`), and choosing the nearest sensor. `cargo test` runs them.
 
 #[path = "../../../src/aranet.rs"]
 #[allow(dead_code)]
 mod aranet;
+#[path = "../../../src/bthome_sensor.rs"]
+#[allow(dead_code)]
+mod bthome_sensor;
+
+#[cfg(test)]
+mod bthome;
 
 fn main() {
     println!("run `cargo test`");
@@ -43,14 +49,15 @@ mod tests {
     #[test]
     fn reads_the_upstream_vector() {
         let reading = parse(&ARANET4).expect("a full reading");
+        assert_eq!(reading.kind, Kind::Aranet4);
         assert_eq!(reading.co2, Some(1091));
-        assert_eq!(reading.twentieths, Some(415));
+        assert_eq!(reading.hundredths, Some(2075));
         // Aranet4-Python rounds 20.75 to 20.8.
         assert_eq!(reading.tenths(), Some(208));
         assert_eq!(reading.quarters(), Some(83));
         assert_eq!(reading.pressure, Some(10123));
-        assert_eq!(reading.humidity, 53);
-        assert_eq!(reading.battery, 12);
+        assert_eq!(reading.humidity, Some(53));
+        assert_eq!(reading.battery, Some(12));
         assert_eq!(reading.band, Some(Band::Fair));
         assert_eq!(reading.interval, 60);
         assert_eq!(reading.age, 16);
@@ -68,11 +75,12 @@ mod tests {
                 0xaa,
             ],
             Reading {
+                kind: Kind::Aranet4,
                 co2: Some(677),
-                twentieths: Some(481),
+                hundredths: Some(2405),
                 pressure: Some(10182),
-                humidity: 28,
-                battery: 27,
+                humidity: Some(28),
+                battery: Some(27),
                 band: Some(Band::Good),
                 interval: 120,
                 age: 96,
@@ -85,11 +93,12 @@ mod tests {
                 0xb9,
             ],
             Reading {
+                kind: Kind::Aranet4,
                 co2: Some(649),
-                twentieths: Some(443),
+                hundredths: Some(2215),
                 pressure: Some(10169),
-                humidity: 32,
-                battery: 23,
+                humidity: Some(32),
+                battery: Some(23),
                 band: Some(Band::Good),
                 interval: 300,
                 age: 1,
@@ -227,6 +236,16 @@ mod tests {
         assert_eq!(reading(422).quarters(), Some(84));
         assert_eq!(reading(423).quarters(), Some(85));
         assert_eq!(reading(425).quarters(), Some(85));
+        // Below zero (a BTHome thermometer outdoors), still half up:
+        // -5.25 °C is -5.2, and -5.25 to the quarter.
+        let cold = Reading {
+            hundredths: Some(-525),
+            ..reading(0)
+        };
+        assert_eq!(cold.tenths(), Some(-52));
+        assert_eq!(cold.quarters(), Some(-21));
+        // Too hot to fit: no temperature, rather than a wrong one.
+        assert_eq!(reading(0x3FFF).hundredths, None);
     }
 
     quickcheck! {
@@ -320,18 +339,62 @@ mod tests {
         nearby.begin(45 * MIN);
         nearby.hear(KITCHEN, -60, reading(), 45 * MIN);
         nearby.end(45 * MIN + 100);
-        // An hour after the bedroom was last heard, it's forgotten: the
-        // kitchen alone will do.
-        let later = 15 * MIN + 200 + RECENT;
-        nearby.begin(later);
-        nearby.hear(KITCHEN, -60, reading(), later);
-        assert!(nearby.heard_everyone(later));
-        // An hour after that, nothing is known: it looks around again.
-        let much_later = 45 * MIN + RECENT;
+        // The last scan missed the bedroom: it isn't waited for, though
+        // it's still around (and still counts if heard).
+        assert!(nearby.around(60 * MIN));
+        nearby.begin(60 * MIN);
+        nearby.hear(KITCHEN, -60, reading(), 60 * MIN);
+        assert!(nearby.heard_everyone(60 * MIN));
+        nearby.hear(BEDROOM, -70, reading(), 60 * MIN + 100);
+        nearby.end(60 * MIN + 200);
+        // Heard again, it's waited for again.
+        nearby.begin(75 * MIN);
+        nearby.hear(KITCHEN, -60, reading(), 75 * MIN);
+        assert!(!nearby.heard_everyone(75 * MIN));
+        nearby.end(75 * MIN + SCAN_LIMIT);
+        // An hour after the last one heard, nothing is known: it looks
+        // around again.
+        let much_later = 75 * MIN + RECENT;
         nearby.begin(much_later);
         nearby.hear(KITCHEN, -60, reading(), much_later);
         assert!(!nearby.heard_everyone(much_later));
         assert!(nearby.heard_everyone(much_later + LOOK_AROUND));
+    }
+
+    #[test]
+    fn a_scan_waits_longer_for_a_bthome_thermometer() {
+        let thermometer = |irregular| Reading {
+            kind: Kind::BTHome { irregular },
+            ..reading()
+        };
+        let mut nearby = Nearby::new();
+        // Finding sensors: the usual limit.
+        nearby.begin(0);
+        assert_eq!(nearby.limit(0), SCAN_LIMIT);
+        nearby.hear(KITCHEN, -60, reading(), 100);
+        nearby.hear(BEDROOM, -70, thermometer(false), 2000);
+        nearby.end(2000);
+        // The thermometer heard last time, it waits for it, longer.
+        nearby.begin(15 * MIN);
+        assert_eq!(nearby.limit(15 * MIN), SLOW_SCAN_LIMIT);
+        nearby.hear(KITCHEN, -60, reading(), 15 * MIN + 100);
+        assert!(!nearby.heard_everyone(15 * MIN + 100));
+        nearby.end(15 * MIN + SLOW_SCAN_LIMIT);
+        // Missed: the next waits for the Aranet4 alone, as long as it
+        // would.
+        nearby.begin(30 * MIN);
+        assert_eq!(nearby.limit(30 * MIN), SCAN_LIMIT);
+        nearby.hear(KITCHEN, -60, reading(), 30 * MIN + 100);
+        assert!(nearby.heard_everyone(30 * MIN + 100));
+        nearby.hear(BEDROOM, -50, thermometer(true), 30 * MIN + 200);
+        nearby.end(30 * MIN + 200);
+        // Any kind can be shown: the strongest.
+        assert_eq!(nearby.best().map(|s| s.address), Some(BEDROOM));
+        // One that says it advertises irregularly is never waited for.
+        nearby.begin(45 * MIN);
+        assert_eq!(nearby.limit(45 * MIN), SCAN_LIMIT);
+        nearby.hear(KITCHEN, -60, reading(), 45 * MIN + 100);
+        assert!(nearby.heard_everyone(45 * MIN + 100));
     }
 
     #[test]

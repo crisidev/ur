@@ -15,8 +15,9 @@
 //! - Above: the last [`HISTORY`] notifications, newest nearest, one a page,
 //!   with when each arrived (see [`crate::arrival`]).
 //! - Below: the button grid (see [`buttons`]), if it's on; Music, while
-//!   the phone has media; Air, while a nearby Aranet4 has been heard
-//!   within the hour (see [`crate::aranet`]). Possibly none of them.
+//!   the phone has media; Air, while a nearby room sensor (an Aranet4 or a
+//!   BTHome thermometer) has been heard within the hour (see
+//!   [`crate::aranet`]). Possibly none of them.
 //!
 //! Screens away from the clock show a short bar, a handle, in the middle of
 //! each edge a swipe leads somewhere from: the one facing the clock (home),
@@ -227,10 +228,10 @@ pub struct Status<'a> {
     /// The temperature in °C (see [`crate::temperature`]), once it's been
     /// read.
     pub temperature: Option<i8>,
-    /// Whether that's a nearby Aranet4's, rather than the watch's own (or
-    /// an estimate from it).
-    pub temperature_from_aranet: bool,
-    /// The nearest Aranet4's latest reading, for the Air screen.
+    /// Whether that's a nearby room sensor's (an Aranet4's or a BTHome
+    /// thermometer's), rather than the watch's own (or an estimate from it).
+    pub temperature_from_sensor: bool,
+    /// The nearest room sensor's latest reading, for the Air screen.
     pub air: Option<Sighting>,
     /// The most recent sleep within the last day.
     pub sleep: Option<crate::activity::Sleep>,
@@ -615,7 +616,7 @@ impl App {
         self.daytime = daytime;
     }
 
-    /// Whether a nearby Aranet4 has been heard recently enough for its
+    /// Whether a nearby room sensor has been heard recently enough for its
     /// screen to be there ([`aranet::RECENT`]). It goes away when not,
     /// leaving the clock if it was showing.
     pub fn set_air(&mut self, air: bool) {
@@ -1994,10 +1995,10 @@ fn render_clock(
     // a temperature can't both fit beside that, so until the phone sets
     // the clock (just after a cold boot), "NO TIME" wins.
     //
-    // A reading from a room sensor (a nearby Aranet4; see
-    // `crate::temperature`), rather than the watch's own or an estimate
-    // from it, is underlined at the degree sign: a short line a pixel
-    // below it, like a ground line under the reading, in the labels'
+    // A reading from a room sensor (a nearby Aranet4 or BTHome
+    // thermometer; see `crate::temperature`), rather than the watch's own
+    // or an estimate from it, is underlined at the degree sign: a short
+    // line a pixel below it, like a ground line under the reading, in the labels'
     // colour, so it's a mark on the reading rather than part of it. (A
     // little house before the reading said the same, but read as one more
     // status icon. Also tried: a dot under the degree sign, which read as
@@ -2009,7 +2010,7 @@ fn render_clock(
         let mut text = heapless::String::<6>::new();
         write!(text, "{degrees}°").expect("an i8 is at most 4 chars, and ° is 2 bytes");
         let end = canvas.text(x, 3, &text, Color::TEXT);
-        if status.temperature_from_aranet {
+        if status.temperature_from_sensor {
             // `end` is past the degree sign's spacing column: the sign
             // itself is the 3 columns before that.
             canvas.fill_rect(end - 4, 9, 3, 1, Color::TEXT_DIM);
@@ -3405,11 +3406,17 @@ const MUSIC_TEXT_WIDTH: i32 = 74;
 //   38..42   "PPM CO2" (left); the band, GOOD/FAIR/POOR (right)
 //   46..48   three segments, the band's lit: it reads without colour
 //   54..63   temperature and humidity at 2×
-//   69..73   pressure (left); the Aranet4's battery (right)
+//   69..73   pressure (left); the sensor's battery (right)
+//
+// A sensor without CO₂ (a BTHome thermometer) has the temperature big in
+// its place, "°C" for its label, and no band; then the humidity at 2×
+// (right), labelled (left).
 
-/// A nearby Aranet4's latest reading (see [`crate::aranet`]): the CO₂
-/// big, since that's what the watch can't otherwise know and what to act
-/// on (open a window), then what else it measures.
+/// A nearby room sensor's latest reading (see [`crate::aranet`]): from an
+/// Aranet4, the CO₂ big, since that's what the watch can't otherwise know
+/// and what to act on (open a window), then what else it measures. From a
+/// BTHome thermometer, the temperature big (to the tenth: the clock face
+/// has it to the degree), and whatever else it sends.
 ///
 /// Not on the clock face: CO₂ changes over tens of minutes, and its number
 /// would crowd a face that's read at a glance, many times a day. The
@@ -3439,33 +3446,40 @@ fn render_air(canvas: &mut Canvas, sighting: &Sighting, now: Instant) {
         Color::TEXT
     };
 
-    // CO₂: up to four digits of 15 px with 2 px gaps, centred; dashes
-    // while the sensor calibrates.
-    const CO2_Y: i32 = 13;
-    match reading.co2 {
-        Some(ppm) => {
-            let ppm = u64::from(ppm.min(9999));
-            let digits = ppm.max(1).ilog10() as i32 + 1;
-            let mut x = 40 - (digits * 17 - 2) / 2;
-            for place in (0..digits).rev() {
-                draw_digit(
-                    canvas,
-                    x,
-                    CO2_Y,
-                    ppm / 10u64.pow(place as u32) % 10,
-                    3,
-                    value,
-                );
-                x += 17;
-            }
+    // The temperature, to the tenth: "--.-" if invalid. Within ±100 °C
+    // (and a sauna's), so that big it still fits the width.
+    let mut temperature = heapless::String::<8>::new();
+    match reading.tenths().map(|t| t.clamp(-999, 1999)) {
+        Some(t) => {
+            let sign = if t < 0 { "-" } else { "" };
+            write!(temperature, "{sign}{}.{}", t.abs() / 10, t.abs() % 10).expect("fits")
         }
-        None => {
-            for x in [6, 23, 40, 57] {
-                canvas.fill_rect(x, CO2_Y + 9, 15, 3, value);
-            }
-        }
+        None => temperature.push_str("--.-").expect("fits"),
     }
-    canvas.text(4, 38, "PPM CO2", Color::TEXT_DIM);
+
+    // The big number: CO₂ when the sensor measures it (dashes while an
+    // Aranet4 calibrates), the temperature from a thermometer.
+    const BIG_Y: i32 = 13;
+    let mut text = heapless::String::<8>::new();
+    let thermometer = reading.co2.is_none() && reading.kind != aranet::Kind::Aranet4;
+    if thermometer {
+        draw_big_number(canvas, BIG_Y, &temperature, value);
+        canvas.text(4, 38, "°C", Color::TEXT_DIM);
+    } else {
+        match reading.co2 {
+            Some(ppm) => {
+                write!(text, "{}", ppm.min(9999)).expect("fits");
+                draw_big_number(canvas, BIG_Y, &text, value);
+            }
+            // A digit's width each.
+            None => {
+                for x in [6, 23, 40, 57] {
+                    canvas.fill_rect(x, BIG_Y + 9, 15, 3, value);
+                }
+            }
+        }
+        canvas.text(4, 38, "PPM CO2", Color::TEXT_DIM);
+    }
     // The band: the word, and which third of the bar is lit, so it reads
     // in every theme, even those of one hue.
     if let Some(band) = reading.band {
@@ -3481,31 +3495,63 @@ fn render_air(canvas: &mut Canvas, sighting: &Sighting, now: Instant) {
         }
     }
 
-    // Temperature and humidity, at 2×.
-    let mut text = heapless::String::<8>::new();
-    match reading.tenths() {
-        Some(tenths) => write!(text, "{}.{}°", tenths / 10, tenths % 10).expect("fits"),
-        None => text.push_str("--.-°").expect("fits"),
+    // Temperature (unless it's big already) and humidity, at 2×.
+    if thermometer {
+        if reading.humidity.is_some() {
+            canvas.text(4, 57, "HUMIDITY", Color::TEXT_DIM);
+        }
+    } else {
+        temperature.push('°').expect("fits");
+        canvas.text_scaled(4, 54, &temperature, value, 2);
     }
-    canvas.text_scaled(4, 54, &text, value, 2);
-    let mut text = heapless::String::<4>::new();
-    write!(text, "{}%", reading.humidity.min(100)).expect("fits");
-    canvas.text_scaled(76 - 2 * font::small_text_width(&text), 54, &text, value, 2);
+    if let Some(humidity) = reading.humidity {
+        let mut text = heapless::String::<4>::new();
+        write!(text, "{}%", humidity.min(100)).expect("fits");
+        canvas.text_scaled(76 - 2 * font::small_text_width(&text), 54, &text, value, 2);
+    }
 
-    // Pressure, and the Aranet4's own battery, red when it wants changing.
+    // Pressure, and the sensor's own battery, red when it wants changing:
+    // each if the sensor sends it.
     let mut text = heapless::String::<10>::new();
     if let Some(pressure) = reading.pressure {
         write!(text, "{} HPA", (pressure + 5) / 10).expect("fits");
     }
     canvas.text(4, 69, &text, Color::TEXT_DIM);
-    let mut text = heapless::String::<8>::new();
-    write!(text, "BAT {}%", reading.battery.min(100)).expect("fits");
-    let color = if reading.battery <= 15 {
-        Color::BAD
-    } else {
-        Color::TEXT_DIM
+    if let Some(battery) = reading.battery {
+        let mut text = heapless::String::<8>::new();
+        write!(text, "BAT {}%", battery.min(100)).expect("fits");
+        let color = if battery <= 15 {
+            Color::BAD
+        } else {
+            Color::TEXT_DIM
+        };
+        canvas.text_right(76, 69, &text, color);
+    }
+}
+
+/// `text` (digits, '.', '-') in the time's digits at 3×, centred, with
+/// its top at `y`: the point is the glyphs' bottom row, a dash their
+/// middle one (three of the digits' pixels each).
+fn draw_big_number(canvas: &mut Canvas, y: i32, text: &str, color: Color) {
+    let advance = |c: char| match c {
+        '.' => 5,
+        '-' => 11,
+        _ => 17,
     };
-    canvas.text_right(76, 69, &text, color);
+    let width: i32 = text.chars().map(advance).sum::<i32>() - 2;
+    let mut x = 40 - width / 2;
+    for c in text.chars() {
+        let mark = |canvas: &mut Canvas, dy: i32, w: i32| {
+            canvas.fill_rect(x + 1, y + dy + 1, w, 3, Color::SHADOW);
+            canvas.fill_rect(x, y + dy, w, 3, color);
+        };
+        match c {
+            '.' => mark(canvas, 18, 3),
+            '-' => mark(canvas, 9, 9),
+            digit => draw_digit(canvas, x, y, u64::from(digit as u8 - b'0'), 3, color),
+        }
+        x += advance(c);
+    }
 }
 
 fn render_music(canvas: &mut Canvas, music: &Music, now: Instant) {

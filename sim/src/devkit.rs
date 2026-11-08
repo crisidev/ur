@@ -807,7 +807,7 @@ impl Follower {
             steps: (pass.steps != compare::NONE_U32).then_some(pass.steps),
             heart_rate: (pass.heart_rate != 0).then_some(pass.heart_rate),
             temperature: (pass.has_temperature != 0).then_some(pass.temperature),
-            temperature_from_aranet: pass.has_temperature == 2,
+            temperature_from_sensor: pass.has_temperature == 2,
             // TODO: the Aranet4 reading itself, for the Air screen, should a
             // dev kit ever have one near (it's not exported: the screen
             // only exists with one).

@@ -26,8 +26,9 @@
 //! channels, and interrupt priority 0; see `main` for the setup.
 //!
 //! Besides serving the phone, the watch now and then listens for nearby
-//! Aranet4 air monitors' advertisements (see [`scan`], and
-//! [`crate::aranet`] for what they say and when to listen). That takes the
+//! room sensors' advertisements, Aranet4 air monitors' and BTHome
+//! thermometers' (see [`scan`], [`crate::aranet`] and
+//! [`crate::bthome_sensor`] for what they say, and when to listen). That takes the
 //! controller's multirole library (peripheral and scanner) rather than the
 //! peripheral-only one.
 
@@ -49,7 +50,7 @@ use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
-use crate::aranet::{self, Nearby};
+use crate::aranet::{self, Nearby, Reading};
 use crate::gb::{self, Incoming, LineBuffer, Outgoing};
 use crate::geo::{self, GpsPolicy, Location};
 use crate::packet_pool::Pool;
@@ -1398,7 +1399,7 @@ fn decode_bond(data: &[u8; BOND_LEN]) -> Option<BondInformation> {
 }
 
 // ==============================================================================
-// Listening for Aranet4s
+// Listening for room sensors
 // ==============================================================================
 
 /// What the scans have heard, and when the next is due; see
@@ -1420,7 +1421,7 @@ static REPORTS: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::n
 
 /// Runs a scan for each [`SCAN`]: passive (the readings are in the
 /// advertisements themselves, so we never ask for more, and never
-/// transmit), for at most [`aranet::SCAN_LIMIT`].
+/// transmit), for at most [`Nearby::limit`].
 ///
 /// The scanner listens with its window as long as its interval, which
 /// makes it the controller's lowest-priority radio activity: the phone's
@@ -1453,7 +1454,8 @@ async fn scan(stack: &BleStack) {
             REPORTS.store(0, Ordering::Relaxed);
             match Scanner::new(&mut central).scan(&config).await {
                 Ok(session) => {
-                    let limit = Duration::from_millis(aranet::SCAN_LIMIT);
+                    let limit = NEARBY.lock(|n| n.borrow().limit(started.as_millis()));
+                    let limit = Duration::from_millis(limit);
                     let _ = with_timeout(limit, HEARD_EVERYONE.wait()).await;
                     session.stop().await;
                     crate::power::add(crate::power::Meter::Scanning, started);
@@ -1472,9 +1474,10 @@ async fn scan(stack: &BleStack) {
         match best {
             _ if updating => {}
             Some(s) => info!(
-                "aranet: {} ms, {} reports; nearest {=[u8]:x} at {} dBm: {} ppm, {} dC, {}%, {} s old",
+                "aranet: {} ms, {} reports; nearest {} {=[u8]:x} at {} dBm: {} ppm, {} dC, {}%, {} s old",
                 ms,
                 reports,
+                s.reading.kind,
                 s.address,
                 s.rssi,
                 s.reading.co2,
@@ -1488,36 +1491,54 @@ async fn scan(stack: &BleStack) {
 }
 
 /// Takes the scans' advertising reports, as the host's receive loop gets
-/// them: keeps what Aranet4s say, and drops everything else at once (in
-/// a busy place, there are hundreds a second).
+/// them: keeps what Aranet4s and BTHome thermometers say, and drops
+/// everything else at once (in a busy place, there are hundreds a
+/// second).
 struct Reports;
 
 impl EventHandler for Reports {
     fn on_adv_reports(&self, reports: LeAdvReportsIter<'_>) {
         for report in reports.flatten() {
             REPORTS.fetch_add(1, Ordering::Relaxed);
-            let Some(payload) = aranet::manufacturer_payload(report.data) else {
-                continue;
-            };
             let Ok(address) = <aranet::Address>::try_from(report.addr.raw()) else {
                 continue;
             };
-            match aranet::parse(payload) {
-                Ok(reading) => {
-                    let now = Instant::now().as_millis();
-                    let everyone = NEARBY.lock(|nearby| {
-                        let mut nearby = nearby.borrow_mut();
-                        nearby.hear(address, report.rssi, reading, now);
-                        nearby.heard_everyone(now)
-                    });
-                    if everyone {
-                        HEARD_EVERYONE.signal(());
+            let reading = if let Some(payload) = aranet::manufacturer_payload(report.data) {
+                match aranet::parse(payload) {
+                    Ok(reading) => reading,
+                    // Once or twice a scan, and only from an Aranet:
+                    // worth knowing why it's not shown.
+                    Err(skip) => {
+                        info!("aranet: {=[u8]:x} has no reading: {}", address, skip);
+                        continue;
                     }
                 }
-                // Once or twice a scan, and only from an Aranet: worth
-                // knowing why it's not shown.
-                Err(skip) => info!("aranet: {=[u8]:x} has no reading: {}", address, skip),
-            }
+            } else if let Some(Ok(reading)) =
+                crate::bthome_sensor::service_data(report.data).map(crate::bthome_sensor::parse)
+            {
+                reading
+            } else {
+                // Not logged when BTHome service data has no temperature
+                // (encrypted, another kind of sensor, or a thermometer's
+                // other advert): buttons, and other watches, send it all
+                // the time.
+                continue;
+            };
+            hear(address, report.rssi, reading);
         }
+    }
+}
+
+/// A room sensor was heard: into [`NEARBY`], and stops the scan if that
+/// was everyone it waits for.
+fn hear(address: aranet::Address, rssi: i8, reading: Reading) {
+    let now = Instant::now().as_millis();
+    let everyone = NEARBY.lock(|nearby| {
+        let mut nearby = nearby.borrow_mut();
+        nearby.hear(address, rssi, reading, now);
+        nearby.heard_everyone(now)
+    });
+    if everyone {
+        HEARD_EVERYONE.signal(());
     }
 }
