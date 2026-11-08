@@ -67,7 +67,9 @@ another app (see [Installing](#installing)).
 **Status:** experimental and personal. It's tested on two watches, and
 heart rate and sleep are still being tuned against a Garmin. It was
 written largely by Claude (Anthropic's model), steered and tested on real
-hardware by a human.
+hardware by a human. That's me, Jon, 👋, but yes, this is very much
+LLM-written, Jon-guided! Although I'm also quite happy with what I've
+now landed on, and am daily driving this in real life :)
 
 [PineTime]: https://pine64.org/devices/pinetime/
 [Gadgetbridge]: https://gadgetbridge.org
