@@ -476,18 +476,20 @@ async fn speed_up(stack: &Stack<'_, Controller, Pool>, conn: &GattConnection<'_,
 const IDLE_AFTER: Duration = Duration::from_secs(30);
 
 /// Asks for connection parameters for a phone that's just keeping in
-/// touch: 100–125 ms, and we may skip two events in three when we have
-/// nothing to send. These are AOSP's defaults for its own
-/// `CONNECTION_PRIORITY_LOW_POWER`, so Android should accept them (the
-/// `ConnectionParamsUpdated` log line says whether it did). Gadgetbridge asks
-/// for "balanced" (30–50 ms, no skipping) at connect, i.e. ~25 connection
-/// events a second; this is ~3. Anything from the phone waits at most
-/// ~375 ms longer.
+/// touch: 100–125 ms, and we may skip up to seven events in eight when we
+/// have nothing to send. Gadgetbridge asks for "balanced" (30–50 ms, no
+/// skipping) at connect, i.e. ~25 connection events a second, but field
+/// logs show Android itself settling on 112.5–123.8 ms with latency 7 a
+/// few seconds later; asking for latency 2 here (AOSP's
+/// `CONNECTION_PRIORITY_LOW_POWER`) undid that and roughly tripled the
+/// idle connection events. With 7, it's ~1 event a second. Anything from
+/// the phone waits at most ~1 s longer; what the watch sends doesn't wait,
+/// since a peripheral may use any connection event.
 async fn slow_down(stack: &Stack<'_, Controller, Pool>, conn: &GattConnection<'_, '_, Pool>) {
     let params = RequestedConnParams {
         min_connection_interval: Duration::from_millis(100),
         max_connection_interval: Duration::from_millis(125),
-        max_latency: 2,
+        max_latency: 7,
         supervision_timeout: Duration::from_secs(6),
         ..Default::default()
     };
