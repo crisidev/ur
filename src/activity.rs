@@ -431,14 +431,15 @@ impl History {
         }
     }
 
-    /// Whether the newest minute is classified as asleep (light or deep).
+    /// Whether the newest minute is classified as sleep, restless included:
+    /// at the classifier's leading edge, any moving minute is `Restless`
+    /// until it's clear whether it becomes a wake (after
+    /// [`sleep::WAKE_RUN`] minutes), so counting only light and deep sleep
+    /// flipped this to awake at every stir (51 times in one night, letting
+    /// glances through).
     fn asleep_now(&self) -> bool {
-        self.newest.is_some_and(|minute| {
-            matches!(
-                self.samples[Self::slot(minute)].sleep(),
-                sleep::Kind::Light | sleep::Kind::Deep
-            )
-        })
+        self.newest
+            .is_some_and(|minute| self.samples[Self::slot(minute)].sleep().is_sleep())
     }
 
     /// The most recent sleep in the history (see [`sleep::last_sleep`]).
@@ -588,9 +589,14 @@ pub fn steps_today() -> Option<u32> {
 // The task
 // ==============================================================================
 
-/// How often to drain the FIFO and read the step counter. At 12.5 Hz × 6
-/// bytes, 3 s fills 225 bytes, inside one 252-byte read (see `drain_fifo`).
-const POLL_SECONDS: u64 = 3;
+/// How often to drain the FIFO and read the step counter. Frames are 7
+/// bytes with their headers, so at 12.5 Hz, 2 s fills 175 bytes, well
+/// inside one 252-byte read (see `drain_fifo`), with room to catch up after
+/// a late poll. (At 3 s it was 263 bytes: every read was a full 36 frames,
+/// the FIFO fell further behind until it overflowed, and the skip frame
+/// that marks an overflow misaligned the read, dropping the batch, about
+/// every half hour.)
+const POLL_SECONDS: u64 = 2;
 
 #[embassy_executor::task]
 pub async fn activity_task(i2c: Device) {
@@ -644,8 +650,26 @@ pub async fn activity_task(i2c: Device) {
             warn!("activity: reading the accelerometer failed");
             continue;
         };
-        let new_steps = count.wrapping_sub(last_count);
-        last_count = count;
+        // The counter only counts up (it's reset only by our own setup at
+        // boot), but right after a broken FIFO batch it has read as 0 for
+        // one poll, then the true count again: 7 times in one night. Taken
+        // at face value, that's billions of steps (saturating that minute's
+        // history at 65 535, which the sleep classifier reads as getting up),
+        // then the real count again as new steps. So a lower count is a bad
+        // read: skip it, and keep counting from the last good one. (Were
+        // the chip itself to reset, it would lose the step counter's
+        // configuration too, so there'd be nothing to resume from anyway.)
+        let new_steps = if count < last_count {
+            warn!(
+                "activity: step counter read {} after {}; ignored",
+                count, last_count
+            );
+            0
+        } else {
+            let new = count - last_count;
+            last_count = count;
+            new
+        };
         // The last sample too: which way up the watch is (1024 per g, in
         // the sensor's own axes), for orientation questions such as how
         // it's mounted, or sleep position.

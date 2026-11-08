@@ -227,7 +227,13 @@ fn replay(path: &str) {
             continue;
         }
         // "activity: 36 samples, movement 1653, 0 new steps (counter 0)"
-        let Some(rest) = message.strip_prefix("activity: ") else {
+        // Only the per-batch lines: warnings such as "activity: FIFO out of
+        // step (header 0x84 at 247)" carry numbers too, which would read as
+        // 247 steps.
+        let Some(rest) = message
+            .strip_prefix("activity: ")
+            .filter(|rest| rest.contains(" samples, movement "))
+        else {
             continue;
         };
         let numbers: Vec<u64> = rest
@@ -243,7 +249,10 @@ fn replay(path: &str) {
         let entry = minutes.entry(minute).or_insert((0, 0, 0, None));
         entry.0 += movement * samples;
         entry.1 += samples;
-        entry.2 = entry.2.saturating_add(steps as u16);
+        // Saturating, as the firmware's history does.
+        entry.2 = entry
+            .2
+            .saturating_add(steps.min(u64::from(u16::MAX)) as u16);
         entry.3 = worn;
     }
     let (Some(&first), Some(&last)) = (minutes.keys().next(), minutes.keys().last()) else {
