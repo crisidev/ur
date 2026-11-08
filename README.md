@@ -89,8 +89,8 @@ hardware by a human.
 - **Media, from the clock:** while the phone is playing (a note shows
   beside the Bluetooth icon) or paused, long-press to play or pause, and
   double-tap for the next track.
-- **Long-press:** on the alarms screen, an alarm or timer switches it on
-  or off; on the info screen, it offers storage mode.
+- **Long-press:** on the alarms screen, an alarm or timer to switch it on
+  or off; on the info screen, for storage mode.
 - **Themes:** tap THEME on the info screen for the next one.
 - **Brightness:** brightest while the sun is up, dim from midnight until
   you get up, and in between, medium. For less (and a longer battery),

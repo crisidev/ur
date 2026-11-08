@@ -14,6 +14,9 @@ missing below were test builds for the dev kit.
 
 ### Added
 
+- Show today's steps and heart rate hour by hour, with a resting heart rate, and last night's sleep with its stages, on screens of their own left of the clock face (the Info screen's SLEEP row moves there) (0b74bd9)
+- Keep the last three notifications above the clock face, one a page, with a mark on the clock while any are unseen (0b74bd9)
+- Play, pause, and skip media from the clock face (long-press to play or pause, double-tap for the next track), with a note beside the Bluetooth icon while it plays (6667727)
 - Keep notifications quiet while the wearer sleeps, without buzzing or lighting the screen, until their alarm or until they've been up a while (20b73a8)
 - Sync the alarms set in Gadgetbridge to the watch, shown on a screen of their own (c1e45cb)
 - Tell light, deep, and REM sleep apart, estimated from movement and heart rate, and sync them to Gadgetbridge and Health Connect (deep sleep used to be just long stillness, and there was no REM) (d9249b8)
@@ -27,6 +30,8 @@ missing below were test builds for the dev kit.
 
 ### Changed
 
+- Arrange the screens around the clock face: the past to the left, alarms to the right, notifications above, music and info below; the same swipe goes further out, the opposite one comes back, with no wrapping round, transitions that sweep the way you went, and handles on the edges where a swipe leads (0b74bd9)
+- Change the theme from a THEME row on the Info screen, rather than with a long press on the clock (6667727)
 - Set the screen's brightness by the time of day: full while the sun is up, dim from midnight until the wearer gets up, medium otherwise; SOFT on the Info screen turns it down a step (ec80454)
 - Start wake alarms gently, building up their vibration and the screen's brightness over about a minute (c1e45cb)
 - Wake the screen with a double tap, or a deliberate tap away from the edge, rather than any touch (ce53224)
@@ -44,6 +49,7 @@ missing below were test builds for the dev kit.
 
 ### Fixed
 
+- Ignore touches while pairing or an update fills the screen, which could change the screen beneath unseen (0b74bd9)
 - Stop the watch crashing while a phone pairs, which made updates from the nRF DFU app fail on a link that wasn't paired (d7ca4d1)
 - Keep a ringing alarm buzzing when a notification arrives, instead of silencing it (c1e45cb)
 - Keep the screen on when an alarm starts ringing during a glance (ec80454)
