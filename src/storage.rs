@@ -6,10 +6,10 @@
 //!
 //! Two choices worth knowing about:
 //!
-//! - Writes go through MPSL's flash driver, not the plain NVMC. Erasing a
-//!   flash page stalls the CPU for ~85 ms, which would make the radio miss
-//!   its timing; MPSL schedules erases and writes into gaps between radio
-//!   events instead.
+//! - Writes go through MPSL timeslots ([`crate::nvmc`]), not the plain
+//!   NVMC. Erasing a flash page stalls the CPU for ~85 ms, which would make
+//!   the radio miss its timing; MPSL schedules erases and writes into gaps
+//!   between radio events instead.
 //! - `sequential-storage` appends new values and only erases a page when it
 //!   runs out of space, spreading wear across the three pages.
 //!
@@ -23,14 +23,15 @@ use core::ops::Range;
 use defmt::warn;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
+use embedded_storage_async::nor_flash::NorFlash;
 use sequential_storage::cache::{Cache, Uncached};
 use sequential_storage::map::{MapConfig, MapStorage};
 
-/// The internal flash, through MPSL. In the simulator (`sim/`), which
+/// The internal flash, through MPSL timeslots. In the simulator (`sim/`), which
 /// runs this module too, a model of it, with the same pages and the same
 /// addresses.
 #[cfg(target_os = "none")]
-pub type Flash = nrf_sdc::mpsl::Flash<'static>;
+pub type Flash = crate::nvmc::Flash;
 #[cfg(not(target_os = "none"))]
 pub type Flash = crate::flash::Flash;
 
@@ -147,7 +148,7 @@ pub async fn write_word_elsewhere(address: u32, word: u32) -> bool {
     // rebuild it. It's uncached, so nothing is lost by doing so.
     let Store(map) = store.take().expect("storage::init runs at boot");
     let (mut flash, cache) = map.destroy();
-    let result = flash.write(address, &word.to_le_bytes()).await;
+    let result = NorFlash::write(&mut flash, address, &word.to_le_bytes()).await;
     *store = Some(Store(MapStorage::new(flash, MapConfig::new(RANGE), cache)));
     if let Err(e) = &result {
         warn!("storage: writing {:#x} failed: {}", address, e);

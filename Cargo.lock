@@ -1673,6 +1673,7 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "embedded-hal-async",
+ "embedded-storage-async",
  "heapless",
  "libm",
  "nrf-mpsl",

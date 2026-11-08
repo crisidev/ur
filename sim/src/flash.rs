@@ -136,14 +136,6 @@ impl Flash {
     }
 }
 
-impl Flash {
-    /// As `nrf_mpsl::Flash::write`, which `storage::write_word_elsewhere`
-    /// calls (not the trait's, which it doesn't import).
-    pub async fn write(&mut self, offset: u32, data: &[u8]) -> Result<(), Error> {
-        NorFlash::write(self, offset, data).await
-    }
-}
-
 impl ErrorType for Flash {
     type Error = Error;
 }

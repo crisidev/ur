@@ -79,6 +79,7 @@ mod i2c;
 mod mcuboot;
 mod motor;
 mod nav;
+mod nvmc;
 mod packet_pool;
 mod phone;
 mod power;
@@ -503,8 +504,8 @@ async fn main(spawner: Spawner) {
     );
     spawner.spawn(ble::mpsl_task(mpsl).expect("spawned once"));
     // Flash writes go through MPSL so they don't disturb the radio; see
-    // `storage`.
-    storage::init(mpsl::Flash::take(mpsl, p.NVMC));
+    // `nvmc` and `storage`.
+    storage::init(nvmc::Flash::new(mpsl, p.NVMC));
 
     static RNG: StaticCell<rng::Rng<'static, embassy_nrf::mode::Async>> = StaticCell::new();
     let rng = RNG.init(rng::Rng::new(p.RNG, Irqs));
