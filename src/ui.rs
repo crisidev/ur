@@ -1748,8 +1748,8 @@ fn render_today(canvas: &mut Canvas, day: Option<&Day>, steps: Option<u32>) {
     }
 }
 
-/// The last night's (or nap's) sleep: how long, big, and from when to
-/// when.
+/// The last night's (or nap's) sleep: how long, big, from when to when,
+/// and in which stages.
 fn render_last_night(canvas: &mut Canvas, sleep: Option<crate::activity::Sleep>) {
     canvas.clear(BACKGROUND);
     canvas.text(4, 3, "LAST NIGHT", Color::ACCENT);
@@ -1803,8 +1803,32 @@ fn render_last_night(canvas: &mut Canvas, sleep: Option<crate::activity::Sleep>)
         canvas.text_centered(40, 50, &window, Color::TEXT);
     }
 
-    // TODO: the stages (light, deep, REM) across the night, in the rows
-    // left free below (60–76), once `activity::Sleep` has them.
+    // The stages (see `crate::stages`): their shares of the time asleep as
+    // one bar, and each one's time below its name.
+    let light = sleep
+        .asleep_minutes
+        .saturating_sub(sleep.deep_minutes + sleep.rem_minutes);
+    let stages = [
+        ("DEEP", sleep.deep_minutes, Color::ACCENT),
+        ("REM", sleep.rem_minutes, Color::HEART),
+        ("LIGHT", light, Color::TEXT_DIM),
+    ];
+    const BAR: i32 = 72;
+    let total = i32::from(sleep.asleep_minutes.max(1));
+    let mut x = 4;
+    for (i, &(name, minutes, color)) in stages.iter().enumerate() {
+        // The last takes what's left, so rounding can't leave a gap.
+        let width = if i + 1 == stages.len() {
+            4 + BAR - x
+        } else {
+            i32::from(minutes) * BAR / total
+        };
+        canvas.fill_rect(x, 60, width, 4, color);
+        x += width;
+        let center = 16 + 24 * i as i32;
+        canvas.text_centered(center, 67, name, color);
+        canvas.text_centered(center, 74, &hhmm(i64::from(minutes)), Color::TEXT);
+    }
 }
 
 // ==============================================================================
