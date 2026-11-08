@@ -326,7 +326,7 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
                 last_disconnect.set(Some(Instant::now()));
             }
             // Only if a pairing was cut short: a plain disconnect has nothing
-            // to show, and waking the screen for it costs ~15 s of panel,
+            // to show, and waking the screen for it costs ~10 s of panel,
             // backlight, and heart-rate LED.
             if PASSKEY.lock(Cell::get).is_some() {
                 show_passkey(None);

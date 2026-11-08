@@ -403,7 +403,7 @@ for v1. It is still a fine way to see *other* rooms' CO₂.
   - when nearest: once every sensor in `SENSORS` (and every one seen
     before) has been heard, but not before 1 s.
 
-  The screen timeout is 15 s, so a scan always finishes on screen.
+  The screen timeout is 10 s, so a scan always finishes on screen.
 - **Never** while the screen is off, on a glance, or during DFU. TODO, as a
   `const` switch, off by default: scan on glance. That would cost ~35 µA at
   60 glances a day.
@@ -419,8 +419,8 @@ for v1. It is still a fine way to see *other* rooms' CO₂.
 - **Per scan:** 4 s ≈ 26–44 mC ≈ **7–12 µAh**.
 - **Per day:** 10 scans ≈ 0.1 mAh/day ≈ **5 µA** average, about 1.5 % of
   the power plan's ~310 µA target. Cache hits cost 0.
-- **Comparison:** opening the screen at all costs ~15 s × ~11 mA
-  (panel + backlight) ≈ 165 mC, about 4× the scan.
+- **Comparison:** opening the screen at all costs ~10 s × ~11 mA
+  (panel + backlight) ≈ 110 mC, about 3× the scan.
 - **Report load:** with ~100 advertisers in a house, the host sees on the
   order of 100–300 reports/s while scanning. `on_adv_reports` has to
   reject most of them cheaply: walk the AD, compare the company ID, and

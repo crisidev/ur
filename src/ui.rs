@@ -55,7 +55,9 @@
 //!   wake to the clock. Other touches don't, so a brush of a sleeve
 //!   doesn't light the screen. (The waking input is *only* a wake-up; it
 //!   isn't also acted on.)
-//! - No input for [`SCREEN_TIMEOUT`]: turn the screen off.
+//! - No input for [`SCREEN_TIMEOUT`] (longer on the music screen, for a
+//!   long title to scroll by; never while a banner shows): turn the screen
+//!   off.
 //! - Turning the wrist to look (see [`crate::glance`]) while the screen is
 //!   off: a glance, just the time in white on black at a low backlight,
 //!   for [`GLANCE_TIME`]. While the phone navigates, the next turn instead,
@@ -136,7 +138,12 @@ use crate::sleep::{self, Change, Over};
 use crate::theme::{self, Theme};
 use crate::touch::{Gesture, Touch};
 
-const SCREEN_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long the screen stays on after the last input (see
+/// [`App::screen_timeout`] for when it's longer). Glances by button
+/// dominate the screen's time on, so this is a big lever on the battery
+/// (~45 µA going from 15 s to 10 s; see docs/power-plan.md, #10), and a
+/// look at the clock rarely needs more.
+const SCREEN_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a glance shows the time.
 const GLANCE_TIME: Duration = Duration::from_secs(5);
 /// With the screen off, a tap that isn't [`deliberate`] still wakes it as
@@ -1371,8 +1378,36 @@ impl App {
         if keep_awake || self.call.is_some() || self.ringing.is_some() || self.brief_wake {
             self.last_input = now;
         }
-        if self.awake && now - self.last_input >= SCREEN_TIMEOUT {
+        // Not while a banner shows: one that arrived late in the timeout
+        // would otherwise go before it could be read. (It doesn't count as
+        // input, so the screen goes off once it's gone, unless input came
+        // in the meantime.) One still waiting to be seen (under the alarm
+        // editor, say) isn't showing.
+        let banner_showing = self.banner.as_ref().is_some_and(|b| b.until != UNSEEN);
+        if self.awake && !banner_showing && now - self.last_input >= self.screen_timeout() {
             self.awake = false;
+        }
+    }
+
+    /// How long the screen stays on after the last input: [`SCREEN_TIMEOUT`],
+    /// or on the music screen, long enough for the title and artist to
+    /// scroll by once, from wherever they are. They scroll from when the
+    /// track started (see `render_music`), not from the last input, so a
+    /// whole cycle shows every part of them. That's ~19 s for a 30-letter
+    /// title, against the clock face's 10 s; the music screen is opened
+    /// rarely enough that the extra time costs little.
+    ///
+    /// TODO: the notification history's pages could use the same, for a
+    /// sender too long to wrap (see `quiet_layout`); none has been seen.
+    fn screen_timeout(&self) -> Duration {
+        let overflow =
+            |text: &str, scale: i32| font::small_text_width(text) * scale - MUSIC_TEXT_WIDTH;
+        match (self.screen, &self.music) {
+            (Screen::Music, Some(music)) => {
+                let overflow = overflow(&music.track, 2).max(overflow(&music.artist, 1));
+                SCREEN_TIMEOUT.max(marquee_cycle(overflow))
+            }
+            _ => SCREEN_TIMEOUT,
         }
     }
 
