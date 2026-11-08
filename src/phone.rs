@@ -15,8 +15,8 @@ use crate::{alarm, route};
 /// Things the phone tells the UI, via [`crate::ble`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum PhoneEvent {
-    /// The app it came from, and its title: who it's from, in a chat
-    /// (see `gb`). Never its body or subject.
+    /// The app it came from, and who it's from: Gadgetbridge's `sender`,
+    /// or without one, the title (see `gb`). Never its body or subject.
     Notification {
         app: Text<24>,
         who: Text<40>,
@@ -187,8 +187,8 @@ impl<const N: usize> core::fmt::Debug for Text<N> {
 ///   the font has for what it lacks: `?` reads as an error, or a
 ///   question. The spaces around one collapse into one, and none is left
 ///   before the punctuation that followed it, so `Familien 🏡: Nils`
-///   becomes `Familien: Nils`, `🎉 Bursdag` becomes `Bursdag`, and a title
-///   that was only emoji becomes empty (see [`TextBuilder::blank`]).
+///   becomes `Familien: Nils`, `🎉 Bursdag` becomes `Bursdag`, and a name
+///   that was only emoji becomes empty.
 /// - **Invisible characters are ignored:** joiners and variation
 ///   selectors (inside emoji), and the direction marks phones put around
 ///   names and phone numbers.
@@ -206,9 +206,6 @@ pub struct TextBuilder<const N: usize> {
     len: usize,
     /// What's between the last character kept and the next.
     gap: Gap,
-    /// Whether anything but whitespace and invisible characters came: an
-    /// emoji-only title isn't blank, though it shows nothing.
-    seen: bool,
     full: bool,
 }
 
@@ -227,7 +224,6 @@ impl<const N: usize> TextBuilder<N> {
             text: Text::new(),
             len: 0,
             gap: Gap::None,
-            seen: false,
             full: false,
         }
     }
@@ -242,7 +238,6 @@ impl<const N: usize> TextBuilder<N> {
             }
             return;
         }
-        self.seen = true;
         if pictograph(c) {
             self.gap = Gap::Dropped;
             return;
@@ -281,10 +276,10 @@ impl<const N: usize> TextBuilder<N> {
         self.text.0[self.len + 1..].fill(0);
     }
 
-    /// Whether nothing came but whitespace (and invisible characters): an
-    /// empty title, as opposed to one that was only emoji.
-    pub fn blank(&self) -> bool {
-        !self.seen
+    /// Whether nothing has been kept: nothing came, or only whitespace,
+    /// invisible characters, or emoji, which all show nothing.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 
     pub fn finish(self) -> Text<N> {

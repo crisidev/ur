@@ -8,7 +8,7 @@
 # Each is a line as Gadgetbridge sends it (`gb`), through the firmware's
 # parser. Every name, number, and message is invented; the shapes are
 # typical Android ones (see the list below). The watch shows only `src`
-# and the title (or, without one, `sender`), as they come, but for emoji:
+# and `sender` (or, without one, the title), as they come, but for emoji:
 # subject and body are read for images, never shown. They're here anyway,
 # as the phone sends them.
 #
@@ -16,7 +16,7 @@
 # needs its own way in:
 #
 #   1. quiet:   with the screen off: the whole screen, dim (always white,
-#               and red, on black), the title big if it's short.
+#               and red, on black), who it's from big if it's short.
 #   2. banner:  with the clock on screen: the banner over its bottom rows;
 #      history: then swiped down to: the first page of the history.
 #               Both shot in ARCADE (the evening's theme) and HANDHELD
@@ -29,7 +29,8 @@
 #
 #   01 sms-short          Messages: Ida
 #   02 signal             Signal: Ada Lovelace
-#   03 sms-number         SMS Message: +47 912 34 567 (no title: `sender`)
+#   03 sms-number         SMS Message: +47 912 34 567 (`sender`; the rest
+#                         have none, so show their title)
 #   04 code-2fa           Messages: UrBank
 #   05 group-whatsapp     WhatsApp: Familien \ud83c\udfe1: Nils Holm
 #   06 group-count        WhatsApp: Familien \ud83c\udfe1 (12 messages): \xc5se Bergersen

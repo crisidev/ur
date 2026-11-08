@@ -359,41 +359,49 @@ mod tests {
         );
     }
 
-    /// The title is shown, whatever `sender` says, and whole: a group
-    /// chat's "Group: Person" isn't split.
+    /// `sender` is shown when there is one, over the title: an SMS's
+    /// number, say, though the title has the contact's name.
     #[test]
-    fn the_title_wins_over_the_sender() {
+    fn the_sender_wins_over_the_title() {
         let line = br#"GB({"t":"notify","id":5,"src":"SMS Message","title":"New message","subject":"","body":"Your parcel has shipped","sender":"Posten","tel":"+4799999999"})"#;
         assert_eq!(
             event(line),
             PhoneEvent::Notification {
                 app: t("SMS Message"),
-                who: t("New message")
+                who: t("Posten")
             }
         );
-        let line = notify_line("WhatsApp", "Familien (12 messages): Åse", "Åse");
-        let PhoneEvent::Notification { who, .. } = event(&line) else {
-            panic!("a notification");
-        };
-        assert_eq!(who.to_string(), "Familien (12 messages): Åse");
-    }
-
-    /// Without a title (Gadgetbridge's own SMS, say), `sender`; but not
-    /// for a title that was only emoji, which shows nothing.
-    #[test]
-    fn the_sender_only_without_a_title() {
-        let line = br#"GB({"t":"notify","id":5,"src":"SMS Message","title":"","subject":"","body":"Hei","sender":"+47 912 34 567","tel":"+4791234567"})"#;
+        let line = br#"GB({"t":"notify","id":5,"src":"SMS Message","title":"Nils Holm","subject":"","body":"Hei","sender":"+47 912 34 567","tel":"+4791234567"})"#;
         let PhoneEvent::Notification { who, .. } = event(line) else {
             panic!("a notification");
         };
         assert_eq!(who.to_string(), "+47 912 34 567");
-        let line = br#"GB({"t":"notify","src":"SMS Message","title":" 
- ","sender":"Posten"})"#;
+    }
+
+    /// Without a `sender` (most messaging apps), the title, whole: a group
+    /// chat's "Group: Person" isn't split. Also for a `sender` that's
+    /// blank, or only emoji, which would show nothing.
+    #[test]
+    fn the_title_without_a_sender() {
+        let line = notify_line("WhatsApp", "Familien (12 messages): Åse", "");
+        let PhoneEvent::Notification { who, .. } = event(&line) else {
+            panic!("a notification");
+        };
+        assert_eq!(who.to_string(), "Familien (12 messages): Åse");
+        let line = br#"GB({"t":"notify","src":"SMS Message","title":"Posten","sender":" 
+ "})"#;
         let PhoneEvent::Notification { who, .. } = event(line) else {
             panic!("a notification");
         };
         assert_eq!(who.to_string(), "Posten");
-        let line = br#"GB({"t":"notify","src":"Telegram","title":"\ud83c\udf89\ud83c\udf82","sender":"Kari"})"#;
+        let line =
+            br#"GB({"t":"notify","src":"Telegram","title":"Kari","sender":"\ud83c\udf89\u200d"})"#;
+        let PhoneEvent::Notification { who, .. } = event(line) else {
+            panic!("a notification");
+        };
+        assert_eq!(who.to_string(), "Kari");
+        // Neither shows anything: nothing.
+        let line = br#"GB({"t":"notify","src":"Telegram","title":"\ud83c\udf89\ud83c\udf82","sender":""})"#;
         let PhoneEvent::Notification { who, .. } = event(line) else {
             panic!("a notification");
         };
@@ -577,7 +585,6 @@ mod tests {
         ] {
             let mut builder = TextBuilder::<40>::new();
             sent.chars().for_each(|c| builder.push(c));
-            assert_eq!(builder.blank(), sent.trim().is_empty(), "{sent:?}");
             assert_eq!(builder.finish().to_string(), shown, "{sent:?}");
         }
         // Cut with an ellipsis, in place of a space before it too.
@@ -1137,7 +1144,7 @@ mod tests {
 
     /// Images are noticed wherever Gadgetbridge puts them: in what's
     /// shown, in a notification's title, subject, and body (which aren't
-    /// shown), in `sender` (which is, without a title), past what fits, and in
+    /// shown), in `sender` (which is), past what fits, and in
     /// calls, music, and directions.
     #[test]
     fn text_as_bitmaps_anywhere() {

@@ -337,7 +337,7 @@ const HISTORY: usize = 3;
 
 struct Notification {
     app: Text<24>,
-    /// Its title: who it's from, in a chat (see `gb`).
+    /// Who it's from: Gadgetbridge's `sender`, or its title (see `gb`).
     who: Text<40>,
     /// When it arrived, in local minutes since 1970 (see [`arrival`]), if
     /// the time was known then. The whole minute rather than the minute

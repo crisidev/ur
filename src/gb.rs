@@ -201,16 +201,16 @@ fn phone_event(kind: &str, object: Object<'_>, bitmaps: &mut bool) -> Option<Pho
                     *bitmaps |= value.decode(&mut |_| {});
                 }
             }
-            // The title is who it's from, in chats (the contact, or the
-            // group); Gadgetbridge's `sender` is set by fewer apps, and
-            // then often to something else (an SMS's number, with the
-            // contact's name as the title). So the title, shown as it
-            // comes, whatever app it's from, and `sender` only when the
-            // title is empty: not when it was only emoji, which shows
-            // nothing (see `TextBuilder`).
+            // Gadgetbridge's `sender`, as the owner prefers: who it's
+            // from, where an app says so apart from what it's about (an
+            // SMS's number, a mail's sender). Messaging apps mostly leave
+            // it empty and put who it's from in the title, so the title
+            // stands in whenever `sender` would show nothing: empty,
+            // blank, or only emoji (see `TextBuilder::is_empty`). Both
+            // are read either way, for images.
             let title: TextBuilder<40> = shown(object, "title", bitmaps);
             let sender: TextBuilder<40> = shown(object, "sender", bitmaps);
-            let who = if title.blank() { sender } else { title };
+            let who = if sender.is_empty() { title } else { sender };
             PhoneEvent::Notification {
                 app: shown(object, "src", bitmaps).finish(),
                 who: who.finish(),
