@@ -10,7 +10,7 @@ use core::cell::Cell;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::{Duration, Instant};
-use libm::{acos, asin, ceil, cos, fmod, sin};
+use libm::{acosf, ceil, cosf, floor, sinf, sqrtf};
 
 use crate::clock::{self, DateTime};
 
@@ -209,11 +209,18 @@ pub fn is_daytime() -> bool {
 /// minute or two at mid latitudes: checked against published Oslo times for
 /// the solstices (03:53/22:43, 09:18/15:12).
 ///
+/// The dates need `f64` (a Julian date's 2.4 million days leave an `f32`
+/// a quarter-day resolution), but the trigonometry is in `f32`: its
+/// arguments are small angles, and its errors (around 1e-7) move the times
+/// by milliseconds. The `f64` versions, with `fmod` (see `wrap`), cost
+/// 7.5 KB of flash.
+///
 /// TODO: cache per (date, location, offset) if this ever shows up in
 /// profiles; it's a few dozen soft-float operations, once per frame.
 fn compute_sun(today: &DateTime, location: Location, offset_minutes: i16) -> Sun {
     let (latitude, longitude) = location.degrees();
-    let (sin_deg, cos_deg) = (|d: f64| sin(d.to_radians()), |d: f64| cos(d.to_radians()));
+    let sin_deg = |d: f64| f64::from(sinf(d.to_radians() as f32));
+    let cos_deg = |d: f64| f64::from(cosf(d.to_radians() as f32));
 
     // Days since the J2000 epoch, at local solar noon of today's date.
     let days_since_1970 = today.days_since_epoch() as f64;
@@ -233,7 +240,9 @@ fn compute_sun(today: &DateTime, location: Location, offset_minutes: i16) -> Sun
     // The hour angle at which the sun's upper edge crosses the horizon,
     // including atmospheric refraction (the −0.833°).
     let sin_declination = sin_deg(ecliptic_longitude) * sin_deg(23.4397);
-    let cos_declination = cos(asin(sin_declination));
+    // cos(asin(x)); the declination is within ±23.44°, so its cosine is
+    // positive.
+    let cos_declination = f64::from(sqrtf(1.0 - (sin_declination * sin_declination) as f32));
     let cos_hour_angle = (sin_deg(-0.833) - sin_deg(latitude) * sin_declination)
         / (cos_deg(latitude) * cos_declination);
     if cos_hour_angle > 1.0 {
@@ -248,7 +257,7 @@ fn compute_sun(today: &DateTime, location: Location, offset_minutes: i16) -> Sun
             sunset: 24 * 60,
         };
     }
-    let hour_angle = acos(cos_hour_angle).to_degrees();
+    let hour_angle = f64::from(acosf(cos_hour_angle as f32)).to_degrees();
 
     let local_minute = |julian: f64| {
         let unix_seconds = (julian - 2_440_587.5) * 86_400.0 + f64::from(offset_minutes) * 60.0;
@@ -260,8 +269,17 @@ fn compute_sun(today: &DateTime, location: Location, offset_minutes: i16) -> Sun
     }
 }
 
-/// `x` modulo `m`, in `0..m` (`f64::rem_euclid` needs `std`).
+/// `x` modulo `m`, in `0..m` (`f64::rem_euclid` needs `std`, and `fmod` is
+/// big). For our `x`, at most a few billion, the quotient's floor and its
+/// product with `m` are exact; only the division can round, which the end
+/// corrects.
 fn wrap(x: f64, m: f64) -> f64 {
-    let r = fmod(x, m);
-    if r < 0.0 { r + m } else { r }
+    let r = x - m * floor(x / m);
+    if r < 0.0 {
+        r + m
+    } else if r >= m {
+        r - m
+    } else {
+        r
+    }
 }
