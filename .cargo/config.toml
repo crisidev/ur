@@ -8,14 +8,8 @@ target = "thumbv7em-none-eabihf"
 # CARGO_TARGET_THUMBV7EM_NONE_EABIHF_RUNNER to your own runner, which
 # overrides this without changing the repository.
 runner = "scripts/run-esprobe.sh"
-rustflags = [
-  # `link.x` comes from cortex-m-rt (and includes our `memory.x`); `defmt.x`
-  # places the defmt string table where `defmt-print` expects to find it.
-  "-C", "link-arg=-Tlink.x",
-  "-C", "link-arg=-Tdefmt.x",
-  # Avoids page-aligning sections, which would waste flash.
-  "-C", "link-arg=--nmagic",
-]
+# The linker scripts are passed by build.rs, not `rustflags` here; see there
+# for why.
 
 [env]
 DEFMT_LOG = "info"

@@ -1,5 +1,5 @@
 //! Makes `memory.x` visible to the linker, which `link.x` from cortex-m-rt
-//! includes by name, wraps two of Nordic's functions (see below), and gives
+//! includes by name, passes the linker scripts, wraps two of Nordic's functions (see below), and gives
 //! the firmware its full version.
 //!
 //! The version is Cargo.toml's, extended by `scripts/release.sh` (through
@@ -17,6 +17,18 @@ fn main() {
     fs::copy("memory.x", out.join("memory.x")).expect("memory.x exists in the crate root");
     println!("cargo:rustc-link-search={}", out.display());
     println!("cargo:rerun-if-changed=memory.x");
+
+    // The linker scripts: `link.x` comes from cortex-m-rt (and includes our
+    // `memory.x`); `defmt.x` places the defmt string table where
+    // `defmt-print` expects to find it. `--nmagic` avoids page-aligning
+    // sections, which would waste flash. These live here rather than in
+    // `.cargo/config.toml`'s `rustflags` because cargo merges the
+    // `rustflags` of every config file up the directory tree: a git worktree
+    // inside the repository (e.g. under `.claude/worktrees/`) would pass
+    // each script twice, and the link would fail on duplicate sections.
+    println!("cargo:rustc-link-arg-bins=-Tlink.x");
+    println!("cargo:rustc-link-arg-bins=-Tdefmt.x");
+    println!("cargo:rustc-link-arg-bins=--nmagic");
 
     // Route nrf-sdc's and nrf-mpsl's calls to `sdc_init` and `mpsl_init`
     // through our `__wrap_sdc_init` and `__wrap_mpsl_init`, which register

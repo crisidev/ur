@@ -98,8 +98,8 @@ command -v llvm-objcopy >/dev/null ||
 # Panic locations in dependencies embed their source paths in the image,
 # under cargo's registry, and debug info names this checkout. Replace both
 # with fixed paths, so where the build ran doesn't change its output. (On
-# the command line, `--config` adds to .cargo/config.toml's rustflags rather
-# than replacing them, as RUSTFLAGS would.)
+# the command line, `--config` adds to any rustflags in .cargo/config.toml
+# rather than replacing them, as RUSTFLAGS would.)
 cargo_home=${CARGO_HOME:-$HOME/.cargo}
 remap="target.thumbv7em-none-eabihf.rustflags = [
   '--remap-path-prefix=$(realpath "$cargo_home")=/cargo',
