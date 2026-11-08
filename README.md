@@ -95,7 +95,8 @@ hardware by a human.
   beside the Bluetooth icon) or paused, long-press to play or pause, and
   double-tap for the next track.
 - **Long-press:** on the alarms screen, an alarm or timer to switch it on
-  or off; on the info screen, for storage mode.
+  or off; on the info screen, for storage mode. The watch acts, and
+  buzzes, once you've held for 0.6 s, so let go when you feel it.
 - **Themes:** tap THEME on the info screen for the next one.
 - **Brightness:** brightest while the sun is up, dim from midnight until
   you get up, and in between, medium. For less (and a longer battery),

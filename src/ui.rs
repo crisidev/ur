@@ -35,7 +35,9 @@
 //!   long press to play or pause, double tap (two taps within
 //!   [`DOUBLE_TAP`]) for the next track. Each buzzes, and shows what it did
 //!   for a moment where a note shows while media plays, beside the
-//!   Bluetooth rune. Without media, neither does anything.
+//!   Bluetooth rune. Without media, neither does anything. A long press
+//!   acts (and buzzes) once the finger has been down long enough, before
+//!   it lifts (see [`crate::touch`]); that goes for every long press.
 //! - Long press elsewhere: on the alarms screen, switch an alarm on or off;
 //!   on the info screen, offer storage mode (see [`crate::system_off`]),
 //!   which a tap then confirms, and anything else cancels. Elsewhere,

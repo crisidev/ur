@@ -11,6 +11,18 @@
 //! raw reports throughout each touch and classify the touch ourselves from
 //! where it started and ended, and how long it lasted.
 //!
+//! A long press is the exception: it's reported the moment the finger has
+//! been down for [`LONG_PRESS`] without moving, while it's still down, so
+//! whatever it does (and its buzz) comes then, and the wearer knows when
+//! to let go rather than guessing. That touch is then spent: lifting the
+//! finger, or moving it, does nothing more. The timer runs from the press,
+//! not from reports, though the chip does keep reporting (every ~10 ms)
+//! for as long as a finger is down, however still: the field logs have
+//! long presses of nearly 10 s, which [`LIFT_TIMEOUT`] would otherwise
+//! have cut short. A finger that moves past the tap tolerance
+//! ([`SWIPE_DISTANCE`]) before then is on its way to a swipe, and the
+//! long press is off for that touch, even if it comes back.
+//!
 //! When touches can't do anything (the screen is off in the quiet night;
 //! see [`set_asleep`]), the chip goes into deep sleep, as InfiniTime puts
 //! it to sleep with the screen: it stops scanning the panel, and sends no
@@ -20,7 +32,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use defmt::{Format, debug, info, warn};
-use embassy_futures::select::{Either3, select3};
+use embassy_futures::select::{Either, Either3, select, select3};
 use embassy_nrf::gpio::{Input, Output};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
@@ -49,7 +61,8 @@ const IRQ_CTL: u8 = 0b0111_0000;
 /// tap. From logged touches on the dev kit: taps drift at most ~11 px, while
 /// lazy swipes can be as short as ~24 px.
 const SWIPE_DISTANCE: i32 = 20;
-/// A stationary touch at least this long is a long press.
+/// A stationary touch at least this long is a long press, reported as soon
+/// as it's been held this long.
 const LONG_PRESS: Duration = Duration::from_millis(600);
 /// The panel's size in the chip's coordinates (pixels). Reports beyond it
 /// are garbage: the first report after the chip wakes from its own sleep
@@ -58,6 +71,11 @@ const PANEL: i32 = 240;
 /// While a finger is down, the chip reports every ~10 ms. If reports stop for
 /// this long without a lift report, assume we missed the lift.
 const LIFT_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// A simulated finger's reports, from [`crate::debug`] (for testing long
+/// presses without a finger): where it is, in panel pixels, or `None` once
+/// it's lifted. [`touch_task`] treats each like a report from the chip.
+pub static SIMULATED: Signal<CriticalSectionRawMutex, Option<(u8, u8)>> = Signal::new();
 
 /// Whether the chip should be asleep, as last asked (see [`set_asleep`]).
 static ASLEEP: AtomicBool = AtomicBool::new(false);
@@ -99,9 +117,36 @@ struct Tracking {
     start: (i32, i32),
     last: (i32, i32),
     since: Instant,
+    /// It went beyond the tap tolerance ([`SWIPE_DISTANCE`]) at some point,
+    /// so it can't become a long press.
+    moved: bool,
+    /// It was reported as a long press already, while still down.
+    held: bool,
 }
 
 impl Tracking {
+    fn new(at: (i32, i32)) -> Self {
+        Self {
+            start: at,
+            last: at,
+            since: Instant::now(),
+            moved: false,
+            held: false,
+        }
+    }
+
+    /// The finger is now at `at`.
+    fn moved_to(&mut self, at: (i32, i32)) {
+        self.last = at;
+        let (dx, dy) = (at.0 - self.start.0, at.1 - self.start.1);
+        self.moved |= dx.abs().max(dy.abs()) >= SWIPE_DISTANCE;
+    }
+
+    /// When this touch becomes a long press, if it still can.
+    fn long_press_at(&self) -> Option<Instant> {
+        (!self.moved && !self.held).then_some(self.since + LONG_PRESS)
+    }
+
     fn classify(&self) -> Touch {
         let dx = self.last.0 - self.start.0;
         let dy = self.last.1 - self.start.1;
@@ -113,7 +158,9 @@ impl Tracking {
                 (false, _, true) => Gesture::SwipeUp,
                 (false, _, false) => Gesture::SwipeDown,
             }
-        } else if self.since.elapsed() >= LONG_PRESS {
+        } else if !self.moved && self.since.elapsed() >= LONG_PRESS {
+            // Usually reported while held (see `touch_task`); this is for a
+            // lift that beat the timer.
             Gesture::LongPress
         } else {
             Gesture::Tap
@@ -167,23 +214,42 @@ pub async fn touch_task(
 
     let mut tracking: Option<Tracking> = None;
     loop {
-        // While a touch is in progress, also wake up if reports dry up, so a
-        // missed lift can't leave us stuck mid-touch.
-        let lift_timeout = async {
-            match tracking {
-                Some(_) => Timer::after(LIFT_TIMEOUT).await,
-                None => core::future::pending().await,
+        // While a touch is in progress, also wake up when it's been held
+        // long enough to be a long press, and if reports dry up, so a
+        // missed lift can't leave us stuck mid-touch. Whether it's the
+        // long press that's due.
+        let deadline = async {
+            let Some(touch) = &tracking else {
+                return core::future::pending().await;
+            };
+            let lift = Instant::now() + LIFT_TIMEOUT;
+            match touch.long_press_at() {
+                Some(at) if at < lift => {
+                    Timer::at(at).await;
+                    true
+                }
+                _ => {
+                    Timer::at(lift).await;
+                    false
+                }
             }
         };
-        match select3(
-            interrupt.wait_for_falling_edge(),
-            lift_timeout,
-            ASLEEP_CHANGED.wait(),
-        )
-        .await
-        {
-            Either3::First(()) => {}
-            Either3::Second(()) => {
+        let report = select(interrupt.wait_for_falling_edge(), SIMULATED.wait());
+        let simulated = match select3(report, deadline, ASLEEP_CHANGED.wait()).await {
+            Either3::First(Either::First(())) => None,
+            Either3::First(Either::Second(finger)) => Some(finger),
+            Either3::Second(true) => {
+                let touch = tracking.as_mut().expect("only due while tracking");
+                touch.held = true;
+                let event = touch.classify();
+                info!(
+                    "touch: {} at ({},{}), held",
+                    event.gesture, touch.start.0, touch.start.1
+                );
+                crate::INPUT.send(crate::InputEvent::Touch(event)).await;
+                continue;
+            }
+            Either3::Second(false) => {
                 let touch = tracking.take().expect("only times out while tracking");
                 finish(&touch).await;
                 continue;
@@ -203,27 +269,34 @@ pub async fn touch_task(
                 }
                 continue;
             }
-        }
+        };
 
-        if !configured {
-            configured = configure(&mut i2c).await;
-        }
+        let (lifted, x, y) = match simulated {
+            Some(Some((x, y))) => (false, i32::from(x), i32::from(y)),
+            // Lifted where it last was.
+            Some(None) => (true, 0, 0),
+            None => {
+                if !configured {
+                    configured = configure(&mut i2c).await;
+                }
 
-        let mut report = [0u8; 6];
-        if let Err(e) = i2c.write_read(ADDRESS, &[REG_REPORT], &mut report).await {
-            warn!("touch: read failed: {}", e);
-            crate::i2c::reset_controller().await;
-            continue;
-        }
-        let [_chip_gesture, fingers, x_hi, x_lo, y_hi, y_lo] = report;
-        // Top two bits of the X high byte: 0 = press, 1 = lift, 2 = contact.
-        let lifted = x_hi >> 6 == 1 || fingers == 0;
-        let x = (i32::from(x_hi & 0x0F) << 8) | i32::from(x_lo);
-        let y = (i32::from(y_hi & 0x0F) << 8) | i32::from(y_lo);
-        debug!(
-            "touch: fingers={} lifted={} x={} y={}",
-            fingers, lifted, x, y
-        );
+                let mut report = [0u8; 6];
+                if let Err(e) = i2c.write_read(ADDRESS, &[REG_REPORT], &mut report).await {
+                    warn!("touch: read failed: {}", e);
+                    crate::i2c::reset_controller().await;
+                    continue;
+                }
+                let [_chip_gesture, fingers, x_hi, x_lo, y_hi, y_lo] = report;
+                // Top two bits of the X high byte: 0 = press, 1 = lift, 2 =
+                // contact.
+                let lifted = x_hi >> 6 == 1 || fingers == 0;
+                let x = (i32::from(x_hi & 0x0F) << 8) | i32::from(x_lo);
+                let y = (i32::from(y_hi & 0x0F) << 8) | i32::from(y_lo);
+                debug!("touch: fingers={}", fingers);
+                (lifted, x, y)
+            }
+        };
+        debug!("touch: lifted={} x={} y={}", lifted, x, y);
 
         // A position off the panel is a misread (see `PANEL`): it can still
         // end a touch, but never starts or moves one.
@@ -234,23 +307,17 @@ pub async fn touch_task(
 
         match (&mut tracking, lifted) {
             (None, false) if !on_panel => {}
-            (None, false) => {
-                tracking = Some(Tracking {
-                    start: (x, y),
-                    last: (x, y),
-                    since: Instant::now(),
-                });
-            }
+            (None, false) => tracking = Some(Tracking::new((x, y))),
             (Some(touch), false) => {
                 if on_panel {
-                    touch.last = (x, y);
+                    touch.moved_to((x, y));
                 }
             }
             (Some(touch), true) => {
                 // Lift reports usually carry the final position, but some
                 // report (0, 0); don't let that look like a long swipe.
                 if on_panel && (x, y) != (0, 0) {
-                    touch.last = (x, y);
+                    touch.moved_to((x, y));
                 }
                 finish(touch).await;
                 tracking = None;
@@ -303,6 +370,15 @@ async fn configure(i2c: &mut Device) -> bool {
 }
 
 async fn finish(touch: &Tracking) {
+    // A long press was reported while held, and that was the touch's one
+    // event, whatever the finger did after.
+    if touch.held {
+        info!(
+            "touch: lifted after {}ms",
+            touch.since.elapsed().as_millis()
+        );
+        return;
+    }
     let event = touch.classify();
     info!(
         "touch: {} from ({},{}) to ({},{}) in {}ms",

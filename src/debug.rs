@@ -32,7 +32,9 @@ static UR_CANVAS: AtomicPtr<Canvas> = AtomicPtr::new(core::ptr::null_mut());
 /// `x` is 1, paused otherwise (for screenshots of the music screen and the
 /// clock's media icon; gone once the phone disconnects), 15 `x` + 256 × `y`
 /// steps, as if walked now (to test what keeps them across resets and
-/// updates)) and the next two the canvas x and y. Cleared once taken.
+/// updates), 16 a simulated finger down at, or moved to, (`x`, `y`), held
+/// there until 17 lifts it (see [`input_task`])) and the next two the
+/// canvas x and y. Cleared once taken.
 #[unsafe(no_mangle)]
 static UR_INPUT: AtomicU32 = AtomicU32::new(0);
 
@@ -64,10 +66,23 @@ pub fn register_canvas(canvas: &mut Canvas) {
 }
 
 /// Turns injected inputs into real ones.
+///
+/// Most go straight to the UI loop, as the gesture the touch task would
+/// have recognised. A simulated finger (inputs 16 and 17) instead goes
+/// through the touch task, as the chip's reports, to test what it makes
+/// of a touch over time: a long press is recognised while the finger is
+/// held, for one. Like the chip, this repeats the finger's position while
+/// it's down (each poll, rather than every ~10 ms), or the touch task
+/// would take the silence for a missed lift.
 #[embassy_executor::task]
 pub async fn input_task() {
+    // The simulated finger, in panel pixels, while it's down.
+    let mut finger: Option<(u8, u8)> = None;
     loop {
         Timer::after_millis(100).await;
+        if finger.is_some() {
+            crate::touch::SIMULATED.signal(finger);
+        }
         let word = UR_INPUT.swap(0, Ordering::Relaxed);
         if word == 0 {
             continue;
@@ -97,6 +112,13 @@ pub async fn input_task() {
                 };
                 // SAFETY: A NUL-terminated string, as the handler needs.
                 unsafe { crate::field_log::sdc_fault(file.as_ptr(), u32::from(y)) };
+                continue;
+            }
+            16 | 17 => {
+                let scale = crate::canvas::SCALE as u8;
+                finger = (kind == 16).then(|| (x.min(79) * scale, y.min(79) * scale));
+                defmt::warn!("debug: finger at {}", finger);
+                crate::touch::SIMULATED.signal(finger);
                 continue;
             }
             15 => {
