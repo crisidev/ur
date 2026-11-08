@@ -16,6 +16,8 @@ missing below were test builds for the dev kit.
 
 ### Changed
 
+- Redesign the clock face's lower half: the date with small seconds under the time, the heart rate and the next alarm or timer in one row, and the day's steps as ten blocks of 1,000 towards a fixed goal of 10,000 rather than a number (the exact count is on Today, a swipe right) (a02d355)
+
 ### Deprecated
 
 ### Removed

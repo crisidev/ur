@@ -6,7 +6,7 @@ integration through [Gadgetbridge]. ("Ur" is an older Norwegian word for a
 timepiece.)
 
 <p align="center">
-  <img src="docs/screenshots/clock-arcade.png" width="150" alt="The clock face in the Arcade theme, white and red on black: Bluetooth, a note for music playing, and 31° along the top, with the battery; then the time, seconds, heart rate, date, and steps; a short red bar on the top edge means unseen notifications">
+  <img src="docs/screenshots/clock-arcade.png" width="150" alt="The clock face in the Arcade theme, white and red on black: Bluetooth, a note for music playing, and 31° along the top, with the battery; then the time, with the date and the seconds under it; the heart rate; and ten red blocks for the day's steps, all full, as it's past the 10,000-step goal; a short red bar on the top edge means unseen notifications">
   <img src="docs/screenshots/clock-terminal.png" width="150" alt="The same clock face in the Terminal theme: green on black">
   <img src="docs/screenshots/clock-handheld.png" width="150" alt="The same clock face in the Handheld theme, for the day: dark green on pale green, like an old handheld">
   <img src="docs/screenshots/clock-parchment.png" width="150" alt="The same clock face in the Parchment theme, for the day: brown on cream">
@@ -19,12 +19,15 @@ timepiece.)
   <img src="docs/screenshots/directions.png" width="150" alt="A glance while the phone navigates: the time, a right-turn arrow, 150 m, and the street">
 </p>
 
-- **Clock face:** time with seconds, date, battery, steps, heart rate, and
-  temperature, in four themes: two dark for after sunset (Arcade and
-  Terminal), and two light for the day (Handheld and Parchment), switching
-  by themselves at your location's sunset and sunrise. The temperature is
-  the watch's own (it has no other sensor): on the wrist it reads close to
-  your skin's, around 30 °C; off the wrist, it drifts towards the room's.
+- **Clock face:** time with seconds, date, battery, heart rate, the next
+  alarm or timer, temperature, and steps, as ten blocks of 1,000 towards
+  a fixed goal of 10,000 (Gadgetbridge doesn't send yours); the exact
+  count is on Today, a swipe right. In four themes: two dark for after
+  sunset (Arcade and Terminal), and two light for the day (Handheld and
+  Parchment), switching by themselves at your location's sunset and
+  sunrise. The temperature is the watch's own (it has no other sensor):
+  on the wrist it reads close to your skin's, around 30 °C; off the
+  wrist, it drifts towards the room's.
 - **Glance:** turn your wrist to look, and the time shows dimly for a few
   seconds, without lighting the whole screen. Not while you're asleep.
 - **Directions:** while Google Maps, OsmAnd, or CoMaps navigates on the
