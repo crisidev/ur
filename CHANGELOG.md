@@ -50,6 +50,7 @@ missing below were test builds for the dev kit.
 
 ### Fixed
 
+- Stop the watch resetting when a heart rate reading came in while the screen was being redrawn (1bd5e6b)
 - Keep today's steps, and the activity the phone hasn't fetched yet, across updates, and say in the field log when an update resets the watch (3f55661)
 - Stop reading a heart rate sensor that shifts on the skin as a slow pulse (it read 42 BPM at a desk while a Garmin said 67) (1651aa5)
 - Measure the heart rate in the background only once the wrist has kept still for a few seconds, and give up early on a wrist that keeps moving, so desk work no longer spends minutes of LED an hour on failed measurements (77be9c2)
