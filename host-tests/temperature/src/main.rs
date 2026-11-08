@@ -250,4 +250,23 @@ mod tests {
         // Off the wrist: never.
         assert!(!pairing.offer(60 * MIN, q(25.0), q(21.0), None));
     }
+
+    #[test]
+    fn pairs_only_at_a_room_s_temperature() {
+        // Sat by a fridge's thermometer, as steady as can be.
+        let mut pairing = Pairing::new();
+        let worn = Some(30 * MIN);
+        for at in [0, 15 * MIN, 30 * MIN] {
+            assert!(!pairing.offer(at, q(27.0), q(4.0), worn));
+        }
+        // The room's edges.
+        let mut pairing = Pairing::new();
+        assert!(!pairing.offer(0, q(28.0), q(10.0), worn));
+        assert!(pairing.offer(15 * MIN, q(28.0), q(10.0), worn));
+        assert!(!pairing.offer(30 * MIN, q(28.0), q(9.75), worn));
+        let mut pairing = Pairing::new();
+        assert!(!pairing.offer(0, q(31.0), q(35.0), worn));
+        assert!(pairing.offer(15 * MIN, q(31.0), q(35.0), worn));
+        assert!(!pairing.offer(30 * MIN, q(31.0), q(35.25), worn));
+    }
 }

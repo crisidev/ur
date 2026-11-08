@@ -382,11 +382,19 @@ pub const PAIR_AGE: u64 = 10 * 60;
 const PAIR_GAP: u64 = 25 * MINUTE;
 /// Quarter degrees: 1 °C.
 const STEADY: i32 = 4;
+/// The air temperatures (quarter degrees: 10–35 °C) of a room the wrist
+/// line is for. The nearest sensor may be measuring something else: BTHome
+/// thermometers are common in fridges, freezers and saunas, and outdoors,
+/// where the line (made for indoors) doesn't hold. Those are still shown,
+/// but not learnt from.
+const ROOM: core::ops::RangeInclusive<i32> = 40..=140;
+
 /// Decides which (die, room sensor) pairs are fit to learn from: only on a
-/// wrist that has settled ([`SETTLED`]), and only when the pair before,
-/// at most [`PAIR_GAP`] earlier, had both temperatures within [`STEADY`]
-/// of this one's. That leaves out walking between rooms (the die lags the
-/// air by many minutes), and most bursts of exercise.
+/// wrist that has settled ([`SETTLED`]), at a room's temperature
+/// ([`ROOM`]), and only when the pair before, at most [`PAIR_GAP`]
+/// earlier, had both temperatures within [`STEADY`] of this one's. That
+/// leaves out walking between rooms (the die lags the air by many
+/// minutes), and most bursts of exercise.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Pairing {
     /// The last pair offered: when, the die's, the air's.
@@ -401,7 +409,7 @@ impl Pairing {
     /// Offers a pair at `now` (quarter degrees), with how long the watch
     /// has been worn; returns whether to learn from it.
     pub fn offer(&mut self, now: u64, die: i32, air: i32, worn_for: Option<u64>) -> bool {
-        let settled = worn_for.is_some_and(|worn| worn >= SETTLED);
+        let settled = worn_for.is_some_and(|worn| worn >= SETTLED) && ROOM.contains(&air);
         let steady = self.last.is_some_and(|(at, last_die, last_air)| {
             now.saturating_sub(at) <= PAIR_GAP
                 && (die - last_die).abs() <= STEADY
