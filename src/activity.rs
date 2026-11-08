@@ -635,16 +635,10 @@ impl History {
     fn last_sleep(&mut self) -> Option<Sleep> {
         let newest = self.newest?;
         let oldest = newest - HISTORY_MINUTES as i64 + 1;
-        // The span, in its own scope: the copy of the classes is 1.4 KB of
-        // stack, not to be held while staging.
-        let (start, end) = {
-            let mut kinds = [sleep::Kind::Unknown; HISTORY_MINUTES];
-            for (i, kind) in kinds.iter_mut().enumerate() {
-                *kind = self.samples[Self::slot(oldest + i as i64)].sleep();
-            }
-            let (start, end, _) = sleep::last_sleep(&kinds)?;
-            (oldest + start as i64, oldest + end as i64)
-        };
+        let (start, end, _) = sleep::last_sleep(HISTORY_MINUTES, |i| {
+            self.samples[Self::slot(oldest + i as i64)].sleep()
+        })?;
+        let (start, end) = (oldest + start as i64, oldest + end as i64);
         if newest < end + sleep::WINDOW as i64 {
             stages::stage(self, start, end);
         }

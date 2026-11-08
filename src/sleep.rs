@@ -260,15 +260,20 @@ pub fn classify(before: Kind, minutes: &[Minute], out: &mut [Kind]) {
 /// bathroom, lying awake for a while).
 pub const SAME_NIGHT_GAP: usize = 45;
 
-/// The most recent sleep in `kinds` (oldest first): (index of its first
-/// minute, index after its last, minutes actually asleep). Wakes shorter
-/// than [`SAME_NIGHT_GAP`] are part of it; sleep still going on counts.
-pub fn last_sleep(kinds: &[Kind]) -> Option<(usize, usize, usize)> {
-    let end = kinds.iter().rposition(|k| k.is_sleep())? + 1;
+/// The most recent sleep in `minutes` minutes (oldest first), whose kinds
+/// `kind` gives by index: (index of its first minute, index after its
+/// last, minutes actually asleep). Wakes shorter than [`SAME_NIGHT_GAP`]
+/// are part of it; sleep still going on counts.
+///
+/// The kinds come from a function rather than a slice so that the watch
+/// can read them straight out of its history, instead of copying a day's
+/// worth (1.4 KB) onto the stack first.
+pub fn last_sleep(minutes: usize, kind: impl Fn(usize) -> Kind) -> Option<(usize, usize, usize)> {
+    let end = (0..minutes).rev().find(|&i| kind(i).is_sleep())? + 1;
     let mut start = end - 1;
     let mut gap = 0;
     for i in (0..end).rev() {
-        if kinds[i].is_sleep() {
+        if kind(i).is_sleep() {
             start = i;
             gap = 0;
         } else {
@@ -278,7 +283,7 @@ pub fn last_sleep(kinds: &[Kind]) -> Option<(usize, usize, usize)> {
             }
         }
     }
-    let asleep = kinds[start..end].iter().filter(|k| k.is_stage()).count();
+    let asleep = (start..end).filter(|&i| kind(i).is_stage()).count();
     Some((start, end, asleep))
 }
 

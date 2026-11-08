@@ -234,7 +234,7 @@ fn firmware(minutes: &[Minute], heart: &[u8]) -> (Vec<Kind>, Vec<bool>) {
         let mut out = vec![Kind::Unknown; now + 1 - start];
         sleep::classify(before, &minutes[start..=now], &mut out);
         kinds[window..=now].copy_from_slice(&out[window - start..]);
-        if let Some((start, end, _)) = sleep::last_sleep(&kinds[..=now])
+        if let Some((start, end, _)) = last_sleep(&kinds[..=now])
             && now < end + sleep::WINDOW
         {
             let mut record = Record {
@@ -272,7 +272,7 @@ fn staged_at_once(kinds: &[Kind], minutes: &[Minute], heart: &[u8]) -> Vec<Kind>
         .map(|&k| if k.is_stage() { Kind::Light } else { k })
         .collect();
     let mut until = kinds.len();
-    while let Some((start, end, _)) = sleep::last_sleep(&kinds[..until]) {
+    while let Some((start, end, _)) = last_sleep(&kinds[..until]) {
         let newest = kinds.len() as i64 - 1;
         let mut record = Record {
             kinds: &mut kinds,
@@ -320,6 +320,11 @@ fn timeline(kinds: &[Kind]) -> String {
             Kind::Rem => 'R',
         })
         .collect()
+}
+
+/// [`sleep::last_sleep`], over a slice.
+fn last_sleep(kinds: &[Kind]) -> Option<(usize, usize, usize)> {
+    sleep::last_sleep(kinds.len(), |i| kinds[i])
 }
 
 fn asleep_minutes(kinds: &[Kind]) -> usize {
@@ -439,7 +444,7 @@ fn replay(path: &str, reference: Option<&str>) {
         stages.light,
         stages.deep,
         stages.rem,
-        sleep::last_sleep(&kinds)
+        last_sleep(&kinds)
     );
 
     let reference: Option<Vec<Option<Kind>>> = reference.map(|path| {
@@ -583,7 +588,7 @@ fn main() {
         println!(
             "seed {seed}: asleep {} min (truth {real}), last sleep {:?}",
             asleep_minutes(&kinds),
-            sleep::last_sleep(&kinds)
+            last_sleep(&kinds)
         );
         let truth: String = truth
             .iter()
@@ -633,7 +638,7 @@ mod tests {
                 .iter()
                 .filter(|t| matches!(t, Truth::Asleep | Truth::DeepAsleep | Truth::Rem))
                 .count();
-            let (start, end, asleep) = sleep::last_sleep(&kinds).expect("a night");
+            let (start, end, asleep) = last_sleep(&kinds).expect("a night");
             // Onset is dated back to the start of the stillness; the last
             // reading minutes before sleep are still enough to blur it.
             assert!(
@@ -684,7 +689,7 @@ mod tests {
             // stretch, leaving too short a bout on one side: together.)
             let rem = share(480..505, Kind::Rem) * 25.0 + share(691..721, Kind::Rem) * 30.0;
             assert!(rem / 55.0 > 0.6, "{}", msg());
-            let (start, end, asleep) = sleep::last_sleep(&kinds).expect("a night");
+            let (start, end, asleep) = last_sleep(&kinds).expect("a night");
             assert!(
                 !kinds[start..start + stages::REM_AFTER as usize].contains(&Kind::Rem),
                 "REM in the first hour: {}",
