@@ -5,7 +5,7 @@ Assistant, or for Tasker (or any Android automation app) through
 Gadgetbridge.
 
 <p align="center">
-  <img src="screenshots/buttons.png" width="150" alt="The button grid: nine grey squares in three rows of three; the top right one is white, showing 23 and 2X: 2, then 3 double-tapped, just sent">
+  <img src="screenshots/buttons.png" width="150" alt="The button grid: nine chunky grey keycaps with red sides, like an arcade cabinet's, in three rows of three; the top right one is pressed in and white, showing 23 and 2X: 2, then 3 double-tapped, just sent">
   <img src="screenshots/settings.png" width="150" alt="The Settings screen: THEME, LIGHT, BUTTONS (set to HA), and HA KEY, a row each">
 </p>
 
