@@ -348,6 +348,22 @@ python3 scripts/flash-stress.py target/thumbv7em-none-eabihf/release/ur --minute
 below.) Its saves stay behind under a key of their own
 (`storage::key::STRESS`), harmless to a normal build.
 
+`scripts/touch_probe.py` looks for a touch controller register that
+tells a fingertip from a bigger contact (a knuckle, a palm, a forearm
+brushing the edge). A build with the `touch-probe` feature reads 0x00–0x0F
+and 0xB0–0xB3 on every touch report and logs them all (see
+`src/touch_probe.rs`). Capture its log while someone touches the dev kit
+as `guide` asks, then analyse it:
+
+```sh
+DEFMT_RTT_BUFFER_SIZE=2048 RTT_SECS=900 cargo run --release --features touch-probe 2>&1 | tee tmp/touch-probe.log
+python3 scripts/touch_probe.py guide    # in another terminal, with the screen on
+python3 scripts/touch_probe.py analyse tmp/touch-probe.log --csv tmp/touch-probe.csv
+```
+
+(The bigger RTT buffer, as a finger down logs ~100 lines a second;
+`analyse` counts the lines dropped anyway.)
+
 **Probe sessions halt the core.** Most `esprobe` commands (`core read`
 and `core write`, `rtt`, `flash`) are a probe-rs session, which halts
 the core for ~20 ms as it attaches and again as it detaches (to clear
