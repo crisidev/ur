@@ -2351,7 +2351,7 @@ fn render_route_glance(canvas: &mut Canvas, status: &Status, step: &route::Step)
     match font::fill(street, font::Face::Small, 76, &mut lines) {
         count @ 0..=2 => {
             for (i, &line) in lines[..count].iter().enumerate() {
-                let width = font::small_text_width(&street[line.start..line.end])
+                let width = font::small_text_width(line.of(street))
                     + font::small_text_width(line.tail.as_str())
                     + if line.tail == font::Tail::None { 0 } else { 1 };
                 let y = STREET_Y + i as i32 * 7;
@@ -3483,7 +3483,7 @@ fn render_card(canvas: &mut Canvas, app: &str, who: &str, time: &str) {
         // The tail (an ellipsis or a hyphen) is part of the width.
         let x = 40 - line.width(who, face) * scale / 2;
         if scale == 2 {
-            canvas.text_scaled(x, y, &who[line.start..line.end], Color::TEXT, 2);
+            canvas.text_scaled(x, y, line.of(who), Color::TEXT, 2);
         } else {
             canvas.line(x, y, who, line, face, Color::TEXT);
         }

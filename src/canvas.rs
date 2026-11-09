@@ -236,7 +236,7 @@ impl Canvas {
             font::Face::Small => self.text(x, y, text, color),
             font::Face::Medium => self.text_medium(x, y, text, color),
         };
-        let end = draw(x, &text[line.start..line.end]);
+        let end = draw(x, line.of(text));
         // Right after the text, as one more letter of it.
         let x = if line.end > line.start { end } else { x };
         draw(x, line.tail.as_str());

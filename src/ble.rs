@@ -322,7 +322,9 @@ fn build_server() -> &'static Server<'static> {
             name: NAME,
             appearance: &appearance::watch::GENERIC_WATCH,
         }))
-        .expect("the attribute table is sized for this server"),
+        // Not `expect`: that would format the error with `Debug`, and `&str`'s
+        // `Debug` escapes characters with ~3.5 KB of Unicode tables.
+        .unwrap_or_else(|e| panic!("the attribute table is sized for this server: {e}")),
     )
 }
 

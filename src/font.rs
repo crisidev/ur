@@ -475,6 +475,16 @@ impl Tail {
     }
 }
 
+/// `&text[start..end]`, for offsets at character boundaries, as layout
+/// keeps them.
+///
+/// Not `str` indexing, whose panic message names the character an offset
+/// splits with `{:?}`: escaping it (`char::escape_debug`) takes ~5 KB of
+/// Unicode tables and code, used nowhere else.
+pub fn slice(text: &str, start: usize, end: usize) -> &str {
+    text.get(start..end).expect("offsets at char boundaries")
+}
+
 /// One line of laid-out text: `text[start..end]`, then its [`Tail`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Line {
@@ -491,7 +501,12 @@ impl Line {
             Tail::None => 0,
             tail => 1 + face.width(tail.as_str()),
         };
-        face.width(&text[self.start..self.end]) + tail
+        face.width(self.of(text)) + tail
+    }
+
+    /// The line's characters in `text`, without the tail.
+    pub fn of(self, text: &str) -> &str {
+        slice(text, self.start, self.end)
     }
 }
 
@@ -519,18 +534,18 @@ pub fn wrap(text: &str, face: Face, room: i32, lines: &mut [Line]) -> usize {
         // whatever the last line would have broken with.
         let last = &mut lines[most - 1];
         let ellipsis = face.width(Tail::Ellipsis.as_str()) + 1;
-        let rest = &text[last.start..];
+        let rest = slice(text, last.start, text.len());
         let mut end = 0;
         for (i, c) in rest.char_indices() {
             let next = i + c.len_utf8();
-            if face.width(&rest[..next]) + ellipsis > room {
+            if face.width(slice(rest, 0, next)) + ellipsis > room {
                 break;
             }
             end = next;
         }
         // Not after a space or a mark that would read as the end of the
         // text itself.
-        let kept = rest[..end].trim_end_matches([' ', ',', '.', ':', ';', '-']);
+        let kept = slice(rest, 0, end).trim_end_matches([' ', ',', '.', ':', ';', '-']);
         *last = Line {
             start: last.start,
             end: last.start + kept.len(),
@@ -590,7 +605,7 @@ pub fn fill(text: &str, face: Face, room: i32, lines: &mut [Line]) -> usize {
         let mut fits: Option<(usize, usize)> = None;
         let mut width = -1;
         let mut overflow = None;
-        for (i, c) in text[start..].char_indices() {
+        for (i, c) in slice(text, start, text.len()).char_indices() {
             let i = start + i;
             if c == ' ' && !(dash(i + 1) && bytes.get(i + 2).is_none_or(|&b| b == b' ')) {
                 fits = Some((i, i + 1));
@@ -644,8 +659,8 @@ pub fn fill(text: &str, face: Face, room: i32, lines: &mut [Line]) -> usize {
 /// doesn't fit being at `at`: where to break it (see [`fill`]), and where
 /// the next line starts.
 fn break_word(text: &str, face: Face, room: i32, start: usize, at: usize) -> (Line, usize) {
-    let word = &text[start..];
-    let word = &word[..word.find(' ').unwrap_or(word.len())];
+    let word = slice(text, start, text.len());
+    let word = slice(word, 0, word.find(' ').unwrap_or(word.len()));
     let cut = |end: usize, tail: Tail| (Line { start, end, tail }, end);
     // The word fits, but not the dash after it (see `fill`): a dash
     // starts the next line after all, rather than a word being broken.
@@ -680,8 +695,8 @@ fn break_word(text: &str, face: Face, room: i32, start: usize, at: usize) -> (Li
     // keeping at least three letters for the next line, and three here.
     let mut end = at;
     loop {
-        let here = &text[start..end];
-        let left = text[end..start + word.len()].chars().count();
+        let here = slice(text, start, end);
+        let left = slice(text, end, start + word.len()).chars().count();
         if face.width(here) + hyphen <= room && left >= 3 {
             if here.chars().count() >= 3 {
                 return cut(end, Tail::Hyphen);
