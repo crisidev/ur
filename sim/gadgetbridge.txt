@@ -68,3 +68,11 @@ heart 72
 wait 10s
 gb GB({"t":"act","hrm":true,"stp":false,"int":10})
 gb GB({"t":"act","hrm":false,"stp":false,"int":10})
+
+# A long day: from 10,000 steps the blocks count 10,000 each, and the
+# scale, "×10K", takes the accent.
+steps 12500
+button
+wait 1s
+expect clock
+shot past-goal.png

@@ -2415,10 +2415,12 @@ fn render_clock(
         Color::TEXT_DIM,
     );
     let steps = status.steps.unwrap_or(0);
-    let (per_block, scale) = if steps < STEP_GOAL {
-        (STEP_GOAL / BLOCKS, "×1K")
+    // Past the goal the scale takes the accent, the filled blocks'
+    // colour, since the change of scale is what says the goal was reached.
+    let (per_block, scale, scale_color) = if steps < STEP_GOAL {
+        (STEP_GOAL / BLOCKS, "×1K", Color::TEXT_DIM)
     } else {
-        (STEP_GOAL, "×10K")
+        (STEP_GOAL, "×10K", Color::ACCENT)
     };
     let full = (steps / per_block).min(BLOCKS);
     for i in 0..BLOCKS {
@@ -2430,7 +2432,7 @@ fn render_clock(
         let x = BAR_X + i as i32 * (BLOCK_W + 1);
         canvas.fill_rect(x, STEPS_Y, BLOCK_W, 5, color);
     }
-    canvas.text(SCALE_X, STEPS_Y, scale, Color::TEXT_DIM);
+    canvas.text(SCALE_X, STEPS_Y, scale, scale_color);
 }
 
 /// The glance: the hours above the minutes, as big as fits with room
