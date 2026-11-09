@@ -28,6 +28,7 @@
 //! It costs ~2.3 KB of RAM, so it isn't in releases.
 
 use core::cell::UnsafeCell;
+use core::sync::atomic::{Ordering, compiler_fence};
 
 use embassy_time::Instant;
 use heapless::String;
@@ -402,6 +403,16 @@ fn with<R>(f: impl FnOnce(&mut Export) -> R) -> R {
     f(unsafe { &mut *UR_COMPARE.0.get() })
 }
 
+/// Keeps the stores before this before those after it, in memory and not
+/// only in program order. The reader reads as the core runs (`esprobe
+/// fast-dump` never halts it), word by word: a counter it checks (`magic`,
+/// `written`, `started` and `finished`, a music info's `number`) has to
+/// change on the right side of what it guards. A compiler fence is enough:
+/// the Cortex-M4 has one core and makes its stores to RAM in order.
+fn publish() {
+    compiler_fence(Ordering::SeqCst);
+}
+
 /// The UI started, at `at`, with these settings from flash.
 pub fn boot(at: Instant, app: &crate::ui::App) {
     with(|export| {
@@ -414,6 +425,7 @@ pub fn boot(at: Instant, app: &crate::ui::App) {
             alarms: app.alarms.to_bytes(),
             phone_alarms: app.phone_alarms.to_bytes(),
         };
+        publish();
         export.head.magic = MAGIC;
     });
 }
@@ -422,6 +434,7 @@ fn push(event: Event) {
     with(|export| {
         let head = &mut export.head;
         export.events[head.written as usize % EVENTS] = event;
+        publish();
         head.written = head.written.wrapping_add(1);
     });
 }
@@ -437,6 +450,7 @@ fn music(artist: &String<MUSIC_TEXT>, track: &String<MUSIC_TEXT>) -> u16 {
         let entry = &mut export.music;
         let number = entry.number.wrapping_add(1);
         entry.number = number;
+        publish();
         entry.artist[..artist.len()].copy_from_slice(artist.as_bytes());
         entry.artist_len = artist.len() as u8;
         entry.track[..track.len()].copy_from_slice(track.as_bytes());
@@ -532,6 +546,7 @@ pub fn rendering(now: Instant, status: &Status, daytime: bool, today: Option<Day
     with(|export| {
         let head = &mut export.head;
         head.started = head.started.wrapping_add(1);
+        publish();
         head.push = PUSH;
         let time = status.local_time;
         let sleep = status.sleep;
@@ -604,6 +619,7 @@ pub fn rendered() {
         if export.head.push.windows > 0 {
             export.head.push.finished = Instant::now().as_ticks();
         }
+        publish();
         export.head.finished = export.head.started;
     });
 }
