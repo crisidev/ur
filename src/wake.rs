@@ -44,13 +44,16 @@
 //!   start there. That goes for both taps of a double tap: three phantom
 //!   pairs in a night's log each had a tap at the edge.
 //! - A long press must start in the middle of the screen, further from
-//!   every edge than a tap need be ([`LONG_PRESS_MARGIN`], twice
-//!   [`TAP_MARGIN`]): with the wearer's arms folded, the other arm resting
-//!   against the watch's edge played or paused. That goes on a glance too,
-//!   where a tap at the edge still counts: folding the arms turns the
-//!   wrist, which can light a glance. Not on the awake clock face, though,
-//!   where a long press anywhere plays or pauses: something woke the
-//!   screen first, so it's likelier meant.
+//!   the edges than a tap need be ([`LONG_PRESS_MARGIN_X`] at the sides,
+//!   twice [`TAP_MARGIN`], and [`LONG_PRESS_MARGIN_Y`] at the top and
+//!   bottom, a quarter of the screen): with the wearer's arms folded, the
+//!   other arm, resting against the watch, played or paused. That goes on
+//!   a glance too, where a tap at the edge still counts: folding the arms
+//!   turns the wrist, which can light a glance. Not on the awake clock
+//!   face, though, where a long press anywhere plays or pauses: something
+//!   woke the screen first, so it's likelier meant. Unless that was a
+//!   touch, under [`CENTRE_AFTER_TOUCH_WAKE_MS`] before (see
+//!   [`awake_long_press`]): the folded arm wakes the screen too.
 //! - A long press must stay put (the touch task's [`SWIPE_DISTANCE`]
 //!   tolerance), or it's a swipe, which does nothing here.
 //! - In the quiet night (see [`crate::sleep::Night`]), nothing: bedding
@@ -59,8 +62,11 @@
 //!
 //! Considered and declined: undoing the play or pause of a long press held
 //! for seconds (a pressing object rather than a finger). It fires at
-//! 0.6 s, so only an undo could help, and the field logs' presses that
-//! long all started at the edge, which the margin already turns away.
+//! 0.6 s, so only an undo could help, and of the field logs' presses
+//! held 2 s or more, all but one started near the top edge, which the
+//! margin already turns away. (The one, held 2.2 s at 25 across and
+//! 29 down, a folded arm's by the wearer pausing again 3 s later, no
+//! margin stops; the wearer's own lifted within 1 s of the buzz.)
 //!
 //! Hardware-free, so it runs in host tests (`host-tests/wake`).
 //!
@@ -98,47 +104,89 @@ pub const DELIBERATE_TAP_MS: u16 = 40;
 /// with the screen off, do nothing.
 pub const TAP_MARGIN: i32 = 8;
 /// Canvas pixels (48 panel pixels, a fifth of the screen) at the screen's
-/// edge where a long press doesn't play or pause with the screen off or on
-/// a glance: see [`centred`].
-pub const LONG_PRESS_MARGIN: i32 = 2 * TAP_MARGIN;
+/// left and right edges where a long press doesn't play or pause with the
+/// screen off or on a glance: see [`centred`].
+pub const LONG_PRESS_MARGIN_X: i32 = 2 * TAP_MARGIN;
+/// Canvas pixels (60 panel pixels, a quarter of the screen) at the
+/// screen's top and bottom edges where a long press doesn't play or pause
+/// with the screen off or on a glance: see [`centred`].
+pub const LONG_PRESS_MARGIN_Y: i32 = 20;
+/// Milliseconds after a touch woke the screen (from off, or a glance)
+/// during which a long press on the clock face must be in the middle too:
+/// see [`awake_long_press`].
+pub const CENTRE_AFTER_TOUCH_WAKE_MS: u32 = 3000;
 /// The canvas's width and height.
 const SIZE: i32 = 80;
 
-/// Whether (`x`, `y`), in canvas pixels, is further than `margin` from
-/// every edge of the screen.
-fn within(x: i32, y: i32, margin: i32) -> bool {
-    let within = |v: i32| (margin..SIZE - margin).contains(&v);
-    within(x) && within(y)
+/// Whether `v`, a canvas coordinate, is further than `margin` from both
+/// ends of the screen along its axis.
+fn within(v: i32, margin: i32) -> bool {
+    (margin..SIZE - margin).contains(&v)
 }
 
 /// Whether a touch starting at (`x`, `y`), in canvas pixels, starts away
 /// from the screen's edge.
 pub fn inside(x: i32, y: i32) -> bool {
-    within(x, y, TAP_MARGIN)
+    within(x, TAP_MARGIN) && within(y, TAP_MARGIN)
 }
 
 /// Whether a long press starting at (`x`, `y`), in canvas pixels, starts
-/// in the middle of the screen (the central 48 by 48 canvas pixels, away
-/// from [`LONG_PRESS_MARGIN`]): what it needs to play or pause, with the
-/// screen off or on a glance.
+/// in the middle of the screen (16..=63 across and 20..=59 down, away
+/// from [`LONG_PRESS_MARGIN_X`] and [`LONG_PRESS_MARGIN_Y`]): what it
+/// needs to play or pause, with the screen off or on a glance (and on the
+/// clock face just after a touch woke it; see [`awake_long_press`]).
 ///
-/// The wearer's other arm, resting against the watch's edge with their
-/// arms folded, played or paused. No field log caught that, but the
-/// touch controller puts a press from the edge near it, though not always
-/// within [`TAP_MARGIN`]: the phantom long presses of bedding, at night,
-/// started 4–11 canvas pixels from the top edge (the one at 11 was far
-/// enough in to play or pause). The long presses that did play or pause,
-/// in a 0.9.0 milestone's field log, started 30–40 down and 45–55
-/// across, at the foot of the time; others in older logs, 44–52 down and
-/// 39–57 across. So twice the tap's margin: all of the latter count, none
-/// of the former. (Bedding pressed mid-screen too, once, which no margin
-/// stops: the quiet night does.) Where it started is where it stayed: a
-/// long press moves less than [`SWIPE_DISTANCE`] (under 7 canvas pixels)
-/// on the way.
+/// The wearer's other arm, resting against the watch with their arms
+/// folded, played or paused. A day's field log (0.10.0-rc.1) caught it,
+/// each time undone, on the watch or the phone, seconds or minutes later:
+/// with the screen off, long presses started 11 and 12 canvas pixels from
+/// the top edge (held 9.7 s and 1.3 s); on a glance, 3 from the top and
+/// 64 down (so 15 from the bottom). With the arms folded, the other
+/// forearm lies along the watch's top or bottom edge, so that's where it
+/// presses, and where the margin is wider than at the sides. The touch
+/// controller places such a press up to 15 canvas pixels in; the
+/// bedding's phantom long presses at night were 4–11 from the top edge.
+///
+/// The wearer's own long presses, in that log and older ones, started
+/// 30–53 down and 39–59 across: around the foot of the time, a bit right
+/// of centre, where the other hand's finger comes in from the side. One,
+/// on a glance, pausing what a folded arm had just played, was 59 across:
+/// a margin of 20 at the sides, too, would have had it at its very edge,
+/// and no press of the arm's started between a fifth and a quarter in
+/// from a side. So a quarter at the top and bottom (rejecting 15 from the
+/// edge with some to spare, and keeping 30–53 down), and a fifth, twice
+/// the tap's margin, at the sides. (Neither stops a press the arm made at
+/// 25 across and 29 down, nor bedding's once mid-screen: those look just
+/// like the wearer's.)
+///
+/// Where it started is where it stayed: a long press moves less than
+/// [`SWIPE_DISTANCE`] (under 7 canvas pixels) on the way.
 ///
 /// [`SWIPE_DISTANCE`]: crate::gesture::SWIPE_DISTANCE
 pub fn centred(x: i32, y: i32) -> bool {
-    within(x, y, LONG_PRESS_MARGIN)
+    within(x, LONG_PRESS_MARGIN_X) && within(y, LONG_PRESS_MARGIN_Y)
+}
+
+/// Whether a long press on the awake clock face, starting at (`x`, `y`)
+/// in canvas pixels, plays or pauses. `touch_woke`: a touch woke the
+/// screen (from off, or a glance) under [`CENTRE_AFTER_TOUCH_WAKE_MS`]
+/// ago.
+///
+/// Anywhere, normally: something woke the screen to get there, so it's
+/// likelier meant than with the screen off. But a folded arm's touch can
+/// be what woke it. In the field log of [`centred`], a 254 ms tap at the
+/// top edge of a glance (where a tap counts, the wearer being taken to be
+/// looking) woke the screen, and two long presses at the top edge, 0.61
+/// and 2.75 s later, played and paused on the awake clock face. So just
+/// after a touch woke the screen, the long press must be in the middle,
+/// as on the glance: for 3 s, which takes in both, if barely the second.
+/// Not longer, so that a long press at the edge after waking the screen
+/// on purpose soon counts again. (The wearer's own, 1.3, 2.9, and 5 s
+/// after waking the screen with a touch, were in the middle anyway.)
+/// Measured, as the UI does, from the waking touch's report (a tap's or
+/// swipe's lift) to the long press's (0.6 s after its finger landed).
+pub fn awake_long_press(x: i32, y: i32, touch_woke: bool) -> bool {
+    !touch_woke || centred(x, y)
 }
 
 /// Whether a tap looks meant, rather than a brush: what, with the screen

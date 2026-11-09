@@ -90,19 +90,39 @@ mod tests {
         );
     }
 
+    /// The middle's corners, in canvas pixels: the first and last columns
+    /// and rows a long press may start in, with the screen off or on a
+    /// glance.
+    const LEFT: i32 = LONG_PRESS_MARGIN_X;
+    const RIGHT: i32 = 79 - LONG_PRESS_MARGIN_X;
+    const TOP: i32 = LONG_PRESS_MARGIN_Y;
+    const BOTTOM: i32 = 79 - LONG_PRESS_MARGIN_Y;
+
+    /// Just inside the middle, and just outside it, on each side.
+    fn just_inside() -> [(i32, i32); 4] {
+        [(LEFT, TOP), (RIGHT, BOTTOM), (LEFT, BOTTOM), (RIGHT, TOP)]
+    }
+    fn just_outside() -> [(i32, i32); 4] {
+        [
+            (LEFT - 1, 40),
+            (40, TOP - 1),
+            (RIGHT + 1, 40),
+            (40, BOTTOM + 1),
+        ]
+    }
+
     /// Only in the middle: an arm folded over the watch rests against its
-    /// edge. Just inside [`LONG_PRESS_MARGIN`] counts, just outside doesn't,
-    /// on each side, even where a tap would wake the screen.
+    /// edge. Just inside counts, just outside doesn't, on each side, even
+    /// where a tap would wake the screen.
     #[test]
     fn a_long_press_plays_or_pauses_only_in_the_middle() {
-        let (near, far) = (LONG_PRESS_MARGIN, 79 - LONG_PRESS_MARGIN);
-        for at in [(near, near), (far, far), (near, far), (far, near)] {
+        for at in just_inside() {
             assert_eq!(
                 off(Kind::LongPress, at, 600, false, true),
                 Action::PlayPause
             );
         }
-        for at in [(near - 1, 40), (40, near - 1), (far + 1, 40), (40, far + 1)] {
+        for at in just_outside() {
             assert!(inside(at.0, at.1), "{at:?} is away from a tap's edge");
             assert_eq!(off(Kind::LongPress, at, 600, false, true), Action::Ignore);
             assert_eq!(
@@ -112,27 +132,32 @@ mod tests {
         }
     }
 
-    /// The middle is the central 48 by 48 canvas pixels: twice a tap's
-    /// edge.
+    /// The middle is 16..=63 across, twice a tap's edge from the sides, and
+    /// 20..=59 down, a quarter of the screen from the top and bottom, where
+    /// a folded arm lies.
     #[test]
-    fn the_middle_is_away_from_twice_the_edge() {
-        assert_eq!(LONG_PRESS_MARGIN, 2 * TAP_MARGIN);
-        assert!(centred(LONG_PRESS_MARGIN, LONG_PRESS_MARGIN));
-        assert!(centred(79 - LONG_PRESS_MARGIN, 79 - LONG_PRESS_MARGIN));
-        assert!(!centred(LONG_PRESS_MARGIN - 1, 40));
-        assert!(!centred(40, LONG_PRESS_MARGIN - 1));
-        assert!(!centred(80 - LONG_PRESS_MARGIN, 40));
-        assert!(!centred(40, 80 - LONG_PRESS_MARGIN));
+    fn the_middle_leaves_a_fifth_at_the_sides_and_a_quarter_at_the_ends() {
+        assert_eq!(LONG_PRESS_MARGIN_X, 2 * TAP_MARGIN);
+        assert_eq!((LEFT, RIGHT, TOP, BOTTOM), (16, 63, 20, 59));
+        for (x, y) in just_inside() {
+            assert!(centred(x, y), "{:?}", (x, y));
+        }
+        for (x, y) in just_outside() {
+            assert!(!centred(x, y), "{:?}", (x, y));
+        }
     }
 
-    /// The field logs' long presses that played or paused (a 0.9.0
-    /// milestone's, each followed by the phone's new state), and the other
-    /// mid-screen ones in older logs: all in the middle.
+    /// The field logs' long presses by the wearer: a 0.9.0 milestone's
+    /// (each followed by the phone's new state), the other mid-screen ones
+    /// in older logs, and 0.10.0-rc.1's with the screen off or on a glance
+    /// (the last at 59 across, on a glance, pausing what a folded arm had
+    /// played 3 s before). All in the middle.
     #[test]
-    fn the_field_logs_long_presses_mid_screen_play_or_pause() {
+    fn the_field_logs_long_presses_by_the_wearer_play_or_pause() {
         let played = [(55, 40), (47, 30), (47, 39), (49, 35), (45, 33), (50, 35)];
         let older = [(39, 51), (45, 52), (48, 44), (57, 45)];
-        for at in played.into_iter().chain(older) {
+        let rc1 = [(43, 47), (52, 48), (46, 53), (59, 32)];
+        for at in played.into_iter().chain(older).chain(rc1) {
             assert!(centred(at.0, at.1), "{at:?}");
             assert_eq!(
                 off(Kind::LongPress, at, 600, false, true),
@@ -143,6 +168,101 @@ mod tests {
                 Action::PlayPause
             );
         }
+    }
+
+    /// 0.10.0-rc.1's field log, a day with the wearer's arms folded now and
+    /// then: long presses that played or paused, each undone (on the watch
+    /// or the phone) seconds or minutes later, or one of a run at the edge.
+    /// Each started near the top or bottom edge, though further in than a
+    /// tap's margin, so none does anything now.
+    #[test]
+    fn the_field_logs_folded_arm_long_presses_do_nothing() {
+        // With the screen off: held 9.7 s (the phone paused again 165 s
+        // later), and 1.3 s (the wearer paused again 21 s later).
+        for at in [(44, 11), (41, 12)] {
+            assert!(inside(at.0, at.1), "{at:?}");
+            assert_eq!(off(Kind::LongPress, at, 600, false, true), Action::Ignore);
+        }
+        // On a glance: 64 down (the phone paused again 128 s later), and
+        // at the top edge (the first of three there in 6 s).
+        for at in [(46, 64), (35, 3)] {
+            assert_eq!(
+                glance(Kind::LongPress, at.0, at.1, 600, false),
+                Action::Ignore
+            );
+        }
+        // Likewise on a glance, 66 down, 0.6 s after it lit; it paused,
+        // and nothing undid that for 24 minutes, so perhaps meant, but
+        // lower than any long press the wearer certainly made.
+        assert_eq!(glance(Kind::LongPress, 48, 66, 600, false), Action::Ignore);
+    }
+
+    /// Two the arm made that no margin turns away: held 2.2 s at 25
+    /// across, 29 down, with the screen off (the wearer paused again 3 s
+    /// later, on a glance, at (59, 32)); and one dead centre, 3 s after a
+    /// 369 ms tap woke the screen, on the clock face, which may well have
+    /// been meant. They look like the wearer's.
+    #[test]
+    fn the_field_logs_mid_screen_long_presses_still_play_or_pause() {
+        assert_eq!(
+            off(Kind::LongPress, (25, 29), 600, false, true),
+            Action::PlayPause
+        );
+        assert!(awake_long_press(47, 48, true));
+    }
+
+    /// On the awake clock face, anywhere: something woke the screen first.
+    /// Unless a touch woke it just before, which may have been the folded
+    /// arm: then only in the middle, as on a glance.
+    #[test]
+    fn the_awake_clock_face_takes_a_long_press_anywhere_unless_a_touch_just_woke_it() {
+        for at in just_inside().into_iter().chain(just_outside()) {
+            assert!(awake_long_press(at.0, at.1, false), "{at:?}");
+        }
+        assert!(awake_long_press(0, 0, false));
+        for at in just_inside() {
+            assert!(awake_long_press(at.0, at.1, true), "{at:?}");
+        }
+        for at in just_outside() {
+            assert!(!awake_long_press(at.0, at.1, true), "{at:?}");
+        }
+    }
+
+    /// Whether a long press `ms` after a touch woke the screen comes while
+    /// the clock face still needs it in the middle.
+    fn just_woken(ms: u32) -> bool {
+        ms < CENTRE_AFTER_TOUCH_WAKE_MS
+    }
+
+    /// 0.10.0-rc.1's field log: a 254 ms tap at the top edge of a glance
+    /// woke the screen, and two long presses at the top edge, 0.61 s and
+    /// 2.75 s later, played and paused on the clock face; both count as
+    /// just after the wake, so do nothing now. The wearer's own, 1.28 s
+    /// and 4.96 s after a swipe woke the screen from a glance, and 2.90 s
+    /// after a tap woke it from off, were in the middle, so play or pause
+    /// either way.
+    #[test]
+    fn the_field_logs_long_presses_just_after_a_touch_woke_the_screen() {
+        assert_eq!(
+            glance(Kind::Tap, 29, 3, 254, false),
+            Action::Wake { first_tap: true }
+        );
+        for (x, y, ms) in [(34, 3, 610), (31, 3, 2750)] {
+            assert!(just_woken(ms), "{ms} ms");
+            assert!(!awake_long_press(x, y, just_woken(ms)), "{:?}", (x, y));
+        }
+        for (x, y, ms) in [(47, 46, 1280), (47, 48, 2900), (48, 48, 4960)] {
+            assert!(awake_long_press(x, y, just_woken(ms)), "{:?}", (x, y));
+        }
+    }
+
+    /// Only for 3 s: soon after a deliberate wake, a long press at the edge
+    /// counts again, as the wearer would rather.
+    #[test]
+    fn the_clock_face_needs_the_middle_only_for_3_s_after_a_touch_wake() {
+        assert_eq!(CENTRE_AFTER_TOUCH_WAKE_MS, 3000);
+        assert!(!awake_long_press(40, 4, just_woken(2999)));
+        assert!(awake_long_press(40, 4, just_woken(3000)));
     }
 
     #[test]
@@ -280,18 +400,10 @@ mod tests {
             glance(Kind::LongPress, 40, 40, 600, true),
             Action::PlayPause
         );
-        let (near, far) = (LONG_PRESS_MARGIN, 79 - LONG_PRESS_MARGIN);
-        assert_eq!(
-            glance(Kind::LongPress, near, far, 600, false),
-            Action::PlayPause
-        );
-        for (x, y) in [
-            (near - 1, 40),
-            (40, near - 1),
-            (far + 1, 40),
-            (40, far + 1),
-            (0, 0),
-        ] {
+        for (x, y) in just_inside() {
+            assert_eq!(glance(Kind::LongPress, x, y, 600, false), Action::PlayPause);
+        }
+        for (x, y) in just_outside().into_iter().chain([(0, 0)]) {
             assert_eq!(glance(Kind::LongPress, x, y, 600, false), Action::Ignore);
         }
     }

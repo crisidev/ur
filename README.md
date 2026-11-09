@@ -138,9 +138,11 @@ bar on an edge means there's more that way.
   silences a call or stops an alarm or "find my watch" (as does a tap),
   and a double press ends a quiet night.
 - **Long-press** (the watch buzzes once it's taken, at 0.6 s) plays or
-  pauses on the clock face (with the screen off or glancing, only in the
-  middle, not near an edge, where a folded arm rests), switches an alarm
-  or timer on or off, and on Info, offers storage mode.
+  pauses on the clock face (with the screen off or glancing, or for 3 s
+  after a touch woke it, only in the middle: a quarter of the screen
+  away from the top and bottom, a fifth from the sides, clear of a
+  folded arm), switches an alarm or timer on or off, and on Info, offers
+  storage mode.
 - **Double-tap** the clock face for the next track. Tap lightly to skip
   without waking the screen; a firm first tap wakes it. Without a phone
   connected, a double tap wakes the screen instead.

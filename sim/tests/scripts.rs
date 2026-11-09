@@ -384,12 +384,14 @@ fn a_double_tap_skips_without_waking_only_after_a_light_first_tap() {
 }
 
 /// With a phone connected, a long press with the screen off or on a glance
-/// plays or pauses only in the middle of the screen (see `wake::centred`).
-/// Nearer the edge, where an arm folded over the watch rests, it does
-/// nothing, not even a buzz, and leaves the screen (and a glance) as it
-/// was; one where a tap would still count too. On the awake clock face,
-/// something woke the screen first, so one at the edge still plays or
-/// pauses, through the touch task's recogniser too.
+/// plays or pauses only in the middle of the screen (see `wake::centred`):
+/// a fifth in from the sides, a quarter from the top and bottom. Nearer
+/// the edge, where an arm folded over the watch rests, it does nothing,
+/// not even a buzz, and leaves the screen (and a glance) as it was; one
+/// where a tap would still count too. On the awake clock face, something
+/// woke the screen first, so one at the edge still plays or pauses,
+/// through the touch task's recogniser too; but for 3 s after a touch
+/// woke it (maybe the folded arm), only in the middle.
 #[test]
 fn a_long_press_plays_or_pauses_only_in_the_middle() {
     let dir = out("long-centred");
@@ -402,11 +404,19 @@ fn a_long_press_plays_or_pauses_only_in_the_middle() {
          press 75,40\nwait 610ms\nexpect buzzing\nlift\nexpect clock\n\
          wait 11s\nexpect not screen-on\n\
          echo off\nlong 40,40\nexpect buzzing\nexpect not screen-on\nwait 2s\n\
-         echo off-edge\nlong 12,40\nexpect not buzzing\nlong 40,66\nexpect not buzzing\n\
-         expect not screen-on\n\
+         echo off-edge\nlong 12,40\nexpect not buzzing\nlong 40,61\nexpect not buzzing\n\
+         long 40,19\nexpect not buzzing\nexpect not screen-on\n\
          echo glance\nglance\nlong 40,40\nexpect buzzing\nexpect dim\nwait 10s\n\
          echo glance-edge\nglance\nlong 64,40\nexpect not buzzing\nlong 40,12\n\
-         expect not buzzing\nexpect dim\nwait 6s\nexpect not screen-on\n\
+         expect not buzzing\nlong 40,60\nexpect not buzzing\nexpect dim\n\
+         wait 6s\nexpect not screen-on\n\
+         echo tap-woke-edge\ntap 40,40\nexpect screen-on\nwait 1s\nlong 40,4\n\
+         expect not buzzing\nwait 1s\nlong 12,40\nexpect not buzzing\n\
+         echo tap-woke\nlong 40,40\nexpect buzzing\nwait 1500ms\n\
+         echo tap-woke-later\nlong 40,4\nexpect buzzing\nwait 11s\n\
+         expect not screen-on\n\
+         echo glance-tap-woke-edge\nglance\ntap 40,4\nexpect screen-on\nwait 1s\n\
+         long 40,70\nexpect not buzzing\n\
          echo done\n",
     )
     .expect("the target dir is writable");
@@ -419,6 +429,10 @@ fn a_long_press_plays_or_pauses_only_in_the_middle() {
         ("off-edge", 0),
         ("glance", 1),
         ("glance-edge", 0),
+        ("tap-woke-edge", 0),
+        ("tap-woke", 1),
+        ("tap-woke-later", 1),
+        ("glance-tap-woke-edge", 0),
         ("done", 0),
     ];
     let at = |name: &str| {
