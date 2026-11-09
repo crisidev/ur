@@ -24,7 +24,8 @@
 //!    noise than finding individual pulse peaks, and it doesn't care about
 //!    the pulse's shape (which varies a lot between people and sites).
 //! 3. **Rejection**: a window only yields a rate if it looks like a pulse.
-//!    Its amplitude must be steady (motion makes bursts), and the
+//!    Motion makes bursts: seconds much louder than the rest are masked
+//!    out, and what's left must be steady and most of the window. The
 //!    autocorrelation peak must be high (a periodic signal correlates
 //!    strongly with itself one period later; filtered noise doesn't). A
 //!    slow rate must also come from a steady light level: a shifting
@@ -103,14 +104,45 @@ const HIGHPASS: Biquad =
 const LOWPASS: Biquad =
     Biquad::from_bits([0x3e0640c4, 0x3e8640c4, 0x3e0640c4, 0xbf3f6f1c, 0x3e8b5fc1]);
 
-/// How much the signal's amplitude may vary across the window: the ratio
-/// of the loudest to the quietest quarter. A pulse's amplitude wanders
-/// slowly (with breathing, say, by tens of percent); an arm movement
-/// produces a burst many times larger.
+/// Parts the window is split into to find motion bursts: each ~1 s, so a
+/// burst costs only the second or two it lasts, yet holds most of a beat
+/// even at 40 BPM, so a pulse's parts have comparable energies.
+const PARTS: usize = 8;
+
+/// How much louder than the window's median part (in amplitude) a part
+/// may be before it's masked out as motion. A pulse's amplitude wanders
+/// slowly, with breathing say, by tens of percent; moving the arm or
+/// fingers makes bursts many times the pulse.
 ///
-/// On a real wrist (field log, sitting) the pulse's own ratio ran 3.1–4.0,
-/// rejecting most windows at the first guess of 3; arm movement read 5–10.
+/// This used to reject the whole window, judged by its loudest quarter
+/// against its quietest (at 4.5x). At a desk, though, the hand makes a
+/// burst every few seconds, and in field logs of desk days 45% of
+/// windows were rejected that way, against 18% asleep: hardly any 8 s
+/// window was free of one. Most of those windows had nothing to recover
+/// (only 7% had their best peak at a Garmin's rate, and letting through
+/// ratios up to 8 gained one window in 800), but masking the burst and
+/// measuring the rest accepted half as many windows again (71 to 110 of
+/// ~830), and about as accurately (80% within 5 BPM of the Garmin, from
+/// 83%).
+const MAX_PART_AMPLITUDE: f32 = 2.0;
+
+/// How much the parts left after masking may vary: the ratio of the
+/// loudest one's amplitude to the quietest's. Masking only takes out
+/// bursts that stand out from the median part, so it can't help a window
+/// that's mostly motion: then the median is motion, and only the
+/// remaining pulse stands out, as the quietest.
+///
+/// On a real wrist (field log, sitting) the pulse's own ratio between 2 s
+/// quarters ran 3.1–4.0; arm movement read 5–10. Between 1 s parts a
+/// pulse varies a little more, but replaying field logs, comparing parts
+/// rather than quarters lost only 3 of 476 accepted windows.
 const MAX_AMPLITUDE_RATIO: f32 = 4.5;
+
+/// Parts that must be left after masking. Five of eight (5.3 s) still
+/// hold four beats at 40 BPM, and every lag up to the longest still has
+/// pairs of unmasked samples to correlate; with fewer, too many windows
+/// that were mostly motion got through.
+const MIN_QUIET_PARTS: usize = 5;
 
 /// The normalised autocorrelation a window's beat period must reach (1.0
 /// is perfectly periodic). Clean synthetic pulses with realistic heart-rate
@@ -121,6 +153,14 @@ const MAX_AMPLITUDE_RATIO: f32 = 4.5;
 /// reached 0.595 (and the Garmin agreed), so slightly under 0.6; noise is
 /// still kept out by needing three windows to agree (`Consensus`).
 const MIN_CORRELATION: f32 = 0.55;
+
+/// [`MIN_CORRELATION`] for a window with motion masked out: what's left
+/// of it is shorter, and what came just before or after a burst may still
+/// carry some of it. In field-log replays, masked windows at 0.55-0.6
+/// were within 5 BPM of a Garmin only half the time (6 of 11), against
+/// 72% above 0.6. That's few windows to go by: this errs on the side of
+/// caution.
+const MIN_MASKED_CORRELATION: f32 = 0.6;
 
 /// The first autocorrelation peak within this fraction of the highest one
 /// is the period. A clean signal correlates almost as well at two or three
@@ -261,14 +301,15 @@ impl Estimate {
 pub enum Rejection {
     /// No signal at all.
     Flat,
-    /// The amplitude jumps around: most likely movement. `ratio` is the
-    /// loudest quarter's amplitude over the quietest's (the limit is
+    /// The amplitude jumps around, through more of the window than can be
+    /// masked out: most likely movement. `ratio` is the loudest part's
+    /// amplitude over the quietest's (see [`MAX_PART_AMPLITUDE`] and
     /// [`MAX_AMPLITUDE_RATIO`]).
     Unsteady { ratio: f32 },
     /// Not periodic enough within 40–200 BPM: noise, or a weak pulse.
     /// `quality` is the best correlation found (the limit is
-    /// [`MIN_CORRELATION`]), and `bpm` its rate (NaN if there was no peak
-    /// at all).
+    /// [`MIN_CORRELATION`], or [`MIN_MASKED_CORRELATION`] if motion was
+    /// masked out), and `bpm` its rate (NaN if there was no peak at all).
     Aperiodic { quality: f32, bpm: f32 },
     /// Slow, while the light level shifted: most likely the sensor moving
     /// on the skin (see [`MAX_SLOW_DRIFT`]).
@@ -379,38 +420,84 @@ impl Ppg {
             *sample -= mean;
         }
 
-        // Steadiness: compare the energy of the window's four quarters.
-        // Quarters are 2 s, so each holds at least one beat at 40 BPM and
-        // their energies are comparable.
-        const QUARTER: usize = WINDOW / 4;
         let energy = |part: &[f32]| part.iter().map(|v| v * v).sum::<f32>();
-        let mut quietest = f32::INFINITY;
-        let mut loudest = 0.0f32;
-        for quarter in x.as_chunks::<QUARTER>().0 {
-            let e = energy(quarter);
-            quietest = quietest.min(e);
-            loudest = loudest.max(e);
-        }
         let rms = libm::sqrtf(energy(&x) / WINDOW as f32);
         if rms < MIN_RMS {
             return Err(Rejection::Flat);
         }
-        // Energies, so the amplitude ratio is squared.
-        if loudest > quietest * MAX_AMPLITUDE_RATIO * MAX_AMPLITUDE_RATIO {
-            let ratio = libm::sqrtf(loudest / quietest.max(f32::MIN_POSITIVE));
+
+        // Steadiness: find the parts much louder than the window's median
+        // part, and mask them out (see `MAX_PART_AMPLITUDE`). The median,
+        // not the mean or the quietest: a burst inflates the mean, and a
+        // pulse's quietest second can be far quieter than its typical one.
+        let part_of = |i: usize| i * PARTS / WINDOW;
+        let mut loudness = [0.0f32; PARTS];
+        let mut lengths = [0usize; PARTS];
+        for (i, v) in x.iter().enumerate() {
+            loudness[part_of(i)] += v * v;
+            lengths[part_of(i)] += 1;
+        }
+        for (e, n) in loudness.iter_mut().zip(lengths) {
+            *e /= n as f32;
+        }
+        let mut sorted = loudness;
+        sorted.sort_unstable_by(f32::total_cmp);
+        let median = (sorted[PARTS / 2 - 1] + sorted[PARTS / 2]) / 2.0;
+        let limit = median * MAX_PART_AMPLITUDE * MAX_PART_AMPLITUDE;
+        let quiet = loudness.map(|e| e <= limit);
+        let quiet_parts = quiet.iter().filter(|&&q| q).count();
+        // The loudest part left: `sorted` ascends, and the quiet parts
+        // are its first ones.
+        let loudest_left = sorted[quiet_parts.max(1) - 1];
+        let ratio_squared = MAX_AMPLITUDE_RATIO * MAX_AMPLITUDE_RATIO;
+        if quiet_parts < MIN_QUIET_PARTS || loudest_left > sorted[0] * ratio_squared {
+            // Energies, so the amplitude ratio is the square root.
+            let ratio = libm::sqrtf(sorted[PARTS - 1] / sorted[0].max(f32::MIN_POSITIVE));
             return Err(Rejection::Unsteady { ratio });
+        }
+        let masked = quiet_parts < PARTS;
+        if masked {
+            // Masked samples become zero, so they drop out of every
+            // product below; the rest are re-centred on their own mean.
+            let mut sum = 0.0;
+            for (i, v) in x.iter().enumerate() {
+                if quiet[part_of(i)] {
+                    sum += v;
+                }
+            }
+            let kept = (0..PARTS)
+                .filter(|&p| quiet[p])
+                .map(|p| lengths[p])
+                .sum::<usize>();
+            let mean = sum / kept as f32;
+            for (i, v) in x.iter_mut().enumerate() {
+                *v = if quiet[part_of(i)] { *v - mean } else { 0.0 };
+            }
         }
 
         // The normalised autocorrelation at each lag of interest: the
         // correlation coefficient between the window and itself shifted by
         // `lag`. Normalising each lag by the energy of exactly the samples
         // it uses (rather than the whole window's) keeps long lags, which
-        // sum over fewer samples, comparable with short ones.
+        // sum over fewer samples, comparable with short ones. With parts
+        // masked, a sample is only used where its partner, `lag` away, is
+        // unmasked too.
         let mut r = [0.0f32; MAX_LAG + 1];
         for (lag, r) in r.iter_mut().enumerate().skip(MIN_LAG - 1) {
             let (early, late) = (&x[..WINDOW - lag], &x[lag..]);
             let cross: f32 = early.iter().zip(late).map(|(a, b)| a * b).sum();
-            let norm = libm::sqrtf(energy(early) * energy(late));
+            let norm = if masked {
+                let (mut e, mut l) = (0.0, 0.0);
+                for (i, (a, b)) in early.iter().zip(late).enumerate() {
+                    if quiet[part_of(i)] && quiet[part_of(i + lag)] {
+                        e += a * a;
+                        l += b * b;
+                    }
+                }
+                libm::sqrtf(e * l)
+            } else {
+                libm::sqrtf(energy(early) * energy(late))
+            };
             *r = if norm > 0.0 { cross / norm } else { 0.0 };
         }
 
@@ -457,7 +544,12 @@ impl Ppg {
             drift: self.drift(),
         };
         let bpm = estimate.bpm();
-        if quality < MIN_CORRELATION || !(MIN_BPM..=MAX_BPM).contains(&bpm) {
+        let min_quality = if masked {
+            MIN_MASKED_CORRELATION
+        } else {
+            MIN_CORRELATION
+        };
+        if quality < min_quality || !(MIN_BPM..=MAX_BPM).contains(&bpm) {
             return Err(Rejection::Aperiodic { quality, bpm });
         }
         if bpm < SLOW_BPM && estimate.drift > MAX_SLOW_DRIFT {

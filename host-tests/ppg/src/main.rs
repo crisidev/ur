@@ -295,6 +295,8 @@ struct Summary {
     windows: usize,
     accepted_windows: usize,
     worst_window_error: f64,
+    /// Accepted windows more than 10% off the true rate.
+    wrong_windows: usize,
 }
 
 fn summarise(scenario: &Scenario, seeds: u64, gate: impl Fn(f64) -> bool + Copy) -> Summary {
@@ -306,6 +308,7 @@ fn summarise(scenario: &Scenario, seeds: u64, gate: impl Fn(f64) -> bool + Copy)
         windows: 0,
         accepted_windows: 0,
         worst_window_error: 0.0,
+        wrong_windows: 0,
     };
     for seed in 0..seeds {
         let scenario = Scenario {
@@ -339,7 +342,11 @@ fn summarise(scenario: &Scenario, seeds: u64, gate: impl Fn(f64) -> bool + Copy)
             s.windows += 1;
             if let Ok(bpm) = verdict {
                 s.accepted_windows += 1;
-                s.worst_window_error = s.worst_window_error.max(error(bpm, t - 8.0, t));
+                let error = error(bpm, t - 8.0, t);
+                s.worst_window_error = s.worst_window_error.max(error);
+                if error > 0.1 * scenario.bpm.unwrap_or(0.0) {
+                    s.wrong_windows += 1;
+                }
             }
         }
     }
@@ -351,14 +358,15 @@ fn summarise(scenario: &Scenario, seeds: u64, gate: impl Fn(f64) -> bool + Copy)
 
 fn print_row(name: &str, s: &Summary) {
     println!(
-        "{name:<34} readings {:>3}/{:<3} worst err {:>5.1}  t1 {:>5.1}s | windows ok {:>4}/{:<4} worst err {:>5.1}",
+        "{name:<34} readings {:>3}/{:<3} worst err {:>5.1}  t1 {:>5.1}s | windows ok {:>4}/{:<4} worst err {:>5.1} >10% off {:>3}",
         s.with_reading,
         s.runs,
         s.worst_reading_error,
         s.mean_time_to_reading,
         s.accepted_windows,
         s.windows,
-        s.worst_window_error
+        s.worst_window_error,
+        s.wrong_windows
     );
 }
 
@@ -717,13 +725,19 @@ mod tests {
     }
 
     /// No pulse, no reading: with the accelerometer veto in place, as in
-    /// the firmware. (Without it, sustained random motion occasionally
-    /// passes for a pulse; see the report.)
+    /// the firmware, and without it. At a desk the hand moves too little
+    /// for the veto (`heart::MOTION_LIMIT`), but plenty to make bursts in
+    /// the signal, so the signal checks must keep motion out on their own.
+    /// (Before motion was masked rather than rejected whole, sustained
+    /// random motion passed for a pulse in 18 of these 20 runs; the
+    /// steadiness check on what's left after masking now catches it.)
     #[test]
     fn garbage_never_yields_a_reading() {
         for (name, scenario) in garbage() {
             let s = summarise(&scenario, SEEDS, accelerometer_gate(&scenario));
             assert_eq!(s.with_reading, 0, "{name}: got a reading from no pulse");
+            let s = summarise(&scenario, SEEDS, no_gate);
+            assert_eq!(s.with_reading, 0, "{name}: got a reading without the veto");
         }
     }
 
@@ -760,27 +774,52 @@ mod tests {
         );
     }
 
-    /// Windows containing a movement are rejected from the signal alone.
+    /// A short movement is masked out of the windows it falls in: most are
+    /// read from the pulse either side of it, at the true rate, and the
+    /// rest rejected. A window that's more than half movement is always
+    /// rejected (the movement's edges, where it starts and stops, are
+    /// gentle enough to pass for pulse).
     #[test]
-    fn motion_windows_are_rejected() {
-        let scenario = Scenario {
-            motion: vec![(12.0, 2.0, 1200.0)],
-            ..Scenario::pulse(70.0, 9)
-        };
-        for seed in 0..SEEDS {
-            let outcome = run(
-                &generate(&Scenario {
+    fn motion_is_masked_or_rejected() {
+        // (start s, duration s, whether some windows over it may be read)
+        for (start, duration, readable) in
+            [(12.0, 1.5, true), (12.0, 2.0, true), (10.0, 6.0, false)]
+        {
+            let scenario = Scenario {
+                motion: vec![(start, duration, 1200.0)],
+                ..Scenario::pulse(70.0, 9)
+            };
+            let (mut over, mut read) = (0, 0);
+            for seed in 0..SEEDS {
+                let scenario = Scenario {
                     seed,
                     ..scenario.clone()
-                }),
-                no_gate,
-            );
-            for (t, verdict) in outcome.windows {
-                // The window ending at `t` covers the 8 s before it; the
-                // burst peaks at 13 s.
-                if t - 8.0 < 13.0 && t > 13.0 {
-                    assert!(verdict.is_err(), "seed {seed}: accepted window at {t} s");
+                };
+                let (polls, beats) = generate_with_beats(&scenario);
+                for (t, verdict) in run(&polls, no_gate).windows {
+                    // The window ending at `t` covers the 8 s before it.
+                    let overlap = t.min(start + duration) - (t - 8.0).max(start);
+                    if overlap <= 0.0 {
+                        continue;
+                    }
+                    over += 1;
+                    let Ok(bpm) = verdict else { continue };
+                    read += 1;
+                    let truth = realised_bpm(&beats, t - 8.0, t);
+                    assert!(
+                        overlap < 4.0,
+                        "{duration} s at {start} s, seed {seed}: read {bpm:.1} BPM at {t:.1} s"
+                    );
+                    assert!(
+                        (f64::from(bpm) - truth).abs() <= tolerance(&scenario),
+                        "{duration} s at {start} s, seed {seed}: read {bpm:.1} BPM at {t:.1} s, \
+                         truth {truth:.1}"
+                    );
                 }
+            }
+            println!("{duration} s of motion: {read}/{over} windows over it read");
+            if duration <= 2.0 {
+                assert!(read * 2 > over, "{duration} s: only {read}/{over} read");
             }
         }
     }
@@ -898,6 +937,28 @@ mod tests {
                 rates[0],
                 session.reference
             );
+        }
+    }
+
+    /// Desk sessions (today's one of the field log, 2026-11-09, and the
+    /// day before's) with a pulse between the hand's bursts: each has a
+    /// window with a burst in it that used to be rejected whole, short of
+    /// the three a reading needs. Masked out, all of them agree with the
+    /// Garmin.
+    #[test]
+    fn desk_bursts_are_masked_out() {
+        let text = include_str!("../fixtures/desk-burst.txt");
+        for session in parse_sessions(text) {
+            let rates = accepted(&session);
+            assert!(rates.len() >= 3, "{}: only {rates:?}", session.start);
+            for bpm in rates {
+                assert!(
+                    (bpm - session.reference).abs() <= 5.0,
+                    "{}: {bpm:.0} BPM against {}",
+                    session.start,
+                    session.reference
+                );
+            }
         }
     }
 
