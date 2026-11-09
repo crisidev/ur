@@ -25,8 +25,7 @@
 //! reset reason, and where the previous run panicked (see [`panic`]).
 
 use core::cell::Cell;
-#[cfg(feature = "field-log")]
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use defmt::{info, warn};
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
@@ -459,13 +458,19 @@ pub fn report_last_reset() {
     } else {
         "?"
     };
-    // The message as the panic handler formatted and truncated it (on a
-    // character boundary). The breadcrumb's checks above make garbage
-    // unlikely, but RAM is RAM: keep whatever prefix is valid UTF-8.
+    // The message as the panic handler kept it (see `panic`): truncated on
+    // a character boundary, and empty if it was a formatted one. The
+    // breadcrumb's checks above make garbage unlikely, but RAM is RAM: keep
+    // whatever prefix is valid UTF-8.
     let message = &crumb.message[..(crumb.message_len as usize).min(MESSAGE)];
     let message = core::str::from_utf8(message).unwrap_or_else(|e| {
         core::str::from_utf8(&message[..e.valid_up_to()]).expect("valid up to there")
     });
+    let message = if message.is_empty() {
+        "(formatted: not kept)"
+    } else {
+        message
+    };
     warn!(
         "the previous run panicked at {}:{}: {} ({=i32} B of stack left)",
         file, crumb.line, message, stack_left
@@ -511,7 +516,8 @@ struct Breadcrumb {
     /// The stack pointer when it happened: how close the stack came to its
     /// end (see [`STACK_END`]).
     sp: u32,
-    /// The start of the panic's message, formatted (see [`Truncated`]).
+    /// The start of the panic's message, if it's a plain string (see
+    /// [`panic`]).
     message: [u8; MESSAGE],
     /// A backtrace, of sorts: see [`scan_stack`].
     trace: [u32; TRACE],
@@ -531,11 +537,8 @@ impl Breadcrumb {
     };
 }
 
-/// Bytes of a panic's message kept in a breadcrumb. What matters most is
-/// a fault in Nordic's libraries, whose message names the assert that fired
-/// (see [`sdc_fault`]). The blobs have no file names in them, and other
-/// projects' reports show numbers instead (`SoftDevice Controller ASSERT:
-/// 92, 4317`), so that fits; most Rust panic messages do too.
+/// Bytes of a panic's message kept in a breadcrumb: enough for most plain
+/// ones (`explicit panic`, `SoftDevice Controller ASSERT`, …).
 const MESSAGE: usize = 60;
 
 /// Return addresses kept in a breadcrumb: what's left of its 192 bytes
@@ -736,7 +739,6 @@ extern "C" fn watchdog_bite(frame: *const u32) -> ! {
 /// [`PANICKING_MAGIC`] and resets at once, keeping the first panic's record.
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    use core::fmt::Write;
     use core::ptr::addr_of_mut;
 
     cortex_m::interrupt::disable();
@@ -751,9 +753,17 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
             magic.write_volatile(BREADCRUMB_MAGIC);
             cortex_m::peripheral::SCB::sys_reset();
         }
-        let (file, line) = info
-            .location()
-            .map_or(("?", 0), |location| (location.file(), location.line()));
+        // A fault in Nordic's libraries names their assert's file and line
+        // instead (see `sdc_fault`).
+        let nordic = NORDIC_FILE.load(Ordering::Relaxed);
+        let (file, line) = if nordic.is_null() {
+            info.location()
+                .map_or(("?", 0), |location| (location.file(), location.line()))
+        } else {
+            let len = NORDIC_FILE_LEN.load(Ordering::Relaxed) as usize;
+            let file = core::str::from_utf8_unchecked(core::slice::from_raw_parts(nordic, len));
+            (file, NORDIC_LINE.load(Ordering::Relaxed))
+        };
         addr_of_mut!((*crumb).version).write_volatile(crate::firmware::version_word());
         addr_of_mut!((*crumb).file).write_volatile(file.as_ptr());
         addr_of_mut!((*crumb).file_len).write_volatile(file.len() as u32);
@@ -769,22 +779,26 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         let sp = cortex_m::register::msp::read() as *const u32;
         addr_of_mut!((*crumb).trace).write_volatile(scan_stack(sp, 4096, true));
 
-        // Formatting runs the message's `Display` impls, which could panic
-        // in turn; the guard above then resets with what's recorded so far.
-        let mut message = Truncated {
-            buffer: &mut *addr_of_mut!((*crumb).message),
-            len: 0,
-            full: false,
-        };
-        let _ = write!(message, "{}", info.message());
-        addr_of_mut!((*crumb).message_len).write_volatile(message.len as u32);
+        // Only a message that's a plain string (`panic!("…")` without
+        // arguments, `explicit panic`, …), not a formatted one (`expect`'s,
+        // an index out of bounds, …). Formatting it would take `core::fmt`,
+        // the one thing here that could panic in turn, and the location and
+        // backtrace already say where it was.
+        // Cut by length rather than by slicing the `str`, whose check (for
+        // a cut inside a character, which `floor_char_boundary` rules out)
+        // would bring in 4.8 KB of Unicode tables to format its panic.
+        let message = info.message().as_str().unwrap_or("");
+        let len = message.floor_char_boundary(MESSAGE);
+        addr_of_mut!((*crumb).message)
+            .cast::<u8>()
+            .copy_from_nonoverlapping(message.as_ptr(), len);
+        addr_of_mut!((*crumb).message_len).write_volatile(len as u32);
         magic.write_volatile(BREADCRUMB_MAGIC);
     }
-    // Log it, for a probe, which sees it at once, and in full. Not in field
-    // builds: there it would only reach the RTT buffer, whose RAM the reset
-    // clears before the field log could save it, so the next boot's report
-    // of the breadcrumb is all that's kept either way. Leaving it out there
-    // saves the ~470 bytes of `core::fmt` glue it takes.
+    // Log it, for a probe, which sees it at once. Not in field builds:
+    // there it would only reach the RTT buffer, whose RAM the reset clears
+    // before the field log could save it, so the next boot's report of the
+    // breadcrumb is all that's kept either way.
     #[cfg(not(feature = "field-log"))]
     {
         // Only now, with everything recorded: this is what can panic again
@@ -792,7 +806,19 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         // fresh one. So mark it in progress again for the duration.
         // SAFETY: As above.
         unsafe { core::ptr::addr_of_mut!((*crumb).magic).write_volatile(PANICKING_MAGIC) };
-        defmt::error!("{}", defmt::Display2Format(info));
+        // SAFETY: As above; written in full above.
+        let (file, line, message) = unsafe {
+            let crumb = &*crumb;
+            (
+                core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+                    crumb.file,
+                    crumb.file_len as usize,
+                )),
+                crumb.line,
+                core::str::from_utf8_unchecked(&crumb.message[..crumb.message_len as usize]),
+            )
+        };
+        defmt::error!("panicked at {=str}:{=u32}: {=str}", file, line, message);
         // SAFETY: As above.
         unsafe { core::ptr::addr_of_mut!((*crumb).magic).write_volatile(BREADCRUMB_MAGIC) };
     }
@@ -861,36 +887,6 @@ pub fn guard_stack() {
     cortex_m::asm::isb();
 }
 
-/// Formats into a fixed buffer, for the panic handler (which has no heap):
-/// keeps what fits, cut at a character boundary, and drops the rest.
-struct Truncated<'a> {
-    buffer: &'a mut [u8],
-    len: usize,
-    /// Once something didn't fit, nothing more is kept, even if it would
-    /// fit: the message is its start, without holes.
-    full: bool,
-}
-
-impl core::fmt::Write for Truncated<'_> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        if self.full {
-            return Ok(());
-        }
-        let room = self.buffer.len() - self.len;
-        let take = if s.len() <= room {
-            s.len()
-        } else {
-            self.full = true;
-            s.floor_char_boundary(room)
-        };
-        self.buffer[self.len..][..take].copy_from_slice(&s.as_bytes()[..take]);
-        self.len += take;
-        // Never an error, even when full: a `Display` impl that unwraps its
-        // writes would panic again.
-        Ok(())
-    }
-}
-
 // ==============================================================================
 // Nordic's fault handlers
 // ==============================================================================
@@ -911,8 +907,8 @@ impl core::fmt::Write for Truncated<'_> {
 // to `sdc_init` and `mpsl_init`, once each, at startup. So build.rs has the
 // linker wrap those two (`--wrap=sdc_init`): calls to `sdc_init` go to
 // `__wrap_sdc_init`, below, and `__real_sdc_init` names the original. The
-// wrappers pass the originals our handlers instead, which `core::panic!` with
-// the file and line: a message that the breadcrumb keeps.
+// wrappers pass the originals our handlers instead, which note the file and
+// line for the panic handler to keep in the breadcrumb, then `core::panic!`.
 
 /// The SoftDevice Controller's fault handler (see above). Worded like
 /// Nordic's own (in the nRF Connect SDK), to search for.
@@ -922,8 +918,8 @@ impl core::fmt::Write for Truncated<'_> {
 /// `file` is null or a NUL-terminated string, as the controller passes.
 pub unsafe extern "C" fn sdc_fault(file: *const core::ffi::c_char, line: u32) {
     // SAFETY: Passed on from our caller.
-    let file = unsafe { assert_file(file) };
-    panic!("SoftDevice Controller ASSERT: {}, {}", file, line)
+    note_assert(unsafe { assert_file(file) }, line);
+    panic!("SoftDevice Controller ASSERT")
 }
 
 /// The MPSL's assert handler (see above); like [`sdc_fault`].
@@ -933,8 +929,23 @@ pub unsafe extern "C" fn sdc_fault(file: *const core::ffi::c_char, line: u32) {
 /// `file` is null or a NUL-terminated string, as the MPSL passes.
 unsafe extern "C" fn mpsl_assert(file: *const core::ffi::c_char, line: u32) {
     // SAFETY: Passed on from our caller.
-    let file = unsafe { assert_file(file) };
-    panic!("MPSL ASSERT: {}, {}", file, line)
+    note_assert(unsafe { assert_file(file) }, line);
+    panic!("MPSL ASSERT")
+}
+
+/// The file and line of the Nordic assert that fired, for the panic
+/// handler to keep in place of the panic's own location: passed this way,
+/// rather than formatted into the message, so that the handler needs no
+/// `core::fmt`. The file stays where the blob (or `debug`) has it, in our
+/// flash, as a panic's location does.
+static NORDIC_FILE: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
+static NORDIC_FILE_LEN: AtomicU32 = AtomicU32::new(0);
+static NORDIC_LINE: AtomicU32 = AtomicU32::new(0);
+
+fn note_assert(file: &'static str, line: u32) {
+    NORDIC_FILE_LEN.store(file.len() as u32, Ordering::Relaxed);
+    NORDIC_LINE.store(line, Ordering::Relaxed);
+    NORDIC_FILE.store(file.as_ptr().cast_mut(), Ordering::Relaxed);
 }
 
 /// The file name a fault handler gets, or `?` if there's none, or it isn't
@@ -942,8 +953,8 @@ unsafe extern "C" fn mpsl_assert(file: *const core::ffi::c_char, line: u32) {
 ///
 /// # Safety
 ///
-/// `file` is null or a NUL-terminated string that outlives `'a`.
-unsafe fn assert_file<'a>(file: *const core::ffi::c_char) -> &'a str {
+/// `file` is null or a NUL-terminated string that's never freed.
+unsafe fn assert_file(file: *const core::ffi::c_char) -> &'static str {
     if file.is_null() {
         return "?";
     }

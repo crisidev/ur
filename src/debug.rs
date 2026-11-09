@@ -120,10 +120,10 @@ pub async fn input_task() {
             // The way a dependency's `defmt::panic!` or `defmt::unwrap!`
             // fails, for testing the panic breadcrumb's backtrace.
             11 => defmt::panic!("debug: panicking on purpose"),
-            // The way a fault in Nordic's SoftDevice Controller fails: a
-            // `core::panic!` with a formatted message (the assert's file and
-            // line, here `y`), for testing that the breadcrumb keeps it. `x`
-            // 1 makes the message too long to keep whole.
+            // The way a fault in Nordic's SoftDevice Controller fails: the
+            // assert's file and line (here `y`) noted for the breadcrumb,
+            // then a `core::panic!`, for testing that the breadcrumb keeps
+            // them. `x` 1 gives it a long file name.
             12 => {
                 let file = if x == 1 {
                     c"debug: a file name long enough that the message is cut short"

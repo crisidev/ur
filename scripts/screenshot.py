@@ -25,7 +25,7 @@ every ASCII symbol between them, `notify:8,0` curly quotes, a dash, and an
 ellipsis; `notify:X,H` arrived H
 hours ago, for the history's arrival times). `hang`, `panic` (a `defmt::panic!`) and `fault` (a
 `core::panic!` as from a SoftDevice Controller fault, at "line" Y;
-`fault:1,Y` with a message too long to keep whole) crash the watch on
+`fault:1,Y` with a long file name) crash the watch on
 purpose, to test the crash reports. `battery:MV` makes the watch read its
 battery as MV millivolts from then on (`battery:0` for the real reading
 again), e.g. `battery:3300` to test what a critically low battery does: a
