@@ -54,10 +54,22 @@ pub const SAMPLE_HZ: f32 = 1e6 / NOMINAL_PERIOD_US as f32;
 /// multiple of four, for the steadiness check's quarters.
 pub const WINDOW: usize = 212;
 
-/// Samples to discard after a reset, while the filters settle. The highpass
-/// is primed with the first sample (see [`Ppg::push`]), so this only has to
-/// cover the response to whatever the signal does in its first moments.
-const SETTLE: usize = 27;
+/// Conversions to throw away after the sensor starts (or restarts at a new
+/// level): the first comes out 3-5% darker than the rest, presumably while
+/// the LED warms up. That's a step of 70-160 counts, ten or twenty times
+/// the pulse, and primed with it, the highpass rang for seconds: in field
+/// logs, the first two windows of a session were dominated by the
+/// transient, and a desk-bound session, which gives up at 12 s, has only
+/// those two.
+const WARMUP: usize = 1;
+
+/// Samples to discard after warming up, while the filters settle. The
+/// highpass is primed with the first sample it gets (see [`Ppg::push`]),
+/// so this only has to cover the response to whatever the signal does in
+/// its first moments: half a second. (A second, which this was while the
+/// warm-up sample went through the filters, cost every session a second's
+/// LED before its first window, for no gain in field-log replays.)
+const SETTLE: usize = 13;
 
 /// Samples between estimates: 2 s. Consecutive windows overlap by 6 s, so
 /// estimates closer together than this would mostly repeat each other, and
@@ -322,6 +334,10 @@ impl Ppg {
     /// Adds one raw sample. Every [`ESTIMATE_EVERY`] samples once the
     /// window is full, returns that window's verdict.
     pub fn push(&mut self, raw: u32) -> Option<Result<Estimate, Rejection>> {
+        self.seen = self.seen.saturating_add(1);
+        if self.seen <= WARMUP {
+            return None;
+        }
         let raw = raw as f32;
         let offset = *self.offset.get_or_insert(raw);
         let mut x = raw - offset;
@@ -330,14 +346,13 @@ impl Ppg {
         }
         x = self.lowpass.step(x);
 
-        self.seen = self.seen.saturating_add(1);
-        if self.seen <= SETTLE {
+        if self.seen <= WARMUP + SETTLE {
             return None;
         }
         self.window[self.next] = x;
         self.next = (self.next + 1) % WINDOW;
 
-        let stored = self.seen - SETTLE;
+        let stored = self.seen - WARMUP - SETTLE;
         self.block_sum += raw;
         if stored.is_multiple_of(ESTIMATE_EVERY) {
             self.blocks[self.block_next] = self.block_sum / ESTIMATE_EVERY as f32;

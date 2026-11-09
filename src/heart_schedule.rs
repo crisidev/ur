@@ -130,7 +130,7 @@ pub const START_CALM_POLLS: u8 = 3;
 /// has passed the signal checks yet and the wrist has been busy (above
 /// `heart::CALM`) at most of its level checks (see [`give_up`]).
 ///
-/// The first two windows end at ~9 and ~11 s. Replaying 129 field-log
+/// The first two windows end at ~8.5 and ~10.5 s. Replaying 129 field-log
 /// sessions (`host-tests/ppg`), giving up at 12 s cut 45 failing sessions
 /// short, saving ~860 s of LED (~19 s each), and lost three background
 /// readings (at a desk, from windows that only passed after 15 s of a busy

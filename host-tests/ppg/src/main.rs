@@ -872,6 +872,35 @@ mod tests {
         }
     }
 
+    /// Sessions (an afternoon at 59 BPM, a night at 46) whose first
+    /// conversion came out darker than the rest, as most do. Fed to the
+    /// filters, that step drowned the first window's pulse (it was read as
+    /// aperiodic, quality ~0.3); skipped, all three windows to a reading
+    /// agree with the Garmin.
+    #[test]
+    fn the_first_window_survives_the_led_warming_up() {
+        let text = include_str!("../fixtures/warmup.txt");
+        for session in parse_sessions(text) {
+            let [first, second, ..] = session.samples[..] else {
+                panic!("{}: too short", session.start);
+            };
+            assert!(
+                first * 100 < second * 97,
+                "{}: no warm-up step",
+                session.start
+            );
+            let rates = accepted(&session);
+            assert!(rates.len() >= 3, "{}: only {rates:?}", session.start);
+            assert!(
+                (rates[0] - session.reference).abs() <= 3.0,
+                "{}: first window {:.1} BPM against {}",
+                session.start,
+                rates[0],
+                session.reference
+            );
+        }
+    }
+
     #[test]
     fn consensus_needs_agreement() {
         let mut c = Consensus::new();
