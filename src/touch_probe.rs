@@ -24,7 +24,11 @@
 //! - **0xA0–0xBF and 0xE0–0xFF**, once after each configuration (the chip
 //!   only listens just after its reset): the chip and firmware IDs (0xA7,
 //!   0xA9: which variant this is) and its settings (scan thresholds, auto
-//!   sleep and reset times), for reading the reports against.
+//!   sleep and reset times), for reading the reports against. On the dev
+//!   kit, 0xA7 reads 0xB4 (a CST816S), 0xA9 firmware 1, and BPC0 and
+//!   BPC1 200 and 207; but 0xE0–0xFF all read 0, even `IrqCtl` just
+//!   after we wrote it 0x70: the settings are write-only, or not readable
+//!   this way. Kept in case they read otherwise while touched.
 //!
 //! Each report is one `info` line: a sequence number (gaps are lines the
 //! RTT buffer dropped), uptime in milliseconds, and the bytes, 0x00 on.
