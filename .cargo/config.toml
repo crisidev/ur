@@ -8,6 +8,11 @@ target = "thumbv7em-none-eabihf"
 # CARGO_TARGET_THUMBV7EM_NONE_EABIHF_RUNNER to your own runner, which
 # overrides this without changing the repository.
 runner = "scripts/run-esprobe.sh"
+# `aes_compact` picks the `aes` crate's smaller, slower software AES: 0.8 KB
+# less flash, and AES only runs a few blocks at a time (pairing, BTHome
+# packets). A worktree nested in the checkout passes this twice (see
+# build.rs), which is harmless for a `--cfg`.
+rustflags = ["--cfg", "aes_compact"]
 # The linker scripts are passed by build.rs, not `rustflags` here; see there
 # for why.
 
