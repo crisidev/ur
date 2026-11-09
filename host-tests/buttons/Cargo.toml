@@ -10,3 +10,7 @@ publish = false
 
 [dependencies]
 embassy-time = "0.5.1"
+
+# `cargo kani` builds with `--cfg kani`, for the proofs in `src/main.rs`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
