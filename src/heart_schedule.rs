@@ -34,11 +34,15 @@
 //!   on a desk) would otherwise retry every few minutes all day. Only a
 //!   watch that was *off* the wrist and then moved retries sooner: it was
 //!   likely picked up to be put on. A session that failed on a *calm*
-//!   wrist backs off only to [`CALM_RETRY_INTERVAL`], for up to
-//!   [`CALM_RETRIES`] in a row: stillness is when a reading is possible at
-//!   all, and the signal of a still wrist comes and goes.
+//!   wrist backs off only to [`CALM_RETRY_INTERVAL`]: stillness is when a
+//!   reading is possible at all, and the signal of a still wrist comes and
+//!   goes.
 //! - **An LED budget** ([`LED_BUDGET`] seconds an hour, as a token bucket)
 //!   caps what all of the above can spend, however the day goes.
+//! - **An overdue reading spends more** ([`OVERDUE`]): an hour without
+//!   one, and the budget doubles and failures retry every
+//!   [`OVERDUE_RETRY`], until the next reading. A gap in the data is worth
+//!   more than the battery it takes to avoid.
 //!
 //! Sessions while the clock face shows aren't scheduled (someone is
 //! looking, so `heart` measures right away), but their readings count as
@@ -105,8 +109,7 @@ pub const ELEVATED_BY: u8 = 15;
 pub const FAILED_INTERVAL: u32 = 5 * 60;
 
 /// The longest wait after a session that failed on a calm wrist (see
-/// [`Outcome::CalmNoReading`]), for up to [`CALM_RETRIES`] such failures in
-/// a row.
+/// [`Outcome::CalmNoReading`]).
 ///
 /// Lying still awake for an hour (a field log, 2026-11-09, with a Garmin
 /// alongside reading 51-73), the back-off above allowed three sessions, at
@@ -115,15 +118,14 @@ pub const FAILED_INTERVAL: u32 = 5 * 60;
 /// the back-off is for, and calm failures are rarer (3 of 17 sessions in
 /// that log, 5 of 104 in a night's, none of a desk day's 39), so this
 /// costs little: an hour of calm failures takes 7 sessions instead of 4,
-/// ~95 s more of LED, once (see [`CALM_RETRIES`]).
+/// ~95 s more of LED.
+///
+/// This used to stop after six in a row (an hour), in case the watch lay on
+/// something that reflects the LED like skin (and keeps as still as a
+/// wrist), which fails calm too. An hour of failures makes a reading
+/// overdue, though, which retries as often (see [`OVERDUE_RETRY`]), and the
+/// doubled budget is what bounds such a surface now.
 pub const CALM_RETRY_INTERVAL: u32 = 10 * 60;
-
-/// Calm failures in a row after which the back-off goes on as for any
-/// failure. A watch lying on something that reflects the LED like skin
-/// (and keeps as still as a wrist) fails calm too, and would otherwise
-/// spend the whole [`LED_BUDGET`] on it, all night; six (an hour) cover
-/// lying still for a while.
-pub const CALM_RETRIES: u8 = 6;
 
 /// The longest wait after failures: the watch is likely off the wrist (on
 /// a nightstand, in a drawer). Showing the clock face still measures at
@@ -218,14 +220,51 @@ pub const SESSION_RESERVE: u32 = 30;
 /// Seconds for the bucket to earn one second of LED back.
 const REFILL_EVERY: u32 = 3600 / LED_BUDGET;
 const _: () = assert!(3600 % LED_BUDGET == 0, "the refill rate must be whole");
+const _: () = assert!(
+    REFILL_EVERY.is_multiple_of(2),
+    "the overdue refill rate must be whole"
+);
 const _: () = assert!(SESSION_RESERVE <= LED_BUDGET);
+
+/// How long without a reading (any, watched or not; or since boot) before
+/// one is overdue, asleep or awake. Overdue, the [`LED_BUDGET`] doubles
+/// ([`OVERDUE_BUDGET`]) and a failure is retried within [`OVERDUE_RETRY`],
+/// so that more sessions, and more of them brighter (see [`brighter`]),
+/// have a go, until a reading comes and it all returns to normal.
+///
+/// An hour: awake, readings come every 2-20 minutes when they come at all,
+/// so an hour is three or more tries in a row that failed, and a gap the
+/// day's chart shows. Asleep, they come every 5 minutes, so an hour is a
+/// dozen missed; a shorter limit by night would cut into sleep staging's
+/// data less, but nights read 88% of the time, and a night without
+/// readings is more often a watch on the nightstand (which this leaves
+/// alone; see [`Outcome::OffWrist`]) than a faint pulse. Longer by night
+/// would only save LED on nights that aren't reading anyway.
+///
+/// At its worst (a whole day overdue, every session failing), it doubles
+/// the LED's hourly cap: from ~0.14 mA to ~0.28 mA on average, ~3.3 mAh a
+/// day more (see docs/power-plan.md).
+pub const OVERDUE: u32 = 60 * 60;
+
+/// The LED budget, and its refill rate, while a reading is overdue (see
+/// [`OVERDUE`]).
+pub const OVERDUE_BUDGET: u32 = 2 * LED_BUDGET;
+
+/// The longest wait after a failure while a reading is overdue (see
+/// [`OVERDUE`]), unless the watch was off the wrist: as for a calm failure
+/// (see [`CALM_RETRY_INTERVAL`]), and with no limit on how many, as the
+/// doubled budget bounds them. At a desk, failures (a busy wrist, or a
+/// third interruption) otherwise back off to 20 minutes, or an hour with
+/// no movement in between; with this, a desk day that hasn't read for an
+/// hour tries six times an hour at its still moments.
+pub const OVERDUE_RETRY: u32 = CALM_RETRY_INTERVAL;
 
 /// Consecutive failures counted (beyond this the wait is capped anyway).
 const MAX_FAILURES: u8 = 5;
 
 // Intervals are stored as `u16` to keep the heart task's state small.
 const _: () = assert!(MAX_FAILED_INTERVAL <= u16::MAX as u32);
-const _: () = assert!(LED_BUDGET <= u16::MAX as u32);
+const _: () = assert!(OVERDUE_BUDGET <= u16::MAX as u32);
 
 // ==============================================================================
 // The schedule
@@ -248,6 +287,9 @@ pub enum Why {
     Elevated,
     /// The last session(s) had no reading.
     Retry,
+    /// The last session(s) had no reading, and neither has any for an hour
+    /// (see [`OVERDUE`]): sooner than [`Why::Retry`] would be.
+    Overdue,
     /// Due already by one of the above, but the LED budget is spent until
     /// then.
     Budget,
@@ -299,12 +341,14 @@ struct Resting {
     candidate: u8,
 }
 
-/// The scheduling state, 24 bytes: the heart task holds it across every
+/// The scheduling state, 28 bytes: the heart task holds it across every
 /// await, so it lives in that task's static future, where RAM is tight.
 #[derive(Clone, Debug)]
 pub struct Schedule {
     /// When the last counted session ended.
     last: u32,
+    /// When the last reading came (0: none since boot), for [`OVERDUE`].
+    last_reading: u32,
     /// The wait after `last` at rest, in seconds; 0 before the first
     /// session (which makes it due at once).
     interval: u16,
@@ -340,6 +384,7 @@ impl Schedule {
     pub const fn new() -> Self {
         Self {
             last: 0,
+            last_reading: 0,
             interval: 0,
             failures: 0,
             off_wrist: false,
@@ -372,7 +417,7 @@ impl Schedule {
         let moved = moved(active_polls, asleep);
         let (wait, why) = if self.failures > 0 {
             let retry = (FAILED_INTERVAL << (self.failures - 1)).min(MAX_FAILED_INTERVAL);
-            let retry = if (1..=CALM_RETRIES).contains(&self.calm_failures) {
+            let retry = if self.calm_failures > 0 {
                 retry.min(CALM_RETRY_INTERVAL)
             } else {
                 retry
@@ -398,15 +443,21 @@ impl Schedule {
         } else {
             (u32::from(self.interval), Why::Rest)
         };
-        let at = self.last.saturating_add(wait);
+        let mut at = self.last.saturating_add(wait);
+        let mut why = why;
+        // A reading overdue: a failure is retried sooner, but not off the
+        // wrist (a nightstand), where there's no reading to be had.
+        if self.failures > 0 && !self.off_wrist {
+            let soonest = (self.last + OVERDUE_RETRY).max(self.overdue_from());
+            if soonest < at {
+                (at, why) = (soonest, Why::Overdue);
+            }
+        }
 
         // The budget: when will the bucket hold a whole session's worth?
-        let tokens = u32::from(self.tokens);
-        if tokens < SESSION_RESERVE {
-            let affordable = self.refilled_at + (SESSION_RESERVE - tokens) * REFILL_EVERY;
-            if affordable > at {
-                return (affordable, Why::Budget);
-            }
+        let affordable = self.holds(SESSION_RESERVE);
+        if affordable > at {
+            return (affordable, Why::Budget);
         }
         (at, why)
     }
@@ -458,6 +509,10 @@ impl Schedule {
         self.last = now;
         match outcome {
             Outcome::Reading(bpm) => {
+                // No longer overdue: back to the usual budget (see
+                // `OVERDUE`), keeping no more than it holds.
+                self.last_reading = now;
+                self.tokens = self.tokens.min(LED_BUDGET as u16);
                 self.failures = 0;
                 self.off_wrist = false;
                 self.calm_failures = 0;
@@ -538,25 +593,73 @@ impl Schedule {
 
     /// LED seconds left in the budget at `now`.
     pub fn budget(&self, now: u32) -> u32 {
-        self.tokens_at(now)
+        self.refilled(now).0
     }
 
-    fn tokens_at(&self, now: u32) -> u32 {
-        let earned = now.saturating_sub(self.refilled_at) / REFILL_EVERY;
-        (u32::from(self.tokens) + earned).min(LED_BUDGET)
+    /// When a reading becomes overdue (see [`OVERDUE`]), unless one comes.
+    fn overdue_from(&self) -> u32 {
+        self.last_reading.saturating_add(OVERDUE)
     }
 
-    /// Brings `tokens` up to date, keeping the part-earned second (so
-    /// frequent refills don't lose time to rounding).
-    fn refill(&mut self, now: u32) {
-        let tokens = self.tokens_at(now);
-        if tokens == LED_BUDGET {
-            self.refilled_at = now;
-        } else {
-            let earned = tokens - u32::from(self.tokens);
-            self.refilled_at += earned * REFILL_EVERY;
+    /// The budget at `now`, and when its last whole second was earned (to
+    /// keep the part-earned one, so frequent refills don't lose time to
+    /// rounding): at [`LED_BUDGET`]'s rate, into a bucket that size, until
+    /// a reading is overdue, and twice that after.
+    fn refilled(&self, now: u32) -> (u32, u32) {
+        let from = self.overdue_from();
+        let earn = |(tokens, at): (u32, u32), until: u32, every: u32, cap: u32| {
+            if until <= at {
+                return (tokens, at);
+            }
+            let earned = (until - at) / every;
+            if tokens + earned >= cap {
+                (cap.max(tokens), until)
+            } else {
+                (tokens + earned, at + earned * every)
+            }
+        };
+        let usual = earn(
+            (u32::from(self.tokens), self.refilled_at),
+            now.min(from),
+            REFILL_EVERY,
+            LED_BUDGET,
+        );
+        if now <= from {
+            return usual;
         }
+        // Overdue: what was part-earned at the usual rate is lost, at most
+        // one second's worth, once.
+        let (tokens, at) = usual;
+        earn(
+            (tokens, at.max(from)),
+            now,
+            REFILL_EVERY / 2,
+            OVERDUE_BUDGET,
+        )
+    }
+
+    /// When the bucket will hold `want` seconds, if no session spends any
+    /// before then.
+    fn holds(&self, want: u32) -> u32 {
+        let tokens = u32::from(self.tokens);
+        if tokens >= want {
+            return 0;
+        }
+        let from = self.overdue_from();
+        let usual = self.refilled_at + (want - tokens) * REFILL_EVERY;
+        if usual <= from {
+            return usual;
+        }
+        // Earned at the usual rate until overdue, twice as fast after.
+        let by_then = from.saturating_sub(self.refilled_at) / REFILL_EVERY;
+        self.refilled_at.max(from) + (want - tokens - by_then) * (REFILL_EVERY / 2)
+    }
+
+    /// Brings `tokens` up to date.
+    fn refill(&mut self, now: u32) {
+        let (tokens, at) = self.refilled(now);
         self.tokens = tokens as u16;
+        self.refilled_at = at;
     }
 }
 
