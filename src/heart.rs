@@ -12,7 +12,10 @@
 //!   ([`heart_schedule::give_up`]), and
 //! - while the clock face is showing (see
 //!   [`crate::heart_reading::set_watching`]), continuously,
-//!   since then someone is looking at the number.
+//!   since then someone is looking at the number, and
+//! - while Gadgetbridge's live activity asks for it (see [`crate::live`]
+//!   and [`crate::heart_reading::set_live`]), continuously too, for as long
+//!   as it asks (at most `live::LIMIT`).
 //!
 //! Between sessions the sensor is fully off: no LED, no oscillator.
 //!
@@ -426,7 +429,11 @@ pub async fn heart_task(i2c: Device) {
         schedule.ended(uptime(), led_seconds, outcome, background, before);
 
         // A session only ends while someone's watching if there's no
-        // signal to be had; don't start another until they look away.
+        // signal to be had (off the wrist, typically); don't start another
+        // until they look away, or Gadgetbridge stops asking.
+        //
+        // TODO: retry now and then while Gadgetbridge asks, in case the
+        // watch goes on a wrist meanwhile.
         while watching() {
             Timer::after_secs(1).await;
         }

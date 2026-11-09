@@ -43,8 +43,8 @@ use crate::system_off::Reason;
 use crate::touch::Touch;
 use crate::ui::{App, Status, ThemeChoice};
 use crate::{
-    activity, alarm, aranet, ble, brightness, buttons, clock, debug, dfu, geo, glance, power,
-    sleep, storage, temperature, touch, ui,
+    activity, alarm, aranet, ble, brightness, buttons, clock, debug, dfu, gb, geo, glance, live,
+    power, sleep, storage, temperature, touch, ui,
 };
 
 // ==============================================================================
@@ -331,6 +331,8 @@ pub struct UiLoop {
     /// six buttons (see [`bthome::battery_due`]); `None` while they're not
     /// on for it, so turning them on sends it.
     battery_sent: Option<u8>,
+    /// Gadgetbridge's live activity, while it asks (see [`live`]).
+    live: live::Live,
 }
 
 impl UiLoop {
@@ -361,6 +363,7 @@ impl UiLoop {
             sighting_seen: None,
             location_seen: 0,
             battery_sent: None,
+            live: live::Live::new(),
         };
         (app, ui)
     }
@@ -438,6 +441,7 @@ impl UiLoop {
         // them to.
         let connected = ble::CONNECTED.load(Ordering::Relaxed);
         app.set_connected(connected);
+        self.live_activity(now, connected);
         let air = ble::NEARBY.lock(|nearby| {
             nearby
                 .borrow()
@@ -590,6 +594,38 @@ impl UiLoop {
         board.pet_watchdog();
         clock::checkpoint();
         None
+    }
+
+    /// Gadgetbridge's live activity (see [`live`]): what it asked for
+    /// since the last pass, its report if one's due, and whether the heart
+    /// rate sensor should run for it.
+    fn live_activity(&mut self, now: Instant, connected: bool) {
+        let seconds = now.as_secs() as u32;
+        let steps = activity::steps_today().unwrap_or(0);
+        if let Some(request) = live::take() {
+            if request.wanted() {
+                info!(
+                    "live: heart rate {}, steps {}, every {} s",
+                    request.heart_rate, request.steps, request.interval
+                );
+            }
+            if let Some(ended) = self.live.ask(request, seconds, steps) {
+                info!("live: ended ({=str})", ended.as_str());
+            }
+        }
+        let reading = heart::latest().map(|(bpm, at)| (bpm, at.as_secs() as u32));
+        match self.live.poll(seconds, connected, steps, reading) {
+            live::Poll::Idle => {}
+            live::Poll::Report(report) => {
+                // Dropped if the queue's full: the next one is due soon.
+                let _ = ble::OUTBOX.try_send(gb::Outgoing::Live {
+                    steps: report.steps,
+                    heart_rate: report.heart_rate,
+                });
+            }
+            live::Poll::Ended(ended) => info!("live: ended ({=str})", ended.as_str()),
+        }
+        heart::set_live(self.live.heart_rate());
     }
 
     /// The temperature for the clock face: from a nearby room sensor, the

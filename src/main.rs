@@ -79,6 +79,7 @@ mod heart;
 mod heart_reading;
 mod heart_schedule;
 mod i2c;
+mod live;
 mod mcuboot;
 mod motor;
 mod nav;

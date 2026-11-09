@@ -857,6 +857,7 @@ mod tests {
                 "nav",
                 "gps",
                 "actfetch",
+                "act",
                 "weather",
             ];
             let kind = kinds[usize::from(kind) % kinds.len()];
@@ -1043,6 +1044,46 @@ mod tests {
         assert_eq!(
             parse(br#"GB({"t":"actfetch"})"#),
             Some(Incoming::ActivityFetch { since_ms: 0 })
+        );
+    }
+
+    /// Gadgetbridge's live activity requests, as its `transmitActivityStatus`
+    /// sends them: opening the chart asks for steps, then the heart rate
+    /// too; closing it stops one, then the other.
+    #[test]
+    fn live_activity_requests() {
+        let live = |heart_rate, steps, interval| Incoming::Live {
+            heart_rate,
+            steps,
+            interval,
+        };
+        assert_eq!(
+            parse(br#"GB({"t":"act","hrm":false,"stp":true,"int":10})"#),
+            Some(live(false, true, Some(10)))
+        );
+        assert_eq!(
+            parse(br#"GB({"t":"act","hrm":true,"stp":true,"int":10})"#),
+            Some(live(true, true, Some(10)))
+        );
+        assert_eq!(
+            parse(br#"GB({"t":"act","hrm":false,"stp":false,"int":10})"#),
+            Some(live(false, false, Some(10)))
+        );
+        // A Bangle.js's own stop, on disconnecting, has numbers.
+        assert_eq!(
+            parse(br#"GB({"t":"act","stp":0,"hrm":0,"int":0})"#),
+            Some(live(false, false, Some(0)))
+        );
+        // Whatever's missing or odd asks for nothing (and `live` picks
+        // the interval).
+        assert_eq!(parse(br#"GB({"t":"act"})"#), Some(live(false, false, None)));
+        assert_eq!(
+            parse(br#"GB({"t":"act","hrm":"yes","int":"10"})"#),
+            Some(live(false, false, None))
+        );
+        assert_eq!(
+            parse(br#"GB({"t":"act","hrm":true,"int":2.5})"#),
+            Some(live(true, false, Some(2)))
         );
     }
 
@@ -1235,7 +1276,6 @@ mod tests {
                 br#"GB({"t":"weather","temp":278,"hi":281,"lo":274,"hum":80,"rain":60,"uv":1,"code":500,"txt":"Light rain","wind":5.1,"wdir":220,"loc":"Oslo"})"#,
                 "weather",
             ),
-            (br#"GB({"t":"act","hrm":false,"stp":false,"int":10})"#, "act"),
             (br#"GB({"t":"vibrate","n":2})"#, "vibrate"),
             (br#"GB({"t":"force_calendar_sync_start"})"#, "force_calendar_sync_start"),
         ];
@@ -1358,6 +1398,22 @@ mod tests {
                     kind: Some("LIGHT_SLEEP"),
                 },
                 r#"{"t":"act","ts":1794150000000,"stp":0,"mov":3,"hrm":0,"act":"LIGHT_SLEEP"}"#,
+            ),
+            // A live report: `rt`, and no `ts` (Gadgetbridge dates it).
+            (
+                Outgoing::Live {
+                    steps: 12,
+                    heart_rate: 72,
+                },
+                r#"{"t":"act","stp":12,"hrm":72,"rt":1}"#,
+            ),
+            // The longest.
+            (
+                Outgoing::Live {
+                    steps: u16::MAX,
+                    heart_rate: u8::MAX,
+                },
+                r#"{"t":"act","stp":65535,"hrm":255,"rt":1}"#,
             ),
             (
                 Outgoing::Call(CallAction::Ignore),

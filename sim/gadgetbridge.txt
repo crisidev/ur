@@ -59,3 +59,12 @@ expect not buzzing
 gb GB({"t":"weather","temp":278,"hum":80,"txt":"Light rain","loc":"Oslo"})
 gb GB({"t":"notify","src":"Sig
 gb GB({"t":"actfetch","ts":1794063600000})
+
+# Its live activity chart opening (Charts, "Live activity"): steps, then
+# the heart rate too, reported every 10 s, until the chart closes.
+gb GB({"t":"act","hrm":false,"stp":true,"int":10})
+gb GB({"t":"act","hrm":true,"stp":true,"int":10})
+heart 72
+wait 10s
+gb GB({"t":"act","hrm":true,"stp":false,"int":10})
+gb GB({"t":"act","hrm":false,"stp":false,"int":10})

@@ -1120,6 +1120,16 @@ fn interpret(line: &[u8], actions: &mut Vec<Action, 4>) {
         },
         Some(Incoming::IsGpsActive) => Action::ReportGps,
         Some(Incoming::ActivityFetch { since_ms }) => Action::ActivityFetch { since_ms },
+        // The UI loop runs the session (see `live`), and checks the
+        // connection.
+        Some(Incoming::Live {
+            heart_rate,
+            steps,
+            interval,
+        }) => {
+            crate::live::ask(crate::live::Request::new(heart_rate, steps, interval));
+            return;
+        }
         Some(Incoming::Phone {
             event,
             text_as_bitmaps,

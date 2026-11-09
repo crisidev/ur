@@ -1,0 +1,16 @@
+[package]
+name = "live-test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Host-side tests for `src/live.rs` (included via `#[path]`). Not part of
+# the firmware workspace: run `cargo test` from this directory.
+[workspace]
+
+[dependencies]
+
+# CI runs the host tests with `--release`; keep the arithmetic checks, so
+# that a sum that would wrap round fails a test here.
+[profile.release]
+overflow-checks = true

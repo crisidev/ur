@@ -1,6 +1,7 @@
 //! The heart rate as the rest of the firmware sees it: the latest reading
-//! (and whether it's recent enough to show), and whether someone's looking
-//! at the clock face, waiting for one.
+//! (and whether it's recent enough to show), and whether someone's waiting
+//! for one: looking at the clock face, or at Gadgetbridge's live activity
+//! (see [`crate::live`]).
 //!
 //! This is the hardware-free half of [`crate::heart`], which drives the
 //! sensor and publishes what it measures here. It's a module of its own so
@@ -23,8 +24,11 @@ const STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 
 /// Whether the clock face is showing; set by the UI loop.
 static WATCHING: AtomicBool = AtomicBool::new(false);
-/// Raised when [`WATCHING`] becomes true, to start a session right away,
-/// and when `activity::still` changes (see [`wake`]).
+/// Whether Gadgetbridge's live activity wants the heart rate; set by the
+/// UI loop.
+static LIVE: AtomicBool = AtomicBool::new(false);
+/// Raised when [`WATCHING`] or [`LIVE`] becomes true, to start a session
+/// right away, and when `activity::still` changes (see [`wake`]).
 pub static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// Whether the last session saw skin; for sleep tracking, which must tell
@@ -57,6 +61,17 @@ pub fn set_watching(watching: bool) {
     }
 }
 
+/// Tells the heart-rate task whether Gadgetbridge's live activity wants
+/// the heart rate: measured continuously, as while someone looks at the
+/// clock face, but for as long as it asks. Cheap; the UI loop calls it
+/// every pass.
+pub fn set_live(live: bool) {
+    let was = LIVE.swap(live, Ordering::Relaxed);
+    if live && !was {
+        WAKE.signal(());
+    }
+}
+
 /// Has the heart-rate task look again at what it's waiting for: the wrist
 /// just went still (a due session may start), or started moving (which
 /// may bring the next session forward). Cheap.
@@ -64,8 +79,10 @@ pub fn wake() {
     WAKE.signal(());
 }
 
+/// Whether someone's waiting for a reading (see [`set_watching`] and
+/// [`set_live`]): measure continuously.
 pub fn watching() -> bool {
-    WATCHING.load(Ordering::Relaxed)
+    WATCHING.load(Ordering::Relaxed) || LIVE.load(Ordering::Relaxed)
 }
 
 /// The latest heart rate and when it was measured, however old.

@@ -82,6 +82,8 @@ mod glance;
 #[path = "../../src/heart_reading.rs"]
 #[allow(dead_code)]
 mod heart_reading;
+#[path = "../../src/live.rs"]
+mod live;
 #[path = "../../src/motor.rs"]
 #[allow(dead_code)]
 mod motor;

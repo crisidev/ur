@@ -531,7 +531,73 @@ fn gadgetbridge_lines() {
         "find my watch: true",
         "ignoring weather message",
         "not a line the watch understands",
+        "live activity: heart rate true, steps true, every 10 s",
+        r#"to the phone: {"t":"act","stp":0,"hrm":72,"rt":1}"#,
+        "live activity: stop",
     ] {
         assert!(log.contains(line), "{line:?} missing from:\n{log}");
     }
+}
+
+/// Gadgetbridge's live activity (`live`): a report every interval, with
+/// the steps since the last and this session's latest heart rate, until
+/// Gadgetbridge stops it, the phone disconnects, or it's run for
+/// `live::LIMIT` (10 minutes).
+#[test]
+fn live_activity() {
+    let dir = out("live");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    let start = |interval: u32| {
+        format!("gb GB({{\"t\":\"act\",\"hrm\":true,\"stp\":true,\"int\":{interval}}})\n")
+    };
+    let stop = "gb GB({\"t\":\"act\",\"hrm\":false,\"stp\":false,\"int\":10})\n";
+    // The time first, as Gadgetbridge sends it on connecting: today's
+    // steps need it.
+    let text = [
+        "gb setTime(1794150000);E.setTimeZone(1.0)\nheart 60\n".to_string(),
+        start(10),
+        "wait 5s\nsteps 12\nheart 72\nwait 10s\nsteps 3\nwait 10s\n".into(),
+        stop.into(),
+        "wait 30s\necho disconnecting\n".into(),
+        start(5),
+        "wait 6s\ndisconnect\nwait 30s\necho limit\n".into(),
+        start(60),
+        "wait 11m\necho end\n".into(),
+    ]
+    .concat();
+    std::fs::write(&script, text).expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+    let reports = |part: &str| {
+        part.lines()
+            .filter_map(|line| line.split_once("to the phone: "))
+            .map(|(_, json)| json.to_owned())
+            .collect::<Vec<_>>()
+    };
+    let (stopping, rest) = log.split_once("live activity: stop").expect("it stops");
+    let (stopped, rest) = rest.split_once("disconnecting").expect("it goes on");
+    let (disconnecting, rest) = rest.split_once("limit").expect("it goes on");
+    let (limited, _) = rest.split_once("end").expect("it ends");
+    // The reading from before the session isn't this session's.
+    assert_eq!(
+        reports(stopping),
+        [
+            r#"{"t":"act","stp":12,"hrm":72,"rt":1}"#,
+            r#"{"t":"act","stp":3,"hrm":72,"rt":1}"#,
+        ],
+        "{log}"
+    );
+    assert_eq!(reports(stopped), [] as [&str; 0], "{log}");
+    assert_eq!(
+        reports(disconnecting),
+        [r#"{"t":"act","stp":0,"hrm":0,"rt":1}"#],
+        "{log}"
+    );
+    // A report a minute, nine of them in the ten minutes.
+    assert_eq!(
+        reports(limited),
+        [r#"{"t":"act","stp":0,"hrm":0,"rt":1}"#; 9],
+        "{log}"
+    );
 }

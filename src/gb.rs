@@ -125,6 +125,14 @@ pub enum Incoming<'a> {
     /// `{"t":"actfetch","ts":…}`: send activity samples since `ts` (UTC
     /// milliseconds).
     ActivityFetch { since_ms: i64 },
+    /// `{"t":"act","hrm":true,"stp":true,"int":10}`: report the heart rate
+    /// and steps live, every `int` seconds, or stop (both `false`); see
+    /// [`crate::live`].
+    Live {
+        heart_rate: bool,
+        steps: bool,
+        interval: Option<i64>,
+    },
     /// A notification, call, music, find-my-watch, alarm, or navigation
     /// message, translated for the UI (see [`phone_event`]), and whether
     /// its text came with Gadgetbridge's "Text as Bitmaps" images in it
@@ -163,6 +171,24 @@ pub fn parse(line: &[u8]) -> Option<Incoming<'_>> {
                 .and_then(|v| v.as_number())
                 .map_or(0, |ts| ts.scaled(0)),
         },
+        "act" => {
+            // Gadgetbridge sends booleans; a Bangle.js's own stop (on
+            // disconnecting) has 0s.
+            let flag = |key| {
+                object
+                    .get(key)
+                    .and_then(|v| v.as_bool().or_else(|| Some(v.as_number()?.scaled(0) != 0)))
+                    .unwrap_or(false)
+            };
+            Incoming::Live {
+                heart_rate: flag("hrm"),
+                steps: flag("stp"),
+                interval: object
+                    .get("int")
+                    .and_then(|v| v.as_number())
+                    .map(|int| int.scaled(0)),
+            }
+        }
         _ => {
             let mut text_as_bitmaps = false;
             match phone_event(kind, object, &mut text_as_bitmaps) {
@@ -718,6 +744,9 @@ pub enum Outgoing {
     Call(CallAction),
     /// Control the phone's media player.
     Music(MusicCommand),
+    /// A live report (see [`crate::live`]): steps since the last one, and
+    /// the heart rate (0 for none).
+    Live { steps: u16, heart_rate: u8 },
     /// A press on the button grid (see [`crate::buttons`]), as an Android
     /// broadcast intent for Tasker and the like: Gadgetbridge sends any
     /// `intent` message on as one, if its "Allow Intents" setting is on
@@ -788,6 +817,13 @@ impl Outgoing {
                 Some(kind) => write!(line, r#","act":"{}"}}"#, kind),
                 None => write!(line, "}}"),
             }),
+            // `rt` makes it live: charted, not stored. No `ts`:
+            // Gadgetbridge dates it on arrival.
+            Self::Live { steps, heart_rate } => write!(
+                line,
+                r#"{{"t":"act","stp":{},"hrm":{},"rt":1}}"#,
+                steps, heart_rate
+            ),
             // Gadgetbridge upper-cases these and looks them up in its call
             // and media event enums.
             Self::Call(action) => write!(

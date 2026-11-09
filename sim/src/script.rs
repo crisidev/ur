@@ -607,6 +607,25 @@ fn gadgetbridge(watch: &mut Watch, line: &str) -> Result<(), String> {
                 "activity since {since_ms} ms asked for; not simulated"
             ));
         }
+        // As `ble` does: the UI loop's passes run the session, and send
+        // its reports.
+        Some(Incoming::Live {
+            heart_rate,
+            steps,
+            interval,
+        }) => {
+            let request = crate::live::Request::new(heart_rate, steps, interval);
+            crate::live::ask(request);
+            if request.wanted() {
+                watch.log(format!(
+                    "live activity: heart rate {heart_rate}, steps {steps}, every {} s",
+                    request.interval
+                ));
+            } else {
+                watch.log("live activity: stop");
+            }
+            watch.refresh();
+        }
         // As `ble::interpret` does: the warning after the message.
         Some(Incoming::Phone {
             event,
