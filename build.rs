@@ -29,6 +29,16 @@ fn main() {
     println!("cargo:rustc-link-arg-bins=-Tlink.x");
     println!("cargo:rustc-link-arg-bins=-Tdefmt.x");
     println!("cargo:rustc-link-arg-bins=--nmagic");
+    // Identical code folding: functions that compile to the same bytes (a
+    // generic at two types of the same size, `index` and `index_mut`,
+    // empty functions, LLVM's outlined fragments, …) are kept once,
+    // ~1.7 KB less flash. `all` rather than `safe`, which folds nothing
+    // here (rustc marks nearly every function's address as significant).
+    // What it gives up is distinct addresses for folded functions, which
+    // Rust doesn't promise (`fn_addr_eq`'s docs), and nothing here
+    // compares; but a backtrace or a debugger may name one of the folded
+    // functions for another.
+    println!("cargo:rustc-link-arg-bins=--icf=all");
 
     // Route nrf-sdc's and nrf-mpsl's calls to `sdc_init` and `mpsl_init`
     // through our `__wrap_sdc_init` and `__wrap_mpsl_init`, which register
