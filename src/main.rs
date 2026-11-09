@@ -507,7 +507,14 @@ async fn main(spawner: Spawner) {
     let sessions = MPSL_SESSIONS.init(mpsl::SessionMem::new());
     let mpsl = MPSL.init(
         mpsl::MultiprotocolServiceLayer::with_timeslots(mpsl_peripherals, Irqs, lfclk, sessions)
-            .expect("MPSL initialises once, with valid clock config"),
+            // Not `expect`, which would format the error with `Debug` and so
+            // keep its every name in flash (~0.9 KB): the errno will do.
+            .unwrap_or_else(|e| {
+                panic!(
+                    "MPSL initialises once, with valid clock config: {}",
+                    i32::from(e)
+                )
+            }),
     );
     spawner.spawn(ble::mpsl_task(mpsl).expect("spawned once"));
     // Flash writes go through MPSL so they don't disturb the radio; see
@@ -565,7 +572,13 @@ async fn main(spawner: Spawner) {
         .map(|b| b.support_dle_peripheral())
         .and_then(|b| b.buffer_cfg(packet_size, packet_size, 3, 3))
         .and_then(|b| b.build(sdc_peripherals, rng, mpsl, sdc_mem))
-        .expect("controller configuration is valid and its memory is large enough");
+        // The errno, not `expect`'s `Debug` of the error; see MPSL's above.
+        .unwrap_or_else(|e| {
+            panic!(
+                "controller configuration is valid and its memory is large enough: {}",
+                i32::from(e)
+            )
+        });
     spawner.spawn(ble::host_task(controller, address).expect("spawned once"));
 
     // ==========================================================================
