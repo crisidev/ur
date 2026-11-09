@@ -90,6 +90,8 @@ mod motor;
 #[path = "../../src/nav.rs"]
 #[allow(dead_code)]
 mod nav;
+#[path = "../../src/on_time.rs"]
+mod on_time;
 #[path = "../../src/phone.rs"]
 mod phone;
 #[path = "../../src/qr.rs"]

@@ -305,8 +305,6 @@ pub struct UiLoop {
     /// For battery-life analysis from the field log.
     next_battery_log: Instant,
     last_power_report: Instant,
-    /// Since when the panel (and backlight) have been on, for `power`.
-    panel_since: Instant,
     /// Whether the last frame was in the dim look; see [`UiLoop::pass`].
     was_dim: bool,
     /// The clock face's temperature (tenths of a degree), once read, and
@@ -351,7 +349,6 @@ impl UiLoop {
             // after a minute.
             next_battery_log: now + Duration::from_secs(60),
             last_power_report: now,
-            panel_since: now,
             was_dim: false,
             temperature: None,
             die: None,
@@ -421,11 +418,6 @@ impl UiLoop {
         if now >= self.next_battery_log {
             clock::log_now();
             if now - self.last_power_report >= Duration::from_secs(60 * 60) {
-                if self.panel_awake {
-                    power::add(power::Meter::Panel, self.panel_since);
-                    power::add(power::Meter::Backlight, self.panel_since);
-                    self.panel_since = now;
-                }
                 power::report(now - self.last_power_report);
                 self.last_power_report = now;
             }
@@ -529,12 +521,13 @@ impl UiLoop {
             board.backlight(app.backlight(Instant::now()));
             if !self.panel_awake {
                 self.panel_awake = true;
-                self.panel_since = Instant::now();
+                power::on(power::Meter::Panel);
+                power::on(power::Meter::Backlight);
             }
         } else if self.panel_awake {
             board.backlight(brightness::Level::OFF);
-            power::add(power::Meter::Panel, self.panel_since);
-            power::add(power::Meter::Backlight, self.panel_since);
+            power::off(power::Meter::Panel);
+            power::off(power::Meter::Backlight);
             // In sleep the ST7789 keeps its frame memory, so the canvas's
             // idea of what's on the panel stays valid across sleep/wake.
             board.sleep_panel().await;

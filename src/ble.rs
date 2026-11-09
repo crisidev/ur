@@ -444,7 +444,7 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
             // Whether this is the phone; see `serve`. The status reporter
             // waits for that, and never finishes on its own.
             let phone = Cell::new(false);
-            let since = Instant::now();
+            crate::power::on(crate::power::Meter::Connected);
             let peer = conn.raw().peer_identity();
             ACTIVE.lock(|active| {
                 let _ = active.borrow_mut().push(peer);
@@ -455,7 +455,7 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
             )
             .await;
             ACTIVE.lock(|active| active.borrow_mut().retain(|p| !p.match_identity(&peer)));
-            crate::power::add(crate::power::Meter::Connected, since);
+            crate::power::off(crate::power::Meter::Connected);
             crate::power::count(crate::power::Count::Disconnects);
             if phone.get() {
                 CONNECTED.store(false, Ordering::Relaxed);
@@ -1502,11 +1502,12 @@ async fn scan(stack: &BleStack) {
             REPORTS.store(0, Ordering::Relaxed);
             match Scanner::new(&mut central).scan(&config).await {
                 Ok(session) => {
+                    crate::power::on(crate::power::Meter::Scanning);
                     let limit = NEARBY.lock(|n| n.borrow().limit(started.as_millis()));
                     let limit = Duration::from_millis(limit);
                     let _ = with_timeout(limit, HEARD_EVERYONE.wait()).await;
                     session.stop().await;
-                    crate::power::add(crate::power::Meter::Scanning, started);
+                    crate::power::off(crate::power::Meter::Scanning);
                     crate::power::count(crate::power::Count::Scans);
                 }
                 Err(e) => warn!("aranet: scanning failed: {}", e),

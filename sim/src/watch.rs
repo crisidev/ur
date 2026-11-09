@@ -185,6 +185,7 @@ impl Watch {
         self.restarted_at = Some(Instant::now());
         clock::lose();
         heart_reading::forget();
+        crate::power::forget();
         ble::NEARBY.lock(|nearby| *nearby.borrow_mut() = crate::aranet::Nearby::new());
         crate::time::restart();
         self.passkey = None;

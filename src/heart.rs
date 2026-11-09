@@ -445,23 +445,22 @@ fn uptime() -> u32 {
     Instant::now().as_secs() as u32
 }
 
-/// Accounts the LED's on-time to its drive current, for [`crate::power`].
+/// Accounts the LED's on-time to its drive current, for [`crate::power`]:
+/// on from creation until dropped.
 struct LedMeter {
     drive: u8,
-    since: Instant,
 }
 
 impl LedMeter {
     fn new(drive: u8) -> Self {
-        Self {
-            drive,
-            since: Instant::now(),
-        }
+        crate::power::on(Self::meter(drive));
+        Self { drive }
     }
 
     fn switch(&mut self, drive: u8) {
-        crate::power::add(Self::meter(self.drive), self.since);
-        *self = Self::new(drive);
+        crate::power::off(Self::meter(self.drive));
+        crate::power::on(Self::meter(drive));
+        self.drive = drive;
     }
 
     fn meter(drive: u8) -> crate::power::Meter {
@@ -477,7 +476,7 @@ impl LedMeter {
 
 impl Drop for LedMeter {
     fn drop(&mut self) {
-        crate::power::add(Self::meter(self.drive), self.since);
+        crate::power::off(Self::meter(self.drive));
     }
 }
 

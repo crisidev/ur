@@ -36,7 +36,7 @@ use embassy_futures::select::{Either, select};
 use embassy_nrf::gpio::Input;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_time::{Duration, Instant, Timer, with_timeout};
+use embassy_time::{Duration, Timer, with_timeout};
 use embedded_hal_async::i2c::I2c;
 
 use crate::i2c::Device;
@@ -854,7 +854,7 @@ pub async fn motion_task(i2c: Device, mut interrupt: Input<'static>) {
     let mut interrupt_works = true;
     loop {
         if STILL.load(Ordering::Relaxed) {
-            let still_since = Instant::now();
+            crate::power::on(crate::power::Meter::Still);
             loop {
                 let woken = select(interrupt.wait_for_high(), Timer::after(STILL_CHECK)).await;
                 // Before the read below lowers it.
@@ -872,7 +872,7 @@ pub async fn motion_task(i2c: Device, mut interrupt: Input<'static>) {
             debug!("activity: moving");
             STILL.store(false, Ordering::Relaxed);
             crate::heart::wake();
-            crate::power::add(crate::power::Meter::Still, still_since);
+            crate::power::off(crate::power::Meter::Still);
             polls_since_motion = 0;
             // Look at once: this may be the start of a glance.
             poll_now = true;

@@ -16,6 +16,8 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use defmt::info;
 use embassy_time::Instant;
 
+use crate::on_time::OnTime;
+
 // ==============================================================================
 // Sleeping
 // ==============================================================================
@@ -73,8 +75,9 @@ pub enum Meter {
     HeartLed1,
     HeartLed2,
     HeartLed3,
-    /// A phone (or other client) connected; see the logged connection
-    /// interval for what that costs.
+    /// A phone (or other client) connected, once per client (two at once
+    /// count twice); see the logged connection interval for what that
+    /// costs.
     Connected,
     /// SPI flash out of deep power-down.
     SpiFlash,
@@ -88,12 +91,22 @@ pub enum Meter {
 }
 
 const METERS: usize = 10;
-static MILLIS: [AtomicU32; METERS] = [const { AtomicU32::new(0) }; METERS];
+static ON_TIME: [OnTime; METERS] = [const { OnTime::new() }; METERS];
 
-/// Adds time spent in `meter`'s state.
-pub fn add(meter: Meter, since: Instant) {
-    let ms = since.elapsed().as_millis() as u32;
-    MILLIS[meter as usize].fetch_add(ms, Ordering::Relaxed);
+/// `meter`'s state turned on. Match each with an [`off`]: overlapping ones
+/// (two clients connected) count once each.
+pub fn on(meter: Meter) {
+    ON_TIME[meter as usize].on(millis());
+}
+
+/// `meter`'s state turned off.
+pub fn off(meter: Meter) {
+    ON_TIME[meter as usize].off(millis());
+}
+
+/// The clock [`OnTime`] keeps; see there for the wrapping.
+fn millis() -> u32 {
+    Instant::now().as_millis() as u32
 }
 
 /// Event counts per report.
@@ -118,11 +131,17 @@ pub fn count(event: Count) {
 }
 
 /// Logs and resets everything. Call about once an hour (from the UI loop),
-/// right before the battery line, so the two can be lined up.
+/// right before the battery line, so the two can be lined up. Each meter
+/// reads the time its state was on since the last report, whether or not
+/// it's still on.
 pub fn report(period: embassy_time::Duration) {
     let asleep = ASLEEP_TICKS.swap(0, Ordering::Relaxed) as u64;
     let total = period.as_ticks().max(1);
     let take = |a: &AtomicU32| a.swap(0, Ordering::Relaxed);
+    // States still on count up to now, and go on counting from here into
+    // the next report.
+    let now = millis();
+    let on_time = |meter: Meter| ON_TIME[meter as usize].take(now);
     info!(
         "power: awake {=u64}‰, {=u32} wakeups; ms: panel {=u32}, backlight {=u32}, \
          led {=u32}/{=u32}/{=u32}/{=u32}, connected {=u32}, flash {=u32}, still {=u32}, scanning {=u32}; \
@@ -130,16 +149,16 @@ pub fn report(period: embassy_time::Duration) {
          hr sessions {=u32}, disconnects {=u32}, scans {=u32}; stack {=u32} B",
         1000 - asleep.min(total) * 1000 / total,
         WAKEUPS.swap(0, Ordering::Relaxed),
-        take(&MILLIS[Meter::Panel as usize]),
-        take(&MILLIS[Meter::Backlight as usize]),
-        take(&MILLIS[Meter::HeartLed0 as usize]),
-        take(&MILLIS[Meter::HeartLed1 as usize]),
-        take(&MILLIS[Meter::HeartLed2 as usize]),
-        take(&MILLIS[Meter::HeartLed3 as usize]),
-        take(&MILLIS[Meter::Connected as usize]),
-        take(&MILLIS[Meter::SpiFlash as usize]),
-        take(&MILLIS[Meter::Still as usize]),
-        take(&MILLIS[Meter::Scanning as usize]),
+        on_time(Meter::Panel),
+        on_time(Meter::Backlight),
+        on_time(Meter::HeartLed0),
+        on_time(Meter::HeartLed1),
+        on_time(Meter::HeartLed2),
+        on_time(Meter::HeartLed3),
+        on_time(Meter::Connected),
+        on_time(Meter::SpiFlash),
+        on_time(Meter::Still),
+        on_time(Meter::Scanning),
         take(&EVENTS[Count::WakeButton as usize]),
         take(&EVENTS[Count::WakeTouch as usize]),
         take(&EVENTS[Count::WakePhone as usize]),

@@ -84,6 +84,7 @@ mod mcuboot;
 mod motor;
 mod nav;
 mod nvmc;
+mod on_time;
 mod packet_pool;
 mod phone;
 mod power;

@@ -2,10 +2,13 @@
 //! keeps for the panel and backlight, and its count of what woke the
 //! screen. The hourly report is printed, as the field log would show it,
 //! less what only the hardware knows (sleep, the stack, the sensors').
+//! The counting is the watch's own (`src/on_time.rs`).
 
 use std::sync::Mutex;
 
 use embassy_time::{Duration, Instant};
+
+use crate::on_time::OnTime;
 
 /// The states the UI loop times (the watch's `Meter` has more).
 #[derive(Clone, Copy)]
@@ -25,25 +28,45 @@ pub enum Count {
     WakeGlance,
 }
 
-/// Milliseconds in each [`Meter`], and each [`Count`], since the last
-/// report.
-static TOTALS: Mutex<([u64; 2], [u32; 5])> = Mutex::new(([0; 2], [0; 5]));
+/// Time in each [`Meter`]'s state, as the watch keeps it.
+static ON_TIME: Mutex<[OnTime; 2]> = Mutex::new([OnTime::new(), OnTime::new()]);
+/// Each [`Count`] since the last report.
+static COUNTS: Mutex<[u32; 5]> = Mutex::new([0; 5]);
 
-pub fn add(meter: Meter, since: Instant) {
-    let ms = since.elapsed().as_millis();
-    TOTALS.lock().expect("never poisoned").0[meter as usize] += ms;
+fn millis() -> u32 {
+    Instant::now().as_millis() as u32
+}
+
+pub fn on(meter: Meter) {
+    ON_TIME.lock().expect("never poisoned")[meter as usize].on(millis());
+}
+
+pub fn off(meter: Meter) {
+    ON_TIME.lock().expect("never poisoned")[meter as usize].off(millis());
 }
 
 pub fn count(event: Count) {
-    TOTALS.lock().expect("never poisoned").1[event as usize] += 1;
+    COUNTS.lock().expect("never poisoned")[event as usize] += 1;
 }
 
 pub fn report(period: Duration) {
-    let ([panel, backlight], [button, touch, phone, attention, glance]) =
-        std::mem::take(&mut *TOTALS.lock().expect("never poisoned"));
+    let now = millis();
+    let [panel, backlight] = ON_TIME
+        .lock()
+        .expect("never poisoned")
+        .each_ref()
+        .map(|meter| meter.take(now));
+    let [button, touch, phone, attention, glance] =
+        std::mem::take(&mut *COUNTS.lock().expect("never poisoned"));
     crate::watch::log(format!(
         "power, over {} min: panel {panel} ms, backlight {backlight} ms; wakes: button \
          {button}, touch {touch}, phone {phone}, attention {attention}, glance {glance}",
         period.as_secs() / 60
     ));
+}
+
+/// Forgets everything, as switching off does to the watch's RAM.
+pub fn forget() {
+    *ON_TIME.lock().expect("never poisoned") = [OnTime::new(), OnTime::new()];
+    *COUNTS.lock().expect("never poisoned") = [0; 5];
 }
