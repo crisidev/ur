@@ -1323,7 +1323,13 @@ async fn send_activity(server: &Server<'_>, conn: &GattConnection<'_, '_, Pool>,
         }
         next = last + 1;
     }
-    complete &= send(server, conn, Outgoing::ActivityFetch { done: true }).await;
+    // The end, and the empty track list that gets Gadgetbridge to pass
+    // the samples on to Health Connect (see `gb::FETCH_END`). Only the
+    // end counts towards `complete`: without the list, the phone still
+    // has every sample.
+    let [end, no_tracks] = gb::FETCH_END;
+    complete &= send(server, conn, end).await;
+    send(server, conn, no_tracks).await;
     info!("ble: sent {} minutes of activity", sent);
     if complete {
         // The phone now has everything up to the newest minute sent, if any

@@ -1438,6 +1438,24 @@ mod tests {
     }
 
     #[test]
+    fn fetch_end() {
+        // The end marker, then the empty track list that gets Gadgetbridge
+        // to broadcast new data (and so export to Health Connect): in that
+        // order, so the fetch is over before the export is set off.
+        let lines: Vec<_> = super::gb::FETCH_END
+            .iter()
+            .map(|message| message.to_line())
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "{\"t\":\"actfetch\",\"state\":\"end\"}\r\n",
+                "{\"t\":\"actTrksList\",\"list\":[]}\r\n",
+            ]
+        );
+    }
+
+    #[test]
     fn intents_off() {
         // What Gadgetbridge answers a grid press with, its "Allow Intents"
         // setting off (`uartTxJSONError`).

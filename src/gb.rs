@@ -725,8 +725,12 @@ pub enum Outgoing {
     },
     /// Ask Gadgetbridge to start (or stop) forwarding phone GPS.
     GpsPower(bool),
-    /// Bracket an activity-sample transfer.
+    /// Bracket an activity-sample transfer (the end as part of
+    /// [`FETCH_END`]).
     ActivityFetch { done: bool },
+    /// `actTrksList` with an empty list: "no recorded tracks". Sent only
+    /// as part of [`FETCH_END`], for what Gadgetbridge does on hearing it.
+    NoTracks,
     /// One minute of activity.
     Activity {
         utc_minute: i64,
@@ -755,6 +759,34 @@ pub enum Outgoing {
     /// and `gesture` (`tap`, `double_tap`, or `hold`).
     Button { code: u8, gesture: &'static str },
 }
+
+/// What ends an activity fetch, in order, after its last `act` sample.
+///
+/// The `actfetch` end is what the protocol has for it, but Gadgetbridge
+/// (2026.11.1 and master) only unmarks the device busy on it
+/// ([`handleActivityFetch`]); it never broadcasts that new data is in
+/// (`GB.signalActivityDataFinish`, Android's `ACTION_NEW_DATA`), which is
+/// what its Health Connect export's "Sync after device sync" waits for
+/// ([`NewDataReceiver`]). So after its first sync, the export never ran
+/// again.
+///
+/// Its Bangle.js driver does broadcast it when a fetch of recorded tracks
+/// (the Recorder app's GPS logs) ends, which an empty track list does at
+/// once ([`handleActTrksList`] → `signalFetchingEnded`). We have no
+/// tracks, so the empty list is true, and it closes off the fetch: the
+/// export then runs 10 s later, from where its last run stopped, so the
+/// first fetch with this catches up on everything since. Gadgetbridge
+/// also shows a short "End : Fetching sports details" toast for it, and
+/// logs an error for unmarking a device that's no longer busy; both are
+/// harmless.
+///
+/// TODO: drop the empty list once Gadgetbridge broadcasts new data on the
+/// `actfetch` end itself (and the releases without that are old).
+///
+/// [`handleActivityFetch`]: https://codeberg.org/Freeyourgadget/Gadgetbridge/src/tag/2026.11.1/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/banglejs/BangleJSDeviceSupport.java#L838-L857
+/// [`NewDataReceiver`]: https://codeberg.org/Freeyourgadget/Gadgetbridge/src/tag/2026.11.1/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/externalevents/NewDataReceiver.java#L80-L126
+/// [`handleActTrksList`]: https://codeberg.org/Freeyourgadget/Gadgetbridge/src/tag/2026.11.1/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/banglejs/BangleJSActivityTrack.java#L70-L84
+pub const FETCH_END: [Outgoing; 2] = [Outgoing::ActivityFetch { done: true }, Outgoing::NoTracks];
 
 #[derive(Clone, Copy, Format)]
 pub enum CallAction {
@@ -799,6 +831,7 @@ impl Outgoing {
                 r#"{{"t":"actfetch","state":"{}"}}"#,
                 if done { "end" } else { "start" }
             ),
+            Self::NoTracks => write!(line, r#"{{"t":"actTrksList","list":[]}}"#),
             Self::Activity {
                 utc_minute,
                 steps,

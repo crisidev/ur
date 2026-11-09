@@ -107,7 +107,9 @@ fetches activity (steps, heart rate, sleep) only when you pull down on
 its device list (or tap Synchronize), or, with Settings → Automations →
 "Auto fetch activity data" on, when you unlock the phone (that needs a
 screen lock; "Minimum time between fetches" spaces them out). It passes
-sleep and heart rate on to [Health Connect] if you like. For the themes
+steps, heart rate and sleep on to [Health Connect] after each sync if
+you like (its "Sync after device sync"; each sync then ends with a
+short "End : Fetching sports details" message). For the themes
 to follow your sun rather than Oslo's, the phone has to share its
 location: see [C03](#c03-the-watch-never-gets-a-location-from-the-phone).
 A few Gadgetbridge defaults need changing: see [docs/gadgetbridge.md](docs/gadgetbridge.md).
