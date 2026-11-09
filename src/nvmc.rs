@@ -34,8 +34,9 @@
 //! a halt in a slot outlasts it. A watch without a probe never halts.
 //!
 //! TODO: go back to nrf-mpsl's driver once a release has the lock fix
-//! (on its `main` since alexmoon/nrf-sdc#124) and the nRF52832's erase
-//! time (docs/upstream/).
+//! (on its `main` since alexmoon/nrf-sdc#124; release requested in
+//! alexmoon/nrf-sdc#92) and the nRF52832's erase time
+//! (alexmoon/nrf-sdc#126).
 
 use core::cell::{RefCell, UnsafeCell};
 use core::future::poll_fn;
