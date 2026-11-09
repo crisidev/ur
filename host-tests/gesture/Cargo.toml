@@ -11,3 +11,11 @@ publish = false
 [dependencies]
 critical-section = { version = "1", features = ["std"] }
 embassy-time = { version = "0.5.1", features = ["mock-driver", "generic-queue-8"] }
+
+# `cargo kani` builds with `--cfg kani`, for the proofs in `src/main.rs`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+# The proofs stub the clock (see `proofs` in `src/main.rs`).
+[package.metadata.kani.unstable]
+stubbing = true
