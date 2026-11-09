@@ -261,6 +261,26 @@ fn a_deliberate_tap_wakes_the_screen_at_once() {
     assert!(ok, "{log}");
 }
 
+/// Home Assistant's key stays on screen, as a QR code and then as text,
+/// for as long as it takes to scan or type it: until a tap takes it away.
+/// Back on the settings, the screen goes off as usual.
+#[test]
+fn the_bthome_key_stays_until_tapped_away() {
+    let dir = out("bthome-key");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    std::fs::write(
+        &script,
+        "buttons bthome\nleft\nleft\nwait 1s\ntap 40,72\n\
+         wait 10m\nexpect screen-on\ntap\n\
+         wait 10m\nexpect screen-on\ntap\n\
+         wait 11s\nexpect not screen-on\n",
+    )
+    .expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+}
+
 /// With a phone connected, a double tap skips without waking the screen
 /// (or ending a glance) only if its first tap is light. A deliberate first
 /// tap wakes it at once, and the second skips on the clock face.

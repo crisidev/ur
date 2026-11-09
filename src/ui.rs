@@ -81,8 +81,8 @@
 //!   second is the next track on the clock face it woke to. See
 //!   [`crate::wake`] for the guards against brushes.
 //! - No input for [`SCREEN_TIMEOUT`] (longer on the music screen, for a
-//!   long title to scroll by; never while a banner shows): turn the screen
-//!   off.
+//!   long title to scroll by; never while a banner shows, or Home
+//!   Assistant's key): turn the screen off.
 //! - Turning the wrist to look (see [`crate::glance`]) while the screen is
 //!   off: a glance, just the time in white on black at a low backlight,
 //!   for [`GLANCE_TIME`]. While the phone navigates, the next turn instead,
@@ -1677,6 +1677,15 @@ impl App {
     /// whole cycle shows every part of them. That's ~19 s for a 30-letter
     /// title, against the clock face's 10 s; the music screen is opened
     /// rarely enough that the extra time costs little.
+    ///
+    /// Home Assistant's key, as a QR code or as text, stays until a tap
+    /// (or a swipe, or the button) takes it away: scanning it, or typing
+    /// 32 digits from it, takes the phone, Home Assistant's pages, and
+    /// often longer than any timeout would allow. It's shown rarely, and
+    /// only on purpose, so the backlight it keeps on costs little.
+    ///
+    /// TODO: maybe a safety cap (minutes) for a watch put down with the
+    /// key showing; the user asked for none.
     fn screen_timeout(&self) -> Duration {
         let overflow =
             |text: &str, scale: i32| font::small_text_width(text) * scale - MUSIC_TEXT_WIDTH;
@@ -1685,6 +1694,7 @@ impl App {
                 let overflow = overflow(&music.track, 2).max(overflow(&music.artist, 1));
                 SCREEN_TIMEOUT.max(marquee_cycle(overflow))
             }
+            (Screen::HaQr | Screen::HaKey, _) => Duration::MAX,
             _ => SCREEN_TIMEOUT,
         }
     }

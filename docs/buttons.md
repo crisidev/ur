@@ -88,7 +88,9 @@ Presses are encrypted with a key the watch made for itself.
 1. On the watch, **Settings → BTHOME KEY** (there while **BUTTONS** is
    on **BTHOME** or **BOTH**) shows the key as a QR code; scan it with
    the phone's camera, and copy the text it reads. A tap shows the key
-   as text instead (32 characters), with the watch's Bluetooth address.
+   as text instead (32 characters), with the watch's Bluetooth address,
+   and another goes back to Settings. The screen stays on meanwhile,
+   however long it takes.
 2. Press any grid button. Home Assistant discovers a BTHome device with
    that address (Settings → Devices & services); add it, and paste (or
    type) the key.
