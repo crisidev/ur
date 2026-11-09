@@ -71,6 +71,9 @@ pub const MAX_INTERVAL: u32 = 20 * 60;
 /// The interval while asleep, for sleep staging (see the module docs).
 /// Twelve ~12 s sessions an hour: ~144 s of LED, inside [`LED_BUDGET`],
 /// and ~0.65 mAh more a night than backing off to [`MAX_INTERVAL`].
+/// Shorter doesn't pay: simulated on two nights with a Garmin alongside and
+/// 60 of its own, readings every 2 or 3 minutes staged sleep no better than
+/// every 5, even with `crate::stages`' thresholds refitted to them.
 pub const ASLEEP_INTERVAL: u32 = 5 * 60;
 
 /// The wait after an elevated reading (see [`ELEVATED_BY`]), to follow a

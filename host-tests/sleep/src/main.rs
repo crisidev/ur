@@ -58,7 +58,9 @@ enum Truth {
     Asleep,
     /// A long, very still stretch of sleep.
     DeepAsleep,
-    /// REM sleep: moving like light sleep, the heart rate up.
+    /// REM sleep: moving like light sleep, plus twitches (a Garmin's REM
+    /// had a stir in ~20% of minutes, its light sleep ~14%), the heart rate
+    /// up.
     Rem,
     /// Up in the night.
     Up,
@@ -84,12 +86,21 @@ fn minute(rng: &mut Rng, truth: Truth) -> Minute {
             },
             0,
         ),
-        // A stir now and then: a minute or two of rolling over.
+        // A stir now and then: a minute or two of rolling over. In REM,
+        // also twitches: in the top fifth of still minutes, a little more
+        // movement (131-145): averaged with its neighbours (at most 105), a
+        // stir to staging (`stages::STIR_LIMIT`) at typical neighbours,
+        // but always still to the classifier (`sleep::STILL_LIMIT`). (From
+        // the same random numbers, so that the classifier's tests see the
+        // same nights as before twitches.)
         Truth::Asleep | Truth::Rem => (
             if rng.chance(0.04) {
                 rng.range(200, 700)
             } else {
-                rng.range(25, 105)
+                match rng.range(25, 105) {
+                    m if truth == Truth::Rem && m > 90 => m + 40,
+                    m => m,
+                }
             },
             0,
         ),
@@ -745,23 +756,33 @@ mod tests {
     }
 
     /// A hand-made sleep for the rules: `minutes` of still sleep with a
-    /// heart rate reading every minute at 50 BPM, but 62 at `raised`.
+    /// heart rate reading every minute at 50 BPM, but 62 at `raised`, where
+    /// the wrist also twitches every 10 minutes (from its third minute), as
+    /// in REM sleep. A twitch makes three minutes of stirs (its three-minute
+    /// average), enough for REM within [`stages::STIR_SPAN`] of it, and
+    /// not too many for deep.
     fn hand_made(
         minutes: usize,
         raised: &[std::ops::Range<usize>],
     ) -> (Vec<Kind>, Vec<Minute>, Vec<u8>) {
         let kinds = vec![Kind::Light; minutes];
-        let still = Minute {
-            seen: true,
-            movement: 30,
-            steps: 0,
-            worn: Some(true),
-        };
+        let mut still = vec![
+            Minute {
+                seen: true,
+                movement: 30,
+                steps: 0,
+                worn: Some(true),
+            };
+            minutes
+        ];
         let mut heart = vec![50; minutes];
         for range in raised {
             heart[range.clone()].fill(62);
+            for t in range.clone().skip(2).step_by(10) {
+                still[t].movement = 400;
+            }
         }
-        (kinds, vec![still; minutes], heart)
+        (kinds, still, heart)
     }
 
     fn stage_once(kinds: &mut [Kind], minutes: &[Minute], heart: &[u8]) {
@@ -799,6 +820,62 @@ mod tests {
         expect(rem_after..100, Kind::Rem);
         expect(100..deep_until, Kind::Deep);
         expect(deep_until..400, Kind::Light);
+    }
+
+    /// A raised heart rate on a wrist that never stirs isn't REM: REM
+    /// sleep twitches. (Too raised for deep, it's light.)
+    #[test]
+    fn rem_twitches() {
+        let (mut kinds, minutes, mut heart) = hand_made(200, &[]);
+        heart[100..150].fill(62);
+        stage_once(&mut kinds, &minutes, &heart);
+        assert!(
+            kinds[100..150].iter().all(|&k| k == Kind::Light),
+            "{}",
+            timeline(&kinds)
+        );
+    }
+
+    /// A heart rate that steps up and down between readings isn't deep
+    /// sleep, however still the wrist: readings every 5 minutes, as asleep,
+    /// alternating 50 and 51 BPM for the first 100 minutes (deep), then 49
+    /// and 52 (a swing of 3 BPM: light; too little rise for REM).
+    #[test]
+    fn a_swinging_heart_is_not_deep() {
+        let (mut kinds, minutes, mut heart) = hand_made(200, &[]);
+        for (t, bpm) in heart.iter_mut().enumerate() {
+            let up = t % 10 == 5;
+            *bpm = match t {
+                _ if t % 5 != 0 => 0,
+                ..100 => 50 + u8::from(up),
+                _ => 49 + 3 * u8::from(up),
+            };
+        }
+        stage_once(&mut kinds, &minutes, &heart);
+        let all = |range: std::ops::Range<usize>, kind| kinds[range].iter().all(|&k| k == kind);
+        assert!(all(0..90, Kind::Deep), "{}", timeline(&kinds));
+        assert!(all(110..200, Kind::Light), "{}", timeline(&kinds));
+    }
+
+    /// Steps between readings further apart than [`stages::SWING_GAP`]
+    /// (missed sessions) don't count towards the swing: the same 49 and 52
+    /// BPM as above, every 10 minutes, are deep.
+    #[test]
+    fn swing_skips_missed_readings() {
+        let (mut kinds, minutes, mut heart) = hand_made(200, &[]);
+        for (t, bpm) in heart.iter_mut().enumerate() {
+            *bpm = match t % 20 {
+                0 => 49,
+                10 => 52,
+                _ => 0,
+            };
+        }
+        stage_once(&mut kinds, &minutes, &heart);
+        assert!(
+            kinds.iter().all(|&k| k == Kind::Deep),
+            "{}",
+            timeline(&kinds)
+        );
     }
 
     /// Stirring keeps it from being deep, however calm the heart.

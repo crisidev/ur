@@ -13,20 +13,28 @@
 //!   look calm and early light sleep look aroused. So each minute's
 //!   **rise** is the mean of the readings within [`LEVEL`] minutes (or the
 //!   nearest reading), minus the 10th percentile of those within
-//!   [`LOCAL`] minutes.
-//! - **The wrist stirs less in deep sleep**: a Garmin's deep sleep had a
-//!   stir in ~4% of minutes, light 16%, REM 20%. Each minute's **stirs** are
-//!   how many minutes within [`STIR_SPAN`] had a three-minute average
-//!   movement of at least [`STIR_LIMIT`].
+//!   [`LOCAL`] minutes; and its **swing** is the mean step (up or down)
+//!   between consecutive readings within [`SWING`] minutes, those at most
+//!   [`SWING_GAP`] minutes apart. (Between readings five minutes apart, a
+//!   Garmin's deep sleep stepped ~0.5 BPM, its light sleep ~1.7, and its
+//!   REM ~2.4; ur's readings 0.7, 2.0, and 4.3.)
+//! - **The wrist stirs least in deep sleep, and most in REM**: a Garmin's
+//!   deep sleep had a stir in ~3% of minutes, light 14%, REM 20%. Each
+//!   minute's **stirs** are how many minutes within [`STIR_SPAN`] had a
+//!   three-minute average movement of at least [`STIR_LIMIT`].
 //!
 //! The rules, for each minute of sleep:
 //!
 //! - **Deep**: at most [`DEEP_STIRS`] stirs, a rise of at most
-//!   [`DEEP_RISE`], and less than [`DEEP_UNTIL`] minutes after falling
-//!   asleep (deep sleep is front-loaded: a Garmin finds almost none after
-//!   the fifth hour).
-//! - **REM**: a rise of at least [`REM_RISE`], at least [`REM_AFTER`]
-//!   minutes after falling asleep (the first REM comes about an hour in).
+//!   [`DEEP_RISE`], a swing of at most [`DEEP_SWING`] (or no two readings
+//!   near enough to tell), and less than [`DEEP_UNTIL`] minutes after
+//!   falling asleep (deep sleep is front-loaded: a Garmin finds almost none
+//!   after the fifth hour).
+//! - **REM**: a rise of at least [`REM_RISE`], at least [`REM_STIRS`]
+//!   stirs (REM sleep twitches: on two nights, a raised heart rate on a
+//!   wrist that hadn't stirred was a Garmin's REM in 2 of 35 minutes), and
+//!   at least [`REM_AFTER`] minutes after falling asleep (the first REM
+//!   comes about an hour in).
 //! - **Light**: everything else, and all of it if the sleep has no heart
 //!   rate readings at all.
 //!
@@ -35,21 +43,28 @@
 //! between two bouts of the same stage are filled, and deep or REM bouts
 //! shorter than [`MIN_BOUT`] minutes become light.
 //!
-//! On one night (2026-11-08) this agreed with a Garmin vívoactive 5 on 67%
-//! of its asleep minutes (Cohen's kappa 0.51 over light/deep/REM), where
-//! deep-as-stillness agreed on 46% (kappa 0.07). The heart rate thresholds
-//! come from simulations over 60 of the Garmin's nights, at the watch's
-//! reading every 5 minutes asleep (`crate::heart_schedule::ASLEEP_INTERVAL`);
-//! the movement ones from that one night, so they're the first to revisit
-//! as more nights come in. (Both are estimates of the Garmin's estimates,
-//! not of a sleep lab's.)
+//! Against a Garmin vívoactive 5 worn alongside, this agreed on 70% of its
+//! asleep minutes on one night (2026-11-08; Cohen's kappa 0.54 over
+//! light/deep/REM) and 61% on another (2026-11-09; kappa 0.42). Without
+//! the swing, and with REM from a rise of 5 alone, it was 67% and 48%
+//! (kappa 0.51 and 0.21): the second night's quiet-wrist light sleep came
+//! out as deep, and its REM, at a rise of 4 or so, as light. On 60 of the
+//! Garmin's own nights, its heart rate thinned to a reading every 5
+//! minutes (`crate::heart_schedule::ASLEEP_INTERVAL`) and without
+//! movement, kappa went from 0.34 to 0.44. The thresholds were picked to
+//! do well on both nights and those 60 together, not on either night
+//! alone; the movement ones rest on just the two nights, so they're the
+//! first to revisit as more come in. Readings more often than every 5
+//! minutes didn't help in those simulations. (All of this estimates the
+//! Garmin's estimates, not a sleep lab's.)
 //!
 //! [`stage`] runs over a whole sleep, every minute while it's recent, in
 //! place on the per-minute record (`crate::activity`'s history), in one
-//! pass and with ~500 bytes of stack: nothing is copied out. That re-does
-//! the whole night each minute (some ten thousand reads of the record by
-//! morning: milliseconds), which keeps it simple: a minute's stage depends
-//! on up to an hour of readings either side, and on bouts that end later.
+//! pass and with ~550 bytes of stack: nothing is copied out. That re-does
+//! the whole night each minute (some fifteen thousand reads of the record
+//! by morning: milliseconds), which keeps it simple: a minute's stage
+//! depends on up to an hour of readings either side, and on bouts that end
+//! later.
 //!
 //! The smart alarm (`crate::alarm`) doesn't use stages: it rings at a stir
 //! in its window, and a minute's stage is only settled an hour later. A
@@ -82,11 +97,25 @@ pub const STIR_SPAN: i64 = 12;
 pub const DEEP_STIRS: usize = 6;
 /// The most a heart rate rises above its baseline (BPM) in deep sleep.
 pub const DEEP_RISE: i32 = 6;
+/// Minutes either side of a minute whose readings make its swing.
+pub const SWING: i64 = 10;
+/// The longest gap (minutes) between two readings whose step counts
+/// towards the swing: a step grows with the time between readings, so the
+/// swing is only comparable between readings a schedule's interval apart
+/// (`crate::heart_schedule::ASLEEP_INTERVAL`, plus a session's wait for a
+/// still wrist), not across a missed one.
+pub const SWING_GAP: i64 = 7;
+/// The most a heart rate swings (the mean BPM step between readings) in
+/// deep sleep.
+pub const DEEP_SWING: i32 = 2;
 /// Minutes after falling asleep from which there's no more deep sleep.
 pub const DEEP_UNTIL: i64 = 5 * 60;
 /// The least a heart rate rises above its baseline (BPM) in REM sleep.
-/// (Below [`DEEP_RISE`]: in between, a still wrist makes it deep.)
-pub const REM_RISE: i32 = 5;
+/// (Below [`DEEP_RISE`]: in between, a still wrist and a flat heart rate
+/// make it deep.)
+pub const REM_RISE: i32 = 4;
+/// The fewest stirs (out of `2 * STIR_SPAN + 1` minutes) REM sleep has.
+pub const REM_STIRS: usize = 3;
 /// Minutes after falling asleep before there's any REM sleep.
 pub const REM_AFTER: i64 = 60;
 /// Deep or REM bouts shorter than this many minutes become light.
@@ -135,7 +164,7 @@ pub trait Record {
 /// light gap that may yet be filled), written out once they're settled.
 /// Writing behind the pass is safe, as staging reads only whether a minute
 /// is sleep, never which stage.
-#[inline(never)] // its ~500-byte frame only while it runs
+#[inline(never)] // its ~550-byte frame only while it runs
 pub fn stage<R: Record>(record: &mut R, onset: i64, end: i64) {
     let reading = |record: &R, minute: i64| reading(record, onset..end, minute);
 
@@ -175,12 +204,34 @@ pub fn stage<R: Record>(record: &mut R, onset: i64, end: i64) {
 
         let kind = record.minute(t).0;
         let stage = if kind.is_sleep() {
-            // The level: the mean of the readings within `LEVEL`, as a sum
-            // and a count, or else the nearest reading (the earlier one of
-            // two as near).
-            let (sum, count) = (t - LEVEL..t + LEVEL + 1)
-                .filter_map(|m| reading(record, m))
-                .fold((0i32, 0i32), |(s, c), bpm| (s + i32::from(bpm), c + 1));
+            // One look at the readings within `SWING` (which takes in those
+            // within `LEVEL`) for the level and the swing. The level: the
+            // mean of the readings within `LEVEL`, as a sum and a count, or
+            // else the nearest reading (the earlier one of two as near).
+            // The swing: the mean step between consecutive readings, as a
+            // sum of steps and a count of them.
+            let (mut sum, mut count) = (0i32, 0i32);
+            let (mut steps, mut pairs) = (0i32, 0i32);
+            let mut last: Option<(i64, u8)> = None;
+            for m in t - SWING..t + SWING + 1 {
+                let Some(bpm) = reading(record, m) else {
+                    continue;
+                };
+                if (m - t).abs() <= LEVEL {
+                    sum += i32::from(bpm);
+                    count += 1;
+                }
+                if let Some((l, b)) = last
+                    && m - l <= SWING_GAP
+                {
+                    steps += (i32::from(bpm) - i32::from(b)).abs();
+                    pairs += 1;
+                }
+                last = Some((m, bpm));
+            }
+            // Without two readings close enough to step between, the swing
+            // says nothing, and doesn't stand in deep sleep's way.
+            let flat = steps <= DEEP_SWING * pairs;
             let level = if count > 0 {
                 Some((sum, count))
             } else {
@@ -210,9 +261,16 @@ pub fn stage<R: Record>(record: &mut R, onset: i64, end: i64) {
                     let base = baseline.tenth_percentile_x10().unwrap_or(sum * 10 / count);
                     let rise = 10 * sum - count * base;
                     let since = t - onset;
-                    if stirs <= DEEP_STIRS && rise <= 10 * DEEP_RISE * count && since < DEEP_UNTIL {
+                    if stirs <= DEEP_STIRS
+                        && rise <= 10 * DEEP_RISE * count
+                        && flat
+                        && since < DEEP_UNTIL
+                    {
                         Kind::Deep
-                    } else if rise >= 10 * REM_RISE * count && since >= REM_AFTER {
+                    } else if rise >= 10 * REM_RISE * count
+                        && stirs >= REM_STIRS
+                        && since >= REM_AFTER
+                    {
                         Kind::Rem
                     } else {
                         Kind::Light
