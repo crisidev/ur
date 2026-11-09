@@ -18,13 +18,14 @@
 //! by hand. Text goes in through a buffer the page writes into
 //! ([`ur_buffer`]), and comes out through the page's `ur_print`.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
 use embassy_time::{Duration, Instant};
 
 use crate::case::{self, Case};
+use crate::display::PANEL;
 use crate::script::{self, Next, Output};
 use crate::watch::Watch;
 use crate::{InputEvent, theme};
@@ -37,10 +38,12 @@ const ZOOM: usize = 4;
 /// watch's time that the push runs through.
 const FRAME: Duration = Duration::from_millis(16);
 
-/// At most this many of a transition's frames wait to be shown: a long
-/// `wait` can run through many transitions, and only the last few are
-/// worth seeing.
-const QUEUED_FRAMES: usize = 12;
+/// At most this many of a push's frames wait to be shown: about a second
+/// of them, as a frame is a copy of the panel (115 KB). A transition takes
+/// ~0.47 s, so ~30; nothing the watch pushes in one go takes longer.
+/// Beyond it, the page would hold the last frame kept until the watch's
+/// clock is due to move again.
+const QUEUED_FRAMES: usize = 64;
 
 /// What the page starts with, so it opens on a watch in use rather than
 /// one fresh from a reset (see the file).
@@ -102,7 +105,7 @@ pub fn utc_offset_minutes(ms: f64) -> i32 {
 //
 // Kept apart, because they're borrowed at different times: the watch for
 // the whole of a call into it, and the screen also from within that call,
-// while a transition hands over its frames (see `Screen::transition_frame`).
+// while a transition hands over its frames (see `Screen::push_frame`).
 
 thread_local! {
     static WATCH: RefCell<Option<Watch>> = const { RefCell::new(None) };
@@ -110,8 +113,61 @@ thread_local! {
     static HANDS: RefCell<Hands> = RefCell::new(Hands::default());
     /// Text from the page (see [`ur_buffer`]).
     static INPUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
-    /// The watch's clock when [`ur_advance`] last let time pass.
-    static ADVANCED: Cell<Instant> = const { Cell::new(Instant::from_ticks(0)) };
+}
+
+// ==============================================================================
+// Showing pushes at their pace
+// ==============================================================================
+//
+// The window shows a push's frames as it runs, sleeping through each
+// step (see `window.rs`). The page can't: nothing it's given shows until
+// the call into the module returns, and a swipe's transition runs to its
+// end within the one call (`ur_pointer`, `ur_key`), moving the watch's
+// clock ~0.47 s on in no time at all. So the screen keeps the push's
+// frames, each with the instant on the watch's clock it shows, and plays
+// them back a little after, at their pace: the page has a clock of its
+// own on the watch's timeline (`Screen::shown`), which runs with the
+// browser's, and shows the latest frame it has reached. While it's
+// behind the watch's, the watch waits for it, rather than running on
+// while its past is still being shown: `ur_advance` moves the watch only
+// once the page has caught up.
+//
+// Only the latest run of pushes (pushes one after the other, with no
+// time passing between them but theirs) is kept: one that starts after
+// the clock moved on otherwise (a `wait`) supersedes those before. And
+// time a command skips on purpose (`wait 1h`, `F`) isn't played back:
+// the page's clock jumps with it, to the start of the run of pushes it
+// ended on, if any.
+
+/// What the panel showed at an instant: a frame kept to be shown later.
+struct Frame {
+    at: Instant,
+    /// The panel's pixels and idle mode, as `display::Panel`'s.
+    pixels: Vec<u16>,
+    idle: bool,
+}
+
+impl Frame {
+    /// What the panel shows now.
+    fn now() -> Self {
+        let mut frame = Frame {
+            at: Instant::now(),
+            pixels: Vec::new(),
+            idle: false,
+        };
+        frame.update();
+        frame
+    }
+
+    /// Makes this what the panel shows now, in place (as the page draws
+    /// it every animation frame).
+    fn update(&mut self) {
+        PANEL.with_borrow(|panel| {
+            self.at = Instant::now();
+            self.pixels.clone_from(&panel.pixels);
+            self.idle = panel.idle;
+        });
+    }
 }
 
 /// The drawn watch, as the window's `Screen`.
@@ -121,23 +177,93 @@ struct Screen {
     buffer: Vec<u32>,
     rgba: Vec<u8>,
     /// The backlight's brightness (0 to 1), and how far the motor has
-    /// shaken the watch, as of the last whole frame: a transition's frames
-    /// keep them.
+    /// shaken the watch, as of the last frame the page saw live: a push's
+    /// frames, played back, keep them, as the window's do.
     light: f32,
     shake: f32,
-    /// A push's frames (a transition's, or a long flush's), waiting to
-    /// be shown, oldest first, and how much of it has run since the last
-    /// one was kept.
-    frames: VecDeque<Vec<u8>>,
-    since_frame: Duration,
     /// The real panel's colours, or those sent to it (see `crate::panel`).
     mimic: bool,
+    /// What the page shows: the panel now, or a frame of a push.
+    showing: Frame,
+    /// Where the page has got to on the watch's timeline: behind the
+    /// watch's clock while a push's frames play back (see above).
+    shown: Instant,
+    /// The latest run of pushes' frames not yet shown, oldest first, and
+    /// how much of it has run since the last one was kept.
+    frames: VecDeque<Frame>,
+    since_frame: Duration,
+    /// When the latest run of pushes started and ended.
+    run_start: Instant,
+    run_end: Instant,
 }
 
 impl Screen {
+    /// `step` of a push has run (see `Watch::on_frame`), up to now.
+    fn push_frame(&mut self, step: Duration) {
+        let now = Instant::now();
+        let start = now - step;
+        if start != self.run_end {
+            // The clock moved on since the last push (or started again
+            // from 0, at a reboot): a new run, which makes those before it
+            // past. What the page has reached of them is shown first.
+            self.reach_frames();
+            self.frames.clear();
+            self.since_frame = Duration::from_ticks(0);
+            self.run_start = start;
+        }
+        self.run_end = now;
+        self.since_frame += step;
+        if self.since_frame < FRAME || self.frames.len() >= QUEUED_FRAMES {
+            return;
+        }
+        self.since_frame = Duration::from_ticks(0);
+        self.frames.push_back(Frame::now());
+    }
+
+    /// Shows the latest frame waiting that the page's clock has reached.
+    fn reach_frames(&mut self) {
+        while let Some(frame) = self.frames.pop_front_if(|frame| frame.at <= self.shown) {
+            self.showing = frame;
+        }
+    }
+
+    /// After a call into the module: starts the page's clock again with
+    /// the watch's if that did (a reboot), and, if `skips` (a call that may
+    /// skip time on purpose, as a command's `wait`), moves it on to what's
+    /// left to play back.
+    fn settle(&mut self, skips: bool) {
+        let now = Instant::now();
+        // The clock started again from 0 (a reboot), so what's kept is
+        // from the old one: there's nothing to play back.
+        if self.run_end > now {
+            self.frames.clear();
+            self.run_start = now;
+            self.run_end = now;
+        }
+        if self.shown > now {
+            self.shown = now;
+        }
+        if skips {
+            self.shown = if self.run_end == now {
+                // The call ended on a run of pushes (a swipe's
+                // transition, say): play it from its start, unless the
+                // page is already past that.
+                self.shown.max(self.run_start)
+            } else {
+                now
+            };
+        }
+    }
+
     fn draw(&mut self) {
-        self.case
-            .draw(&mut self.buffer, self.light, self.shake, self.mimic);
+        self.case.draw_pixels(
+            &mut self.buffer,
+            &self.showing.pixels,
+            self.showing.idle,
+            self.light,
+            self.shake,
+            self.mimic,
+        );
         for (rgba, pixel) in self
             .rgba
             .as_chunks_mut::<4>()
@@ -148,19 +274,6 @@ impl Screen {
             let [_, r, g, b] = pixel.to_be_bytes();
             *rgba = [r, g, b, 255];
         }
-    }
-
-    /// `step` of a push has run (see `Watch::on_frame`). The page can't
-    /// be shown anything until the call returns, so its frames are kept
-    /// to be shown one an animation frame after.
-    fn push_frame(&mut self, step: Duration) {
-        self.since_frame += step;
-        if self.since_frame < FRAME || self.frames.len() >= QUEUED_FRAMES {
-            return;
-        }
-        self.since_frame = Duration::from_ticks(0);
-        self.draw();
-        self.frames.push_back(self.rgba.clone());
     }
 }
 
@@ -235,9 +348,13 @@ pub extern "C" fn ur_boot(start: bool) {
         rgba: vec![0; pixels * 4],
         light: 0.0,
         shake: 0.0,
+        mimic: true,
+        showing: Frame::now(),
+        shown: Instant::now(),
         frames: VecDeque::new(),
         since_frame: Duration::from_ticks(0),
-        mimic: true,
+        run_start: Instant::now(),
+        run_end: Instant::now(),
     }));
     // Flash that starts erased, and is forgotten with the page.
     let mut watch = Watch::boot(crate::flash::Flash::erased());
@@ -246,7 +363,13 @@ pub extern "C" fn ur_boot(start: bool) {
         print(Text::Error, &e);
     }
     WATCH.set(Some(watch));
-    ADVANCED.set(Instant::now());
+    // The page opens on the watch as the script left it, not on its
+    // last push played back.
+    with_screen(|screen| {
+        screen.frames.clear();
+        screen.showing = Frame::now();
+        screen.shown = Instant::now();
+    });
 }
 
 /// Room for `len` bytes of text from the page, which it writes there
@@ -269,6 +392,7 @@ pub extern "C" fn ur_command() {
         print(Text::Log, &format!("> {line}"));
     }
     with_watch(|watch| command(watch, &line));
+    with_screen(|screen| screen.settle(true));
 }
 
 /// Runs the buffer's text as a script (say, one of `sim/`'s), stopping at
@@ -277,6 +401,7 @@ pub extern "C" fn ur_command() {
 pub extern "C" fn ur_script() {
     let text = input();
     let result = with_watch(|watch| script::run(watch, "script", &text, &output()));
+    with_screen(|screen| screen.settle(true));
     match result {
         Ok(Next::Continue) => print(Text::Log, "script done"),
         Ok(Next::Quit) => print(Text::Log, "script done (it quit)"),
@@ -284,26 +409,30 @@ pub extern "C" fn ur_script() {
     }
 }
 
-/// Lets `ms` milliseconds pass, as the window does each frame: less what
-/// the watch's own pushes took since the last time, which the page has
-/// spent showing their frames.
+/// Lets `ms` milliseconds pass on the page's clock, as the window does
+/// each frame, and on the watch's as far as the page's has caught up with
+/// it: while a push's frames play back, the watch waits for them (see
+/// "Showing pushes at their pace").
 #[unsafe(no_mangle)]
 pub extern "C" fn ur_advance(ms: f64) {
-    let due = Duration::from_micros((ms.max(0.0) * 1e3) as u64);
-    let taken = Instant::now().saturating_duration_since(ADVANCED.get());
-    with_watch(|watch| watch.advance(due.checked_sub(taken).unwrap_or_default()));
-    ADVANCED.set(Instant::now());
+    let shown = with_screen(|screen| {
+        screen.shown += Duration::from_micros((ms.max(0.0) * 1e3) as u64);
+        screen.shown
+    });
+    let now = Instant::now();
+    if shown > now {
+        with_watch(|watch| watch.advance(shown - now));
+    }
+    // A push that ran past `shown` (a timer's, say) puts the page behind
+    // the watch again, by what's left of it to play back.
+    with_screen(|screen| screen.settle(false));
 }
 
 /// The page's colours: the real panel's (`true`, the default), or those
 /// sent to it, as the window's P switches.
 #[unsafe(no_mangle)]
 pub extern "C" fn ur_mimic(on: bool) {
-    with_screen(|screen| {
-        screen.mimic = on;
-        // Drawn in the other colours: the page shows the watch as it is.
-        screen.frames.clear();
-    });
+    with_screen(|screen| screen.mimic = on);
 }
 
 /// The pointer (a mouse, a finger, a pen), at (`x`, `y`) in the drawn
@@ -335,6 +464,7 @@ pub extern "C" fn ur_pointer(kind: u32, x: f32, y: f32) {
         }
         _ => {}
     });
+    with_screen(|screen| screen.settle(true));
 }
 
 /// A key, by its `KeyboardEvent.key`: the window's keys (see `window.rs`'s
@@ -397,6 +527,7 @@ pub extern "C" fn ur_key() -> bool {
     });
     let Some(line) = line else { return false };
     with_watch(|watch| command(watch, &line));
+    with_screen(|screen| screen.settle(true));
     true
 }
 
@@ -412,21 +543,21 @@ pub extern "C" fn ur_height() -> usize {
 }
 
 /// The watch, drawn: [`ur_width`] × [`ur_height`] RGBA pixels, row by row,
-/// valid until the next call into the module. The oldest of a
-/// transition's frames not yet shown, if there are any; otherwise, the
-/// watch as it is now, lit as the backlight is, and shaken while the
-/// motor runs.
+/// valid until the next call into the module. While a push plays back,
+/// its latest frame the page has reached; otherwise, the watch as it is
+/// now, lit as the backlight is, and shaken while the motor runs.
 #[unsafe(no_mangle)]
 pub extern "C" fn ur_frame() -> *const u8 {
     let (light, pulse) = with_watch(|watch| (case::light(watch.backlight), watch.motor_pulse()));
     with_screen(|screen| {
-        if let Some(frame) = screen.frames.pop_front() {
-            screen.rgba = frame;
-            return screen.rgba.as_ptr();
+        screen.reach_frames();
+        // Between the last frame kept and the push's end (less than a
+        // frame), the page holds that frame.
+        if screen.frames.is_empty() && screen.shown >= Instant::now() {
+            screen.showing.update();
+            screen.light = light;
+            screen.shake = screen.case.shake(pulse, Instant::now());
         }
-        screen.since_frame = Duration::from_ticks(0);
-        screen.light = light;
-        screen.shake = screen.case.shake(pulse, Instant::now());
         screen.draw();
         screen.rgba.as_ptr()
     })

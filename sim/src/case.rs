@@ -159,6 +159,24 @@ impl Case {
     /// real panel shows them (see [`crate::panel`]); without, as sent to
     /// it. (A shake's blur blends what's drawn, either way.)
     pub fn draw(&self, buffer: &mut [u32], light: f32, shake: f32, mimic: bool) {
+        PANEL.with_borrow(|panel| {
+            self.draw_pixels(buffer, &panel.pixels, panel.idle, light, shake, mimic);
+        });
+    }
+
+    /// As [`Case::draw`], with the panel showing `pixels` (RGB565,
+    /// row-major, as `display::Panel` holds them), in idle mode if `idle`:
+    /// for the browser's build, which shows a push's frames after the push
+    /// (see `web.rs`).
+    pub fn draw_pixels(
+        &self,
+        buffer: &mut [u32],
+        pixels: &[u16],
+        idle: bool,
+        light: f32,
+        shake: f32,
+        mimic: bool,
+    ) {
         // Whole pixels by moving the watch, the rest by blending each pixel
         // with its left neighbour (below).
         let whole = shake.floor();
@@ -181,24 +199,21 @@ impl Case {
         // pixels are 3 panel pixels, and `zoom` window pixels.
         let side = self.panel_side;
         let panel_pixel = |x: usize| (2 * x + 1) * SIZE / (2 * side);
-        PANEL.with_borrow(|panel| {
-            for y in 0..side {
-                let row = &mut buffer[(self.panel.1 + y) * width..][..width];
-                for x in 0..side {
-                    let pixel = panel.pixels[panel_pixel(y) * SIZE + panel_pixel(x)];
-                    let color = rgb888(pixel, panel.idle);
-                    row[left + x] = if mimic {
-                        pack(crate::panel::mimic(color, light, GLASS_RGB).map(f32::from))
-                    } else {
-                        // Off, the panel is as black as the glass round
-                        // it.
-                        pack(std::array::from_fn(|i| {
-                            (f32::from(color[i]) * light).max(GLASS_COLOR[i])
-                        }))
-                    };
-                }
+        for y in 0..side {
+            let row = &mut buffer[(self.panel.1 + y) * width..][..width];
+            for x in 0..side {
+                let pixel = pixels[panel_pixel(y) * SIZE + panel_pixel(x)];
+                let color = rgb888(pixel, idle);
+                row[left + x] = if mimic {
+                    pack(crate::panel::mimic(color, light, GLASS_RGB).map(f32::from))
+                } else {
+                    // Off, the panel is as black as the glass round it.
+                    pack(std::array::from_fn(|i| {
+                        (f32::from(color[i]) * light).max(GLASS_COLOR[i])
+                    }))
+                };
             }
-        });
+        }
         // A fraction of a pixel further right: each pixel takes that much
         // of the one to its left. A shake of a pixel or two then glides
         // instead of jumping a whole pixel at a time, which strobes. The
