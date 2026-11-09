@@ -34,7 +34,7 @@
 
 use core::cell::{Cell, RefCell};
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::task::{Context, Poll};
 
 use defmt::{debug, info, warn};
@@ -1385,6 +1385,20 @@ async fn update_location(location: Location, precise: bool) {
     }
 }
 
+/// How often a fetch ends with the empty track list that has Gadgetbridge
+/// pass its new data on to Health Connect (see `gb::FETCH_END`).
+/// Gadgetbridge shows an "End : Fetching sports details" toast for each,
+/// and with auto-fetch on that's every few minutes, so the export lags
+/// the watch by up to this much instead. Nothing is lost by skipping one:
+/// the export picks up from where its last run stopped. The first fetch
+/// after a boot always sends it.
+const HEALTH_CONNECT_EVERY: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// When the empty track list last went out: uptime in seconds plus one,
+/// 0 if not since boot. Shared by both connection slots, since it's the
+/// same phone's export either way.
+static LAST_NO_TRACKS: AtomicU32 = AtomicU32::new(0);
+
 /// Sends the per-minute activity samples Gadgetbridge asked for.
 async fn send_activity(server: &Server<'_>, conn: &GattConnection<'_, '_, Pool>, since_ms: i64) {
     send(server, conn, Outgoing::ActivityFetch { done: false }).await;
@@ -1422,12 +1436,18 @@ async fn send_activity(server: &Server<'_>, conn: &GattConnection<'_, '_, Pool>,
         next = last + 1;
     }
     // The end, and the empty track list that gets Gadgetbridge to pass
-    // the samples on to Health Connect (see `gb::FETCH_END`). Only the
-    // end counts towards `complete`: without the list, the phone still
-    // has every sample.
+    // the samples on to Health Connect (see `gb::FETCH_END`), at most
+    // every `HEALTH_CONNECT_EVERY`. Only the end counts towards
+    // `complete`: without the list, the phone still has every sample.
     let [end, no_tracks] = gb::FETCH_END;
     complete &= send(server, conn, end).await;
-    send(server, conn, no_tracks).await;
+    // Uptime in seconds, plus one so that 0 means "not since boot".
+    let now = Instant::now().as_secs() as u32 + 1;
+    let last = LAST_NO_TRACKS.load(Ordering::Relaxed);
+    if last == 0 || now - last >= HEALTH_CONNECT_EVERY.as_secs() as u32 {
+        send(server, conn, no_tracks).await;
+        LAST_NO_TRACKS.store(now, Ordering::Relaxed);
+    }
     info!("ble: sent {} minutes of activity", sent);
     if complete {
         // The phone now has everything up to the newest minute sent, if any

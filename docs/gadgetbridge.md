@@ -46,7 +46,7 @@ own, from its main menu.
 | Do Not Disturb | Settings → Notifications | Off | On: notifications don't reach the watch while the phone is on Do Not Disturb. The watch's quiet nights silence them while you sleep either way. |
 | Cache while out of range | Settings → Notifications | Off | On: notifications that came while the watch was away arrive once it's back. |
 | Notify for missed call | Watch settings → Notifications | Off | On: a notification for each missed call. |
-| Enable Health Connect Export, Select devices, Sync after device sync | Settings → External Integrations → Health Connect | Off, none, off | On, the watch, and on, to pass sleep, steps and heart rate on to Health Connect. But in Gadgetbridge 2026.11.1 a Bangle.js fetch doesn't count as a device sync (its driver never says it finished), so only the first sync, when you set the export up, goes over. |
+| Enable Health Connect Export, Select devices, Sync after device sync | Settings → External Integrations → Health Connect | Off, none, off | On, the watch, and on, to pass sleep, steps and heart rate on to Health Connect. Gadgetbridge 2026.11.1 doesn't count a Bangle.js fetch as a device sync ([#7289](https://codeberg.org/Freeyourgadget/Gadgetbridge/issues/7289)), so the watch ends a fetch as if it had GPS tracks to make it one: the first after the watch starts, then at most every 2 hours. Each of those shows a short "End : Fetching sports details" message. |
 
 [C01]: ../README.md#c01-the-watch-says-not-paired
 [C03]: ../README.md#c03-the-watch-never-gets-a-location-from-the-phone
