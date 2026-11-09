@@ -445,6 +445,8 @@ impl UiLoop {
                 .is_some_and(|s| now_ms.saturating_sub(s.heard) < aranet::RECENT)
         });
         app.set_air(air);
+        #[cfg(feature = "compare")]
+        crate::compare::state(now, connected, air);
         // Apply screen power changes. Waking renders before the backlight
         // comes on, so the old frame never flashes up.
         if app.awake {

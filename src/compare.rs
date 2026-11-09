@@ -10,11 +10,14 @@
 //!
 //! - [`Boot`]: the instant the UI started, and the settings it loaded from
 //!   flash.
-//! - [`Event`]s: everything that changes the UI's state (ticks and
-//!   inputs), with the exact instants and readings the UI loop handed it. The simulator replays
-//!   them in order. A ring: the reader must keep up.
-//! - [`Pass`]: what the last frame was rendered with (`ui::Status`, and
-//!   today's activity), and a seqlock around it, so a reader can tell a
+//! - [`Event`]s: everything that changes the UI's state (ticks, inputs,
+//!   and what a pass tells the App besides: whether a phone is connected,
+//!   a room sensor heard, and it's daytime), with the exact instants and
+//!   readings the UI loop handed it. The simulator replays them in order.
+//!   A ring: the reader must keep up.
+//! - [`Pass`]: what the last frame was rendered with (`ui::Status`,
+//!   with the room sensor's reading and the BTHome identity, and today's
+//!   activity), and a seqlock around it, so a reader can tell a
 //!   frame whose canvas it read whole.
 //! - [`Push`]: what pushing that frame to the panel sent, and how long it
 //!   took, against which the simulator checks its model of the panel's
@@ -25,7 +28,7 @@
 //!
 //! Everything is `repr(C)` plain integers, so the simulator, which
 //! includes this file too, reads the bytes straight into the same types.
-//! It costs ~2.3 KB of RAM, so it isn't in releases.
+//! It costs ~2.4 KB of RAM, so it isn't in releases.
 
 use core::cell::UnsafeCell;
 use core::sync::atomic::{Ordering, compiler_fence};
@@ -33,6 +36,7 @@ use core::sync::atomic::{Ordering, compiler_fence};
 use embassy_time::Instant;
 use heapless::String;
 
+use crate::aranet::{Band, Kind, Sighting};
 use crate::day::{Day, HOURS};
 use crate::gesture::Gesture;
 use crate::ui::{PhoneEvent, Status, Unpaired};
@@ -91,6 +95,8 @@ pub struct Head {
     /// once that pass's frame is on the panel (in the canvas's `front`).
     pub started: u32,
     pub finished: u32,
+    /// The [`state`] flags last logged (as a [`kind::STATE`] event).
+    pub state: u32,
     pub push: Push,
     pub boot: Boot,
     pub pass: Pass,
@@ -145,6 +151,9 @@ pub mod kind {
     pub const GLANCE: u8 = 6;
     /// The UI loop's timer (see `App::on_timer`).
     pub const TIMER: u8 = 7;
+    /// What the pass tells the App besides events changed (see
+    /// [`super::state`]): [`super::state`] flags in [`Event::flags`].
+    pub const STATE: u8 = 8;
 }
 
 /// What [`Event::phone`] says the phone sent: the content isn't kept (the
@@ -173,6 +182,14 @@ pub mod flag {
     pub const ASLEEP: u8 = 2;
     pub const WATCHING: u8 = 4;
     pub const FINGER_DOWN: u8 = 8;
+}
+
+/// [`kind::STATE`] flags: what the pass last told the App
+/// (`App::set_connected`, `App::set_air`, `App::set_daytime`).
+pub mod state {
+    pub const CONNECTED: u8 = 1;
+    pub const AIR: u8 = 2;
+    pub const DAYTIME: u8 = 4;
 }
 
 #[repr(C)]
@@ -252,6 +269,131 @@ pub struct Pass {
     /// highest heart rate, and the sum (little-endian) and count of its
     /// readings.
     pub today: [[u8; 7]; HOURS],
+    /// `Status::air`.
+    pub air: Air,
+    /// `Status::bthome`, if `has_bthome`: the key page shows it.
+    pub bthome_key: [u8; 16],
+    pub bthome_address: [u8; 6],
+    pub has_bthome: u8,
+}
+
+/// A room sensor's [`Sighting`], for the Air screen; `kind` 0 for none.
+/// An `Option` field is in `present`'s bit (see [`present`]), its value 0
+/// without.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Air {
+    pub heard: u64,
+    pub co2: u16,
+    pub hundredths: i16,
+    pub pressure: u16,
+    pub interval: u16,
+    pub age: u16,
+    pub address: [u8; 6],
+    pub rssi: i8,
+    pub humidity: u8,
+    pub battery: u8,
+    /// 0 none, then `Band`'s variants from 1.
+    pub band: u8,
+    /// 0 no sighting, 1 an Aranet4, 2 a BTHome sensor, 3 an irregular one.
+    pub kind: u8,
+    pub present: u8,
+}
+
+/// [`Air::present`]'s bits.
+pub mod present {
+    pub const CO2: u8 = 1;
+    pub const HUNDREDTHS: u8 = 2;
+    pub const PRESSURE: u8 = 4;
+    pub const HUMIDITY: u8 = 8;
+    pub const BATTERY: u8 = 16;
+}
+
+impl Air {
+    const NONE: Self = Self {
+        heard: 0,
+        co2: 0,
+        hundredths: 0,
+        pressure: 0,
+        interval: 0,
+        age: 0,
+        address: [0; 6],
+        rssi: 0,
+        humidity: 0,
+        battery: 0,
+        band: 0,
+        kind: 0,
+        present: 0,
+    };
+
+    fn from(sighting: Option<&Sighting>) -> Self {
+        let Some(sighting) = sighting else {
+            return Self::NONE;
+        };
+        let reading = &sighting.reading;
+        let bit = |is: bool, bit: u8| if is { bit } else { 0 };
+        Self {
+            heard: sighting.heard,
+            co2: reading.co2.unwrap_or(0),
+            hundredths: reading.hundredths.unwrap_or(0),
+            pressure: reading.pressure.unwrap_or(0),
+            interval: reading.interval,
+            age: reading.age,
+            address: sighting.address,
+            rssi: sighting.rssi,
+            humidity: reading.humidity.unwrap_or(0),
+            battery: reading.battery.unwrap_or(0),
+            band: match reading.band {
+                None => 0,
+                Some(Band::Good) => 1,
+                Some(Band::Fair) => 2,
+                Some(Band::Poor) => 3,
+            },
+            kind: match reading.kind {
+                Kind::Aranet4 => 1,
+                Kind::BTHome { irregular: false } => 2,
+                Kind::BTHome { irregular: true } => 3,
+            },
+            present: bit(reading.co2.is_some(), present::CO2)
+                | bit(reading.hundredths.is_some(), present::HUNDREDTHS)
+                | bit(reading.pressure.is_some(), present::PRESSURE)
+                | bit(reading.humidity.is_some(), present::HUMIDITY)
+                | bit(reading.battery.is_some(), present::BATTERY),
+        }
+    }
+
+    /// For the simulator, which renders the dev kit's.
+    #[cfg(not(target_os = "none"))]
+    pub fn sighting(&self) -> Option<Sighting> {
+        let kind = match self.kind {
+            1 => Kind::Aranet4,
+            2 => Kind::BTHome { irregular: false },
+            3 => Kind::BTHome { irregular: true },
+            _ => return None,
+        };
+        let has = |bit: u8| self.present & bit != 0;
+        Some(Sighting {
+            address: self.address,
+            rssi: self.rssi,
+            heard: self.heard,
+            reading: crate::aranet::Reading {
+                kind,
+                co2: has(present::CO2).then_some(self.co2),
+                hundredths: has(present::HUNDREDTHS).then_some(self.hundredths),
+                pressure: has(present::PRESSURE).then_some(self.pressure),
+                humidity: has(present::HUMIDITY).then_some(self.humidity),
+                battery: has(present::BATTERY).then_some(self.battery),
+                band: match self.band {
+                    1 => Some(Band::Good),
+                    2 => Some(Band::Fair),
+                    3 => Some(Band::Poor),
+                    _ => None,
+                },
+                interval: self.interval,
+                age: self.age,
+            },
+        })
+    }
 }
 
 pub const NONE_I64: i64 = i64::MIN;
@@ -341,6 +483,10 @@ const PASS: Pass = Pass {
     daytime: 0,
     has_today: 0,
     today: [[0; 7]; HOURS],
+    air: Air::NONE,
+    bthome_key: [0; 16],
+    bthome_address: [0; 6],
+    has_bthome: 0,
 };
 
 const PUSH: Push = Push {
@@ -368,6 +514,7 @@ pub static UR_COMPARE: Shared = Shared(UnsafeCell::new(Export {
         written: 0,
         started: 0,
         finished: 0,
+        state: 0,
         push: PUSH,
         boot: Boot {
             at: 0,
@@ -545,10 +692,40 @@ pub fn input(input: &InputEvent, at: Instant) {
     push(event);
 }
 
+/// The pass told the App, at `now`, whether a phone is connected and
+/// whether a room sensor was heard lately: logged if either changed, so
+/// a reader replaying the events tells its App the same in between.
+pub fn state(now: Instant, connected: bool, air: bool) {
+    update_state(now, |flags| {
+        (flags & state::DAYTIME)
+            | (u8::from(connected) * state::CONNECTED)
+            | (u8::from(air) * state::AIR)
+    });
+}
+
+fn update_state(now: Instant, update: impl FnOnce(u8) -> u8) {
+    let changed = with(|export| {
+        let old = export.head.state as u8;
+        let new = update(old);
+        export.head.state = u32::from(new);
+        (new != old).then_some(new)
+    });
+    if let Some(flags) = changed {
+        push(Event {
+            flags,
+            ..event(kind::STATE, now)
+        });
+    }
+}
+
 /// A pass is about to render, at `now`, with `status` and `today`. Call
 /// with nothing in between that could let another task run (no awaits),
 /// so `today` is what the render will see.
 pub fn rendering(now: Instant, status: &Status, daytime: bool, today: Option<Day>) {
+    // The App was just told whether it's daytime (only while awake).
+    update_state(now, |flags| {
+        (flags & !state::DAYTIME) | (u8::from(daytime) * state::DAYTIME)
+    });
     with(|export| {
         let head = &mut export.head;
         head.started = head.started.wrapping_add(1);
@@ -615,6 +792,10 @@ pub fn rendering(now: Instant, status: &Status, daytime: bool, today: Option<Day
             daytime: u8::from(daytime),
             has_today: u8::from(today.is_some()),
             today: bytes,
+            air: Air::from(status.air.as_ref()),
+            bthome_key: status.bthome.map_or([0; 16], |identity| identity.key),
+            bthome_address: status.bthome.map_or([0; 6], |identity| identity.address),
+            has_bthome: u8::from(status.bthome.is_some()),
         };
     });
 }

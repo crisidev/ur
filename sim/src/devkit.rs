@@ -437,8 +437,9 @@ struct Follower {
     /// Events replayed so far.
     replayed: u32,
     /// As the dev kit's UI loop last told its App (every pass, and awake
-    /// passes).
+    /// passes), as its `STATE` events say.
     connected: bool,
+    air: bool,
     daytime: bool,
     sent: VecDeque<Sent>,
 }
@@ -472,6 +473,7 @@ impl Follower {
             display: Display,
             replayed: 0,
             connected: false,
+            air: false,
             daytime: false,
             sent: VecDeque::new(),
         };
@@ -643,6 +645,7 @@ impl Follower {
         let at = Instant::from_ticks(event.at);
         time::set(at);
         self.app.set_connected(self.connected);
+        self.app.set_air(self.air);
         self.app.set_daytime(self.daytime);
         let input = match event.kind {
             kind::TICK => {
@@ -671,6 +674,29 @@ impl Follower {
                 held_ms: event.held_ms,
             })),
             kind::PHONE => Some(InputEvent::Phone(self.phone(event)?)),
+            kind::STATE => {
+                let flag = |f| event.flags & f != 0;
+                let (connected, air, daytime) = (
+                    flag(compare::state::CONNECTED),
+                    flag(compare::state::AIR),
+                    flag(compare::state::DAYTIME),
+                );
+                for (what, was, is) in [
+                    ("a phone connected", self.connected, connected),
+                    ("a room sensor heard", self.air, air),
+                    ("daytime", self.daytime, daytime),
+                ] {
+                    if was != is {
+                        let no = if is { "" } else { "no longer " };
+                        eprintln!("  dev kit: {no}{what} at {:.3} s", seconds(at));
+                    }
+                }
+                (self.connected, self.air, self.daytime) = (connected, air, daytime);
+                self.app.set_connected(connected);
+                self.app.set_air(air);
+                self.app.set_daytime(daytime);
+                None
+            }
             kind::TIMER => {
                 let finger_down = event.flags & compare::flag::FINGER_DOWN != 0;
                 self.app.on_timer(at, finger_down);
@@ -849,10 +875,7 @@ impl Follower {
             heart_rate: (pass.heart_rate != 0).then_some(pass.heart_rate),
             temperature: (pass.has_temperature != 0).then_some(pass.temperature),
             temperature_from_sensor: pass.has_temperature == 2,
-            // TODO: the Aranet4 reading itself, for the Air screen, should a
-            // dev kit ever have one near (it's not exported: the screen
-            // only exists with one).
-            air: None,
+            air: pass.air.sighting(),
             sleep: (pass.has_sleep != 0).then_some(activity::Sleep {
                 start_utc_minute: pass.sleep_start_utc_minute,
                 end_utc_minute: pass.sleep_end_utc_minute,
@@ -862,8 +885,10 @@ impl Follower {
             }),
             local_second: (pass.local_second != compare::NONE_I64).then_some(pass.local_second),
             battery: &battery,
-            // The dev kit's own isn't exported: the key page differs.
-            bthome: Some(crate::watch::DEMO_IDENTITY),
+            bthome: (pass.has_bthome != 0).then_some(crate::bthome::Identity {
+                key: pass.bthome_key,
+                address: pass.bthome_address,
+            }),
         };
         self.canvas.set_theme(self.app.theme());
         self.app.render(&mut self.canvas, &status, now);
@@ -956,7 +981,7 @@ mod tests {
     /// on a `compare` build gives `UR_COMPARE`'s size.)
     #[test]
     fn the_export_is_laid_out_as_on_the_watch() {
-        assert_eq!(size_of::<Export>(), 0x950);
+        assert_eq!(size_of::<Export>(), 0x990);
         assert_eq!(size_of::<Event>(), 32);
         assert_eq!(size_of::<Music>(), 84);
         let music = std::mem::offset_of!(Export, music);
@@ -964,6 +989,6 @@ mod tests {
             std::mem::offset_of!(Export, events),
             music - compare::EVENTS * size_of::<Event>()
         );
-        assert_eq!(music + size_of::<Music>(), 0x950 - 4, "and padding");
+        assert_eq!(music + size_of::<Music>(), 0x990 - 4, "and padding");
     }
 }
