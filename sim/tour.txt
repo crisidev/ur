@@ -158,8 +158,9 @@ buttons off
 grid 6
 
 # A nearby Aranet4 (as a scan would hear it): its temperature on the
-# clock face, underlined at the degree sign, and its CO2 on a screen of
-# its own, below the music, for an hour after it was last heard.
+# clock face, to the tenth (the watch's own is to the degree), and its
+# CO2 on a screen of its own, below the music, for an hour after it was
+# last heard.
 aranet 1091 20.75 53 1012.3 87 3m
 wait 1s
 shot 11g-clock-aranet.png
@@ -208,19 +209,21 @@ expect not screen-on
 # Back to the Air screen, with a BTHome thermometer instead of the
 # Aranet4 (here, before the evening, so that the time it takes doesn't
 # move the screenshots above). It gives the clock face's temperature,
-# marked the same; it has no CO2, so its temperature is the big number.
+# to the tenth too; it has no CO2, so its temperature is the big number.
 button
 bthome-temp 21.37 45.6 87 2m
 up
 up
 wait 1s
 shot 11i-air-bthome.png
-# Below zero, and only a temperature.
+# Below zero, and only a temperature: on the clock face, its tenth
+# after the minus.
 bthome-temp -4.25
 wait 1s
 shot 11j-air-bthome-cold.png
 button
 wait 1s
+shot 11k-clock-bthome-cold.png
 bthome-temp off
 
 # ==============================================================================

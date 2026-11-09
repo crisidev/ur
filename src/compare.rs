@@ -225,6 +225,9 @@ pub struct Pass {
     pub has_time: u8,
     /// `clock::utc_offset_minutes()`, if `has_offset`.
     pub offset_minutes: i16,
+    /// `Status::temperature`, in tenths of a degree, if `has_temperature`.
+    /// Here, beside the other i16, so it takes no padding.
+    pub temperature: i16,
     pub has_offset: u8,
     pub has_sleep: u8,
     pub sleep_asleep_minutes: u16,
@@ -239,8 +242,8 @@ pub struct Pass {
     pub update_progress: u8,
     /// Or 0 for none.
     pub heart_rate: u8,
-    pub temperature: i8,
-    /// 0 none, 1 the watch's (or estimated from it), 2 a nearby Aranet4's.
+    /// 0 none, 1 the watch's (or estimated from it), 2 a nearby room
+    /// sensor's.
     pub has_temperature: u8,
     /// What the App was told it is (`App::set_daytime`).
     pub daytime: u8,
@@ -603,7 +606,7 @@ pub fn rendering(now: Instant, status: &Status, daytime: bool, today: Option<Day
             update_progress: status.update_progress.unwrap_or(255),
             heart_rate: status.heart_rate.unwrap_or(0),
             temperature: status.temperature.unwrap_or(0),
-            // 2: from a nearby room sensor (underlined on the clock face).
+            // 2: from a nearby room sensor (to the tenth on the clock face).
             has_temperature: match (status.temperature, status.temperature_from_sensor) {
                 (None, _) => 0,
                 (Some(_), false) => 1,

@@ -956,7 +956,7 @@ mod tests {
     /// on a `compare` build gives `UR_COMPARE`'s size.)
     #[test]
     fn the_export_is_laid_out_as_on_the_watch() {
-        assert_eq!(size_of::<Export>(), 0x948);
+        assert_eq!(size_of::<Export>(), 0x950);
         assert_eq!(size_of::<Event>(), 32);
         assert_eq!(size_of::<Music>(), 84);
         let music = std::mem::offset_of!(Export, music);
@@ -964,6 +964,6 @@ mod tests {
             std::mem::offset_of!(Export, events),
             music - compare::EVENTS * size_of::<Event>()
         );
-        assert_eq!(music + size_of::<Music>(), 0x948 - 4, "and padding");
+        assert_eq!(music + size_of::<Music>(), 0x950 - 4, "and padding");
     }
 }

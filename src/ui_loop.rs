@@ -308,11 +308,11 @@ pub struct UiLoop {
     panel_since: Instant,
     /// Whether the last frame was in the dim look; see [`UiLoop::pass`].
     was_dim: bool,
-    /// The clock face's temperature, once read, and where from; and what
-    /// goes into it (see `temperature`): the die's own, in quarter degrees,
-    /// whether the watch is worn, and the estimate's calibration, which a
-    /// nearby room sensor teaches.
-    temperature: Option<(i8, temperature::Source)>,
+    /// The clock face's temperature (tenths of a degree), once read, and
+    /// where from; and what goes into it (see `temperature`): the die's
+    /// own, in quarter degrees, whether the watch is worn, and the
+    /// estimate's calibration, which a nearby room sensor teaches.
+    temperature: Option<(i16, temperature::Source)>,
     die: Option<i32>,
     wear: temperature::Wear,
     calibration: temperature::Calibration,
@@ -462,7 +462,7 @@ impl UiLoop {
                 sleep: activity::last_sleep(),
                 local_second: local_second(),
                 heart_rate: heart::current(now),
-                temperature: temperature.map(|(degrees, _)| degrees),
+                temperature: temperature.map(|(tenths, _)| tenths),
                 temperature_from_sensor: temperature
                     .is_some_and(|(_, source)| source == temperature::Source::Sensor),
                 // Read again rather than kept from above: kept, it would
@@ -644,18 +644,21 @@ impl UiLoop {
                     self.calibration.pairs()
                 );
             }
-            let sensor = fresh.and_then(|s| s.reading.quarters());
-            let (quarters, source) =
+            let sensor = fresh.and_then(|s| s.reading.hundredths).map(i32::from);
+            let (hundredths, source) =
                 temperature::pick(sensor, self.wear.worn(), die, &self.calibration);
             // A change of source shows the new value at once, rather than
-            // holding the old within a degree.
+            // holding the old within a degree (or a tenth).
             let previous = self
                 .temperature
                 .filter(|&(_, s)| s == source)
                 .map(|(d, _)| d);
-            let shown = (temperature::shown(previous, quarters), source);
+            let shown = (temperature::shown(previous, hundredths, source), source);
             if self.temperature != Some(shown) {
-                info!("temperature: {} C ({}), die {}/4 C", shown.0, source, die);
+                info!(
+                    "temperature: {}/10 C ({}), die {}/4 C",
+                    shown.0, source, die
+                );
             }
             self.temperature = Some(shown);
         }

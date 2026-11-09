@@ -66,8 +66,8 @@ changes from the plan below, which was written 2026-11-07 against
     without a temperature isn't a sensor heard (pvvx's firmware
     alternates its temperature with its battery voltage).
   - **Which:** the nearest of either kind by RSSI, with the same 3 dB
-    hysteresis; its temperature is the clock face's, with the same
-    marker (`Source::Sensor`, `temperature_from_sensor`), and it
+    hysteresis; its temperature is the clock face's, to the tenth like
+    an Aranet4's (`Source::Sensor`, `temperature_from_sensor`), and it
     calibrates the wrist estimate like an Aranet4's: it's a room
     thermometer, rated to a few tenths. But no pair is learnt outside
     10–35 °C, since BTHome thermometers often sit in fridges,

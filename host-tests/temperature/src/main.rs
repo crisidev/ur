@@ -18,69 +18,134 @@ mod tests {
         (degrees * 4.0) as i32
     }
 
+    /// Hundredths, a room sensor's unit (and [`pick`]'s).
+    fn h(degrees: f32) -> i32 {
+        (degrees * 100.0).round() as i32
+    }
+
+    /// [`shown`] for the watch's own reading in quarter degrees, in whole
+    /// degrees, checking that it is whole.
+    fn whole(previous: Option<i8>, quarters: i32) -> i8 {
+        let tenths = shown(
+            previous.map(|d| 10 * i16::from(d)),
+            25 * quarters,
+            Source::Watch,
+        );
+        assert_eq!(tenths % 10, 0, "{tenths} tenths aren't whole degrees");
+        (tenths / 10) as i8
+    }
+
+    /// [`shown`] for a room sensor's reading, in tenths.
+    fn tenths(previous: Option<i16>, degrees: f32) -> i16 {
+        shown(previous, h(degrees), Source::Sensor)
+    }
+
     #[test]
     fn first_reading_rounds_to_nearest() {
-        assert_eq!(shown(None, q(31.0)), 31);
-        assert_eq!(shown(None, q(31.25)), 31);
-        assert_eq!(shown(None, q(31.5)), 32);
-        assert_eq!(shown(None, q(31.75)), 32);
-        assert_eq!(shown(None, 0), 0);
+        assert_eq!(whole(None, q(31.0)), 31);
+        assert_eq!(whole(None, q(31.25)), 31);
+        assert_eq!(whole(None, q(31.5)), 32);
+        assert_eq!(whole(None, q(31.75)), 32);
+        assert_eq!(whole(None, 0), 0);
     }
 
     #[test]
     fn negative_readings_round_like_positive_ones() {
         // Truncating division would make -0.75 °C read as 0°, and -5.25 °C
         // as -5° but -4.75 °C as -4°.
-        assert_eq!(shown(None, q(-0.25)), 0);
-        assert_eq!(shown(None, q(-0.5)), 0);
-        assert_eq!(shown(None, q(-0.75)), -1);
-        assert_eq!(shown(None, q(-4.75)), -5);
-        assert_eq!(shown(None, q(-5.25)), -5);
-        assert_eq!(shown(None, q(-40.0)), -40);
+        assert_eq!(whole(None, q(-0.25)), 0);
+        assert_eq!(whole(None, q(-0.5)), 0);
+        assert_eq!(whole(None, q(-0.75)), -1);
+        assert_eq!(whole(None, q(-4.75)), -5);
+        assert_eq!(whole(None, q(-5.25)), -5);
+        assert_eq!(whole(None, q(-40.0)), -40);
     }
 
     #[test]
     fn small_changes_keep_what_is_shown() {
         // Hovering around 31.5 °C, as a watch on a steady wrist does, the
         // display stays put rather than flipping each minute.
-        let mut degrees = shown(None, q(31.25));
+        let mut degrees = whole(None, q(31.25));
         for reading in [31.5, 31.25, 31.5, 31.75, 31.5, 30.5, 31.0, 30.5] {
-            degrees = shown(Some(degrees), q(reading));
+            degrees = whole(Some(degrees), q(reading));
             assert_eq!(degrees, 31, "at {reading}");
         }
     }
 
     #[test]
     fn a_wobble_across_the_boundary_does_not_flip() {
-        let mut degrees = shown(None, q(31.75));
+        let mut degrees = whole(None, q(31.75));
         assert_eq!(degrees, 32);
         for reading in [31.25, 31.75, 31.5, 31.25, 31.75] {
-            degrees = shown(Some(degrees), q(reading));
+            degrees = whole(Some(degrees), q(reading));
             assert_eq!(degrees, 32, "at {reading}");
         }
     }
 
     #[test]
     fn real_changes_come_through() {
-        assert_eq!(shown(Some(31), q(32.0)), 32);
-        assert_eq!(shown(Some(31), q(30.0)), 30);
-        assert_eq!(shown(Some(31), q(32.5)), 33);
+        assert_eq!(whole(Some(31), q(32.0)), 32);
+        assert_eq!(whole(Some(31), q(30.0)), 30);
+        assert_eq!(whole(Some(31), q(32.5)), 33);
         // Taken off the wrist and left on a desk: straight to the new value.
-        assert_eq!(shown(Some(32), q(23.0)), 23);
-        assert_eq!(shown(Some(1), q(-0.75)), -1);
+        assert_eq!(whole(Some(32), q(23.0)), 23);
+        assert_eq!(whole(Some(1), q(-0.75)), -1);
     }
 
     #[test]
     fn a_slow_drift_follows_within_a_degree() {
         // Cooling a quarter degree a minute, from 33 °C to 22 °C: what's
         // shown never lags the reading by a full degree.
-        let mut degrees = shown(None, q(33.0));
+        let mut degrees = whole(None, q(33.0));
         for quarters in (q(22.0)..=q(33.0)).rev() {
-            degrees = shown(Some(degrees), quarters);
+            degrees = whole(Some(degrees), quarters);
             let lag = 4 * i32::from(degrees) - quarters;
             assert!(lag.abs() < 4, "{degrees}° at {quarters}/4 °C");
         }
         assert_eq!(degrees, 22);
+    }
+
+    #[test]
+    fn a_room_sensor_shows_tenths() {
+        assert_eq!(tenths(None, 21.37), 214);
+        assert_eq!(tenths(None, 21.35), 214);
+        assert_eq!(tenths(None, 21.34), 213);
+        assert_eq!(tenths(None, 20.0), 200);
+        // Below zero, half up as above: -4.25 is -4.2, not -4.3.
+        assert_eq!(tenths(None, -4.25), -42);
+        assert_eq!(tenths(None, -4.26), -43);
+        assert_eq!(tenths(None, -0.04), 0);
+    }
+
+    #[test]
+    fn a_wandering_room_sensor_holds_its_tenth() {
+        // An Aranet4's 0.05 °C steps, across a tenth's boundary and a
+        // whole step either side of what's shown: no flipping.
+        let mut held = tenths(None, 21.40);
+        for reading in [21.45, 21.50, 21.40, 21.35, 21.30, 21.45, 21.50] {
+            held = tenths(Some(held), reading);
+            assert_eq!(held, 214, "at {reading}");
+        }
+        // A BTHome thermometer's hundredths, likewise.
+        for reading in [21.47, 21.33, 21.49, 21.31] {
+            held = tenths(Some(held), reading);
+            assert_eq!(held, 214, "at {reading}");
+        }
+    }
+
+    #[test]
+    fn a_room_sensor_follows_within_a_tenth() {
+        assert_eq!(tenths(Some(214), 21.55), 216);
+        assert_eq!(tenths(Some(214), 21.25), 213);
+        assert_eq!(tenths(Some(214), 19.0), 190);
+        // Warming a hundredth at a time: never more than a tenth behind.
+        let mut held = tenths(None, 20.0);
+        for hundredths in h(20.0)..=h(22.0) {
+            held = shown(Some(held), hundredths, Source::Sensor);
+            let lag = hundredths - 10 * i32::from(held);
+            assert!(lag.abs() <= 10, "{held}/10 at {hundredths}/100");
+        }
+        assert_eq!(held, 219);
     }
 
     // ==========================================================================
@@ -94,18 +159,21 @@ mod tests {
         let calibration = Calibration::new();
         let die = q(27.5);
         assert_eq!(
-            pick(Some(q(20.0)), true, die, &calibration),
-            (q(20.0), Source::Sensor)
+            pick(Some(h(20.37)), true, die, &calibration),
+            (h(20.37), Source::Sensor)
         );
         assert_eq!(
-            pick(Some(q(20.0)), false, die, &calibration),
-            (q(20.0), Source::Sensor)
+            pick(Some(h(20.37)), false, die, &calibration),
+            (h(20.37), Source::Sensor)
         );
         assert_eq!(
             pick(None, true, die, &calibration),
-            (q(21.5), Source::Wrist)
+            (h(21.5), Source::Wrist)
         );
-        assert_eq!(pick(None, false, die, &calibration), (die, Source::Watch));
+        assert_eq!(
+            pick(None, false, die, &calibration),
+            (h(27.5), Source::Watch)
+        );
     }
 
     #[test]

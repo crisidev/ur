@@ -8,8 +8,9 @@
 //! 1. **A nearby room sensor**, the strongest heard ([`crate::aranet`]),
 //!    if its reading is recent: an Aranet4, or a BTHome thermometer
 //!    ([`crate::bthome_sensor`]). A real air temperature, to 0.3 °C or so
-//!    (both kinds' sensors are rated about that). Underlined, at the
-//!    degree sign, on the clock face.
+//!    (both kinds' sensors are rated about that). Shown to the tenth
+//!    (the others to the degree): the precision is what tells a
+//!    measurement from an estimate on the clock face.
 //! 2. **On the wrist, an estimate** from the die temperature
 //!    ([`Calibration`]). The watch sits between the skin (32–34 °C) and
 //!    the air, so the die reads well above the room (27–28 °C on the
@@ -62,25 +63,49 @@ pub const SAMPLE_EVERY: u64 = 60;
 
 const MINUTE: u64 = 60 * 1000;
 
-/// The whole degrees (°C) to show, given what was shown before and a new
-/// reading in quarter degrees (the sensor's unit).
+/// The temperature to show, in tenths of a degree (°C), given what was
+/// shown before from the same source, and a new reading in hundredths
+/// (see [`pick`]): to the tenth from a room sensor, and otherwise to the
+/// whole degree (a multiple of ten tenths).
 ///
-/// A reading near the boundary between two degrees (wobbling between,
-/// say, 31.25 and 31.75 °C) would otherwise flip the shown value back and
-/// forth from minute to minute, so it only changes once the reading is a
-/// whole degree away from what's shown, and then to the nearest whole
-/// degree. What's shown is thus never more than 0.75 °C off.
-pub fn shown(previous: Option<i8>, quarters: i32) -> i8 {
+/// A reading near the boundary between two steps would otherwise flip the
+/// shown value back and forth with each new reading, so what's shown holds
+/// until the reading has moved far enough from it, and then goes to the
+/// nearest step:
+///
+/// - Whole degrees (the die's quarter degrees, or the estimate from them)
+///   hold until the reading is a whole degree away: wobbling between, say,
+///   31.25 and 31.75 °C, a reading a minute, keeps one value. What's shown
+///   is thus never more than 0.75 °C off.
+/// - Tenths hold while the reading is within a tenth of them, inclusive:
+///   an Aranet4 measures in 0.05 °C steps and a BTHome thermometer in
+///   0.01 °C, and both wander by a step or two from one scan to the next
+///   (a scan is the only new reading: every quarter of an hour, see
+///   [`crate::aranet::EVERY`], or as often as a minute while the Air
+///   screen is open).
+///   With "a full tenth away", as for degrees, an Aranet4 alternating
+///   between 21.40 and 21.50 °C would flip between "21.4" and "21.5" each
+///   scan; holding through a tenth takes a wander of more than 0.15 °C to
+///   flip, which is a real change. What's shown is never more than 0.1 °C
+///   off, a third of the sensors' rated accuracy (±0.3 °C), so the
+///   decimal stays honest. (The Air screen shows the reading itself, so
+///   while one holds, the two can differ by that tenth.)
+pub fn shown(previous: Option<i16>, hundredths: i32, source: Source) -> i16 {
+    // Hundredths a shown step, and how far from it a reading still holds.
+    let (step, hold) = match source {
+        Source::Sensor => (10, 10),
+        Source::Wrist | Source::Watch => (100, 99),
+    };
     if let Some(previous) = previous
-        && (quarters - 4 * i32::from(previous)).abs() < 4
+        && (hundredths - 10 * i32::from(previous)).abs() <= hold
     {
         return previous;
     }
     // Round half up, also for negative readings (`div_euclid` floors).
-    let nearest = (quarters + 2).div_euclid(4);
-    // The sensor's range is -40 to 85 °C, so this never clamps in
-    // practice.
-    nearest.clamp(i8::MIN.into(), i8::MAX.into()) as i8
+    let nearest = (hundredths + step / 2).div_euclid(step) * (step / 10);
+    // The die sensor's range is -40 to 85 °C, and a BTHome thermometer's
+    // hundredths (an i16) are within ±328 °C, so this never clamps.
+    nearest.clamp(i16::MIN.into(), i16::MAX.into()) as i16
 }
 
 // ==============================================================================
@@ -99,15 +124,17 @@ pub enum Source {
     Watch,
 }
 
-/// The temperature to show, in quarter degrees, and where it comes from:
-/// a recent room sensor's reading if there is one (`sensor`, quarter
-/// degrees), otherwise the estimate on the wrist, otherwise the die's own
-/// (`die`, quarter degrees).
+/// The temperature to show, in hundredths of a degree, and where it comes
+/// from: a recent room sensor's reading if there is one (`sensor`,
+/// hundredths, as [`crate::aranet::Reading`] has it), otherwise the
+/// estimate on the wrist, otherwise the die's own (`die`, quarter
+/// degrees). Hundredths, rather than the die's quarters, so that a room
+/// sensor's tenths reach [`shown`]; a quarter is exactly 25 of them.
 pub fn pick(sensor: Option<i32>, worn: bool, die: i32, calibration: &Calibration) -> (i32, Source) {
     match sensor {
-        Some(quarters) => (quarters, Source::Sensor),
-        None if worn => (calibration.estimate(die), Source::Wrist),
-        None => (die, Source::Watch),
+        Some(hundredths) => (hundredths, Source::Sensor),
+        None if worn => (25 * calibration.estimate(die), Source::Wrist),
+        None => (25 * die, Source::Watch),
     }
 }
 

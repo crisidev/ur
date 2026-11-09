@@ -228,9 +228,10 @@ pub struct Status<'a> {
     pub steps: Option<u32>,
     /// The latest heart rate, unless there's none recent enough to show.
     pub heart_rate: Option<u8>,
-    /// The temperature in °C (see [`crate::temperature`]), once it's been
-    /// read.
-    pub temperature: Option<i8>,
+    /// The temperature in tenths of a °C (see [`crate::temperature`]),
+    /// once it's been read: whole degrees (a multiple of ten) unless it's
+    /// from a room sensor.
+    pub temperature: Option<i16>,
     /// Whether that's a nearby room sensor's (an Aranet4's or a BTHome
     /// thermometer's), rather than the watch's own (or an estimate from it).
     pub temperature_from_sensor: bool,
@@ -2007,34 +2008,49 @@ fn render_clock(
         }
     };
 
-    // Then the temperature, in whole °C, packed against the left. The
-    // widest ("-10°", 15 px; nothing in the sensor's -40 to 85 °C is
-    // wider) ends at x = 27 after the struck-out rune, and x = 26 after
-    // the widest media icon (the note, 6 px), clear of the battery's
-    // widest (charging at 100%: the bolt starts at x = 43). "NO TIME" and
-    // a temperature can't both fit beside that, so until the phone sets
-    // the clock (just after a cold boot), "NO TIME" wins.
+    // Then the temperature, packed against the left: a room sensor's (a
+    // nearby Aranet4 or BTHome thermometer; see `crate::temperature`) to
+    // the tenth, "21.4°", and the watch's own, or the estimate from it, to
+    // the degree, "21°". The precision is the mark: a measurement has
+    // tenths worth showing, and an estimate good to a few degrees
+    // doesn't. (Tried before: a short line under a measured reading's
+    // degree sign, in the labels' colour, and a little house before it,
+    // which read as one more status icon.) The decimal point is a single
+    // pixel with a column either side, rather than the font's ".", whose
+    // glyph is three columns wide: "21.4" then reads as one number, and
+    // it's 2 px narrower.
     //
-    // A reading from a room sensor (a nearby Aranet4 or BTHome
-    // thermometer; see `crate::temperature`), rather than the watch's own
-    // or an estimate from it, is underlined at the degree sign: a short
-    // line a pixel below it, like a ground line under the reading, in the labels'
-    // colour, so it's a mark on the reading rather than part of it. (A
-    // little house before the reading said the same, but read as one more
-    // status icon. Also tried: a dot under the degree sign, which read as
-    // "?"; a line on the baseline under it, as "±"; a dot after the
-    // reading, as a full stop; and underlining the whole reading, which
-    // is louder than a mark needs to be.)
+    // The widest a room sensor can send (a BTHome thermometer's i16
+    // hundredths, so at most "-327.7°", 25 px) ends at x = 37 after the
+    // struck-out rune, and x = 36 after the widest media icon (the note,
+    // 6 px); anything a room holds, down to a freezer's "-18.4°" (21 px),
+    // ends at x = 33. The watch's own is within -55 °C (the die sensor's
+    // -40 °C, less the estimate's largest correction) and 90 °C, so 15 px
+    // ("-55°"). All clear of the battery's widest (charging at 100%: the
+    // bolt starts at x = 43), so a reading never drops its tenths for
+    // room. "NO TIME" and a temperature can't both fit beside that, so
+    // until the phone sets the clock (just after a cold boot), "NO TIME"
+    // wins.
     // TODO: °F, for those who'd want it.
-    if let (Some(degrees), Some(x)) = (status.temperature, temperature_x) {
-        let mut text = heapless::String::<6>::new();
-        write!(text, "{degrees}°").expect("an i8 is at most 4 chars, and ° is 2 bytes");
-        let end = canvas.text(x, 3, &text, Color::TEXT);
+    if let (Some(tenths), Some(x)) = (status.temperature, temperature_x) {
+        // The whole degrees, then (from a room sensor) the point and the
+        // tenth, then the degree sign: drawn in pieces, so the point can
+        // be narrower than a glyph. `end` is each piece's x past its
+        // spacing column. (The watch's own is a multiple of ten tenths:
+        // see `temperature::shown`.)
+        let magnitude = i32::from(tenths).abs();
+        let sign = if tenths < 0 { "-" } else { "" };
+        // At most "-3276", an i16's tenths in whole degrees.
+        let mut text = heapless::String::<5>::new();
+        write!(text, "{sign}{}", magnitude / 10).expect("fits");
+        let mut end = canvas.text(x, 3, &text, Color::TEXT);
         if status.temperature_from_sensor {
-            // `end` is past the degree sign's spacing column: the sign
-            // itself is the 3 columns before that.
-            canvas.fill_rect(end - 4, 9, 3, 1, Color::TEXT_DIM);
+            // On the baseline, then a column's gap.
+            canvas.pixel(end, 7, Color::TEXT);
+            let digit = char::from(b'0' + (magnitude % 10) as u8);
+            end = canvas.text(end + 2, 3, digit.encode_utf8(&mut [0; 4]), Color::TEXT);
         }
+        canvas.text(end, 3, "°", Color::TEXT);
     }
 
     let (hours, minutes, seconds) = match &status.local_time {
@@ -3546,8 +3562,8 @@ const MUSIC_TEXT_WIDTH: i32 = 74;
 /// A nearby room sensor's latest reading (see [`crate::aranet`]): from an
 /// Aranet4, the CO₂ big, since that's what the watch can't otherwise know
 /// and what to act on (open a window), then what else it measures. From a
-/// BTHome thermometer, the temperature big (to the tenth: the clock face
-/// has it to the degree), and whatever else it sends.
+/// BTHome thermometer, the temperature big (to the tenth, as on the clock
+/// face), and whatever else it sends.
 ///
 /// Not on the clock face: CO₂ changes over tens of minutes, and its number
 /// would crowd a face that's read at a glance, many times a day. The
