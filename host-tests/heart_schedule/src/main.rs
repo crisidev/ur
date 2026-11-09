@@ -542,6 +542,57 @@ mod tests {
         }
     }
 
+    /// Lying still awake for an hour without a reading (a field log,
+    /// 2026-11-09): calm failures retry every ten minutes, not 20, 40, 60,
+    /// until `CALM_RETRIES` of them, and then back off as usual, in case
+    /// it's a still, skin-like surface rather than a wrist.
+    #[test]
+    fn calm_failures_retry_sooner_for_a_while() {
+        let mut schedule = Schedule::new();
+        let sessions = simulate(&mut schedule, 0, 6 * HOUR, |t| Moment {
+            outcome: Outcome::CalmNoReading,
+            seconds: 30,
+            ..resting(t)
+        });
+        let waits = gaps(&sessions);
+        let expected = [5, 10, 10, 10, 10, 10, 60, 60, 60];
+        for (wait, expected) in waits.iter().zip(expected) {
+            assert!(about(*wait, expected * MINUTE), "{waits:?}");
+        }
+        // The hour after the first failure takes 7 sessions, not 4, all of
+        // them within the LED budget.
+        let first_hour = sessions.iter().filter(|s| s.start < HOUR).count();
+        assert_eq!(first_hour, 7, "{sessions:?}");
+        assert!(sessions[1..].iter().all(|s| s.why == Why::Retry));
+
+        // A busy failure in between starts the count again, from wherever
+        // the ordinary back-off has got to.
+        let mut schedule = Schedule::new();
+        schedule.ended(100, 13, Outcome::Reading(60), true, awake(0));
+        for t in [400, 700] {
+            schedule.ended(t, 12, Outcome::NoReading, true, awake(0));
+        }
+        assert_eq!(schedule.due(0, false), (700 + 10 * MINUTE, Why::Retry));
+        schedule.ended(1300, 30, Outcome::NoReading, true, awake(0));
+        assert_eq!(schedule.due(0, false), (1300 + 20 * MINUTE, Why::Retry));
+        schedule.ended(2500, 30, Outcome::CalmNoReading, true, awake(0));
+        assert_eq!(schedule.due(0, false), (2500 + 10 * MINUTE, Why::Retry));
+        // And a reading ends it.
+        schedule.ended(3100, 13, Outcome::Reading(60), true, awake(0));
+        schedule.ended(3400, 30, Outcome::CalmNoReading, true, awake(0));
+        assert_eq!(schedule.due(0, false), (3400 + 5 * MINUTE, Why::Retry));
+    }
+
+    #[test]
+    fn calm_throughout_allows_a_twitch() {
+        assert!(calm_throughout(0, 30));
+        assert!(calm_throughout(7, 30));
+        assert!(!calm_throughout(8, 30));
+        assert!(calm_throughout(0, 0));
+        assert!(calm_throughout(u8::MAX / 4, u8::MAX));
+        assert!(!calm_throughout(u8::MAX, u8::MAX));
+    }
+
     #[test]
     fn a_reading_ends_the_failure_back_off() {
         let mut schedule = Schedule::new();

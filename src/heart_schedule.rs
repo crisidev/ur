@@ -33,7 +33,10 @@
 //!   movement doesn't undo: the usual causes (a fidgety wrist, the watch
 //!   on a desk) would otherwise retry every few minutes all day. Only a
 //!   watch that was *off* the wrist and then moved retries sooner: it was
-//!   likely picked up to be put on.
+//!   likely picked up to be put on. A session that failed on a *calm*
+//!   wrist backs off only to [`CALM_RETRY_INTERVAL`], for up to
+//!   [`CALM_RETRIES`] in a row: stillness is when a reading is possible at
+//!   all, and the signal of a still wrist comes and goes.
 //! - **An LED budget** ([`LED_BUDGET`] seconds an hour, as a token bucket)
 //!   caps what all of the above can spend, however the day goes.
 //!
@@ -98,6 +101,27 @@ pub const ELEVATED_BY: u8 = 15;
 /// sufficient), but not a tight loop: each failure costs a whole
 /// `SESSION_LIMIT` (30 s) of LED, or climbs to 40 mA off the wrist.
 pub const FAILED_INTERVAL: u32 = 5 * 60;
+
+/// The longest wait after a session that failed on a calm wrist (see
+/// [`Outcome::CalmNoReading`]), for up to [`CALM_RETRIES`] such failures in
+/// a row.
+///
+/// Lying still awake for an hour (a field log, 2026-11-09, with a Garmin
+/// alongside reading 51-73), the back-off above allowed three sessions, at
+/// 10 and then 20 minutes apart, and none read: the pulse was a few counts,
+/// beside slower swings that came and went. A desk's busy wrist is what
+/// the back-off is for, and calm failures are rarer (3 of 17 sessions in
+/// that log, 5 of 104 in a night's, none of a desk day's 39), so this
+/// costs little: an hour of calm failures takes 7 sessions instead of 4,
+/// ~95 s more of LED, once (see [`CALM_RETRIES`]).
+pub const CALM_RETRY_INTERVAL: u32 = 10 * 60;
+
+/// Calm failures in a row after which the back-off goes on as for any
+/// failure. A watch lying on something that reflects the LED like skin
+/// (and keeps as still as a wrist) fails calm too, and would otherwise
+/// spend the whole [`LED_BUDGET`] on it, all night; six (an hour) cover
+/// lying still for a while.
+pub const CALM_RETRIES: u8 = 6;
 
 /// The longest wait after failures: the watch is likely off the wrist (on
 /// a nightstand, in a drawer). Showing the clock face still measures at
@@ -215,6 +239,11 @@ pub enum Outcome {
     /// No reading: a busy wrist, a poor signal, or a desk (which reflects
     /// the LED much like skin, without a pulse).
     NoReading,
+    /// No reading, though the wrist was calm through the session (see
+    /// [`calm_throughout`]): a weak pulse, or something that reflects like
+    /// skin without one. Retried sooner than [`Outcome::NoReading`] (see
+    /// [`CALM_RETRY_INTERVAL`]).
+    CalmNoReading,
     /// No skin, or ambient light flooding the sensor: not on a wrist.
     OffWrist,
 }
@@ -255,6 +284,9 @@ pub struct Schedule {
     failures: u8,
     /// Whether the last failure found no skin (see [`Outcome::OffWrist`]).
     off_wrist: bool,
+    /// Consecutive calm failures (see [`Outcome::CalmNoReading`]), up to
+    /// the latest; saturating.
+    calm_failures: u8,
     /// Whether the last reading was elevated (so `interval` is
     /// [`ELEVATED_INTERVAL`] for that reason; for [`Why`]).
     elevated: bool,
@@ -280,6 +312,7 @@ impl Schedule {
             interval: 0,
             failures: 0,
             off_wrist: false,
+            calm_failures: 0,
             elevated: false,
             resting_awake: Resting {
                 bpm: 0,
@@ -307,6 +340,11 @@ impl Schedule {
         let moved = moved(active_polls, asleep);
         let (wait, why) = if self.failures > 0 {
             let retry = (FAILED_INTERVAL << (self.failures - 1)).min(MAX_FAILED_INTERVAL);
+            let retry = if (1..=CALM_RETRIES).contains(&self.calm_failures) {
+                retry.min(CALM_RETRY_INTERVAL)
+            } else {
+                retry
+            };
             // Movement after a failure only shortens the wait if the watch
             // was off the wrist (it was probably picked up to be worn), and
             // otherwise only caps it at the resting interval: something
@@ -377,6 +415,7 @@ impl Schedule {
             Outcome::Reading(bpm) => {
                 self.failures = 0;
                 self.off_wrist = false;
+                self.calm_failures = 0;
                 // Compared against the estimate for the wearer's state.
                 // Asleep before a sleeping estimate exists, the awake one
                 // stands in: sleep only lowers the heart rate, so it can't
@@ -420,9 +459,14 @@ impl Schedule {
                 };
                 self.interval = next as u16;
             }
-            Outcome::NoReading | Outcome::OffWrist => {
+            Outcome::NoReading | Outcome::CalmNoReading | Outcome::OffWrist => {
                 self.failures = (self.failures + 1).min(MAX_FAILURES);
                 self.off_wrist = outcome == Outcome::OffWrist;
+                self.calm_failures = if outcome == Outcome::CalmNoReading {
+                    self.calm_failures.saturating_add(1)
+                } else {
+                    0
+                };
                 self.elevated = false;
                 // The resting back-off carries on from where it was once a
                 // reading comes; only the first session sets it.
@@ -480,6 +524,15 @@ fn moved(active_polls: u8, asleep: bool) -> bool {
 /// a reading, so the schedule backs off as after any other.
 pub fn give_up(seconds: u32, accepted: bool, busy: u8, checks: u8) -> bool {
     seconds >= GIVE_UP_AFTER && !accepted && u16::from(busy) * 2 > u16::from(checks)
+}
+
+/// Whether a session that ran out of time without a reading found the
+/// wrist calm (see [`Outcome::CalmNoReading`]): busy (above `heart::CALM`)
+/// at no more than a quarter of its level checks. A few busy seconds are
+/// a twitch, or turning over; more, and it's a wrist that won't keep still,
+/// which the usual back-off is for.
+pub fn calm_throughout(busy: u8, checks: u8) -> bool {
+    u16::from(busy) * 4 <= u16::from(checks)
 }
 
 /// Moves a resting estimate towards a resting reading: the running median

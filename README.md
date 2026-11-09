@@ -34,9 +34,10 @@ on top:
   faint taps.
 - **Adaptive heart rate:** every 2 to 20 minutes, more often after you
   move, while you sleep, or while it's high, and only once your wrist is
-  still, so the LED isn't spent on readings that fail. To watch it live
-  (with your steps), open Gadgetbridge's Live activity chart: the watch
-  measures continuously while it's open.
+  still, so the LED isn't spent on readings that fail. If a still wrist
+  gives none, it tries again within 10 minutes, for up to an hour. To
+  watch it live (with your steps), open Gadgetbridge's Live activity
+  chart: the watch measures continuously while it's open.
 - **A dim glance:** turn your wrist, and the time shows dimly for a few
   seconds without lighting the screen. While Google Maps, OsmAnd, or
   CoMaps navigates, so does the next turn, with two taps as it comes

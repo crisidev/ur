@@ -49,6 +49,12 @@ use crate::ppg::{Consensus, Conversions, Ppg, Rejection};
 /// warming up and settling, an 8 s window, then another 2 s later that
 /// agrees with it; see `ppg::Consensus`); this leaves room for a few
 /// rejected windows, or the gain adjusting.
+///
+/// Not longer: in field logs (195 readings), 88% came by 14 s, and of the
+/// sessions still going at 20 s, fewer than 2% a second read after that.
+/// A still wrist's signal comes and goes over minutes rather than
+/// seconds, so the LED does more good in another session soon after (see
+/// [`heart_schedule::CALM_RETRY_INTERVAL`]) than in a longer one.
 const SESSION_LIMIT: Duration = Duration::from_secs(30);
 
 /// Wrist movement (see [`activity::movement`]) above which the PPG can't be
@@ -411,7 +417,12 @@ pub async fn heart_task(i2c: Device) {
         let led_seconds = started.elapsed().as_millis().div_ceil(1000) as u32;
         match outcome {
             Ok(Ended::Measured(_)) => {}
-            Ok(Ended::TimedOut) => info!("heart: no reading after {} s", led_seconds),
+            Ok(Ended::TimedOut { calm: false }) => {
+                info!("heart: no reading after {} s", led_seconds)
+            }
+            Ok(Ended::TimedOut { calm: true }) => {
+                info!("heart: no reading after {} s; wrist calm", led_seconds)
+            }
             Ok(Ended::GaveUp) => info!("heart: gave up after {} s; wrist busy", led_seconds),
             Ok(Ended::NoContact) => info!("heart: not on a wrist (after {} s)", led_seconds),
             Ok(Ended::TooBright) => info!("heart: too much light (after {} s)", led_seconds),
@@ -424,7 +435,10 @@ pub async fn heart_task(i2c: Device) {
         let (worn, outcome) = match outcome {
             Ok(Ended::Measured(bpm)) => (Some(true), Outcome::Reading(bpm)),
             Ok(Ended::NoContact | Ended::TooBright) => (Some(false), Outcome::OffWrist),
-            Ok(Ended::TimedOut | Ended::GaveUp) | Err(()) => (None, Outcome::NoReading),
+            Ok(Ended::TimedOut { calm: true }) => (None, Outcome::CalmNoReading),
+            Ok(Ended::TimedOut { calm: false } | Ended::GaveUp) | Err(()) => {
+                (None, Outcome::NoReading)
+            }
         };
         crate::heart_reading::set_worn(worn);
         schedule.ended(uptime(), led_seconds, outcome, background, before);
@@ -487,7 +501,9 @@ enum Ended {
     /// We have a reading (and nobody's watching for more): the last, in
     /// BPM.
     Measured(u8),
-    TimedOut,
+    /// No reading within [`SESSION_LIMIT`]; `calm` if the wrist was calm
+    /// through most of it (see [`heart_schedule::calm_throughout`]).
+    TimedOut { calm: bool },
     /// No window passed the signal checks, and the wrist kept moving (see
     /// [`heart_schedule::give_up`]).
     GaveUp,
@@ -539,7 +555,9 @@ async fn measure(
         } else if let Some(bpm) = measured {
             Some(Ended::Measured(bpm))
         } else if elapsed >= SESSION_LIMIT {
-            Some(Ended::TimedOut)
+            Some(Ended::TimedOut {
+                calm: heart_schedule::calm_throughout(busy, checks),
+            })
         } else if heart_schedule::give_up(elapsed.as_secs() as u32, accepted, busy, checks) {
             Some(Ended::GaveUp)
         } else {
