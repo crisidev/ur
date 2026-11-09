@@ -807,6 +807,13 @@ pub fn brighter(drive: u8, steps: u8, peak: u32, spare: u32) -> Option<u8> {
 /// they never reach the late step, and a still moment there lasts seconds.
 /// Whether more light helps against the tendons and fingers moving the
 /// sensor is what the arms compare.
+///
+/// TODO: once the arms have answered that, start bright only when a
+/// reading looks hard on a calm wrist (the last session failed, or read a
+/// faint pulse, i.e. a small peak-to-mean against its DC), rather than
+/// every other awake session: where a dim session reads easily, the light
+/// only costs charge and risks saturating. Every other session for now,
+/// for a quicker comparison (user, 2026-11-09).
 pub fn bright_start(drive: u8, peak: u32, budget: u32) -> Option<u8> {
     step_up(drive, peak, |next| {
         budget >= budget_seconds(next, SESSION_RESERVE * 1000)
