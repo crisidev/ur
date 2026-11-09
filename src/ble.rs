@@ -182,6 +182,14 @@ const BONDS: usize = 2;
 
 pub type Controller = nrf_sdc::SoftdeviceController<'static>;
 
+/// The longest link-layer payload we ask for (data length extension): what
+/// the controller's buffers hold (`buffer_cfg` in `main` sizes them by the
+/// packet pool's MTU, 251 bytes, the most there is).
+const MAX_DATA_LENGTH: u16 = <Pool as PacketPool>::MTU as u16;
+/// How long such a packet takes on air on the 1M PHY: 14 bytes of
+/// overhead besides the payload, 8 µs a byte (2120 µs for 251 bytes).
+const MAX_DATA_TIME_US: u16 = (MAX_DATA_LENGTH + 14) * 8;
+
 // ==============================================================================
 // GATT server
 // ==============================================================================
@@ -447,6 +455,26 @@ pub async fn host_task(controller: Controller, address: [u8; 6]) {
             // own: Gadgetbridge's Bangle.js support doesn't.
             if let Err(e) = conn.raw().request_security() {
                 warn!("ble: requesting security failed: {}", e);
+            }
+            // Ask for the longest link-layer packets (data length
+            // extension): without them, a link stays at 27 bytes a packet,
+            // so a line from the phone (one or two 244-byte writes) takes
+            // 6–13 packets, and at the idle parameters the phone gets about
+            // one through a second. Neither the controller nor (it seems)
+            // the phone asks on its own. The controller's buffers are sized
+            // for it already (`buffer_cfg` in `main`). The client may offer
+            // less; what it settles on is logged (`DataLengthUpdated`).
+            // The HCI command itself rather than trouble-host's
+            // `update_data_length`, which first asks the controller whether
+            // it supports this (it does: `support_dle_peripheral` in
+            // `main`), for ~0.45 KB of flash.
+            let longer = bt_hci::cmd::le::LeSetDataLength::new(
+                conn.raw().handle(),
+                MAX_DATA_LENGTH,
+                MAX_DATA_TIME_US,
+            );
+            if let Err(e) = stack.command(longer).await {
+                warn!("ble: asking for longer packets failed: {}", e);
             }
             // Whether this is the phone; see `serve`. The status reporter
             // waits for that, and never finishes on its own.
@@ -1085,6 +1113,18 @@ async fn serve(
                     conn_interval.as_micros(),
                     peripheral_latency,
                     supervision_timeout.as_millis()
+                );
+            }
+            // What the client made of our `LeSetDataLength`: the
+            // longest packets each way.
+            GattConnectionEvent::DataLengthUpdated {
+                max_tx_octets,
+                max_rx_octets,
+                ..
+            } => {
+                info!(
+                    "ble: packets up to {} B out, {} B in",
+                    max_tx_octets, max_rx_octets
                 );
             }
             _ => {}
