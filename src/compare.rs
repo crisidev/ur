@@ -166,6 +166,7 @@ pub mod phone {
     pub const MUSIC_INFO: u8 = 4;
     pub const MUSIC_STATE_PAUSED: u8 = 5;
     pub const MUSIC_STATE_PLAYING: u8 = 6;
+    /// "Find my watch": on (see [`FIND_OFF`] for off).
     pub const FIND: u8 = 7;
     pub const UNPAIRED: u8 = 8;
     pub const ALARMS: u8 = 9;
@@ -173,6 +174,7 @@ pub mod phone {
     pub const TEXT_AS_BITMAPS: u8 = 11;
     pub const INTENTS_OFF: u8 = 12;
     pub const UPDATE_REFUSED: u8 = 13;
+    pub const FIND_OFF: u8 = 14;
 }
 
 /// Tick flags: what `App::check_alarms` and `App::on_tick` were told;
@@ -674,7 +676,8 @@ pub fn input(input: &InputEvent, at: Instant) {
                 PhoneEvent::MusicInfo { .. } => phone::MUSIC_INFO,
                 PhoneEvent::MusicState { playing: false } => phone::MUSIC_STATE_PAUSED,
                 PhoneEvent::MusicState { playing: true } => phone::MUSIC_STATE_PLAYING,
-                PhoneEvent::Find { .. } => phone::FIND,
+                PhoneEvent::Find { on: true } => phone::FIND,
+                PhoneEvent::Find { on: false } => phone::FIND_OFF,
                 PhoneEvent::Unpaired(_) => phone::UNPAIRED,
                 PhoneEvent::Alarms(_) => phone::ALARMS,
                 PhoneEvent::Route(_) => phone::ROUTE,

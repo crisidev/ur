@@ -68,8 +68,8 @@
 //!   is a long press too, shown and buzzed the same, as "LONG". A swipe,
 //!   or the button, cancels what's waiting.
 //! - Screens that take over (the alarm editor, a ringing alarm, a call,
-//!   pairing, an update, the storage prompt) get every touch: swipes there
-//!   don't navigate.
+//!   "find my watch", pairing, an update, the storage prompt) get every
+//!   touch: swipes there don't navigate.
 //! - While the screen is off, a button press, a deliberate tap (see
 //!   [`wake::deliberate`]), or a double tap (two taps within
 //!   [`DOUBLE_TAP`]): wake to the clock. Other touches don't, so a brush of
@@ -124,6 +124,14 @@
 //!   straight to its first page instead of a banner.
 //! - Calls: take over the screen, ringing, until the phone says the call is
 //!   over (answered, rejected, ended) or the user acts.
+//! - "Find my watch" (Gadgetbridge's "Find lost device"): takes over the
+//!   screen ("HERE", with rings spreading round it) and buzzes as hard as
+//!   the motor can ([`Pattern::FIND`]), until the button or any touch
+//!   (whoever did has found it), the phone's "Found it!", or [`MAX_FIND`].
+//!   Under a call or a ringing alarm, it waits its turn: the watch rings
+//!   already. Whatever stops a call, an alarm, or this leaves the motor to
+//!   what still rings beneath it (see `App::buzz_for_screen`), and a
+//!   notification doesn't buzz over any of them.
 //! - Media info: enables the music screen.
 //! - Directions, while the phone navigates (see [`crate::route`]): only on
 //!   a glance. As a turn comes near, a double tap, and with the screen off
@@ -207,6 +215,11 @@ const UNSEEN: Instant = Instant::MAX;
 /// Stop ringing after this long, in case the phone never says the call is
 /// over (e.g. the connection dropped mid-call).
 const MAX_RING: Duration = Duration::from_secs(45);
+/// Stop looking for the watch after this long, in case the phone never
+/// says to (Gadgetbridge only does when its "Found it!" is tapped, or the
+/// link may have dropped): long enough to go round a house listening, and
+/// a tap on the phone starts it again.
+const MAX_FIND: Duration = Duration::from_secs(120);
 /// How many ticks (seconds) a media gesture's icon shows on the clock face:
 /// 1–2 s, depending on when in the second it came.
 const MEDIA_HINT_TICKS: u8 = 2;
@@ -461,6 +474,9 @@ pub struct App {
     phone_alarms_changed: bool,
     alarm_state: alarm::State,
     ringing: Option<Ringing>,
+    /// Since when the phone has been looking for the watch ("find my
+    /// watch"), until someone finds it, the phone stops, or [`MAX_FIND`].
+    finding: Option<Instant>,
     /// The alarm editor, while open.
     editing: Option<Editing>,
     /// The local minute, as of the last tick (for edits that need "now").
@@ -552,6 +568,7 @@ impl App {
             phone_alarms_changed: false,
             alarm_state: alarm::State::default(),
             ringing: None,
+            finding: None,
             editing: None,
             local_second: None,
             glance_until: None,
@@ -622,6 +639,7 @@ impl App {
             && !self.brief_wake
             && self.call.is_none()
             && self.ringing.is_none()
+            && self.finding.is_none()
     }
 
     pub fn set_daytime(&mut self, daytime: bool) {
@@ -640,7 +658,11 @@ impl App {
 
     /// Whether the Air screen is on screen, for a scan to refresh it.
     pub fn showing_air(&self) -> bool {
-        self.awake && self.screen == Screen::Air && self.call.is_none() && self.ringing.is_none()
+        self.awake
+            && self.screen == Screen::Air
+            && self.call.is_none()
+            && self.ringing.is_none()
+            && self.finding.is_none()
     }
 
     /// Media info is only meaningful while connected: forget it on
@@ -1025,6 +1047,18 @@ impl App {
             return;
         }
 
+        // "Find my watch": whoever presses the button or touches the
+        // screen has found it. That's all the input does, unless a call or
+        // a ringing alarm has the screen over it: then it goes on to that,
+        // as what the wearer saw and meant it for. (Gadgetbridge can't be
+        // told: its "Found it!" stays up on the phone until tapped there.)
+        if self.finding.is_some() {
+            defmt::info!("find: found");
+            if self.stop_finding() {
+                return;
+            }
+        }
+
         if let Some(call) = &mut self.call {
             match event {
                 InputEvent::Button if !call.silenced => {
@@ -1380,19 +1414,33 @@ impl App {
         self.buzz_for_screen();
     }
 
-    /// Whether a call or a ringing alarm has the screen, and the motor: a
-    /// notification's buzz would cut their ringing short.
+    /// Stops looking for the watch, and its buzz, if it had the screen;
+    /// under a call or a ringing alarm, those keep the motor (and the
+    /// screen), and an alarm keeps its place in its ramp. Returns whether
+    /// it had the screen.
+    fn stop_finding(&mut self) -> bool {
+        self.finding = None;
+        let had_screen = self.call.is_none() && self.ringing.is_none();
+        if had_screen {
+            motor::buzz(Pattern::STOP);
+        }
+        had_screen
+    }
+
+    /// Whether a call, a ringing alarm, or the phone looking for the watch
+    /// has the screen, and the motor: a notification's buzz would cut
+    /// their ringing short.
     fn ringing_any(&self) -> bool {
-        self.call.is_some() || self.ringing.is_some()
+        self.call.is_some() || self.ringing.is_some() || self.finding.is_some()
     }
 
     /// Buzzes for whatever rings on screen now, as `render` stacks them
-    /// (a call, then a ringing alarm), or stops the motor if nothing
-    /// does. For when one of them starts or ends: the motor plays one
-    /// pattern at a time, so ending a call with [`Pattern::STOP`] would
-    /// silence an alarm still ringing beneath it. (That alarm starts its
-    /// gentle ramp over: simpler than keeping its place, and it's only
-    /// been interrupted.)
+    /// (a call, then a ringing alarm, then the phone looking for the
+    /// watch), or stops the motor if nothing does. For when one of them
+    /// starts or ends: the motor plays one pattern at a time, so ending a
+    /// call with [`Pattern::STOP`] would silence an alarm still ringing
+    /// beneath it. (That alarm starts its gentle ramp over: simpler than
+    /// keeping its place, and it's only been interrupted.)
     fn buzz_for_screen(&self) {
         motor::buzz(match (&self.call, &self.ringing) {
             (Some(call), _) if call.silenced => Pattern::STOP,
@@ -1401,6 +1449,7 @@ impl App {
                 alarm::Kind::Timer(_) => Pattern::TIMER,
                 _ => Pattern::ALARM,
             },
+            (None, None) if self.finding.is_some() => Pattern::FIND,
             (None, None) => Pattern::STOP,
         });
     }
@@ -1515,15 +1564,32 @@ impl App {
             PhoneEvent::MusicState { playing } => {
                 self.music.get_or_insert_with(|| Music::new(now)).playing = Some(playing)
             }
-            PhoneEvent::Find { on } => {
-                if on {
-                    motor::buzz(Pattern::RING);
-                } else {
-                    self.buzz_for_screen();
+            // "Find my watch" (Gadgetbridge's "Find lost device"): the
+            // watch takes over the screen, and buzzes as hard as it can,
+            // until it's found (see `on_input`), the phone says stop, or
+            // `MAX_FIND`. Even in the quiet night (in its dim look, as
+            // calls ring): someone awake asked for it on purpose, and a
+            // watch lying still off the wrist may well look asleep. It
+            // doesn't end the night, though: whoever looked will likely
+            // go back to sleep. Under a call or a ringing alarm, it waits
+            // its turn on the screen and the motor: the watch is ringing
+            // already. Asked again, it starts its time over.
+            PhoneEvent::Find { on: true } => {
+                defmt::info!("find: looking for the watch");
+                self.finding = Some(now);
+                self.awake = true;
+                self.brief_wake = false;
+                self.last_input = now;
+                if self.call.is_none() && self.ringing.is_none() {
+                    motor::buzz(Pattern::FIND);
                 }
-                if on {
-                    self.awake = true;
-                    self.last_input = now;
+            }
+            // Only if it's still looking: a stray stop mustn't silence a
+            // call or an alarm.
+            PhoneEvent::Find { on: false } => {
+                if self.finding.is_some() {
+                    defmt::info!("find: stopped by the phone");
+                    self.stop_finding();
                 }
             }
         }
@@ -1586,7 +1652,8 @@ impl App {
             shows,
             until: now + BANNER_TIME,
         });
-        // Not over a call or a ringing alarm, which would go quiet.
+        // Not over a call, a ringing alarm, or the phone looking for the
+        // watch, which would go quiet.
         if !self.ringing_any() {
             motor::buzz(Pattern::NOTIFY);
         }
@@ -1701,8 +1768,7 @@ impl App {
         // it's on screen: awake, and not covered by something that takes
         // over the screen.
         if self.awake
-            && self.call.is_none()
-            && self.ringing.is_none()
+            && !self.ringing_any()
             && self.editing.is_none()
             && let Some(shows) = self
                 .banner
@@ -1726,7 +1792,11 @@ impl App {
             self.call = None;
             self.buzz_for_screen();
         }
-        if keep_awake || self.call.is_some() || self.ringing.is_some() || self.brief_wake {
+        if self.finding.is_some_and(|since| now - since >= MAX_FIND) {
+            defmt::info!("find: gave up");
+            self.stop_finding();
+        }
+        if keep_awake || self.ringing_any() || self.brief_wake {
             self.last_input = now;
         }
         // Not while a banner shows: one that arrived late in the timeout
@@ -1808,6 +1878,10 @@ impl App {
         }
         if let Some(ringing) = &self.ringing {
             render_ringing(canvas, ringing, status);
+            return;
+        }
+        if let Some(since) = self.finding {
+            render_find(canvas, now - since);
             return;
         }
         if self.glancing() {
@@ -2872,6 +2946,29 @@ fn render_ringing(canvas: &mut Canvas, ringing: &Ringing, status: &Status) {
     }
     canvas.text_centered(40, 56, "TAP: SNOOZE", Color::TEXT_DIM);
     canvas.text_centered(40, 66, "BUTTON: STOP", Color::TEXT_DIM);
+}
+
+/// "Find my watch": HERE, big, with rings round it that spread a ring a
+/// second, as a ping does, so the screen catches the eye from across a
+/// room (or from under a cushion), and how to stop it. `elapsed` is how
+/// long the phone has been looking.
+fn render_find(canvas: &mut Canvas, elapsed: Duration) {
+    canvas.clear(BACKGROUND);
+    canvas.text_centered(40, 6, "FIND MY WATCH", Color::ACCENT);
+    // "HERE" at 3×: 45×15, at x 17..62, y 28..43.
+    let (x, y, w, h) = (17, 28, 45, 15);
+    canvas.text_scaled(x, y, "HERE", Color::TEXT, 3);
+    // One to three rings, 4 px apart, outlined a pixel thick.
+    let rings = elapsed.as_secs() % 3 + 1;
+    for ring in 1..=rings as i32 {
+        let gap = 4 * ring;
+        let (left, top, width, height) = (x - gap, y - gap, w + 2 * gap, h + 2 * gap);
+        canvas.fill_rect(left, top, width, 1, Color::ACCENT);
+        canvas.fill_rect(left, top + height - 1, width, 1, Color::ACCENT);
+        canvas.fill_rect(left, top, 1, height, Color::ACCENT);
+        canvas.fill_rect(left + width - 1, top, 1, height, Color::ACCENT);
+    }
+    canvas.text_centered(40, 66, "TAP: FOUND IT", Color::TEXT_DIM);
 }
 
 /// One big 5×7 digit at `scale`, with a 1 px drop shadow down and right.

@@ -858,6 +858,7 @@ pub fn pattern_name(pattern: Pattern) -> &'static str {
         (Pattern::RING, "ring"),
         (Pattern::TIMER, "timer"),
         (Pattern::ALARM, "alarm"),
+        (Pattern::FIND, "find"),
     ]
     .into_iter()
     .find(|&(p, _)| p == pattern)

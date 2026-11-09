@@ -41,6 +41,8 @@ them across resets and updates.
 the probe can (for the button grid's double taps).
 `bitmaps` sends a notification as Gadgetbridge does with its "Text as
 Bitmaps" setting on (a word as an image), through the watch's parser.
+`find` sends Gadgetbridge's "find my watch" line, through the watch's
+parser, and `find:0,0` the one that stops it.
 `press:X,Y` puts a simulated finger down at X,Y (or moves it there, if
 it's down already), and `lift` lifts it: these go through the touch
 task as the touch controller's reports would, so a long press is
@@ -90,6 +92,7 @@ KINDS = {
     "lift": 17,
     "bitmaps": 18,
     "doubletap": 19,
+    "find": 20,
 }
 
 

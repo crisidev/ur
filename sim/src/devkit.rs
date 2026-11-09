@@ -547,6 +547,14 @@ impl Follower {
                 };
                 self.inject(14, state, 0, 0)?;
             }
+            "find" => {
+                let on = match arg(0) {
+                    Some("on") => 1,
+                    Some("off") => 0,
+                    other => return Err(format!("find {other:?}? (on or off)")),
+                };
+                self.inject(20, on, 0, 0)?;
+            }
             "steps" => {
                 let steps: u16 = arg(0)
                     .ok_or("steps: needs N")?
@@ -746,6 +754,9 @@ impl Follower {
             phone::MUSIC_STATE_PAUSED => PhoneEvent::MusicState { playing: false },
             phone::MUSIC_STATE_PLAYING => PhoneEvent::MusicState { playing: true },
             phone::TEXT_AS_BITMAPS => PhoneEvent::TextAsBitmaps,
+            // The `find` input's, or a connected phone's: all there is.
+            phone::FIND => PhoneEvent::Find { on: true },
+            phone::FIND_OFF => PhoneEvent::Find { on: false },
             other => {
                 return Err(format!(
                     "the dev kit got a message from the phone (kind {other}) this can't \

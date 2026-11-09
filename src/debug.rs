@@ -50,8 +50,10 @@ static UR_CANVAS: AtomicPtr<Canvas> = AtomicPtr::new(core::ptr::null_mut());
 /// there until 17 lifts it (see [`input_task`]), 18 [`BITMAPS_LINE`], a
 /// notification as Gadgetbridge sends it with "Text as Bitmaps" on,
 /// through the phone's parser), 19 two taps 0.1 s apart (a double tap,
-/// too quick for two inputs over the probe; for the button grid)) and the
-/// next two the canvas x and y.
+/// too quick for two inputs over the probe; for the button grid), 20
+/// Gadgetbridge's "find my watch" line, through the phone's parser, on
+/// unless `x` is 0 (see [`FIND_LINES`])) and the next two the canvas x
+/// and y.
 /// Cleared once taken.
 #[cfg(feature = "debug-input")]
 #[unsafe(no_mangle)]
@@ -66,6 +68,17 @@ static UR_INPUT: AtomicU32 = AtomicU32::new(0);
 /// turn the setting off (`sim/gadgetbridge.txt` has the same line).
 #[cfg(feature = "debug-input")]
 const BITMAPS_LINE: &[u8] = br#"GB({"t":"notify","id":1762436802,"src":"Signal","title":"","subject":"","body":"Dinner on Sunday?","sender":atob("TWFtbWEgACUVgQAAAAAAAAAAAAAAAAAAAP//H//mABjAAygBRQApIBIkAkiBERAiQhCIQhIJBEEgkDAiBgSBgRAwJBIIgkEhCEQhCRAiIgRJAJEgElACigBTAAxgAZ//4//8AAAAAAAAAAAAAA=="),"tel":"","reply":true})"#;
+
+/// Input 20: "find my watch" off and on, as Gadgetbridge sends them for
+/// its "Find lost device" (see `onFindDevice` in its Bangle.js driver),
+/// through [`crate::gb::parse`]: to check on the watch how it rings, and
+/// that the phone can stop it (`sim/gadgetbridge.txt` has the same
+/// lines).
+#[cfg(feature = "debug-input")]
+const FIND_LINES: [&[u8]; 2] = [
+    br#"GB({"t":"find","n":false})"#,
+    br#"GB({"t":"find","n":true})"#,
+];
 
 /// The battery voltage injected by input 13, in millivolts, or 0.
 #[cfg(feature = "debug-input")]
@@ -184,6 +197,14 @@ pub async fn input_task() {
                         let warning = crate::ui::PhoneEvent::TextAsBitmaps;
                         let _ = INPUT.try_send(InputEvent::Phone(warning));
                     }
+                }
+                continue;
+            }
+            20 => {
+                let line = FIND_LINES[usize::from(x != 0)];
+                if let Some(crate::gb::Incoming::Phone { event, .. }) = crate::gb::parse(line) {
+                    // Not awaiting room in the queue, as for input 14.
+                    let _ = INPUT.try_send(InputEvent::Phone(event));
                 }
                 continue;
             }

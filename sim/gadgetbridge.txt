@@ -46,9 +46,12 @@ gb GB({"t":"alarm","d":[{"h":6,"m":45,"rep":31,"on":true},{"h":9,"m":0,"rep":96,
 gb GB({"t":"nav","instr":"Storgata","distance":"150 m","action":"left","eta":"11:55"})
 gb GB({"t":"nav"})
 
-# Find my watch, and stop.
+# Find my watch: it takes over the screen and buzzes, until the phone's
+# "Found it!" stops it.
 gb GB({"t":"find","n":true})
 expect buzzing
+wait 1s
+shot find.png
 gb GB({"t":"find","n":false})
 expect not buzzing
 

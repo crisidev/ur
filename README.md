@@ -22,7 +22,8 @@ ur, named after an archaic Norwegian word for a timepiece, runs on the
 </p>
 
 It does what you'd expect of a smartwatch (time, notifications, steps,
-heart rate, alarms, timers, music control), and these on top:
+heart rate, alarms, timers, music control, "find my watch"), and these
+on top:
 
 - **Quiet nights:** once you fall asleep, or nap, notifications neither
   buzz nor light the screen, and touches don't wake it, until your alarm
@@ -132,8 +133,8 @@ bar on an edge means there's more that way.
 - **Wake** the screen with the button, or a firm tap away from the edge
   (brushes don't count). During a quiet night, only the button wakes it.
 - **The button** goes back to the clock, or off from it. It also
-  silences a call or stops an alarm, and a double press ends a quiet
-  night.
+  silences a call or stops an alarm or "find my watch" (as does a tap),
+  and a double press ends a quiet night.
 - **Long-press** (the watch buzzes once it's taken, at 0.6 s) plays or
   pauses on the clock face, switches an alarm or timer on or off, and on
   Info, offers storage mode.

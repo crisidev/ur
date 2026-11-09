@@ -68,6 +68,14 @@ impl Pattern {
         steps: &ALARM_STEPS,
         repeat_from: Some(RAMP_LEN as u8),
     };
+    /// "Find my watch": as loud as the motor gets, long pulses with short
+    /// breaks, to rattle whatever the watch lies on, for someone looking
+    /// for it rather than wearing it. (At 80 % on, it costs a few mAh over
+    /// [`crate::ui`]'s two minutes of it, a percent or two of the battery.)
+    pub const FIND: Self = Self {
+        steps: &[800, 200],
+        repeat_from: Some(0),
+    };
 }
 
 /// Two quick pulses and a pause.

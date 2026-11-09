@@ -421,6 +421,39 @@ fn an_alarm_rings_on_after_a_call() {
     assert_eq!(buzzes, ["alarm", "ring", "alarm", "stop"], "{log}");
 }
 
+/// "Find my watch" rings until found (a touch), and gives up after two
+/// minutes; under a ringing alarm it waits its turn, and neither it nor
+/// a call ending silences the alarm.
+#[test]
+fn find_my_watch_rings_until_found_and_never_silences_an_alarm() {
+    let dir = out("find");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    std::fs::write(
+        &script,
+        "time 2026-11-09 06:58 +01:00\nfind on\nexpect buzzing\nwait 2s\ntap\n\
+         expect not buzzing\nexpect clock\n\
+         alarm 1 07:00 on\nuntil 07:00\nexpect buzzing\n\
+         find on\nfind off\nexpect buzzing\ncall Kari\ncall over\nexpect buzzing\n\
+         button\nexpect not buzzing\n\
+         find on\nwait 119s\nexpect buzzing\nwait 2s\nexpect not buzzing\n",
+    )
+    .expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+    let buzzes: Vec<&str> = log
+        .lines()
+        .filter_map(|line| line.split_once("buzz: ").map(|(_, buzz)| buzz))
+        .collect();
+    assert_eq!(
+        buzzes,
+        [
+            "find", "stop", "alarm", "ring", "alarm", "stop", "find", "stop"
+        ],
+        "{log}"
+    );
+}
+
 /// Gadgetbridge's own lines, through the firmware's parser: each reaches
 /// the UI as what it says.
 #[test]
