@@ -37,6 +37,13 @@ const BYTES: usize = WIDTH * HEIGHT / 2;
 /// RAM to save ~40 transfers' setup on the rare full-frame push.
 const BATCH: usize = WIDTH * SCALE * SCALE * 2;
 
+/// The QR code's modules, in panel pixels; its side, with the standard
+/// quiet zone of four modules; and where it starts, centred on the panel
+/// (see [`Canvas::qr`]).
+const QR_MODULE: usize = 7;
+const QR_SIDE: usize = (qr::SIZE + 2 * 4) * QR_MODULE;
+const QR_ORIGIN: usize = (WIDTH * SCALE - QR_SIDE) / 2;
+
 /// `repr(C)`, so `scripts/screenshot.py` can find `front` and `theme` (see
 /// [`crate::debug`]).
 #[repr(C)]
@@ -115,6 +122,14 @@ impl Canvas {
     pub fn qr(&mut self, bytes: &[u8; 16]) {
         self.qr = *bytes;
         self.qr_wanted = true;
+    }
+
+    /// The panel pixels (in each direction) the QR code covers, while the
+    /// panel shows it: for the simulator's dev kit compare, as the dev kit
+    /// exports only its canvas, from beneath the code.
+    #[cfg(not(target_os = "none"))]
+    pub fn qr_area(&self) -> Option<Range<usize>> {
+        self.qr_shown.then_some(QR_ORIGIN..QR_ORIGIN + QR_SIDE)
     }
 
     /// Sets one pixel. Out-of-bounds coordinates are silently clipped, so
@@ -301,10 +316,6 @@ impl Canvas {
     /// over some of it); or, if the frame doesn't want it and the panel
     /// shows it, repaints the canvas over it (unless it just was, `whole`).
     async fn overlay(&mut self, display: &mut Display, covered: bool, whole: bool) {
-        const MODULE: usize = 7;
-        const MODULES: usize = qr::SIZE + 2 * 4;
-        const SIDE: usize = MODULES * MODULE;
-        const ORIGIN: usize = (WIDTH * SCALE - SIDE) / 2;
         match (self.qr_wanted, self.qr_shown) {
             (true, shown) if !shown || covered => {
                 // The code goes in the batch's tail, while the pixels go
@@ -315,17 +326,17 @@ impl Canvas {
                 if !qr_rows(&self.qr, rows) {
                     return;
                 }
-                let span = |at: usize| at as u16..(at + SIDE) as u16;
-                display.start_pixels(span(ORIGIN), span(ORIGIN)).await;
-                let row_bytes = SIDE * 2;
+                let span = |at: usize| at as u16..(at + QR_SIDE) as u16;
+                display.start_pixels(span(QR_ORIGIN), span(QR_ORIGIN)).await;
+                let row_bytes = QR_SIDE * 2;
                 let mut used = 0;
-                for y in 0..SIDE {
+                for y in 0..QR_SIDE {
                     if used + row_bytes > pixels.len() {
                         display.pixels(&pixels[..used]).await;
                         used = 0;
                     }
                     // Modules from the quiet zone's corner.
-                    let my = (y / MODULE).wrapping_sub(4);
+                    let my = (y / QR_MODULE).wrapping_sub(4);
                     let row = rows
                         .as_chunks::<4>()
                         .0
@@ -333,7 +344,7 @@ impl Canvas {
                         .map_or(0, |r| u32::from_le_bytes(*r));
                     let line = &mut pixels[used..used + row_bytes];
                     for (x, px) in line.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-                        let mx = (x / MODULE).wrapping_sub(4);
+                        let mx = (x / QR_MODULE).wrapping_sub(4);
                         let dark = mx < qr::SIZE && row >> mx & 1 != 0;
                         *px = if dark { [0x00, 0x00] } else { [0xFF, 0xFF] };
                     }

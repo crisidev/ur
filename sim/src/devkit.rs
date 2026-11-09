@@ -816,7 +816,19 @@ impl Follower {
                 })
                 .collect()
         });
-        let differ = sim.iter().zip(&devkit).filter(|(a, b)| a != b).count();
+        // The HA key's QR code is drawn over the panel, beneath the canvas
+        // the dev kit exports (see `Canvas::qr`): that square goes
+        // uncompared, bar its key, which the simulator drew from the
+        // export (`render`). The canvas around it is compared as ever.
+        let qr = self.canvas.qr_area();
+        let hidden = |i: usize| {
+            qr.as_ref().is_some_and(|area| {
+                area.contains(&(i % WIDTH * 3 + 1)) && area.contains(&(i / WIDTH * 3 + 1))
+            })
+        };
+        let differ = (0..WIDTH * HEIGHT)
+            .filter(|&i| sim[i] != devkit[i] && !hidden(i))
+            .count();
         report_push(name, &head.push);
         let path = out.join(format!("{name}.png"));
         side_by_side(&path, &sim, &devkit)?;
@@ -826,12 +838,17 @@ impl Follower {
             "no time".into()
         };
         eprintln!(
-            "compare {name}: the frame at {:.3} s ({time}): {} -> {}",
+            "compare {name}: the frame at {:.3} s ({time}): {}{} -> {}",
             seconds(Instant::from_ticks(pass.now)),
             if differ == 0 {
                 "identical".to_owned()
             } else {
                 format!("{differ} pixels differ")
+            },
+            if qr.is_some() {
+                " around the QR code (which the dev kit doesn't export)"
+            } else {
+                ""
             },
             path.display()
         );

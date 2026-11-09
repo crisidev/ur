@@ -116,5 +116,45 @@ button
 wait 1s
 compare 21-woken
 
+# BUTTONS to BTHome: the KEY row, then Home Assistant's key, as a QR code
+# (drawn over the panel, so compared only around it) and as text; and the
+# grid below the clock, with its bar for the screens below it (the Air
+# screen, if an Aranet4's near). None of its buttons is tapped: each would
+# advertise a press to whatever Home Assistant is near. Then BUTTONS back
+# round to OFF.
+left
+left
+wait 1s
+tap 40,44
+wait 1s
+compare 22-settings-bthome
+tap 40,72
+wait 1s
+compare 23-ha-qr
+tap 40,40
+wait 1s
+compare 24-ha-key
+tap 40,40
+wait 1s
+button
+wait 1s
+up
+wait 1s
+compare 25-grid
+down
+wait 1s
+left
+left
+wait 1s
+tap 40,44
+wait 500ms
+tap 40,44
+wait 500ms
+tap 40,44
+wait 1s
+compare 26-settings-buttons-off
+button
+wait 1s
+
 battery 0
 wait 1s
