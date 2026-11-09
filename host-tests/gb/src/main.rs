@@ -1047,6 +1047,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_fetch_from_the_phones_future_gets_everything() {
+        // 2026-11-09 12:00 UTC by the watch's clock.
+        let now = 1_794_225_600;
+        // Gadgetbridge asks from a minute before its last fetch ended.
+        let last = (now - 10 * 60 - 60) * 1000;
+        assert_eq!(gb::fetch_from(last, Some(now)), last);
+        // Its clock was a day ahead then, and has been put right since.
+        assert_eq!(gb::fetch_from((now + 86_400) * 1000, Some(now)), 0);
+        // Without the time, the watch can't tell.
+        assert_eq!(
+            gb::fetch_from((now + 86_400) * 1000, None),
+            (now + 86_400) * 1000
+        );
+    }
+
     /// Gadgetbridge's live activity requests, as its `transmitActivityStatus`
     /// sends them: opening the chart asks for steps, then the heart rate
     /// too; closing it stops one, then the other.

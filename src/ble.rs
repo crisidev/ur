@@ -1401,6 +1401,11 @@ static LAST_NO_TRACKS: AtomicU32 = AtomicU32::new(0);
 
 /// Sends the per-minute activity samples Gadgetbridge asked for.
 async fn send_activity(server: &Server<'_>, conn: &GattConnection<'_, '_, Pool>, since_ms: i64) {
+    let from = gb::fetch_from(since_ms, clock::now_utc_seconds());
+    if from != since_ms {
+        info!("ble: fetch from the phone's future; sending all");
+    }
+    let since_ms = from;
     send(server, conn, Outgoing::ActivityFetch { done: false }).await;
     // Copy out in small batches: the history can't be borrowed across the
     // awaits while sending. Small, because the batch lives in the host
