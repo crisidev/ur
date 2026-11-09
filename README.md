@@ -66,9 +66,9 @@ on top:
   midnight until you get up.
 - **Gadgetbridge without gaps:** with [InfiniTime]'s protocol,
   Gadgetbridge records steps and heart rate only while connected, and no
-  sleep. ur speaks the [Bangle.js protocol] instead, so stock
-  Gadgetbridge fetches its minute-by-minute history whenever it
-  reconnects.
+  sleep. ur speaks the [Bangle.js protocol] instead, and keeps a
+  minute-by-minute history for stock Gadgetbridge to fetch, however long
+  the phone was away.
 - **Nothing lost:** before the battery runs flat, or when put away in
   storage mode, the watch saves what the phone hasn't fetched and
   switches off. A crash restarts it at once, and leaves a backtrace in
@@ -100,12 +100,16 @@ and am daily driving this in real life :)
 
 ## Using it
 
-In Gadgetbridge, add the watch "Bangle.js ur", and type the passkey the
-watch shows when Android asks to pair. Gadgetbridge then syncs
-everything on its own, and passes sleep and heart rate on to [Health
-Connect] if you like. For the themes to follow your sun rather than
-Oslo's, the phone has to share its location: see
-[C03](#c03-the-watch-never-gets-a-location-from-the-phone).
+In Gadgetbridge, add the watch "Bangle.js ur", choose Pair, and type the
+passkey the watch shows when Android asks. Gadgetbridge then sets the
+time and forwards notifications on its own, and shows the battery. It
+fetches activity (steps, heart rate, sleep) only when you pull down on
+its device list (or tap Synchronize), or, with Settings → Automations →
+"Auto fetch activity data" on, when you unlock the phone (that needs a
+screen lock; "Minimum time between fetches" spaces them out). It passes
+sleep and heart rate on to [Health Connect] if you like. For the themes
+to follow your sun rather than Oslo's, the phone has to share its
+location: see [C03](#c03-the-watch-never-gets-a-location-from-the-phone).
 A few Gadgetbridge defaults need changing: see [docs/gadgetbridge.md](docs/gadgetbridge.md).
 
 **The clock face** shows the time, date, battery, heart rate, the next
@@ -210,9 +214,14 @@ Send the zip over Bluetooth with either of these:
 3. The watch shows the PINE64 logo for about a minute while the
    bootloader swaps the images. Leave it be until ur's clock face
    appears.
-4. In Gadgetbridge, remove the InfiniTime device, and add "Bangle.js ur"
-   (see [Using it](#using-it)). The watch keeps ur once the phone has
-   synced the time; until then, a reset puts InfiniTime back.
+4. In Gadgetbridge, remove the InfiniTime device, and forget the watch
+   in Android's Bluetooth settings too. Then add "Bangle.js ur" in
+   Gadgetbridge, choose Pair, and type the passkey the watch shows.
+   Within seconds, Gadgetbridge shows the battery, and firmware "ur"
+   with its version; if not, disconnect and connect again there (see
+   [C05](#c05-gadgetbridge-shows-no-battery-or-firmware-na)). The watch
+   keeps ur once the phone has set the time; until then, a reset puts
+   InfiniTime back.
 
 ### Updating
 
@@ -317,9 +326,10 @@ press again.
 ### C01: The watch says "NOT PAIRED"
 
 A phone or computer connected without pairing, and ur only talks to
-devices paired with its passkey. In Gadgetbridge, add the watch (or
-remove it and add it again), and when Android asks to pair, type the
-6-digit passkey the watch shows.
+devices paired with its passkey. Remove the watch from Gadgetbridge, if
+it's there, and forget it in Android's Bluetooth settings (Android may
+still hold InfiniTime's pairing). Then add it in Gadgetbridge, choose
+Pair, and type the 6-digit passkey the watch shows.
 
 ### C02: The watch says "PAIRING LOST"
 
@@ -354,6 +364,22 @@ is outside.
 Gadgetbridge didn't pass a [button grid](docs/buttons.md) press on to
 other apps: turn on "Allow Intents" in the watch's settings in
 Gadgetbridge.
+
+### C05: Gadgetbridge shows no battery, or firmware "N/A"
+
+Nothing the watch sends reaches Gadgetbridge: it most likely asked for
+it before the link was paired, was refused, and carried on regardless.
+The watch notices within about 10 seconds and disconnects once, and
+Gadgetbridge reconnects and asks again. If that didn't help:
+
+1. In Gadgetbridge, disconnect the watch and connect it again.
+2. Check its device type in Gadgetbridge is Bangle.js. An entry left
+   from InfiniTime for the same watch never works: remove it.
+3. Remove the watch from Gadgetbridge and Android's Bluetooth settings,
+   and add it again as in [C01](#c01-the-watch-says-not-paired).
+
+Steps and sleep come separately, when Gadgetbridge fetches them: see
+[Using it](#using-it).
 
 ### N01: Notifications don't buzz, and the screen stays dim
 
