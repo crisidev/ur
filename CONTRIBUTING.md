@@ -144,8 +144,9 @@ Summing them along call chains takes the call graph from the
 disassembly, and that includes `blx rN`: to save flash, LLVM calls many
 functions through a register loaded from a literal pool (p256's field
 maths, for one). On a dev kit, the painted stack is the ground truth:
-read 0x2000D520 up to 0x20010000 over SWD (`esprobe core read --words`),
-and the lowest word that isn't 0xCCCCCCCC is the peak. After a reset,
+read 0x2000D520 up to 0x20010000 over SWD (`esprobe fast-dump --address
+536925472 --size 10976 stack.bin`, in decimal), and the lowest word that
+isn't 0xCCCCCCCC is the peak. After a reset,
 give the bootloader a few seconds before reading: until our startup
 code repaints, what's there is the previous run's.
 
@@ -336,14 +337,16 @@ python3 scripts/flash-stress.py target/thumbv7em-none-eabihf/release/ur --minute
 below.) Its saves stay behind under a key of their own
 (`storage::key::STRESS`), harmless to a normal build.
 
-**Probe sessions halt the core.** Each `esprobe` command is a probe-rs
-session, which halts the core for ~20 ms as it attaches and again as
-it detaches (to clear breakpoints); `screenshot.py` and `ur-sim
---devkit` run one per read. A halt in the middle of a flash timeslot
-overruns it, and MPSL resets the watch, so a dev kit that saves while
-being read that way can reset (a watch without a probe can't). The
-stress script reads with `esprobe fast-dump`, which doesn't halt;
-`--halting` reads as the others do, to see it.
+**Probe sessions halt the core.** Most `esprobe` commands (`core read`
+and `core write`, `rtt`, `flash`) are a probe-rs session, which halts
+the core for ~20 ms as it attaches and again as it detaches (to clear
+breakpoints). A halt in the middle of a flash timeslot overruns it, and
+MPSL resets the watch, so a dev kit that saves while being read that
+way can reset (a watch without a probe can't). So whatever reads
+often (`screenshot.py`, `ur-sim --devkit`, the stress script) reads
+with `esprobe fast-dump`, which doesn't halt; only their writes (an
+injected input) and resets still halt. The stress script's `--halting`
+reads with `core read`, to see it.
 
 **With a different probe**, nothing in the repository needs to change.
 Write your own runner, doing what `scripts/run-esprobe.sh` does, and
@@ -367,8 +370,9 @@ the screenshot script) has to replace:
   nRF52 aliases its RAM at 0x00800000, so tools that scan RAM for the RTT
   control block find it twice: give them its address (the script reads it
   from the ELF's `_SEGGER_RTT` symbol).
-- `scripts/screenshot.py` reads and writes words of RAM (`core read`,
-  `core write`), in `read_words` and `write_word`.
+- `scripts/screenshot.py` reads and writes words of RAM (`fast-dump`,
+  `core write`), in `read_words` and `write_word`. A read mustn't halt
+  the core (see above).
 
 A runner for another probe, tested on one, would be a welcome
 contribution (as `scripts/run-<probe>.sh`).

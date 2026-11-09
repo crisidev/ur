@@ -130,8 +130,8 @@ impl DevKit {
 
     /// Runs an esprobe command, a few times over if the probe's bridge
     /// times out now and then (it does): everything here reads, or writes
-    /// a word that's as good written twice.
-    fn esprobe(args: &[&str]) -> Result<String, String> {
+    /// a word that's as good written twice. Returns what it printed.
+    fn esprobe(args: &[&str]) -> Result<Vec<u8>, String> {
         let mut tries = 0;
         loop {
             let started = StdInstant::now();
@@ -144,7 +144,7 @@ impl DevKit {
                 eprintln!("  (the probe took {:.0?})", started.elapsed());
             }
             if output.status.success() {
-                return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+                return Ok(output.stdout);
             }
             tries += 1;
             if tries == 3 {
@@ -158,35 +158,43 @@ impl DevKit {
         }
     }
 
+    /// Reads `count` words of the dev kit's memory, from `address` on.
+    ///
+    /// With `esprobe fast-dump`, over the bridge's bulk path, which never
+    /// halts the core. `esprobe core read` is a probe-rs session, which
+    /// halts it for ~20 ms as it attaches and again as it detaches; this
+    /// reads several times a second, and a halt that lands in a flash
+    /// timeslot overruns it, which makes MPSL reset the dev kit (see
+    /// CONTRIBUTING.md). The core runs on as this reads, so what's read
+    /// isn't a snapshot: see [`DevKit::frame`] and [`DevKit::music`].
     fn read_words(&self, address: u32, count: usize) -> Result<Vec<u32>, String> {
-        let mut words = Vec::with_capacity(count);
-        // Each call costs ~0.1 s, however many words (up to a few thousand
-        // at least): as few calls as can be, so a frame can be read whole
-        // between two of the dev kit's passes.
-        while words.len() < count {
-            let n = (count - words.len()).min(4096);
-            let at = address + 4 * words.len() as u32;
-            let out = Self::esprobe(&[
-                "core",
-                "read",
-                &format!("{at:#x}"),
-                "--words",
-                &n.to_string(),
-            ])?;
-            let before = words.len();
-            for line in out.lines().filter(|l| l.starts_with("0x")) {
-                let value = line
-                    .split_whitespace()
-                    .nth(1)
-                    .and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok())
-                    .ok_or_else(|| format!("esprobe's output: {line:?}?"))?;
-                words.push(value);
-            }
-            if words.len() - before != n {
-                return Err(format!("short read at {at:#x}: {out}"));
-            }
+        // To a file: fast-dump prints a summary on stdout. (And it reads
+        // whole words only, rounding a size down to them.)
+        let dump = std::env::temp_dir().join(format!("ur-sim-devkit-{}.bin", std::process::id()));
+        Self::esprobe(&[
+            "fast-dump",
+            "--address",
+            &address.to_string(),
+            "--size",
+            &(4 * count).to_string(),
+            dump.to_str()
+                .ok_or("the temporary directory's path isn't UTF-8")?,
+        ])?;
+        let bytes = std::fs::read(&dump).map_err(|e| format!("reading {}: {e}", dump.display()))?;
+        let _ = std::fs::remove_file(&dump);
+        if bytes.len() != 4 * count {
+            return Err(format!(
+                "short read at {address:#x}: {} bytes of {}",
+                bytes.len(),
+                4 * count
+            ));
         }
-        Ok(words)
+        Ok(bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&word| u32::from_le_bytes(word))
+            .collect())
     }
 
     fn read_bytes(&self, address: u32, len: usize) -> Result<Vec<u8>, String> {
@@ -242,7 +250,12 @@ impl DevKit {
         let bytes = self.read_bytes(address, size_of::<Music>())?;
         // SAFETY: As for `head`.
         let music = unsafe { bytes.as_ptr().cast::<Music>().read_unaligned() };
-        if music.number != number {
+        // The number again (the first word's low half), after the text: the
+        // dev kit runs on as this reads, and if another music info came in
+        // meanwhile, the text may be half of each. Its number changes
+        // first (see `compare::publish`), so this sees that.
+        let again = self.read_words(address, 1)?[0] as u16;
+        if music.number != number || again != number {
             return Err(
                 "the dev kit's music changed again before this read what it \
                         was; can't tell what it showed"
@@ -367,11 +380,16 @@ impl DevKit {
                 .iter()
                 .flat_map(|w| w.to_le_bytes())
                 .collect();
+            // A seqlock: no pass started between the two reads of
+            // `started`, so what was read in between (the canvas, and
+            // `before`'s pass, which comes after `started`) is one pass's.
+            // Not `after`'s pass: the dev kit runs on as this reads, so a
+            // pass may have started once its `started` was read.
             let after = self.head()?;
             if after.started == before.started && after.finished == before.finished {
                 let palette = self.palette(theme)?;
                 return Ok(Some(Frame {
-                    head: after,
+                    head: before,
                     front,
                     palette,
                 }));

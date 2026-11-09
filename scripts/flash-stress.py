@@ -20,7 +20,7 @@ the task's counters (`UR_FLASH_STRESS`):
   longest as far as the slot's own timer (TIMER0) counted.
 
 `--halting` reads with `esprobe core read` instead, as `screenshot.py`
-and `ur-sim --devkit` do. Each such read is a probe-rs session, which
+and `ur-sim --devkit` once did. Each such read is a probe-rs session, which
 halts the core for ~20 ms as it starts and again as it ends (to clear
 breakpoints). A halt that lands in a timeslot overruns it, and MPSL
 asserts: expect resets, from any flash driver. That's the probe, not the

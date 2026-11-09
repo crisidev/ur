@@ -3,8 +3,9 @@
 injecting inputs (see src/debug.rs).
 
 Reads the canvas's front buffer (what the panel shows: 80×80 colour roles)
-and the current theme's palette from RAM with `esprobe core read`, and
-writes a PNG at the panel's 3× scale.
+and the current theme's palette from RAM with `esprobe fast-dump`, and
+writes a PNG at the panel's 3× scale. The watch runs on as it's read, so a
+frame drawn in the meantime can come out half old, half new: take another.
 
 Usage:
     screenshot.py <elf> <out.png> [--input STEP ...] [--wait SECONDS] [--theme NAME]
@@ -51,6 +52,7 @@ import argparse
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import zlib
 from pathlib import Path
@@ -96,21 +98,21 @@ def symbol(elf: Path, name: str) -> int:
 
 
 def read_words(address: int, count: int) -> list[int]:
-    words: list[int] = []
-    # In chunks: one esprobe call per 256 words keeps each call quick.
-    while len(words) < count:
-        n = min(256, count - len(words))
-        out = subprocess.run(
-            TARGET + ["core", "read", hex(address + 4 * len(words)), "--words", str(n)],
+    # With `fast-dump`, which never halts the core. `core read` is a
+    # probe-rs session, which halts it as it attaches and as it detaches,
+    # and a halt in a flash timeslot makes MPSL reset the watch (see
+    # CONTRIBUTING.md). To a file: fast-dump prints a summary on stdout.
+    with tempfile.TemporaryDirectory() as scratch:
+        dump = Path(scratch) / "dump.bin"
+        subprocess.run(
+            TARGET + ["fast-dump", "--address", str(address), "--size", str(4 * count), str(dump)],
             capture_output=True,
-            text=True,
             check=True,
-        ).stdout
-        values = [int(line.split()[1], 16) for line in out.splitlines() if line.startswith("0x")]
-        if len(values) != n:
-            sys.exit(f"short read at {hex(address)}: {out}")
-        words += values
-    return words
+        )
+        data = dump.read_bytes()
+    if len(data) != 4 * count:
+        sys.exit(f"short read at {hex(address)}: {len(data)} bytes of {4 * count}")
+    return list(struct.unpack(f"<{count}I", data))
 
 
 def write_word(address: int, value: int) -> None:
