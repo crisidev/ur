@@ -398,6 +398,29 @@ fn a_double_press_ends_the_quiet_night() {
     assert!(ok, "{log}");
 }
 
+/// A call (or a notification) over a ringing alarm leaves it ringing:
+/// the motor goes back to the alarm once the call is over.
+#[test]
+fn an_alarm_rings_on_after_a_call() {
+    let dir = out("alarm-call");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    std::fs::write(
+        &script,
+        "time 2026-11-09 06:59 +01:00\nalarm 1 07:00 on\nuntil 07:00\nexpect buzzing\n\
+         call Kari\nnotify Signal Kari\ncall over\nexpect buzzing\n\
+         button\nexpect not buzzing\n",
+    )
+    .expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+    let buzzes: Vec<&str> = log
+        .lines()
+        .filter_map(|line| line.split_once("buzz: ").map(|(_, buzz)| buzz))
+        .collect();
+    assert_eq!(buzzes, ["alarm", "ring", "alarm", "stop"], "{log}");
+}
+
 /// Gadgetbridge's own lines, through the firmware's parser: each reaches
 /// the UI as what it says.
 #[test]

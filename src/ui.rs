@@ -1042,7 +1042,8 @@ impl App {
                     };
                     send(Outgoing::Call(action));
                     self.call = None;
-                    motor::buzz(Pattern::STOP);
+                    // An alarm beneath it rings on.
+                    self.buzz_for_screen();
                 }
                 _ => {}
             }
@@ -1376,7 +1377,32 @@ impl App {
 
     fn stop_ringing(&mut self) {
         self.ringing = None;
-        motor::buzz(Pattern::STOP);
+        self.buzz_for_screen();
+    }
+
+    /// Whether a call or a ringing alarm has the screen, and the motor: a
+    /// notification's buzz would cut their ringing short.
+    fn ringing_any(&self) -> bool {
+        self.call.is_some() || self.ringing.is_some()
+    }
+
+    /// Buzzes for whatever rings on screen now, as `render` stacks them
+    /// (a call, then a ringing alarm), or stops the motor if nothing
+    /// does. For when one of them starts or ends: the motor plays one
+    /// pattern at a time, so ending a call with [`Pattern::STOP`] would
+    /// silence an alarm still ringing beneath it. (That alarm starts its
+    /// gentle ramp over: simpler than keeping its place, and it's only
+    /// been interrupted.)
+    fn buzz_for_screen(&self) {
+        motor::buzz(match (&self.call, &self.ringing) {
+            (Some(call), _) if call.silenced => Pattern::STOP,
+            (Some(_), _) => Pattern::RING,
+            (None, Some(ringing)) => match ringing.kind {
+                alarm::Kind::Timer(_) => Pattern::TIMER,
+                _ => Pattern::ALARM,
+            },
+            (None, None) => Pattern::STOP,
+        });
     }
 
     fn on_phone(&mut self, event: PhoneEvent, now: Instant) {
@@ -1474,7 +1500,7 @@ impl App {
             }
             PhoneEvent::CallOver => {
                 if self.call.take().is_some() {
-                    motor::buzz(Pattern::STOP);
+                    self.buzz_for_screen();
                 }
             }
             PhoneEvent::MusicInfo { artist, track } => {
@@ -1490,7 +1516,11 @@ impl App {
                 self.music.get_or_insert_with(|| Music::new(now)).playing = Some(playing)
             }
             PhoneEvent::Find { on } => {
-                motor::buzz(if on { Pattern::RING } else { Pattern::STOP });
+                if on {
+                    motor::buzz(Pattern::RING);
+                } else {
+                    self.buzz_for_screen();
+                }
                 if on {
                     self.awake = true;
                     self.last_input = now;
@@ -1507,7 +1537,7 @@ impl App {
     /// over a call or a ringing alarm, which need the motor and screen
     /// more.
     fn turn_near(&mut self, now: Instant) {
-        if self.night.quiet() || self.call.is_some() || self.ringing.is_some() {
+        if self.night.quiet() || self.ringing_any() {
             return;
         }
         if let Some(route) = &self.route {
@@ -1529,8 +1559,7 @@ impl App {
         if shows == Shows::Newest
             && self.awake
             && matches!(self.screen, Screen::Notification(_))
-            && self.call.is_none()
-            && self.ringing.is_none()
+            && !self.ringing_any()
         {
             self.go_to(Screen::Notification(0), sweep(Side::Below));
             // Its text scrolls from the last input (see `render`).
@@ -1557,8 +1586,8 @@ impl App {
             shows,
             until: now + BANNER_TIME,
         });
-        // Not over a ringing alarm, which would go quiet.
-        if self.ringing.is_none() {
+        // Not over a call or a ringing alarm, which would go quiet.
+        if !self.ringing_any() {
             motor::buzz(Pattern::NOTIFY);
         }
         if !self.awake {
@@ -1639,10 +1668,8 @@ impl App {
             // Not a glance any more: that would end, and turn the screen
             // off, mid-ring (and keep the backlight low).
             self.glance_until = None;
-            motor::buzz(match kind {
-                alarm::Kind::Timer(_) => Pattern::TIMER,
-                _ => Pattern::ALARM,
-            });
+            // Under a call, the call keeps the motor until it's over.
+            self.buzz_for_screen();
             self.awake = true;
             self.brief_wake = false;
             self.last_input = now;
@@ -1697,7 +1724,7 @@ impl App {
         }
         if self.call.as_ref().is_some_and(|c| now >= c.until) {
             self.call = None;
-            motor::buzz(Pattern::STOP);
+            self.buzz_for_screen();
         }
         if keep_awake || self.call.is_some() || self.ringing.is_some() || self.brief_wake {
             self.last_input = now;
