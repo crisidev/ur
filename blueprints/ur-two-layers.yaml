@@ -1,0 +1,801 @@
+# A Home Assistant automation blueprint for the ur watch's button grid,
+# laid out as two layers (Settings → GRID → 2 LAYERS): nine buttons,
+# tapped alone or two in a row, for codes 1–99. See
+# docs/buttons.md#blueprints.
+#
+# 99 codes times their gestures are far too many to each be an input, so
+# this offers three things: the nine buttons on their own (the codes most
+# people use first), a few slots for any code and gesture, picked from
+# lists, and one action for every press, with the code and the gesture as
+# variables, for everything else.
+#
+# What the watch sends (see docs/buttons.md): each tap, double tap, or hold
+# fires a `button` event for the gesture and a `dimmer_N` event, turning
+# right by the code, for which gesture it was (1 tap, 2 double tap, 3
+# hold). A long press and a release fire only the `button` event: they
+# follow a hold, which said the code. So this triggers on the watch's
+# events (by its device id, as Home Assistant's own device triggers do),
+# and takes
+#
+# - taps, double taps, and holds from the dimmer events, which carry both
+#   the code and the gesture, ignoring the `button` events that come with
+#   them, so each press runs once;
+# - long presses and releases from the `button` event, with the code of
+#   the hold they follow.
+#
+# The automation keeps no memory between runs, so that code comes from
+# Home Assistant's dimmer entities: the hold's dimmer event, the last
+# before its long press or release (a finger is down all the while),
+# left the code in its entity's `steps` attribute. Should Home Assistant
+# miss the hold's advertisement but hear its release, the release gets
+# the code before it; Bluetooth repeats each advertisement, which makes
+# that rare.
+blueprint:
+  name: ur watch, two layers
+  author: Jon Gjengset
+  description: >-
+    Actions for the [ur](https://github.com/jonhoo/ur) watch's button grid
+    with **GRID** on **2 LAYERS**: nine buttons, numbered like a phone's
+    keypad, tapped alone or two in a row for codes 1–99 (2, then 3, is 23;
+    1 twice is 11). The first button is the tens digit, the second the
+    ones, and the gesture is what the last one did: a tap, a double tap
+    (two buttons only: 2, then 3 twice, is 23 double-tapped), or a hold. A
+    hold runs **Hold** as soon as it's recognised (0.6 s, finger still
+    down), **Long press** if held on to 1.5 s, and **Release** when you
+    lift.
+
+
+    - **Button 1–9 on its own**: one button tapped or held.
+
+    - **Code slots**: any code and gesture, such as 23 double-tapped.
+
+    - **Every press**: one action for every press, for codes beyond the
+    slots.
+
+
+    Leave any you don't need empty. First add the watch to Home
+    Assistant's BTHome integration with its key (Settings → BTHOME KEY on
+    the watch; see
+    [docs/buttons.md](https://github.com/jonhoo/ur/blob/main/docs/buttons.md#home-assistant)).
+    **Release** needs Home Assistant 2026.11 or later.
+  domain: automation
+  source_url: https://github.com/jonhoo/ur/blob/main/blueprints/ur-two-layers.yaml
+  homeassistant:
+    # Input sections (2024.6), and `triggers:`/`trigger:` (2024.10).
+    min_version: 2024.10.0
+  input:
+    watch:
+      name: Watch
+      description: The watch, as the BTHome integration added it.
+      selector:
+        device:
+          filter:
+            - integration: bthome
+    button_1:
+      name: Button 1 on its own (top left)
+      icon: mdi:numeric-1-box
+      collapsed: true
+      input:
+        button_1_press:
+          name: Tap
+          default: []
+          selector:
+            action: {}
+        button_1_hold_press:
+          name: Hold
+          description: As soon as the hold is recognised, finger still down.
+          default: []
+          selector:
+            action: {}
+        button_1_long_press:
+          name: Long press
+          description: Held on to 1.5 s, finger still down, after Hold.
+          default: []
+          selector:
+            action: {}
+        button_1_hold_release:
+          name: Release
+          description: On lifting the finger after a hold.
+          default: []
+          selector:
+            action: {}
+    button_2:
+      name: Button 2 on its own (top middle)
+      icon: mdi:numeric-2-box
+      collapsed: true
+      input:
+        button_2_press:
+          name: Tap
+          default: []
+          selector:
+            action: {}
+        button_2_hold_press:
+          name: Hold
+          description: As soon as the hold is recognised, finger still down.
+          default: []
+          selector:
+            action: {}
+        button_2_long_press:
+          name: Long press
+          description: Held on to 1.5 s, finger still down, after Hold.
+          default: []
+          selector:
+            action: {}
+        button_2_hold_release:
+          name: Release
+          description: On lifting the finger after a hold.
+          default: []
+          selector:
+            action: {}
+    button_3:
+      name: Button 3 on its own (top right)
+      icon: mdi:numeric-3-box
+      collapsed: true
+      input:
+        button_3_press:
+          name: Tap
+          default: []
+          selector:
+            action: {}
+        button_3_hold_press:
+          name: Hold
+          description: As soon as the hold is recognised, finger still down.
+          default: []
+          selector:
+            action: {}
+        button_3_long_press:
+          name: Long press
+          description: Held on to 1.5 s, finger still down, after Hold.
+          default: []
+          selector:
+            action: {}
+        button_3_hold_release:
+          name: Release
+          description: On lifting the finger after a hold.
+          default: []
+          selector:
+            action: {}
+    button_4:
+      name: Button 4 on its own (middle left)
+      icon: mdi:numeric-4-box
+      collapsed: true
+      input:
+        button_4_press:
+          name: Tap
+          default: []
+          selector:
+            action: {}
+        button_4_hold_press:
+          name: Hold
+          description: As soon as the hold is recognised, finger still down.
+          default: []
+          selector:
+            action: {}
+        button_4_long_press:
+          name: Long press
+          description: Held on to 1.5 s, finger still down, after Hold.
+          default: []
+          selector:
+            action: {}
+        button_4_hold_release:
+          name: Release
+          description: On lifting the finger after a hold.
+          default: []
+          selector:
+            action: {}
+    button_5:
+      name: Button 5 on its own (centre)
+      icon: mdi:numeric-5-box
+      collapsed: true
+      input:
+        button_5_press:
+          name: Tap
+          default: []
+          selector:
+            action: {}
+        button_5_hold_press:
+          name: Hold
+          description: As soon as the hold is recognised, finger still down.
+          default: []
+          selector:
+            action: {}
+        button_5_long_press:
+          name: Long press
+          description: Held on to 1.5 s, finger still down, after Hold.
+          default: []
+          selector:
+            action: {}
+        button_5_hold_release:
+          name: Release
+          description: On lifting the finger after a hold.
+          default: []
+          selector:
+            action: {}
+    button_6:
+      name: Button 6 on its own (middle right)
+      icon: mdi:numeric-6-box
+      collapsed: true
+      input:
+        button_6_press:
+          name: Tap
+          default: []
+          selector:
+            action: {}
+        button_6_hold_press:
+          name: Hold
+          description: As soon as the hold is recognised, finger still down.
+          default: []
+          selector:
+            action: {}
+        button_6_long_press:
+          name: Long press
+          description: Held on to 1.5 s, finger still down, after Hold.
+          default: []
+          selector:
+            action: {}
+        button_6_hold_release:
+          name: Release
+          description: On lifting the finger after a hold.
+          default: []
+          selector:
+            action: {}
+    button_7:
+      name: Button 7 on its own (bottom left)
+      icon: mdi:numeric-7-box
+      collapsed: true
+      input:
+        button_7_press:
+          name: Tap
+          default: []
+          selector:
+            action: {}
+        button_7_hold_press:
+          name: Hold
+          description: As soon as the hold is recognised, finger still down.
+          default: []
+          selector:
+            action: {}
+        button_7_long_press:
+          name: Long press
+          description: Held on to 1.5 s, finger still down, after Hold.
+          default: []
+          selector:
+            action: {}
+        button_7_hold_release:
+          name: Release
+          description: On lifting the finger after a hold.
+          default: []
+          selector:
+            action: {}
+    button_8:
+      name: Button 8 on its own (bottom middle)
+      icon: mdi:numeric-8-box
+      collapsed: true
+      input:
+        button_8_press:
+          name: Tap
+          default: []
+          selector:
+            action: {}
+        button_8_hold_press:
+          name: Hold
+          description: As soon as the hold is recognised, finger still down.
+          default: []
+          selector:
+            action: {}
+        button_8_long_press:
+          name: Long press
+          description: Held on to 1.5 s, finger still down, after Hold.
+          default: []
+          selector:
+            action: {}
+        button_8_hold_release:
+          name: Release
+          description: On lifting the finger after a hold.
+          default: []
+          selector:
+            action: {}
+    button_9:
+      name: Button 9 on its own (bottom right)
+      icon: mdi:numeric-9-box
+      collapsed: true
+      input:
+        button_9_press:
+          name: Tap
+          default: []
+          selector:
+            action: {}
+        button_9_hold_press:
+          name: Hold
+          description: As soon as the hold is recognised, finger still down.
+          default: []
+          selector:
+            action: {}
+        button_9_long_press:
+          name: Long press
+          description: Held on to 1.5 s, finger still down, after Hold.
+          default: []
+          selector:
+            action: {}
+        button_9_hold_release:
+          name: Release
+          description: On lifting the finger after a hold.
+          default: []
+          selector:
+            action: {}
+    slot_1:
+      name: Code slot 1
+      icon: mdi:dialpad
+      collapsed: true
+      input:
+        slot_1_code:
+          name: Code
+          description: 1–99, such as 23 for 2, then 3. 0 leaves the slot unused.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 99
+              mode: box
+        slot_1_gesture:
+          name: Gesture
+          description: What the last button did.
+          default: press
+          selector:
+            select:
+              options:
+                - label: Tap
+                  value: press
+                - label: Double tap
+                  value: double_press
+                - label: Hold
+                  value: hold_press
+                - label: Long press
+                  value: long_press
+                - label: Release
+                  value: hold_release
+        slot_1_action:
+          name: Action
+          default: []
+          selector:
+            action: {}
+    slot_2:
+      name: Code slot 2
+      icon: mdi:dialpad
+      collapsed: true
+      input:
+        slot_2_code:
+          name: Code
+          description: 1–99, such as 23 for 2, then 3. 0 leaves the slot unused.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 99
+              mode: box
+        slot_2_gesture:
+          name: Gesture
+          description: What the last button did.
+          default: press
+          selector:
+            select:
+              options:
+                - label: Tap
+                  value: press
+                - label: Double tap
+                  value: double_press
+                - label: Hold
+                  value: hold_press
+                - label: Long press
+                  value: long_press
+                - label: Release
+                  value: hold_release
+        slot_2_action:
+          name: Action
+          default: []
+          selector:
+            action: {}
+    slot_3:
+      name: Code slot 3
+      icon: mdi:dialpad
+      collapsed: true
+      input:
+        slot_3_code:
+          name: Code
+          description: 1–99, such as 23 for 2, then 3. 0 leaves the slot unused.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 99
+              mode: box
+        slot_3_gesture:
+          name: Gesture
+          description: What the last button did.
+          default: press
+          selector:
+            select:
+              options:
+                - label: Tap
+                  value: press
+                - label: Double tap
+                  value: double_press
+                - label: Hold
+                  value: hold_press
+                - label: Long press
+                  value: long_press
+                - label: Release
+                  value: hold_release
+        slot_3_action:
+          name: Action
+          default: []
+          selector:
+            action: {}
+    slot_4:
+      name: Code slot 4
+      icon: mdi:dialpad
+      collapsed: true
+      input:
+        slot_4_code:
+          name: Code
+          description: 1–99, such as 23 for 2, then 3. 0 leaves the slot unused.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 99
+              mode: box
+        slot_4_gesture:
+          name: Gesture
+          description: What the last button did.
+          default: press
+          selector:
+            select:
+              options:
+                - label: Tap
+                  value: press
+                - label: Double tap
+                  value: double_press
+                - label: Hold
+                  value: hold_press
+                - label: Long press
+                  value: long_press
+                - label: Release
+                  value: hold_release
+        slot_4_action:
+          name: Action
+          default: []
+          selector:
+            action: {}
+    slot_5:
+      name: Code slot 5
+      icon: mdi:dialpad
+      collapsed: true
+      input:
+        slot_5_code:
+          name: Code
+          description: 1–99, such as 23 for 2, then 3. 0 leaves the slot unused.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 99
+              mode: box
+        slot_5_gesture:
+          name: Gesture
+          description: What the last button did.
+          default: press
+          selector:
+            select:
+              options:
+                - label: Tap
+                  value: press
+                - label: Double tap
+                  value: double_press
+                - label: Hold
+                  value: hold_press
+                - label: Long press
+                  value: long_press
+                - label: Release
+                  value: hold_release
+        slot_5_action:
+          name: Action
+          default: []
+          selector:
+            action: {}
+    slot_6:
+      name: Code slot 6
+      icon: mdi:dialpad
+      collapsed: true
+      input:
+        slot_6_code:
+          name: Code
+          description: 1–99, such as 23 for 2, then 3. 0 leaves the slot unused.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 99
+              mode: box
+        slot_6_gesture:
+          name: Gesture
+          description: What the last button did.
+          default: press
+          selector:
+            select:
+              options:
+                - label: Tap
+                  value: press
+                - label: Double tap
+                  value: double_press
+                - label: Hold
+                  value: hold_press
+                - label: Long press
+                  value: long_press
+                - label: Release
+                  value: hold_release
+        slot_6_action:
+          name: Action
+          default: []
+          selector:
+            action: {}
+    slot_7:
+      name: Code slot 7
+      icon: mdi:dialpad
+      collapsed: true
+      input:
+        slot_7_code:
+          name: Code
+          description: 1–99, such as 23 for 2, then 3. 0 leaves the slot unused.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 99
+              mode: box
+        slot_7_gesture:
+          name: Gesture
+          description: What the last button did.
+          default: press
+          selector:
+            select:
+              options:
+                - label: Tap
+                  value: press
+                - label: Double tap
+                  value: double_press
+                - label: Hold
+                  value: hold_press
+                - label: Long press
+                  value: long_press
+                - label: Release
+                  value: hold_release
+        slot_7_action:
+          name: Action
+          default: []
+          selector:
+            action: {}
+    slot_8:
+      name: Code slot 8
+      icon: mdi:dialpad
+      collapsed: true
+      input:
+        slot_8_code:
+          name: Code
+          description: 1–99, such as 23 for 2, then 3. 0 leaves the slot unused.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 99
+              mode: box
+        slot_8_gesture:
+          name: Gesture
+          description: What the last button did.
+          default: press
+          selector:
+            select:
+              options:
+                - label: Tap
+                  value: press
+                - label: Double tap
+                  value: double_press
+                - label: Hold
+                  value: hold_press
+                - label: Long press
+                  value: long_press
+                - label: Release
+                  value: hold_release
+        slot_8_action:
+          name: Action
+          default: []
+          selector:
+            action: {}
+    every:
+      name: Every press
+      icon: mdi:code-braces
+      collapsed: true
+      input:
+        every_press:
+          name: Action
+          description: >-
+            Runs for every press, alongside any action above for it, with
+            `code` (1–99) and `gesture` (`press`, `double_press`,
+            `hold_press`, `long_press`, or `hold_release`) to tell them
+            apart. For example, add a **Choose** action, with a
+            **Template** condition for each option, such as
+            `{{ code == 47 and gesture == 'double_press' }}` for 4, then 7
+            double-tapped.
+          default: []
+          selector:
+            action: {}
+
+# A hold sends several events in a row (hold, maybe long press, then
+# release), and the hold's action may still be running when the next
+# arrives: a loop that dims a light until the release, say. `parallel`
+# runs each event's action at once, alongside any still running. `single`
+# would drop the release while the hold's loop runs, `queued` would hold
+# it back until the loop ends, and `restart` would cut the hold's action
+# short at the long press, even with no Long press action set. The cost:
+# two quick presses' actions can overlap, which for toggles and scenes
+# doesn't matter.
+mode: parallel
+max: 10
+max_exceeded: silent
+
+triggers:
+  - trigger: event
+    event_type: bthome_ble_event
+    event_data:
+      device_id: !input watch
+
+variables:
+  watch: !input watch
+  # The gesture, as BTHome names it, or '' for the events that only repeat
+  # another's: the `button` event's tap, double tap and hold (their
+  # dimmers carry the code too), and anything else (such as a dimmer
+  # turning left, which the watch never sends).
+  gesture: >-
+    {{ {
+      'dimmer_1/rotate_right': 'press',
+      'dimmer_2/rotate_right': 'double_press',
+      'dimmer_3/rotate_right': 'hold_press',
+      'button/long_press': 'long_press',
+      'button/hold_release': 'hold_release',
+    }.get(trigger.event.data.event_class ~ '/' ~ trigger.event.data.event_type, '') }}
+  # A dimmer's steps, or, for a long press or release, the steps of the
+  # dimmer entity that changed last: the hold's (see the top of the file).
+  code: >-
+    {%- if trigger.event.data.event_class.startswith('dimmer_') -%}
+      {{ trigger.event.data.event_properties.steps | int(0) }}
+    {%- else -%}
+      {{ device_entities(watch) | select('match', 'event[.]') | expand
+         | selectattr('attributes.steps', 'defined')
+         | sort(attribute='last_changed', reverse=true)
+         | map(attribute='attributes.steps') | first | default(0) | int(0) }}
+    {%- endif -%}
+  slot_1_code: !input slot_1_code
+  slot_1_gesture: !input slot_1_gesture
+  slot_2_code: !input slot_2_code
+  slot_2_gesture: !input slot_2_gesture
+  slot_3_code: !input slot_3_code
+  slot_3_gesture: !input slot_3_gesture
+  slot_4_code: !input slot_4_code
+  slot_4_gesture: !input slot_4_gesture
+  slot_5_code: !input slot_5_code
+  slot_5_gesture: !input slot_5_gesture
+  slot_6_code: !input slot_6_code
+  slot_6_gesture: !input slot_6_gesture
+  slot_7_code: !input slot_7_code
+  slot_7_gesture: !input slot_7_gesture
+  slot_8_code: !input slot_8_code
+  slot_8_gesture: !input slot_8_gesture
+
+conditions:
+  - "{{ gesture != '' and code > 0 }}"
+
+actions:
+  # The specific actions and Every press side by side, so neither waits
+  # for the other (a hold's dimming loop, say).
+  - parallel:
+      # Code slots first, so a slot set for a single button's code (and
+      # gesture) wins over that button's own input, empty or not.
+      - choose:
+          - conditions: "{{ code == slot_1_code | int(0) and gesture == slot_1_gesture }}"
+            sequence: !input slot_1_action
+          - conditions: "{{ code == slot_2_code | int(0) and gesture == slot_2_gesture }}"
+            sequence: !input slot_2_action
+          - conditions: "{{ code == slot_3_code | int(0) and gesture == slot_3_gesture }}"
+            sequence: !input slot_3_action
+          - conditions: "{{ code == slot_4_code | int(0) and gesture == slot_4_gesture }}"
+            sequence: !input slot_4_action
+          - conditions: "{{ code == slot_5_code | int(0) and gesture == slot_5_gesture }}"
+            sequence: !input slot_5_action
+          - conditions: "{{ code == slot_6_code | int(0) and gesture == slot_6_gesture }}"
+            sequence: !input slot_6_action
+          - conditions: "{{ code == slot_7_code | int(0) and gesture == slot_7_gesture }}"
+            sequence: !input slot_7_action
+          - conditions: "{{ code == slot_8_code | int(0) and gesture == slot_8_gesture }}"
+            sequence: !input slot_8_action
+
+          - conditions: "{{ code == 1 and gesture == 'press' }}"
+            sequence: !input button_1_press
+          - conditions: "{{ code == 1 and gesture == 'hold_press' }}"
+            sequence: !input button_1_hold_press
+          - conditions: "{{ code == 1 and gesture == 'long_press' }}"
+            sequence: !input button_1_long_press
+          - conditions: "{{ code == 1 and gesture == 'hold_release' }}"
+            sequence: !input button_1_hold_release
+
+          - conditions: "{{ code == 2 and gesture == 'press' }}"
+            sequence: !input button_2_press
+          - conditions: "{{ code == 2 and gesture == 'hold_press' }}"
+            sequence: !input button_2_hold_press
+          - conditions: "{{ code == 2 and gesture == 'long_press' }}"
+            sequence: !input button_2_long_press
+          - conditions: "{{ code == 2 and gesture == 'hold_release' }}"
+            sequence: !input button_2_hold_release
+
+          - conditions: "{{ code == 3 and gesture == 'press' }}"
+            sequence: !input button_3_press
+          - conditions: "{{ code == 3 and gesture == 'hold_press' }}"
+            sequence: !input button_3_hold_press
+          - conditions: "{{ code == 3 and gesture == 'long_press' }}"
+            sequence: !input button_3_long_press
+          - conditions: "{{ code == 3 and gesture == 'hold_release' }}"
+            sequence: !input button_3_hold_release
+
+          - conditions: "{{ code == 4 and gesture == 'press' }}"
+            sequence: !input button_4_press
+          - conditions: "{{ code == 4 and gesture == 'hold_press' }}"
+            sequence: !input button_4_hold_press
+          - conditions: "{{ code == 4 and gesture == 'long_press' }}"
+            sequence: !input button_4_long_press
+          - conditions: "{{ code == 4 and gesture == 'hold_release' }}"
+            sequence: !input button_4_hold_release
+
+          - conditions: "{{ code == 5 and gesture == 'press' }}"
+            sequence: !input button_5_press
+          - conditions: "{{ code == 5 and gesture == 'hold_press' }}"
+            sequence: !input button_5_hold_press
+          - conditions: "{{ code == 5 and gesture == 'long_press' }}"
+            sequence: !input button_5_long_press
+          - conditions: "{{ code == 5 and gesture == 'hold_release' }}"
+            sequence: !input button_5_hold_release
+
+          - conditions: "{{ code == 6 and gesture == 'press' }}"
+            sequence: !input button_6_press
+          - conditions: "{{ code == 6 and gesture == 'hold_press' }}"
+            sequence: !input button_6_hold_press
+          - conditions: "{{ code == 6 and gesture == 'long_press' }}"
+            sequence: !input button_6_long_press
+          - conditions: "{{ code == 6 and gesture == 'hold_release' }}"
+            sequence: !input button_6_hold_release
+
+          - conditions: "{{ code == 7 and gesture == 'press' }}"
+            sequence: !input button_7_press
+          - conditions: "{{ code == 7 and gesture == 'hold_press' }}"
+            sequence: !input button_7_hold_press
+          - conditions: "{{ code == 7 and gesture == 'long_press' }}"
+            sequence: !input button_7_long_press
+          - conditions: "{{ code == 7 and gesture == 'hold_release' }}"
+            sequence: !input button_7_hold_release
+
+          - conditions: "{{ code == 8 and gesture == 'press' }}"
+            sequence: !input button_8_press
+          - conditions: "{{ code == 8 and gesture == 'hold_press' }}"
+            sequence: !input button_8_hold_press
+          - conditions: "{{ code == 8 and gesture == 'long_press' }}"
+            sequence: !input button_8_long_press
+          - conditions: "{{ code == 8 and gesture == 'hold_release' }}"
+            sequence: !input button_8_hold_release
+
+          - conditions: "{{ code == 9 and gesture == 'press' }}"
+            sequence: !input button_9_press
+          - conditions: "{{ code == 9 and gesture == 'hold_press' }}"
+            sequence: !input button_9_hold_press
+          - conditions: "{{ code == 9 and gesture == 'long_press' }}"
+            sequence: !input button_9_long_press
+          - conditions: "{{ code == 9 and gesture == 'hold_release' }}"
+            sequence: !input button_9_hold_release
+      - sequence: !input every_press

@@ -1,0 +1,3 @@
+# Home Assistant's test harness for custom components, which pins the
+# Home Assistant release it runs (2026.10.4 for this one).
+pytest-homeassistant-custom-component==0.13.375

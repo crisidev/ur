@@ -1,0 +1,338 @@
+# A Home Assistant automation blueprint for the ur watch's button grid,
+# laid out as six buttons (Settings → GRID → 6 BUTTONS): an action for each
+# button and gesture, in one automation. See docs/buttons.md#blueprints.
+#
+# Each press fires a `bthome_ble_event` whose `event_class` is the button
+# (`button_1` … `button_6`) and whose `event_type` is the gesture, as
+# BTHome names it. The trigger is that bus event, for the chosen watch's
+# device id, which is all Home Assistant's own BTHome device triggers
+# match too (bthome/device_trigger.py). Unlike device triggers, though,
+# it doesn't need Home Assistant to have seen each button and gesture
+# first: they're all here from the start.
+blueprint:
+  name: ur watch, six buttons
+  author: Jon Gjengset
+  description: >-
+    Actions for the [ur](https://github.com/jonhoo/ur) watch's button grid
+    with **GRID** on **6 BUTTONS**, numbered in reading order (1 2 3 on top,
+    4 5 6 below). Each button can be tapped, double-tapped, or held; a hold
+    runs **Hold** as soon as it's recognised (0.6 s, finger still down),
+    **Long press** if held on to 1.5 s, and **Release** when
+    you lift. Leave any you don't need empty.
+
+
+    First add the watch to Home Assistant's BTHome integration with its key
+    (Settings → BTHOME KEY on the watch; see
+    [docs/buttons.md](https://github.com/jonhoo/ur/blob/main/docs/buttons.md#home-assistant)).
+    Actions can use `{{ button }}` (1–6) and `{{ gesture }}` (`press`,
+    `double_press`, `hold_press`, `long_press`, or `hold_release`).
+    **Release** needs Home Assistant 2026.11 or later.
+  domain: automation
+  source_url: https://github.com/jonhoo/ur/blob/main/blueprints/ur-six-buttons.yaml
+  homeassistant:
+    # Input sections (2024.6), and `triggers:`/`trigger:` (2024.10).
+    min_version: 2024.10.0
+  input:
+    watch:
+      name: Watch
+      description: The watch, as the BTHome integration added it.
+      selector:
+        device:
+          filter:
+            - integration: bthome
+    button_1:
+      name: Button 1 (top left)
+      icon: mdi:numeric-1-box
+      collapsed: true
+      input:
+        button_1_press:
+          name: Tap
+          default: []
+          selector:
+            action: {}
+        button_1_double_press:
+          name: Double tap
+          default: []
+          selector:
+            action: {}
+        button_1_hold_press:
+          name: Hold
+          description: As soon as the hold is recognised, finger still down.
+          default: []
+          selector:
+            action: {}
+        button_1_long_press:
+          name: Long press
+          description: Held on to 1.5 s, finger still down, after Hold.
+          default: []
+          selector:
+            action: {}
+        button_1_hold_release:
+          name: Release
+          description: On lifting the finger after a hold.
+          default: []
+          selector:
+            action: {}
+    button_2:
+      name: Button 2 (top middle)
+      icon: mdi:numeric-2-box
+      collapsed: true
+      input:
+        button_2_press:
+          name: Tap
+          default: []
+          selector:
+            action: {}
+        button_2_double_press:
+          name: Double tap
+          default: []
+          selector:
+            action: {}
+        button_2_hold_press:
+          name: Hold
+          description: As soon as the hold is recognised, finger still down.
+          default: []
+          selector:
+            action: {}
+        button_2_long_press:
+          name: Long press
+          description: Held on to 1.5 s, finger still down, after Hold.
+          default: []
+          selector:
+            action: {}
+        button_2_hold_release:
+          name: Release
+          description: On lifting the finger after a hold.
+          default: []
+          selector:
+            action: {}
+    button_3:
+      name: Button 3 (top right)
+      icon: mdi:numeric-3-box
+      collapsed: true
+      input:
+        button_3_press:
+          name: Tap
+          default: []
+          selector:
+            action: {}
+        button_3_double_press:
+          name: Double tap
+          default: []
+          selector:
+            action: {}
+        button_3_hold_press:
+          name: Hold
+          description: As soon as the hold is recognised, finger still down.
+          default: []
+          selector:
+            action: {}
+        button_3_long_press:
+          name: Long press
+          description: Held on to 1.5 s, finger still down, after Hold.
+          default: []
+          selector:
+            action: {}
+        button_3_hold_release:
+          name: Release
+          description: On lifting the finger after a hold.
+          default: []
+          selector:
+            action: {}
+    button_4:
+      name: Button 4 (bottom left)
+      icon: mdi:numeric-4-box
+      collapsed: true
+      input:
+        button_4_press:
+          name: Tap
+          default: []
+          selector:
+            action: {}
+        button_4_double_press:
+          name: Double tap
+          default: []
+          selector:
+            action: {}
+        button_4_hold_press:
+          name: Hold
+          description: As soon as the hold is recognised, finger still down.
+          default: []
+          selector:
+            action: {}
+        button_4_long_press:
+          name: Long press
+          description: Held on to 1.5 s, finger still down, after Hold.
+          default: []
+          selector:
+            action: {}
+        button_4_hold_release:
+          name: Release
+          description: On lifting the finger after a hold.
+          default: []
+          selector:
+            action: {}
+    button_5:
+      name: Button 5 (bottom middle)
+      icon: mdi:numeric-5-box
+      collapsed: true
+      input:
+        button_5_press:
+          name: Tap
+          default: []
+          selector:
+            action: {}
+        button_5_double_press:
+          name: Double tap
+          default: []
+          selector:
+            action: {}
+        button_5_hold_press:
+          name: Hold
+          description: As soon as the hold is recognised, finger still down.
+          default: []
+          selector:
+            action: {}
+        button_5_long_press:
+          name: Long press
+          description: Held on to 1.5 s, finger still down, after Hold.
+          default: []
+          selector:
+            action: {}
+        button_5_hold_release:
+          name: Release
+          description: On lifting the finger after a hold.
+          default: []
+          selector:
+            action: {}
+    button_6:
+      name: Button 6 (bottom right)
+      icon: mdi:numeric-6-box
+      collapsed: true
+      input:
+        button_6_press:
+          name: Tap
+          default: []
+          selector:
+            action: {}
+        button_6_double_press:
+          name: Double tap
+          default: []
+          selector:
+            action: {}
+        button_6_hold_press:
+          name: Hold
+          description: As soon as the hold is recognised, finger still down.
+          default: []
+          selector:
+            action: {}
+        button_6_long_press:
+          name: Long press
+          description: Held on to 1.5 s, finger still down, after Hold.
+          default: []
+          selector:
+            action: {}
+        button_6_hold_release:
+          name: Release
+          description: On lifting the finger after a hold.
+          default: []
+          selector:
+            action: {}
+
+# A hold sends several events in a row (hold, maybe long press, then
+# release), and the hold's action may still be running when the next
+# arrives: a loop that dims a light until the release, say. `parallel`
+# runs each event's action at once, alongside any still running. `single`
+# would drop the release while the hold's loop runs, `queued` would hold
+# it back until the loop ends, and `restart` would cut the hold's action
+# short at the long press, even with no Long press action set. The cost:
+# two quick presses' actions can overlap, which for toggles and scenes
+# doesn't matter.
+mode: parallel
+max: 10
+max_exceeded: silent
+
+triggers:
+  - trigger: event
+    event_type: bthome_ble_event
+    event_data:
+      device_id: !input watch
+
+variables:
+  # `button_2` → 2. Anything else (with GRID on 2 LAYERS, the watch sends
+  # `button` and `dimmer_N`) → 0, which the condition below drops.
+  button: >-
+    {% set event_class = trigger.event.data.event_class %}
+    {{ event_class[7:] | int(0) if event_class.startswith('button_') else 0 }}
+  gesture: "{{ trigger.event.data.event_type }}"
+
+conditions:
+  - "{{ 1 <= button <= 6 }}"
+
+actions:
+  - choose:
+      - conditions: "{{ button == 1 and gesture == 'press' }}"
+        sequence: !input button_1_press
+      - conditions: "{{ button == 1 and gesture == 'double_press' }}"
+        sequence: !input button_1_double_press
+      - conditions: "{{ button == 1 and gesture == 'hold_press' }}"
+        sequence: !input button_1_hold_press
+      - conditions: "{{ button == 1 and gesture == 'long_press' }}"
+        sequence: !input button_1_long_press
+      - conditions: "{{ button == 1 and gesture == 'hold_release' }}"
+        sequence: !input button_1_hold_release
+
+      - conditions: "{{ button == 2 and gesture == 'press' }}"
+        sequence: !input button_2_press
+      - conditions: "{{ button == 2 and gesture == 'double_press' }}"
+        sequence: !input button_2_double_press
+      - conditions: "{{ button == 2 and gesture == 'hold_press' }}"
+        sequence: !input button_2_hold_press
+      - conditions: "{{ button == 2 and gesture == 'long_press' }}"
+        sequence: !input button_2_long_press
+      - conditions: "{{ button == 2 and gesture == 'hold_release' }}"
+        sequence: !input button_2_hold_release
+
+      - conditions: "{{ button == 3 and gesture == 'press' }}"
+        sequence: !input button_3_press
+      - conditions: "{{ button == 3 and gesture == 'double_press' }}"
+        sequence: !input button_3_double_press
+      - conditions: "{{ button == 3 and gesture == 'hold_press' }}"
+        sequence: !input button_3_hold_press
+      - conditions: "{{ button == 3 and gesture == 'long_press' }}"
+        sequence: !input button_3_long_press
+      - conditions: "{{ button == 3 and gesture == 'hold_release' }}"
+        sequence: !input button_3_hold_release
+
+      - conditions: "{{ button == 4 and gesture == 'press' }}"
+        sequence: !input button_4_press
+      - conditions: "{{ button == 4 and gesture == 'double_press' }}"
+        sequence: !input button_4_double_press
+      - conditions: "{{ button == 4 and gesture == 'hold_press' }}"
+        sequence: !input button_4_hold_press
+      - conditions: "{{ button == 4 and gesture == 'long_press' }}"
+        sequence: !input button_4_long_press
+      - conditions: "{{ button == 4 and gesture == 'hold_release' }}"
+        sequence: !input button_4_hold_release
+
+      - conditions: "{{ button == 5 and gesture == 'press' }}"
+        sequence: !input button_5_press
+      - conditions: "{{ button == 5 and gesture == 'double_press' }}"
+        sequence: !input button_5_double_press
+      - conditions: "{{ button == 5 and gesture == 'hold_press' }}"
+        sequence: !input button_5_hold_press
+      - conditions: "{{ button == 5 and gesture == 'long_press' }}"
+        sequence: !input button_5_long_press
+      - conditions: "{{ button == 5 and gesture == 'hold_release' }}"
+        sequence: !input button_5_hold_release
+
+      - conditions: "{{ button == 6 and gesture == 'press' }}"
+        sequence: !input button_6_press
+      - conditions: "{{ button == 6 and gesture == 'double_press' }}"
+        sequence: !input button_6_double_press
+      - conditions: "{{ button == 6 and gesture == 'hold_press' }}"
+        sequence: !input button_6_hold_press
+      - conditions: "{{ button == 6 and gesture == 'long_press' }}"
+        sequence: !input button_6_long_press
+      - conditions: "{{ button == 6 and gesture == 'hold_release' }}"
+        sequence: !input button_6_hold_release

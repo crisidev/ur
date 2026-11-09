@@ -47,8 +47,9 @@ heart rate, alarms, timers, music control), and these on top:
   tapped, double-tapped, or held (and released, for hold-to-dim), or
   two layers of nine for codes 1–99 (2, then 3, is 23). Sent over
   Bluetooth as BTHome button events, a trigger each in Home Assistant's
-  automation editor, or through Gadgetbridge. See
-  [docs/buttons.md](docs/buttons.md).
+  automation editor (or all in one, with a
+  [blueprint](docs/buttons.md#blueprints) for each layout), or through
+  Gadgetbridge. See [docs/buttons.md](docs/buttons.md).
 - **The room's air:** a nearby [Aranet4] (with Smart Home integrations
   on) gives the clock face the room's temperature, and its CO₂ gets a
   screen. So does an unencrypted [BTHome] thermometer (such as a Xiaomi

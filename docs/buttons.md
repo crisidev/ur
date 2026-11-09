@@ -9,7 +9,7 @@ Gadgetbridge. Two layouts, picked in Settings:
   automation editor, no YAML needed.
 - **Two layers**: nine buttons, tapped alone or two in a row, for codes
   1–99. More to choose from, but Home Assistant automations for them
-  are written by hand.
+  are written by hand, or set up with a [blueprint](#blueprints).
 
 <p align="center">
   <img src="screenshots/buttons.png" width="150" alt="Six buttons: chunky grey keycaps with red sides, like an arcade cabinet's, in two rows of three; the top middle one is pressed in and white, showing 2 and 2X: 2, double-tapped, just sent">
@@ -108,6 +108,59 @@ BTHome's:
 | lifting after a hold | `hold_release` |
 
 "Hold release" needs Home Assistant 2026.11 or later.
+
+### Blueprints
+
+The easy way: a [blueprint] for each layout gives every button and
+gesture an action in one automation, set up in Home Assistant's editor,
+no YAML. It needs Home Assistant 2024.10 or later, but not step 3: it
+knows all the events up front.
+
+- **Six buttons**: a section per button, with an action for each
+  gesture: tap, double tap, hold, long press, and release.
+
+  [![Import the six-button blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fjonhoo%2Fur%2Fmain%2Fblueprints%2Fur-six-buttons.yaml)
+- **Two layers**: a section per button on its own (tap, hold, long
+  press, release), eight slots for any code and gesture (23,
+  double-tapped, say), and one action for every press, with `code` and
+  `gesture` to tell them apart, for the rest.
+
+  [![Import the two-layer blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fjonhoo%2Fur%2Fmain%2Fblueprints%2Fur-two-layers.yaml)
+
+1. Click the badge for your layout, or in Home Assistant, **Settings →
+   Automations & scenes → Blueprints → Import blueprint**, and paste the
+   link of [`blueprints/ur-six-buttons.yaml`](../blueprints/ur-six-buttons.yaml)
+   or [`blueprints/ur-two-layers.yaml`](../blueprints/ur-two-layers.yaml).
+2. Click the blueprint to create an automation from it, pick the watch,
+   open the buttons you want, and give them actions. Leave the rest
+   empty.
+
+With two layers, a long press or release gets the code of the hold
+before it, from the watch's dimmer entities: leave those enabled.
+
+Each event's action starts as the event arrives, even while an earlier
+one's still runs, so a hold's action can loop until the release. To dim
+the kitchen while you hold, add this as the hold's action (**Edit in
+YAML**):
+
+```yaml
+repeat:
+  sequence:
+    - action: light.turn_on
+      target: { entity_id: light.kitchen }
+      data: { brightness_step_pct: -10 }
+    # The next step after 0.3 s, or none: the finger's lifted.
+    - wait_for_trigger:
+        - trigger: event
+          event_type: bthome_ble_event
+          event_data:
+            device_id: "{{ trigger.event.data.device_id }}"
+            event_type: hold_release
+      timeout: { milliseconds: 300 }
+  until: "{{ wait.trigger is not none or repeat.index >= 20 }}"
+```
+
+[blueprint]: https://www.home-assistant.io/docs/automation/using_blueprints/
 
 ### With six buttons
 
