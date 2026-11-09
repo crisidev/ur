@@ -11,7 +11,10 @@
 //!   ~11 s), stopping to wait for the next still moment if the wrist gets
 //!   busy before its first windows are in ([`heart_schedule::interrupt`]),
 //!   and giving up sooner if it won't keep still
-//!   ([`heart_schedule::give_up`]), and
+//!   ([`heart_schedule::give_up`]); if it runs out on a calm wrist with a
+//!   pulse too faint to read, it may go on for another 15 s with a
+//!   brighter LED, once or twice ([`heart_schedule::brighter`], an
+//!   experiment), and
 //! - while the clock face is showing (see
 //!   [`crate::heart_reading::set_watching`]), continuously,
 //!   since then someone is looking at the number, and
@@ -183,6 +186,11 @@ struct Level {
 /// draw. The bottom is what InfiniTime runs at fixed (12.5 mA, ×1), so it's
 /// known to work on most wrists; the remembered level carries over between
 /// sessions.
+///
+/// These only follow the light level, which on a wrist sits at the second
+/// (12.5 mA ×2: 1,600-4,000) whatever the pulse. A background session
+/// may raise the drive alone, keeping the gain, once its usual 30 s have
+/// found only a faint pulse (see [`heart_schedule::brighter`]).
 ///
 /// TODO: gain ×64 (HGAIN 0b100) exists too; try it if ×8 at 40 mA is ever
 /// not enough.
@@ -422,7 +430,17 @@ pub async fn heart_task(i2c: Device) {
         let started = Instant::now();
         let mut level = good_level;
         crate::power::count(crate::power::Count::HeartSessions);
-        let outcome = measure(&mut hrs, &mut level, &mut conversions, background).await;
+        // What the session spends of the budget, at 12.5 mA's rate (see
+        // `heart_schedule::budget_seconds`): a brighter phase costs more.
+        let mut spent = 0;
+        let outcome = measure(
+            &mut hrs,
+            &mut level,
+            &mut conversions,
+            background.then(|| schedule.budget(uptime())),
+            &mut spent,
+        )
+        .await;
         if matches!(outcome, Ok(Ended::Measured(_))) {
             good_level = level;
         }
@@ -460,7 +478,10 @@ pub async fn heart_task(i2c: Device) {
             Ok(Ended::Interrupted) => (None, Outcome::Interrupted),
         };
         crate::heart_reading::set_worn(worn);
-        schedule.ended(uptime(), led_seconds, outcome, background, before);
+        // At the lowest drive, `spent` is `led_seconds`, short of the
+        // moments around the LED's switching on and off.
+        let spent = spent.max(led_seconds);
+        schedule.ended(uptime(), spent, outcome, background, before);
         // A session the schedule didn't count leaves the movement before
         // it to count towards the next.
         if outcome == Outcome::Interrupted && schedule.interrupted() {
@@ -485,22 +506,39 @@ fn uptime() -> u32 {
     Instant::now().as_secs() as u32
 }
 
-/// Accounts the LED's on-time to its drive current, for [`crate::power`]:
-/// on from creation until dropped.
-struct LedMeter {
+/// Accounts the LED's on-time to its drive current, for [`crate::power`]
+/// and the schedule's budget (`spent`, see
+/// [`heart_schedule::budget_seconds`]): on from creation until dropped.
+struct LedMeter<'a> {
     drive: u8,
+    /// When the LED went on at `drive`.
+    since: Instant,
+    /// The budget spent at earlier drives.
+    spent: &'a mut u32,
 }
 
-impl LedMeter {
-    fn new(drive: u8) -> Self {
+impl<'a> LedMeter<'a> {
+    fn new(drive: u8, spent: &'a mut u32) -> Self {
         crate::power::on(Self::meter(drive));
-        Self { drive }
+        Self {
+            drive,
+            since: Instant::now(),
+            spent,
+        }
     }
 
     fn switch(&mut self, drive: u8) {
         crate::power::off(Self::meter(self.drive));
         crate::power::on(Self::meter(drive));
+        *self.spent = self.spent();
         self.drive = drive;
+        self.since = Instant::now();
+    }
+
+    /// The budget spent so far.
+    fn spent(&self) -> u32 {
+        let millis = self.since.elapsed().as_millis() as u32;
+        *self.spent + heart_schedule::budget_seconds(self.drive, millis)
     }
 
     fn meter(drive: u8) -> crate::power::Meter {
@@ -514,9 +552,10 @@ impl LedMeter {
     }
 }
 
-impl Drop for LedMeter {
+impl Drop for LedMeter<'_> {
     fn drop(&mut self) {
         crate::power::off(Self::meter(self.drive));
+        *self.spent = self.spent();
     }
 }
 
@@ -542,17 +581,34 @@ enum Ended {
 
 /// One measurement session: turn the sensor on, sample until we have a
 /// reading (and keep going while someone's watching), adjusting the level
-/// as needed. `background`: the schedule started it, rather than someone
-/// looking at the clock face.
+/// as needed. `budget`: the schedule's LED budget at the start, if the
+/// schedule started it (rather than someone looking at the clock face).
+/// `spent` is set to what the session cost the budget.
 async fn measure(
     hrs: &mut Hrs3300,
     level: &mut usize,
     conversions: &mut Conversions,
-    background: bool,
+    budget: Option<u32>,
+    spent: &mut u32,
 ) -> Result<Ended, ()> {
-    hrs.on(LEVELS[*level]).await?;
+    let background = budget.is_some();
+    // The LED's drive: `LEVELS[*level]`'s, unless a phase of the session
+    // has gone brighter (see `heart_schedule::brighter`), keeping the gain.
+    let mut drive = LEVELS[*level].drive;
+    let at = |level: usize, drive: u8| Level {
+        drive,
+        gain: LEVELS[level].gain,
+    };
+    hrs.on(at(*level, drive)).await?;
     // Ends the LED's on-time when the session returns, however it returns.
-    let mut led = LedMeter::new(LEVELS[*level].drive);
+    let mut led = LedMeter::new(drive, spent);
+    // When the session's current phase runs out (its usual limit, or a
+    // brighter phase's), and the brighter phases so far.
+    let (mut limit, mut steps) = (SESSION_LIMIT, 0u8);
+    // Whether the latest window was faint or aperiodic on a calm wrist,
+    // and the last whole second's mean and peak: what a brighter phase
+    // goes by.
+    let (mut last_failed, mut last_mean, mut last_peak) = (false, 0u32, 0u32);
     conversions.restart();
     let mut ppg = Ppg::new();
     let mut consensus = Consensus::new();
@@ -579,11 +635,46 @@ async fn measure(
         ticker.next().await;
         let now = Instant::now();
         let elapsed = now - started;
+        // A phase that ran out without a reading on a calm wrist may go on
+        // brighter (see `heart_schedule::brighter`).
+        let brighter = budget
+            .filter(|_| !watching() && measured.is_none() && elapsed >= limit)
+            .filter(|_| last_failed && heart_schedule::calm_throughout(busy, checks))
+            .and_then(|budget| {
+                let spare = budget.saturating_sub(led.spent());
+                heart_schedule::brighter(drive, steps, last_peak, spare)
+            });
+        if let Some(next) = brighter {
+            // The part-second at the dimmer drive, for the replay.
+            trace!(
+                "heart: samples {=[?]} movement {}",
+                second.as_slice(),
+                activity::movement()
+            );
+            info!(
+                "heart: brighter after {} s: drive {}, from mean {}, pulse {}",
+                elapsed.as_secs(),
+                next,
+                last_mean,
+                last_peak.saturating_sub(last_mean)
+            );
+            drive = next;
+            steps += 1;
+            limit = elapsed + Duration::from_secs(u64::from(heart_schedule::BRIGHTER_FOR));
+            hrs.on(at(*level, drive)).await?;
+            led.switch(drive);
+            conversions.restart();
+            ppg.reset();
+            consensus.reject();
+            (peak, sum, count, last_failed) = (0, 0, 0, false);
+            second.clear();
+            continue;
+        }
         let ended = if watching() {
             None
         } else if let Some(bpm) = measured {
             Some(Ended::Measured(bpm))
-        } else if elapsed >= SESSION_LIMIT {
+        } else if elapsed >= limit {
             Some(Ended::TimedOut {
                 calm: heart_schedule::calm_throughout(busy, checks),
             })
@@ -638,7 +729,7 @@ async fn measure(
             let mean = sum / count;
             debug!(
                 "heart: level {}, mean {}, peak {}, ambient {}, period {} µs",
-                LEVELS[*level],
+                at(*level, drive),
                 mean,
                 peak,
                 ambient,
@@ -650,13 +741,19 @@ async fn measure(
                 activity::movement()
             );
             second.clear();
-            let before = *level;
+            let before = (*level, drive);
             if peak >= SATURATED {
-                if *level == 0 {
+                if drive != LEVELS[*level].drive {
+                    // Too bright after all: back to the session's level,
+                    // for good.
+                    drive = LEVELS[*level].drive;
+                    steps = heart_schedule::BRIGHTER_STEPS;
+                } else if *level == 0 {
                     return Ok(Ended::TooBright);
+                } else {
+                    *level -= 1;
                 }
-                *level -= 1;
-            } else if LEVELS[*level].drive == 0 && mean < NO_SKIN << LEVELS[*level].gain {
+            } else if drive == 0 && mean < NO_SKIN << LEVELS[*level].gain {
                 // Off the wrist: little light comes back at the lowest
                 // current; skin reflects several times more.
                 return Ok(Ended::NoContact);
@@ -665,13 +762,21 @@ async fn measure(
             } else if mean < NO_CONTACT {
                 return Ok(Ended::NoContact);
             }
+            if *level != before.0 {
+                // Any brighter drive was the old level's.
+                drive = LEVELS[*level].drive;
+            }
+            (last_mean, last_peak) = (mean, peak);
             (peak, sum, count) = (0, 0, 0);
-            if *level != before {
-                debug!("heart: switching to level {}", LEVELS[*level]);
-                hrs.on(LEVELS[*level]).await?;
-                led.switch(LEVELS[*level].drive);
+            if (*level, drive) != before {
+                debug!("heart: switching to level {}", at(*level, drive));
+                hrs.on(at(*level, drive)).await?;
+                led.switch(drive);
                 conversions.restart();
                 ppg.reset();
+                // Windows either side aren't in a row, to pair.
+                consensus.reject();
+                last_failed = false;
                 continue;
             }
         }
@@ -682,6 +787,12 @@ async fn measure(
         // A faint window (see `Rejection::Faint`) only counts on a calm
         // wrist, alongside the next; the movement vetoes below can't apply
         // to one, as calm is stricter than either.
+        let calm = movement.iter().all(|&m| m <= CALM);
+        last_failed = calm
+            && matches!(
+                verdict,
+                Err(Rejection::Faint(_) | Rejection::Aperiodic { .. })
+            );
         let (estimate, faint) = match verdict {
             Ok(estimate) => (estimate, false),
             Err(Rejection::Faint(estimate)) => (estimate, true),
@@ -692,14 +803,13 @@ async fn measure(
             }
         };
         let bpm = estimate.bpm_at(conversions.period_us());
-        let calm = movement.iter().all(|&m| m <= CALM);
         if faint {
             debug!(
                 "heart: window faint: {} BPM (quality {}, calm {})",
                 bpm, estimate.quality, calm
             );
             if let Some(bpm) = consensus.push_faint(bpm, calm, activity::asleep()) {
-                measured = Some(read(bpm, measured, started, *level, conversions));
+                measured = Some(read(bpm, measured, started, at(*level, drive), conversions));
             }
             continue;
         }
@@ -729,7 +839,7 @@ async fn measure(
         );
         accepted = true;
         if let Some(bpm) = consensus.push(bpm, calm) {
-            measured = Some(read(bpm, measured, started, *level, conversions));
+            measured = Some(read(bpm, measured, started, at(*level, drive), conversions));
         }
     }
 }
@@ -740,7 +850,7 @@ fn read(
     bpm: u8,
     measured: Option<u8>,
     started: Instant,
-    level: usize,
+    level: Level,
     conversions: &Conversions,
 ) -> u8 {
     if measured.is_none() {
@@ -748,7 +858,7 @@ fn read(
             "heart: {} BPM after {} s (level {}, conversion period {} µs)",
             bpm,
             started.elapsed().as_secs(),
-            LEVELS[level],
+            level,
             conversions.period_us()
         );
     } else {

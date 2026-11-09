@@ -668,6 +668,44 @@ mod tests {
     }
 
     #[test]
+    fn brighter_seconds_cost_more_budget() {
+        assert_eq!(budget_seconds(0, 30_000), 30);
+        assert_eq!(budget_seconds(0, 29_001), 30);
+        assert_eq!(budget_seconds(1, 10_000), 16);
+        assert_eq!(budget_seconds(2, 15_000), 36);
+        assert_eq!(budget_seconds(3, 15_000), 48);
+        assert_eq!(budget_seconds(0, 0), 0);
+    }
+
+    #[test]
+    fn brighter_goes_up_two_drives_as_far_as_headroom_allows() {
+        let plenty = LED_BUDGET;
+        // A wrist's usual level at 12.5 mA ×2: 30 mA, ×2.4.
+        assert_eq!(brighter(0, 0, 2500, plenty), Some(2));
+        assert_eq!(brighter(0, 0, 3413, plenty), Some(2));
+        // Too bright for 30 mA, not for 20.
+        assert_eq!(brighter(0, 0, 3500, plenty), Some(1));
+        assert_eq!(brighter(0, 0, 5200, plenty), None);
+        // From 30 mA, only 40 is left.
+        assert_eq!(brighter(2, 1, 2500, plenty), Some(3));
+        assert_eq!(brighter(2, 1, 6200, plenty), None);
+        assert_eq!(brighter(1, 1, 2000, plenty), Some(3));
+        assert_eq!(brighter(3, 1, 100, plenty), None);
+        // At most twice a session.
+        assert_eq!(brighter(1, BRIGHTER_STEPS, 1000, plenty), None);
+    }
+
+    #[test]
+    fn brighter_leaves_the_next_session_its_reserve() {
+        // 15 s at 30 mA is 36 s of budget, at 20 mA 24.
+        let needed = |drive| budget_seconds(drive, BRIGHTER_FOR * 1000) + SESSION_RESERVE;
+        assert_eq!(brighter(0, 0, 2000, needed(2)), Some(2));
+        assert_eq!(brighter(0, 0, 2000, needed(2) - 1), Some(1));
+        assert_eq!(brighter(0, 0, 2000, needed(1) - 1), None);
+        assert_eq!(brighter(0, 0, 2000, 0), None);
+    }
+
+    #[test]
     fn a_reading_ends_the_failure_back_off() {
         let mut schedule = Schedule::new();
         for t in [0, 300, 900] {

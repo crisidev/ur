@@ -204,6 +204,10 @@ const SEED_AGREEMENT: u8 = 6;
 /// actually used: room for a busy hour of elevated readings, but a bad
 /// day (a fidgety wrist failing session after session) can't drain more
 /// than ~0.14 mA on average.
+///
+/// Seconds at the lowest drive, 12.5 mA, which is all sessions use but
+/// for the occasional [`brighter`] phase: a second at 30 mA costs 2.4 (see
+/// [`budget_seconds`]).
 pub const LED_BUDGET: u32 = 180;
 
 /// Budget a background session needs before it may start: its longest
@@ -408,7 +412,8 @@ impl Schedule {
     }
 
     /// Records a session that ended at `now`, having had the LED on for
-    /// `led_seconds`. `background` says whether the schedule started it
+    /// `led_seconds`, at 12.5 mA or its equivalent (see
+    /// [`budget_seconds`]). `background` says whether the schedule started it
     /// (rather than someone looking at the clock face); `before`, what the
     /// wrist had been doing when it started.
     pub fn ended(
@@ -614,6 +619,80 @@ pub fn interrupt(seconds: u32, accepted: bool, restless: bool, asleep: bool) -> 
 /// which the usual back-off is for.
 pub fn calm_throughout(busy: u8, checks: u8) -> bool {
     u16::from(busy) * 4 <= u16::from(checks)
+}
+
+// ==============================================================================
+// A brighter LED for a faint pulse (an experiment)
+// ==============================================================================
+
+/// The LED's current at each drive setting (`heart`'s PDRIVE 0..=3), in
+/// tenths of a milliamp, from the HRS3300 datasheet: 12.5, 20, 30, 40 mA.
+/// The light that comes back, and so the counts, scale with it (as far as
+/// the datasheet goes; tomorrow's log will tell).
+pub const DRIVE_CURRENT: [u32; 4] = [125, 200, 300, 400];
+
+/// Brighter phases a background session may add (see [`brighter`]).
+pub const BRIGHTER_STEPS: u8 = 2;
+
+/// How long a brighter phase runs, at most: half a second warming up and
+/// settling, the first 8 s window, and three more after it, 2 s apart, so
+/// a calm pair or three accepted windows can form.
+pub const BRIGHTER_FOR: u32 = 15;
+
+/// The highest a brighter phase's peak may be expected to reach, in counts:
+/// half the 14-bit ADC's range. The prediction scales the last second's
+/// peak with the current, and the LED's light may not be quite linear in
+/// it, while the level check steps back down at 90% of full scale; half
+/// leaves the pulse and a shift of the sensor room before that.
+pub const BRIGHTER_PEAK_LIMIT: u32 = 1 << 13;
+
+/// What `millis` of LED at `drive` cost the [`LED_BUDGET`], which counts
+/// seconds at the lowest drive (12.5 mA), rounded up.
+pub fn budget_seconds(drive: u8, millis: u32) -> u32 {
+    let weighted = u64::from(millis) * u64::from(DRIVE_CURRENT[usize::from(drive & 3)]);
+    weighted.div_ceil(1000 * u64::from(DRIVE_CURRENT[0])) as u32
+}
+
+/// The brighter drive a background session should go on at, if any, now
+/// that a phase (the session's usual 30 s at its starting drive, or a
+/// brighter phase's [`BRIGHTER_FOR`]) has run out without a reading on a
+/// calm wrist, its last window faint or aperiodic: it has `peak` counts
+/// at `drive`, has taken `steps` so far, and `spare` seconds of the
+/// [`LED_BUDGET`] would be left after this session's so far.
+///
+/// An experiment: does more light lift a faint pulse out of the noise?
+/// A still wrist at a desk, or lying awake, had a pulse of 2.9-5 counts
+/// on a light level of 1,600-4,000 at 12.5 mA (2026-11-09), and the level
+/// control never moves off its lowest drive there, as that only steps up
+/// for a level under ~1,000. If the noise is the sensor's own (shot noise,
+/// or the ADC's), 30 mA would raise the pulse 2.4× against noise that
+/// grows only ~1.5×; if it's the light itself flickering (the interference
+/// one analysis found to scale with the level), it gains nothing. Field
+/// logs say which.
+///
+/// Only once the session has had its usual chance at the dim drive, so a
+/// session that reads at the dim drive reads exactly as before (and so the
+/// replay of recorded sessions, which can't show a brighter LED, still
+/// holds): stepping at the first faint window instead would have cut short
+/// 9 of the 91 background sessions that read at night (2026-11-08), which
+/// read from later windows; at 14 s, 3.
+///
+/// Up two drive settings at a time (30 mA from 12.5), or one if that would
+/// take the peak past [`BRIGHTER_PEAK_LIMIT`], and only while `spare`
+/// covers the phase and still leaves [`SESSION_RESERVE`] for the next
+/// session: a brighter phase is the budget's to spend only when it's not
+/// needed for ordinary sessions.
+pub fn brighter(drive: u8, steps: u8, peak: u32, spare: u32) -> Option<u8> {
+    if steps >= BRIGHTER_STEPS {
+        return None;
+    }
+    let now = DRIVE_CURRENT[usize::from(drive & 3)];
+    (drive + 1..=(drive + 2).min(3)).rev().find(|&next| {
+        let current = DRIVE_CURRENT[usize::from(next)];
+        let predicted = u64::from(peak) * u64::from(current) / u64::from(now);
+        predicted <= u64::from(BRIGHTER_PEAK_LIMIT)
+            && spare >= budget_seconds(next, BRIGHTER_FOR * 1000) + SESSION_RESERVE
+    })
 }
 
 /// Moves a resting estimate towards a resting reading: the running median
