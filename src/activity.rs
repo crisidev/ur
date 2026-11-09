@@ -48,7 +48,7 @@ use embassy_time::{Duration, Timer, with_timeout};
 use embedded_hal_async::i2c::I2c;
 
 use crate::i2c::Device;
-use crate::{clock, sleep, stages};
+use crate::{clock, minute_ring, sleep, stages};
 
 // ==============================================================================
 // The BMA421
@@ -571,16 +571,20 @@ impl History {
     }
 
     /// The sample for `minute`, clearing any skipped minutes (and stale
-    /// samples from a day ago) on the way.
+    /// samples from a day ago) on the way; or, if the clock went back,
+    /// the minutes after it (see [`crate::minute_ring`]).
     fn at(&mut self, minute: i64) -> &mut Sample {
-        let newest = self.newest.unwrap_or(minute - 1);
-        if minute > newest {
-            let first_new = (newest + 1).max(minute - HISTORY_MINUTES as i64 + 1);
-            for m in first_new..=minute {
-                self.samples[Self::slot(m)] = Sample::default();
-            }
-            self.newest = Some(minute);
+        let (stale, newest) = minute_ring::file(self.newest, minute, HISTORY_MINUTES as i64);
+        if self.newest.is_some_and(|newest| minute < newest) {
+            info!(
+                "activity: clock went back; dropped {} minutes",
+                stale.end - stale.start
+            );
         }
+        for m in stale {
+            self.samples[Self::slot(m)] = Sample::default();
+        }
+        self.newest = Some(newest);
         &mut self.samples[Self::slot(minute)]
     }
 

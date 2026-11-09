@@ -21,8 +21,9 @@ needs nothing special; LFS stores it.
   (`ppg`, `sleep`, `stages`, `alarm`, `aranet`, `glance`, `heart_schedule`,
   `brightness`, `temperature`, `battery`, `snapshot`, `nav`, `day`,
   `route`, `arrival`, `decimal`, `gesture`, `wake`, `gb`, `phone`,
-  `link`, `buttons`, `qr`, `mcuboot`, `on_time` (`power`'s hourly split), and
-  `bthome`'s encoding) are pure logic, tested on the computer, as are
+  `link`, `buttons`, `qr`, `mcuboot`, `on_time` (`power`'s hourly split),
+  `minute_ring` (`activity`'s history as the clock moves), and `bthome`'s
+  encoding) are pure logic, tested on the computer, as are
   `theme`'s colours (that those with different meanings differ in every
   theme).
 - `host-tests/<module>/`: one crate per hardware-free module (`sleep`'s

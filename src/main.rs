@@ -21,7 +21,8 @@
 //! - [`system_off`] / [`snapshot`]: switching off when the battery is
 //!   critically low, or for storage, saving what the phone hasn't fetched.
 //! - [`activity`] / [`sleep`]: steps, movement, and sleep, from the
-//!   accelerometer; [`day`]: the day's activity by the hour, for the UI.
+//!   accelerometer; [`minute_ring`]: which minutes their history keeps as
+//!   the clock moves; [`day`]: the day's activity by the hour, for the UI.
 //! - [`heart`] / [`ppg`] / [`heart_schedule`]: heart rate from the optical
 //!   sensor, the signal processing behind it, and when to measure.
 //! - [`i2c`]: the shared sensor bus.
@@ -83,6 +84,7 @@ mod i2c;
 mod link;
 mod live;
 mod mcuboot;
+mod minute_ring;
 mod motor;
 mod nav;
 mod nvmc;
