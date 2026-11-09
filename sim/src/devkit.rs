@@ -510,13 +510,22 @@ struct Sent {
     event: PhoneEvent,
     /// For a test notification (see `debug::take_backdate_minutes`).
     backdate_minutes: i64,
-    /// When it was sent, to notice one the dev kit never got.
+    /// When it was sent, for how long it took.
     at: StdInstant,
+    /// When the dev kit should have had it by: past this, it never will.
+    due: StdInstant,
 }
 
 /// How long the dev kit may take to log what the phone sent, or to send
 /// the phone what its UI asked: past this, it never will.
 const PHONE_GRACE: StdDuration = StdDuration::from_secs(3);
+
+/// How fast a Gadgetbridge line reaches the dev kit's UI at worst, in
+/// bytes a second, on top of [`PHONE_GRACE`]. Once the link has idled, the
+/// watch's radio listens about once a second (see `slow_down` in
+/// `src/ble.rs`) and takes one link-layer packet (27 bytes) each time:
+/// about 28 B/s measured, so a 335-byte notification took 12 s.
+const PHONE_IN_RATE: f64 = 20.0;
 
 pub struct Follower<'a> {
     devkit: &'a DevKit,
@@ -675,6 +684,7 @@ impl<'a> Follower<'a> {
                         who: who.into(),
                     },
                     backdate_minutes: i64::from(hours) * 60,
+                    due: StdInstant::now() + PHONE_GRACE,
                     at: StdInstant::now(),
                 });
                 self.inject(9, n, hours, 0)?;
@@ -836,10 +846,14 @@ impl<'a> Follower<'a> {
             }
         });
         let at = StdInstant::now();
+        // (Bytes are at most a few KB: exactly an `f64`.)
+        #[allow(clippy::cast_precision_loss)]
+        let due = at + PHONE_GRACE + StdDuration::from_secs_f64(bytes.len() as f64 / PHONE_IN_RATE);
         self.sent.extend(expected.into_iter().map(|event| Sent {
             event,
             backdate_minutes: 0,
             at,
+            due,
         }));
         let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
         // Following the dev kit meanwhile: a long line takes seconds over
@@ -905,11 +919,11 @@ impl<'a> Follower<'a> {
         let late: Vec<_> = self
             .sent
             .iter()
-            .filter(|sent| sent.at.elapsed() > PHONE_GRACE)
+            .filter(|sent| sent.due < StdInstant::now())
             .map(|sent| describe(&InputEvent::Phone(sent.event.clone())))
             .collect();
         if !late.is_empty() {
-            self.sent.retain(|sent| sent.at.elapsed() <= PHONE_GRACE);
+            self.sent.retain(|sent| sent.due >= StdInstant::now());
             findings.push(Finding {
                 name: format!("{name}-phone-in"),
                 what: format!("the dev kit's UI never got {}", late.join(", ")),
