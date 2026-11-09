@@ -31,7 +31,10 @@
 //!    slow rate must also come from a steady light level: a shifting
 //!    sensor's filtered steps look like a slow pulse (see
 //!    [`MAX_SLOW_DRIFT`]). Finally, [`Consensus`] only reports once several
-//!    windows, spread over more than one window's worth of time, agree.
+//!    windows, spread over more than one window's worth of time, agree;
+//!    on a calm wrist, two in a row that agree closely are enough, even
+//!    if neither is quite periodic enough on its own
+//!    ([`Rejection::Faint`]).
 //!
 //! Nothing here touches hardware: it takes raw counts and timestamps, and
 //! makes no assumptions about the counts' scale, so it can be exercised on
@@ -161,6 +164,36 @@ const MIN_CORRELATION: f32 = 0.55;
 /// 72% above 0.6. That's few windows to go by: this errs on the side of
 /// caution.
 const MIN_MASKED_CORRELATION: f32 = 0.6;
+
+/// The normalised autocorrelation a window needs to be [`Rejection::Faint`]
+/// rather than [`Rejection::Aperiodic`]: short of the bars above, but
+/// enough to count towards a reading on a calm wrist, if the next window
+/// agrees (see [`Consensus::push_faint`]).
+///
+/// A still wrist that isn't asleep (lying down awake, cold hands) can
+/// have a pulse of only a few counts, beside the slower swings of
+/// breathing and blood flow, and its windows land at the right rate with
+/// quality 0.3-0.5, again and again. In a field log (2026-11-09, lying
+/// still for an hour, a Garmin reading 62-67), three 30 s sessions gave no
+/// reading, though one had eight of its eleven windows at 57-64 BPM, of
+/// quality 0.18-0.48.
+///
+/// Replaying every recorded session (252, from a night, two days, an
+/// evening and an afternoon, against a Garmin), calm pairs made 118
+/// readings where three accepted windows made 106, in 12 s rather than
+/// 13 on average (a
+/// night's LED time fell 15%). One of the changed readings went wrong (65
+/// BPM against 50, from two good windows during a rise the Garmin didn't
+/// see), and one went right, so 5 are more than 8 BPM off either way.
+/// Floors of 0.35 and 0.4 made the same 118 readings; 0.5 made 116, one
+/// more of them wrong, and lost the hour above.
+///
+/// Bandpass-filtered noise reaches 0.3-0.5 too, and as consecutive windows
+/// share 6 s of signal, its peak can hold still for both: in synthetic
+/// white noise on a calm wrist, 2-4 of 200 runs of 300 s made a reading,
+/// about one per 500-1000 sessions without a pulse to be seen (see
+/// host-tests/ppg). A three-window agreement makes none.
+const MIN_FAINT_CORRELATION: f32 = 0.45;
 
 /// The first autocorrelation peak within this fraction of the highest one
 /// is the period. A clean signal correlates almost as well at two or three
@@ -307,14 +340,20 @@ pub enum Rejection {
     /// amplitude over the quietest's (see [`MAX_PART_AMPLITUDE`] and
     /// [`MAX_AMPLITUDE_RATIO`]).
     Unsteady { ratio: f32 },
-    /// Not periodic enough within 40–200 BPM: noise, or a weak pulse.
-    /// `quality` is the best correlation found (the limit is
-    /// [`MIN_CORRELATION`], or [`MIN_MASKED_CORRELATION`] if motion was
-    /// masked out), and `bpm` its rate (NaN if there was no peak at all).
+    /// Not periodic within 40–200 BPM: noise, or a pulse too weak to tell
+    /// from it. `quality` is the best correlation found (under
+    /// [`MIN_FAINT_CORRELATION`], or its rate out of range), and `bpm` its
+    /// rate (NaN if there was no peak at all).
     Aperiodic { quality: f32, bpm: f32 },
     /// Slow, while the light level shifted: most likely the sensor moving
     /// on the skin (see [`MAX_SLOW_DRIFT`]).
     Drifting { drift: f32, bpm: f32 },
+    /// Periodic within 40–200 BPM, but not enough to stand on its own (at
+    /// least [`MIN_FAINT_CORRELATION`], short of [`MIN_CORRELATION`] or
+    /// [`MIN_MASKED_CORRELATION`]): a weak pulse, or noise. It may still
+    /// count towards a reading on a calm wrist (see
+    /// [`Consensus::push_faint`]).
+    Faint(Estimate),
 }
 
 /// Filters raw samples and estimates the heart rate from them every
@@ -545,12 +584,7 @@ impl Ppg {
             drift: self.drift(),
         };
         let bpm = estimate.bpm();
-        let min_quality = if masked {
-            MIN_MASKED_CORRELATION
-        } else {
-            MIN_CORRELATION
-        };
-        if quality < min_quality || !(MIN_BPM..=MAX_BPM).contains(&bpm) {
+        if quality < MIN_FAINT_CORRELATION || !(MIN_BPM..=MAX_BPM).contains(&bpm) {
             return Err(Rejection::Aperiodic { quality, bpm });
         }
         if bpm < SLOW_BPM && estimate.drift > MAX_SLOW_DRIFT {
@@ -558,6 +592,14 @@ impl Ppg {
                 drift: estimate.drift,
                 bpm,
             });
+        }
+        let min_quality = if masked {
+            MIN_MASKED_CORRELATION
+        } else {
+            MIN_CORRELATION
+        };
+        if quality < min_quality {
+            return Err(Rejection::Faint(estimate));
         }
         Ok(estimate)
     }
@@ -757,12 +799,46 @@ const AGREEING: usize = 3;
 /// far more.
 const AGREEMENT_BPM: f32 = 6.0;
 
+/// How far apart (BPM) two windows in a row on a calm wrist may be to make
+/// a reading between them (see [`Consensus::push_faint`]). Tighter than
+/// [`AGREEMENT_BPM`], as it stands in for a third window. In field-log
+/// replays, 2 BPM lost two readings that agreed with the Garmin, and 4 or
+/// 6 gained none.
+const CALM_AGREEMENT_BPM: f32 = 3.0;
+
+/// The fastest rate a calm pair (see [`Consensus`]) may read. A calm wrist's
+/// pulse is a resting one, and the faster the rate, the fewer samples a
+/// beat spans, so the coarser each window's estimate: at 170 BPM, two
+/// agreeing windows came out up to 5.7 BPM off in synthetic tests (and
+/// 9.9 with motion masked out), where three were within 3.1 (4.8). Faster
+/// pulses still read the usual way, from three windows.
+const MAX_CALM_BPM: f32 = 120.0;
+
 /// Collects window estimates and decides when they agree on a heart rate.
-#[derive(Default)]
+///
+/// Two ways to agree:
+///
+/// - [`AGREEING`] accepted windows within [`AGREEMENT_BPM`], wherever
+///   they fall in the session (see [`Consensus::push`]), or
+/// - on a calm wrist, two windows in a row within
+///   [`CALM_AGREEMENT_BPM`], either of them merely [`Rejection::Faint`]
+///   (see [`Consensus::push_faint`]). Calm, because stillness is what
+///   lets a weak pulse be seen at all, and what a moving wrist's
+///   periodic-looking swings lack. That's also ~2 s sooner, and so 2 s
+///   less LED, than waiting for a third window.
 pub struct Consensus {
     /// The latest accepted estimates, oldest first.
     recent: [f32; AGREEING],
     len: usize,
+    /// The previous window's rate, if it was accepted or faint, on a calm
+    /// wrist; NaN if not (or if it was rejected).
+    calm: f32,
+}
+
+impl Default for Consensus {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Consensus {
@@ -770,16 +846,19 @@ impl Consensus {
         Self {
             recent: [0.0; AGREEING],
             len: 0,
+            calm: f32::NAN,
         }
     }
 
-    /// Adds an accepted estimate. Returns the heart rate (the median of the
+    /// Adds an accepted estimate, `calm` saying whether the wrist was calm
+    /// throughout its window. Returns the heart rate (the median of the
     /// latest estimates) if they agree.
     ///
-    /// Rejected windows aren't passed here and don't reset the consensus:
-    /// a moment of motion between two good stretches doesn't make either
-    /// stretch less trustworthy.
-    pub fn push(&mut self, bpm: f32) -> Option<u8> {
+    /// Rejected windows don't reset the [`AGREEING`] estimates: a moment of
+    /// motion between two good stretches doesn't make either stretch less
+    /// trustworthy. (They do break a calm pair: see [`Consensus::reject`].)
+    pub fn push(&mut self, bpm: f32, calm: bool) -> Option<u8> {
+        let paired = self.pair(bpm, calm);
         if self.len == AGREEING {
             self.recent.copy_within(1.., 0);
             self.len -= 1;
@@ -787,15 +866,44 @@ impl Consensus {
         self.recent[self.len] = bpm;
         self.len += 1;
         if self.len < AGREEING {
-            return None;
+            return paired;
         }
 
         let mut sorted = self.recent;
         sorted.sort_unstable_by(f32::total_cmp);
         if sorted[AGREEING - 1] - sorted[0] > AGREEMENT_BPM {
-            return None;
+            return paired;
         }
         Some(libm::roundf(sorted[AGREEING / 2]) as u8)
+    }
+
+    /// Adds a [`Rejection::Faint`] window's rate: it only counts on a calm
+    /// wrist, agreeing with the window just before, and if it's slower
+    /// than [`SLOW_BPM`], only `asleep`.
+    ///
+    /// Awake, a pulse that slow is rare, while bandpass-filtered noise
+    /// lands there often: of 12 pairs that agreed in 200 runs of 300 s of
+    /// two kinds of synthetic noise, 6 were at 45-49 BPM. It cost no
+    /// reading in field-log replays.
+    pub fn push_faint(&mut self, bpm: f32, calm: bool, asleep: bool) -> Option<u8> {
+        self.pair(bpm, calm && (asleep || bpm >= SLOW_BPM))
+    }
+
+    /// Notes a rejected window (or one vetoed for movement), which a calm
+    /// pair can't span.
+    pub fn reject(&mut self) {
+        self.calm = f32::NAN;
+    }
+
+    /// The calm pair: this window and the one before, if both were calm
+    /// (and not too fast, see [`MAX_CALM_BPM`]) and agree, make a reading
+    /// (their mean).
+    fn pair(&mut self, bpm: f32, calm: bool) -> Option<u8> {
+        let calm = calm && bpm <= MAX_CALM_BPM;
+        let previous = core::mem::replace(&mut self.calm, if calm { bpm } else { f32::NAN });
+        // NaN (no calm window before) never agrees.
+        (calm && (bpm - previous).abs() <= CALM_AGREEMENT_BPM)
+            .then(|| libm::roundf((bpm + previous) / 2.0) as u8)
     }
 }
 

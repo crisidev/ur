@@ -8,7 +8,7 @@
 //!   (every 2–20 minutes, depending on movement and recent readings), once
 //!   the wrist has been still for a few seconds after that (see [`CALM`]),
 //!   for up to [`SESSION_LIMIT`] or until it has a reading (typically
-//!   ~13 s), giving up sooner if the wrist won't keep still
+//!   ~11 s), giving up sooner if the wrist won't keep still
 //!   ([`heart_schedule::give_up`]), and
 //! - while the clock face is showing (see
 //!   [`crate::heart_reading::set_watching`]), continuously,
@@ -38,17 +38,17 @@ use crate::heart_reading::{WAKE, publish, watching};
 pub use crate::heart_reading::{wake, worn};
 use crate::heart_schedule::{self, Before, Outcome, Schedule};
 use crate::i2c::Device;
-use crate::ppg::{Consensus, Conversions, Ppg};
+use crate::ppg::{Consensus, Conversions, Ppg, Rejection};
 
 // ==============================================================================
 // Scheduling
 // ==============================================================================
 
 /// How long a background session may try before giving up. A clean
-/// signal gives a reading after ~12.5 s (half a second warming up and
-/// settling, 8 s window, then two more estimates 2 s apart that must
-/// agree); this leaves room for a few rejected windows, or the gain
-/// adjusting.
+/// signal on a calm wrist gives a reading after ~10.5 s (half a second
+/// warming up and settling, an 8 s window, then another 2 s later that
+/// agrees with it; see `ppg::Consensus`); this leaves room for a few
+/// rejected windows, or the gain adjusting.
 const SESSION_LIMIT: Duration = Duration::from_secs(30);
 
 /// Wrist movement (see [`activity::movement`]) above which the PPG can't be
@@ -623,14 +623,30 @@ async fn measure(
         let Some(verdict) = verdict else {
             continue;
         };
-        let estimate = match verdict {
-            Ok(estimate) => estimate,
+        // A faint window (see `Rejection::Faint`) only counts on a calm
+        // wrist, alongside the next; the movement vetoes below can't apply
+        // to one, as calm is stricter than either.
+        let (estimate, faint) = match verdict {
+            Ok(estimate) => (estimate, false),
+            Err(Rejection::Faint(estimate)) => (estimate, true),
             Err(why) => {
                 debug!("heart: window rejected: {}", why);
+                consensus.reject();
                 continue;
             }
         };
         let bpm = estimate.bpm_at(conversions.period_us());
+        let calm = movement.iter().all(|&m| m <= CALM);
+        if faint {
+            debug!(
+                "heart: window faint: {} BPM (quality {}, calm {})",
+                bpm, estimate.quality, calm
+            );
+            if let Some(bpm) = consensus.push_faint(bpm, calm, activity::asleep()) {
+                measured = Some(read(bpm, measured, started, *level, conversions));
+            }
+            continue;
+        }
         // Only sustained movement vetoes a window: most of its readings
         // high, not one poll's spike (which used to veto the next 11 s).
         let moving = movement.iter().filter(|&&m| m > MOTION_LIMIT).count();
@@ -641,12 +657,14 @@ async fn measure(
                 moving,
                 movement.len()
             );
+            consensus.reject();
             continue;
         }
         // Nor a slow one while the wrist was merely busy, awake: that's
         // more likely the sensor shifting than a resting pulse.
         if crate::ppg::slow_while_busy(bpm, movement.as_slice(), CALM, activity::asleep()) {
             debug!("heart: window rejected: slow while busy ({} BPM)", bpm);
+            consensus.reject();
             continue;
         }
         debug!(
@@ -654,20 +672,32 @@ async fn measure(
             bpm, estimate.quality, estimate.drift
         );
         accepted = true;
-        if let Some(bpm) = consensus.push(bpm) {
-            if measured.is_none() {
-                info!(
-                    "heart: {} BPM after {} s (level {}, conversion period {} µs)",
-                    bpm,
-                    started.elapsed().as_secs(),
-                    LEVELS[*level],
-                    conversions.period_us()
-                );
-            } else {
-                debug!("heart: {} BPM", bpm);
-            }
-            publish(bpm);
-            measured = Some(bpm);
+        if let Some(bpm) = consensus.push(bpm, calm) {
+            measured = Some(read(bpm, measured, started, *level, conversions));
         }
     }
+}
+
+/// Publishes a reading, logging the session's first; returns it, as the
+/// session's latest.
+fn read(
+    bpm: u8,
+    measured: Option<u8>,
+    started: Instant,
+    level: usize,
+    conversions: &Conversions,
+) -> u8 {
+    if measured.is_none() {
+        info!(
+            "heart: {} BPM after {} s (level {}, conversion period {} µs)",
+            bpm,
+            started.elapsed().as_secs(),
+            LEVELS[level],
+            conversions.period_us()
+        );
+    } else {
+        debug!("heart: {} BPM", bpm);
+    }
+    publish(bpm);
+    bpm
 }

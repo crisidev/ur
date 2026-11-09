@@ -1,7 +1,9 @@
 //! Host tests for the firmware's `ppg` module, against synthetic PPG.
 //!
 //! `cargo run --release` prints a report across scenarios; `cargo test
-//! --release` asserts on them.
+//! --release` asserts on them. `cargo run --release -- SESSIONS
+//! [--strict]` replays sessions from a field log (see
+//! `scripts/ppg_sessions.py`), `--strict` as before calm pairs.
 
 #[path = "../../../src/ppg.rs"]
 #[allow(dead_code)]
@@ -250,8 +252,11 @@ struct Outcome {
 
 /// Feeds polls through conversion tracking, the estimator, and consensus,
 /// as the firmware does. `gate` may veto windows by time (the firmware
-/// vetoes those during movement).
-fn run(polls: &[Poll], gate: impl Fn(f64) -> bool) -> Outcome {
+/// vetoes those during movement). With `pairs`, a window the gate lets
+/// through counts as calm, for `Consensus`'s calm pairs (the firmware
+/// judges that from the accelerometer, which synthetic signals don't
+/// have); without, none does, as before calm pairs.
+fn run(polls: &[Poll], gate: impl Fn(f64) -> bool, pairs: bool) -> Outcome {
     let mut conversions = Conversions::new();
     let mut ppg = Ppg::new();
     let mut consensus = Consensus::new();
@@ -265,12 +270,21 @@ fn run(polls: &[Poll], gate: impl Fn(f64) -> bool) -> Outcome {
             }
         });
         for verdict in verdicts {
-            let verdict = verdict.map(|e| e.bpm_at(conversions.period_us()));
-            outcome.windows.push((t, verdict));
-            if let Ok(bpm) = verdict
-                && gate(t)
-                && let Some(bpm) = consensus.push(bpm)
-            {
+            let period = conversions.period_us();
+            outcome.windows.push((t, verdict.map(|e| e.bpm_at(period))));
+            let reading = match verdict {
+                _ if !gate(t) => {
+                    consensus.reject();
+                    None
+                }
+                Ok(e) => consensus.push(e.bpm_at(period), pairs),
+                Err(Rejection::Faint(e)) => consensus.push_faint(e.bpm_at(period), pairs, false),
+                Err(_) => {
+                    consensus.reject();
+                    None
+                }
+            };
+            if let Some(bpm) = reading {
                 outcome.readings.push((t, bpm));
             }
         }
@@ -299,7 +313,12 @@ struct Summary {
     wrong_windows: usize,
 }
 
-fn summarise(scenario: &Scenario, seeds: u64, gate: impl Fn(f64) -> bool + Copy) -> Summary {
+fn summarise(
+    scenario: &Scenario,
+    seeds: u64,
+    gate: impl Fn(f64) -> bool + Copy,
+    pairs: bool,
+) -> Summary {
     let mut s = Summary {
         runs: 0,
         with_reading: 0,
@@ -316,7 +335,7 @@ fn summarise(scenario: &Scenario, seeds: u64, gate: impl Fn(f64) -> bool + Copy)
             ..scenario.clone()
         };
         let (polls, beats) = generate_with_beats(&scenario);
-        let outcome = run(&polls, gate);
+        let outcome = run(&polls, gate, pairs);
         // Any reading at all is infinitely wrong without a pulse.
         let error = |bpm: f32, from: f64, to: f64| match scenario.bpm {
             Some(_) => (f64::from(bpm) - realised_bpm(&beats, from, to)).abs(),
@@ -557,8 +576,9 @@ enum Verdict {
 }
 
 /// Every window of a recorded session, with the sample it ended at, as the
-/// firmware would have judged it.
-fn windows(session: &Recorded) -> Vec<(usize, Verdict)> {
+/// firmware would have judged it, and whether the wrist was calm (at most
+/// `CALM`) through it.
+fn windows(session: &Recorded) -> Vec<(usize, Verdict, bool)> {
     let mut ppg = Ppg::new();
     let mut verdicts = Vec::new();
     for (i, &sample) in session.samples.iter().enumerate() {
@@ -568,6 +588,8 @@ fn windows(session: &Recorded) -> Vec<(usize, Verdict)> {
         let checks = ((i + 1) / LEVEL_CHECK_SAMPLES).min(session.movement.len());
         let recent = &session.movement[checks.saturating_sub(8)..checks];
         let moving = recent.iter().filter(|&&m| m > MOTION_LIMIT).count();
+        // Older extracts have no movement: not calm, to be safe.
+        let calm = !recent.is_empty() && recent.iter().all(|&m| m <= CALM);
         verdicts.push((
             i,
             match verdict {
@@ -584,6 +606,7 @@ fn windows(session: &Recorded) -> Vec<(usize, Verdict)> {
                 }
                 verdict => Verdict::Window(verdict),
             },
+            calm,
         ));
     }
     verdicts
@@ -591,7 +614,7 @@ fn windows(session: &Recorded) -> Vec<(usize, Verdict)> {
 
 /// When a background session would give up on a busy wrist (see
 /// [`heart_schedule::give_up`]), in seconds, if it would.
-fn gives_up_at(session: &Recorded, windows: &[(usize, Verdict)]) -> Option<u32> {
+fn gives_up_at(session: &Recorded, windows: &[(usize, Verdict, bool)]) -> Option<u32> {
     let (mut checks, mut busy) = (0u8, 0u8);
     for (k, &moved) in session.movement.iter().enumerate() {
         checks += 1;
@@ -600,7 +623,7 @@ fn gives_up_at(session: &Recorded, windows: &[(usize, Verdict)]) -> Option<u32> 
         let at = (k as u32 + 1) * LEVEL_CHECK_SAMPLES as u32;
         let accepted = windows
             .iter()
-            .any(|(i, verdict)| *i < at as usize && matches!(verdict, Verdict::Window(Ok(_))));
+            .any(|(i, verdict, _)| *i < at as usize && matches!(verdict, Verdict::Window(Ok(_))));
         let seconds = (at as f32 * session.period / 1e6) as u32;
         if heart_schedule::give_up(seconds, accepted, busy, checks) {
             return Some(seconds);
@@ -609,37 +632,80 @@ fn gives_up_at(session: &Recorded, windows: &[(usize, Verdict)]) -> Option<u32> 
     None
 }
 
+/// The reading the firmware would make from a recorded session's windows
+/// before `end` (seconds): the BPM, and when. `strict`: as before calm
+/// pairs (see `replay`).
+fn reading(
+    session: &Recorded,
+    windows: &[(usize, Verdict, bool)],
+    end: f32,
+    strict: bool,
+) -> Option<(u8, f32)> {
+    let mut consensus = Consensus::new();
+    for (i, verdict, calm) in windows {
+        let at = *i as f32 * session.period / 1e6;
+        if at >= end {
+            return None;
+        }
+        let pushed = match verdict {
+            Verdict::Window(Ok(estimate)) => {
+                consensus.push(estimate.bpm_at(session.period), *calm && !strict)
+            }
+            Verdict::Window(Err(Rejection::Faint(estimate))) if !strict => {
+                consensus.push_faint(estimate.bpm_at(session.period), *calm, session.asleep)
+            }
+            _ => {
+                consensus.reject();
+                None
+            }
+        };
+        if let Some(bpm) = pushed {
+            return Some((bpm, at));
+        }
+    }
+    None
+}
+
 /// Replays sessions extracted from a field log through `Ppg` and
 /// `Consensus`, vetoing windows on movement as the firmware does, and
-/// prints each window's verdict next to the reference, and when the
-/// session would now give up on a busy wrist.
-fn replay(path: &str) {
+/// prints each window's verdict next to the reference, the reading the
+/// firmware would now make, and when the session would give up on a busy
+/// wrist. `strict` replays the rule before calm pairs (see
+/// `ppg::Consensus`): only three accepted windows make a reading.
+///
+/// A session ends at its reading, or where it gives up: the totals count
+/// only readings before then, and the LED time to then. (Recordings end
+/// where the firmware that made them stopped, so sessions are a lower
+/// bound on what a longer one would have read.)
+fn replay(path: &str, strict: bool) {
     let text = std::fs::read_to_string(path).expect("readable sessions file");
-    let (mut sessions, mut read, mut right) = (0, 0, 0);
-    let (mut gave_up, mut saved, mut lost) = (0, 0.0, 0);
+    let (mut sessions, mut read, mut referenced) = (0, 0, 0);
+    let (mut error, mut wrong, mut read_at, mut led) = (0.0, 0, 0.0, 0.0);
+    let (mut gave_up, mut lost) = (0, 0);
     for session in parse_sessions(&text) {
-        let mut consensus = Consensus::new();
-        let mut reading = None;
+        let seconds = |i: usize| i as f32 * session.period / 1e6;
+        let length = seconds(session.samples.len());
         let mut verdicts = Vec::new();
         let windows = windows(&session);
         let give_up = gives_up_at(&session, &windows);
-        for (i, verdict) in windows {
+        let end = give_up.map_or(length, |at| (at as f32).min(length));
+        let reading = reading(&session, &windows, end, strict);
+        for (_, verdict, calm) in windows {
             verdicts.push(match verdict {
                 Verdict::Moving => "moving".into(),
                 Verdict::SlowWhileBusy => "slow-busy".into(),
-                Verdict::Window(Ok(estimate)) => {
-                    let bpm = estimate.bpm_at(session.period);
-                    if let Some(agreed) = consensus.push(bpm)
-                        && reading.is_none()
-                    {
-                        reading = Some((agreed, i as f32 * session.period / 1e6));
-                    }
-                    format!(
-                        "{bpm:.0}({:.2},{:.0}%)",
-                        estimate.quality,
-                        estimate.drift * 100.0
-                    )
-                }
+                Verdict::Window(Ok(estimate)) => format!(
+                    "{:.0}({:.2},{:.0}%)",
+                    estimate.bpm_at(session.period),
+                    estimate.quality,
+                    estimate.drift * 100.0
+                ),
+                Verdict::Window(Err(Rejection::Faint(estimate))) => format!(
+                    "f{:.0}({:.2}{})",
+                    estimate.bpm_at(session.period),
+                    estimate.quality,
+                    if calm { ",calm" } else { "" }
+                ),
                 Verdict::Window(Err(Rejection::Flat)) => "flat".into(),
                 Verdict::Window(Err(Rejection::Unsteady { ratio })) => format!("U{ratio:.1}"),
                 Verdict::Window(Err(Rejection::Aperiodic { quality, bpm })) => {
@@ -651,20 +717,25 @@ fn replay(path: &str) {
             });
         }
         sessions += 1;
-        let length = session.samples.len() as f32 * session.period / 1e6;
         if let Some(at) = give_up {
             gave_up += 1;
-            saved += length - at as f32;
             if session.outcome.parse::<u8>().is_ok() {
                 lost += 1;
             }
             verdicts.insert(0, format!("[gives up at {at} s]"));
         }
+        // The LED is on until the reading, or the end; plus the half
+        // second before the first sample.
+        led += 0.5 + reading.map_or(end, |(_, at)| at);
         let verdict = match reading {
             Some((bpm, at)) => {
                 read += 1;
-                if session.reference > 0.0 && (f32::from(bpm) - session.reference).abs() <= 8.0 {
-                    right += 1;
+                read_at += at;
+                if session.reference > 0.0 {
+                    let off = (f32::from(bpm) - session.reference).abs();
+                    referenced += 1;
+                    error += off;
+                    wrong += usize::from(off > 8.0);
                 }
                 format!("{bpm} BPM at {at:.0} s")
             }
@@ -678,30 +749,38 @@ fn replay(path: &str) {
             verdicts.join(" ")
         );
     }
-    println!("{read}/{sessions} sessions read, {right} within 8 BPM of the reference");
     println!(
-        "{gave_up} would give up on a busy wrist, saving {saved:.0} s of LED; \
-         {lost} of them had read (if in the background, now lost)"
+        "{read}/{sessions} sessions read, at {:.1} s on average; of {referenced} with a \
+         reference, MAE {:.1} BPM, {wrong} more than 8 BPM off",
+        read_at / read.max(1) as f32,
+        error / referenced.max(1) as f32
+    );
+    println!(
+        "LED {led:.0} s in all; {gave_up} would give up on a busy wrist, {lost} of them \
+         had read (if in the background, now lost)"
     );
 }
 
 fn main() {
     if let Some(path) = std::env::args().nth(1) {
-        return replay(&path);
+        return replay(
+            &path,
+            std::env::args().nth(2).as_deref() == Some("--strict"),
+        );
     }
     println!("== pulses (20 seeds each; readings within a 30 s session, 40 s with motion) ==");
     for (name, scenario) in scenarios() {
-        print_row(&name, &summarise(&scenario, 20, no_gate));
+        print_row(&name, &summarise(&scenario, 20, no_gate, true));
     }
-    println!("== no pulse (20 seeds each, 300 s) ==");
+    println!("== no pulse (20 seeds each, 300 s), three windows must agree ==");
     for (name, scenario) in garbage() {
-        print_row(&name, &summarise(&scenario, 20, no_gate));
+        print_row(&name, &summarise(&scenario, 20, no_gate, false));
     }
-    println!("== no pulse, with the accelerometer veto ==");
+    println!("== no pulse, calm pairs, with the accelerometer veto (200 seeds) ==");
     for (name, scenario) in garbage() {
         print_row(
             &name,
-            &summarise(&scenario, 20, accelerometer_gate(&scenario)),
+            &summarise(&scenario, 200, accelerometer_gate(&scenario), true),
         );
     }
 }
@@ -719,7 +798,7 @@ mod tests {
     #[test]
     fn pulses_are_measured_accurately() {
         for (name, scenario) in scenarios() {
-            let s = summarise(&scenario, SEEDS, no_gate);
+            let s = summarise(&scenario, SEEDS, no_gate, true);
             assert!(
                 s.worst_reading_error <= tolerance(&scenario),
                 "{name}: a reading was {:.1} BPM off",
@@ -740,20 +819,40 @@ mod tests {
         }
     }
 
-    /// No pulse, no reading: with the accelerometer veto in place, as in
-    /// the firmware, and without it. At a desk the hand moves too little
-    /// for the veto (`heart::MOTION_LIMIT`), but plenty to make bursts in
-    /// the signal, so the signal checks must keep motion out on their own.
-    /// (Before motion was masked rather than rejected whole, sustained
-    /// random motion passed for a pulse in 18 of these 20 runs; the
-    /// steadiness check on what's left after masking now catches it.)
+    /// No pulse, no reading from three agreeing windows: with the
+    /// accelerometer veto in place, as in the firmware, and without it. At a
+    /// desk the hand moves too little for the veto (`heart::MOTION_LIMIT`),
+    /// but plenty to make bursts in the signal, so the signal checks must
+    /// keep motion out on their own. (Before motion was masked rather than
+    /// rejected whole, sustained random motion passed for a pulse in 18 of
+    /// these 20 runs; the steadiness check on what's left after masking now
+    /// catches it.)
     #[test]
     fn garbage_never_yields_a_reading() {
         for (name, scenario) in garbage() {
-            let s = summarise(&scenario, SEEDS, accelerometer_gate(&scenario));
+            let s = summarise(&scenario, SEEDS, accelerometer_gate(&scenario), false);
             assert_eq!(s.with_reading, 0, "{name}: got a reading from no pulse");
-            let s = summarise(&scenario, SEEDS, no_gate);
+            let s = summarise(&scenario, SEEDS, no_gate, false);
             assert_eq!(s.with_reading, 0, "{name}: got a reading without the veto");
+        }
+    }
+
+    /// On a calm wrist two faint windows in a row are enough (see
+    /// `ppg::Consensus`), and filtered noise can do that by chance: rarely.
+    /// Over 200 runs of 300 s (~2000 sessions' worth) per scenario, that's
+    /// what's bounded here, against regressions: 2-4 runs of white noise
+    /// made a reading, about one in 500-1000 sessions of a still wrist with
+    /// no pulse to be seen. (Motion is never calm, so the veto keeps it
+    /// out.)
+    #[test]
+    fn garbage_rarely_pairs_on_a_calm_wrist() {
+        for (name, scenario) in garbage() {
+            let s = summarise(&scenario, 200, accelerometer_gate(&scenario), true);
+            assert!(
+                s.with_reading <= 8,
+                "{name}: {} of 200 runs got a reading from no pulse",
+                s.with_reading
+            );
         }
     }
 
@@ -765,7 +864,7 @@ mod tests {
             if !scenario.motion.is_empty() {
                 continue;
             }
-            let s = summarise(&scenario, SEEDS, no_gate);
+            let s = summarise(&scenario, SEEDS, no_gate, false);
             assert_eq!(s.accepted_windows, 0, "{name}: accepted a window");
         }
     }
@@ -780,7 +879,7 @@ mod tests {
                 conversion: 0,
             })
             .collect();
-        let outcome = run(&polls, no_gate);
+        let outcome = run(&polls, no_gate, true);
         assert!(!outcome.windows.is_empty());
         assert!(
             outcome
@@ -812,7 +911,7 @@ mod tests {
                     ..scenario.clone()
                 };
                 let (polls, beats) = generate_with_beats(&scenario);
-                for (t, verdict) in run(&polls, no_gate).windows {
+                for (t, verdict) in run(&polls, no_gate, true).windows {
                     // The window ending at `t` covers the 8 s before it.
                     let overlap = t.min(start + duration) - (t - 8.0).max(start);
                     if overlap <= 0.0 {
@@ -853,7 +952,7 @@ mod tests {
             let mut rng = Rng::new(scenario.seed);
             let truth = f64::from(ppg::NOMINAL_PERIOD_US)
                 * (1.0 + 2.0 * OSCILLATOR_TOLERANCE * (rng.uniform() - 0.5));
-            let measured = f64::from(run(&generate(&scenario), no_gate).period_us);
+            let measured = f64::from(run(&generate(&scenario), no_gate, true).period_us);
             assert!(
                 (measured - truth).abs() / truth < 0.002,
                 "seed {seed}: measured {measured:.0} µs, truth {truth:.0} µs"
@@ -883,7 +982,7 @@ mod tests {
     fn accepted(session: &Recorded) -> Vec<f32> {
         windows(session)
             .into_iter()
-            .filter_map(|(_, verdict)| match verdict {
+            .filter_map(|(_, verdict, _)| match verdict {
                 Verdict::Window(Ok(estimate)) => Some(estimate.bpm_at(session.period)),
                 _ => None,
             })
@@ -982,17 +1081,96 @@ mod tests {
         }
     }
 
+    /// The reading a recorded session would now make, ending where the
+    /// firmware would give up.
+    fn replayed(session: &Recorded, strict: bool) -> Option<(u8, f32)> {
+        let windows = windows(session);
+        let end = gives_up_at(session, &windows).map_or(f32::INFINITY, |at| at as f32);
+        reading(session, &windows, end, strict)
+    }
+
+    /// Calm sessions from field logs whose pulse was too faint for three
+    /// windows to pass on their own: lying still awake (2026-11-09, the
+    /// Garmin at 67 then 65, two windows of quality 0.46-0.47 near the end),
+    /// and asleep (45-49 BPM, the Garmin at 47). Two in a row agree.
+    #[test]
+    fn a_calm_faint_pulse_is_read() {
+        let text = include_str!("../fixtures/calm-faint.txt");
+        for session in parse_sessions(text) {
+            assert_eq!(replayed(&session, true), None, "{}", session.start);
+            let (bpm, at) = replayed(&session, false).expect("a reading");
+            assert!(
+                (f32::from(bpm) - session.reference).abs() <= 3.0,
+                "{}: {bpm} BPM at {at:.0} s against {}",
+                session.start,
+                session.reference
+            );
+        }
+    }
+
+    /// The same hour's other two sessions, as calm, in which no pulse can
+    /// be seen (slower swings, at 30-46 BPM, outweigh it): no reading.
+    #[test]
+    fn a_calm_wrist_without_a_visible_pulse_is_not_read() {
+        let text = include_str!("../fixtures/calm-pulseless.txt");
+        for session in parse_sessions(text) {
+            assert_eq!(replayed(&session, false), None, "{}", session.start);
+        }
+    }
+
     #[test]
     fn consensus_needs_agreement() {
         let mut c = Consensus::new();
-        assert_eq!(c.push(70.0), None);
-        assert_eq!(c.push(71.0), None);
-        assert_eq!(c.push(72.4), Some(71));
+        assert_eq!(c.push(70.0, false), None);
+        assert_eq!(c.push(71.0, false), None);
+        assert_eq!(c.push(72.4, false), Some(71));
         // One outlier spoils the next two readings.
-        assert_eq!(c.push(140.0), None);
-        assert_eq!(c.push(71.0), None);
-        assert_eq!(c.push(70.0), None);
-        assert_eq!(c.push(70.5), Some(71));
+        assert_eq!(c.push(140.0, false), None);
+        assert_eq!(c.push(71.0, false), None);
+        assert_eq!(c.push(70.0, false), None);
+        assert_eq!(c.push(70.5, false), Some(71));
+        // Rejected windows in between don't matter.
+        let mut c = Consensus::new();
+        assert_eq!(c.push(70.0, false), None);
+        c.reject();
+        assert_eq!(c.push(71.0, false), None);
+        c.reject();
+        assert_eq!(c.push(72.0, false), Some(71));
+    }
+
+    /// On a calm wrist, two windows in a row make a reading if they agree
+    /// closely, faint or not; anything else between them, or a busy wrist
+    /// through either, and they don't.
+    #[test]
+    fn calm_windows_in_a_row_agree() {
+        let mut c = Consensus::new();
+        assert_eq!(c.push_faint(61.8, true, false), None);
+        assert_eq!(c.push_faint(62.4, true, false), Some(62));
+        // Accepted and faint together.
+        let mut c = Consensus::new();
+        assert_eq!(c.push(64.0, true), None);
+        assert_eq!(c.push_faint(65.0, true, false), Some(65));
+        // Too far apart.
+        let mut c = Consensus::new();
+        assert_eq!(c.push_faint(60.0, true, false), None);
+        assert_eq!(c.push_faint(63.5, true, false), None);
+        // A rejected window between them.
+        let mut c = Consensus::new();
+        assert_eq!(c.push_faint(62.0, true, false), None);
+        c.reject();
+        assert_eq!(c.push_faint(62.0, true, false), None);
+        // Not calm, either of them.
+        let mut c = Consensus::new();
+        assert_eq!(c.push_faint(62.0, false, false), None);
+        assert_eq!(c.push_faint(62.0, true, false), None);
+        assert_eq!(c.push_faint(62.0, false, false), None);
+        // Faint windows never count towards the three accepted ones.
+        let mut c = Consensus::new();
+        assert_eq!(c.push(70.0, false), None);
+        assert_eq!(c.push_faint(70.0, false, false), None);
+        assert_eq!(c.push(70.0, false), None);
+        assert_eq!(c.push_faint(70.0, false, false), None);
+        assert_eq!(c.push(70.0, false), Some(70));
     }
 
     /// The tracker emits exactly one sample per conversion: after each
