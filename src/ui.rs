@@ -2991,11 +2991,14 @@ fn render_ha_key(canvas: &mut Canvas, identity: Option<&Identity>) {
 // ==============================================================================
 //
 // Nine buttons in a 3×3 grid (two layers), or six in two rows of three,
-// unlabelled: each 22 px (~8 mm) wide, in the same three columns either
-// way, and 22 px or 36 px (~13 mm) tall, in the middle of its part of the
-// screen, which is what a touch hits (see `buttons::at`), so the gaps
-// between them belong to the nearest. They stay clear of the edges'
-// handles.
+// unlabelled: each 22 px (~8 mm) square, 5 px apart, either way. Nine
+// fill the screen; six are the top two rows of nine, moved down to the
+// middle, rather than stretched to fill it: square, they look like the
+// arcade buttons they're drawn as, and the same either way. A touch hits
+// the screen in thirds across, and thirds or halves down (see
+// `buttons::at`), each with a button in its middle (give or take a
+// pixel), so the gaps between them, and with six, the space above and
+// below, belong to the nearest. They stay clear of the edges' handles.
 //
 // Drawn as an old arcade cabinet's or console's buttons, in the theme's
 // colours: a chunky keycap with a lit edge and a glint at its top left,
@@ -3035,14 +3038,15 @@ fn render_buttons(
 ) {
     canvas.clear(BACKGROUND);
     let (first, second) = grid.waiting();
-    // How many, how tall, and how far apart the rows are.
-    let (count, height, pitch) = match layout {
-        buttons::Layout::Six => (6, 36, 40),
-        buttons::Layout::TwoLayers => (9, 22, 27),
+    // How many, and where the first row's top is: two rows (49 px)
+    // centred in the 80.
+    let (count, top) = match layout {
+        buttons::Layout::Six => (6, 15),
+        buttons::Layout::TwoLayers => (9, 2),
     };
     for button in 1..=count {
         let x = 2 + 27 * i32::from((button - 1) % 3);
-        let y = 2 + pitch * i32::from((button - 1) / 3);
+        let y = top + 27 * i32::from((button - 1) / 3);
         let key = match (sent, first, second) {
             (Some((press, ok)), ..) if press.last() == button => Key::Sent(press, ok),
             (_, _, Some(second)) if second == button => Key::Lit,
@@ -3050,12 +3054,12 @@ fn render_buttons(
             (_, Some(first), None) if first == button => Key::Lit,
             _ => Key::Up,
         };
-        draw_key(canvas, x, y, height, key, dark);
+        draw_key(canvas, x, y, key, dark);
     }
 }
 
-/// One button at (`x`, `y`), 22 px wide and `height` tall.
-fn draw_key(canvas: &mut Canvas, x: i32, y: i32, height: i32, key: Key, dark: bool) {
+/// One button at (`x`, `y`), 22 px square.
+fn draw_key(canvas: &mut Canvas, x: i32, y: i32, key: Key, dark: bool) {
     const SIZE: i32 = 22;
     /// How deep the side is, and so how far a pressed cap sinks (less a
     /// pixel, so it still sits in a well).
@@ -3079,13 +3083,13 @@ fn draw_key(canvas: &mut Canvas, x: i32, y: i32, height: i32, key: Key, dark: bo
         Key::Sent(_, true) => (Color::GOOD, true),
         Key::Sent(_, false) => (Color::BAD, true),
     };
-    canvas.fill_rect(x, y, SIZE, height, outline);
+    canvas.fill_rect(x, y, SIZE, SIZE, outline);
     // Rounded off, a pixel at each corner.
     for (cx, cy) in [
         (x, y),
         (x + SIZE - 1, y),
-        (x, y + height - 1),
-        (x + SIZE - 1, y + height - 1),
+        (x, y + SIZE - 1),
+        (x + SIZE - 1, y + SIZE - 1),
     ] {
         canvas.pixel(cx, cy, BACKGROUND);
     }
@@ -3094,11 +3098,11 @@ fn draw_key(canvas: &mut Canvas, x: i32, y: i32, height: i32, key: Key, dark: bo
     let top = if down { y + DEPTH } else { y + 1 };
     if down {
         canvas.fill_rect(inner, y + 1, width, DEPTH - 1, side);
-        canvas.fill_rect(inner, top, width, y + height - 1 - top, face);
+        canvas.fill_rect(inner, top, width, y + SIZE - 1 - top, face);
         // The well's shadow falls on the cap's left edge too.
-        canvas.fill_rect(inner, top, 1, y + height - 1 - top, side);
+        canvas.fill_rect(inner, top, 1, y + SIZE - 1 - top, side);
     } else {
-        let cap_height = height - 2 - DEPTH;
+        let cap_height = SIZE - 2 - DEPTH;
         canvas.fill_rect(inner, top, width, cap_height, face);
         // The cap's lower lip, then its side.
         canvas.fill_rect(inner, top + cap_height - 1, width, 1, outline);
@@ -3110,8 +3114,6 @@ fn draw_key(canvas: &mut Canvas, x: i32, y: i32, height: i32, key: Key, dark: bo
         canvas.pixel(x + 3, top + 3, light);
     }
     if let Key::Sent(press, _) = key {
-        // In the middle of a tall button.
-        let top = top + (height - SIZE) / 2;
         let mut code = heapless::String::<2>::new();
         write!(code, "{}", press.code).expect("at most 2 digits");
         let width = font::small_text_width(&code) * 2;
