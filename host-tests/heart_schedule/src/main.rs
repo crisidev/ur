@@ -834,6 +834,20 @@ mod tests {
         assert_eq!(schedule.due(0, false).0, 400 + 2 * 2 * MIN_INTERVAL);
     }
 
+    #[test]
+    fn bright_starts_go_up_two_drives_as_far_as_headroom_and_budget_allow() {
+        let plenty = LED_BUDGET;
+        // The desk's median peak at 12.5 mA ×2 (2026-11-09): 30 mA.
+        assert_eq!(bright_start(0, 3098, plenty), Some(2));
+        // Its 90th percentile: 20 mA.
+        assert_eq!(bright_start(0, 4035, plenty), Some(1));
+        assert_eq!(bright_start(0, 5200, plenty), None);
+        // A whole session at 30 mA is 72 s of budget, at 20 mA 48.
+        assert_eq!(bright_start(0, 2000, 72), Some(2));
+        assert_eq!(bright_start(0, 2000, 71), Some(1));
+        assert_eq!(bright_start(0, 2000, 47), None);
+    }
+
     /// An hour without a reading, the budget refills twice as fast, into a
     /// bucket twice as deep; a reading puts it back.
     #[test]

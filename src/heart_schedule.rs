@@ -229,8 +229,9 @@ const _: () = assert!(SESSION_RESERVE <= LED_BUDGET);
 /// How long without a reading (any, watched or not; or since boot) before
 /// one is overdue, asleep or awake. Overdue, the [`LED_BUDGET`] doubles
 /// ([`OVERDUE_BUDGET`]) and a failure is retried within [`OVERDUE_RETRY`],
-/// so that more sessions, and more of them brighter (see [`brighter`]),
-/// have a go, until a reading comes and it all returns to normal.
+/// so that more sessions, and more of them brighter (see [`brighter`] and
+/// [`bright_start`]), have a go, until a reading comes and it all returns
+/// to normal.
 ///
 /// An hour: awake, readings come every 2-20 minutes when they come at all,
 /// so an hour is three or more tries in a row that failed, and a gap the
@@ -789,12 +790,38 @@ pub fn brighter(drive: u8, steps: u8, peak: u32, spare: u32) -> Option<u8> {
     if steps >= BRIGHTER_STEPS {
         return None;
     }
+    step_up(drive, peak, |next| {
+        spare >= budget_seconds(next, BRIGHTER_FOR * 1000) + SESSION_RESERVE
+    })
+}
+
+/// The drive an awake background session in the experiment's bright arm
+/// should start at, rather than its level's `drive` (see `heart`'s arms):
+/// two settings up (30 mA from 12.5), or one if the `peak` expected at
+/// `drive` (the last session's last second, scaled to this level) would
+/// pass [`BRIGHTER_PEAK_LIMIT`] at 30 mA, or none; and only if the
+/// `budget` covers a whole session (`SESSION_RESERVE` seconds) at it.
+///
+/// Why start brighter, rather than step up late as [`brighter`] does: at a
+/// desk, sessions stop for a restless wrist or give up within ~12 s, so
+/// they never reach the late step, and a still moment there lasts seconds.
+/// Whether more light helps against the tendons and fingers moving the
+/// sensor is what the arms compare.
+pub fn bright_start(drive: u8, peak: u32, budget: u32) -> Option<u8> {
+    step_up(drive, peak, |next| {
+        budget >= budget_seconds(next, SESSION_RESERVE * 1000)
+    })
+}
+
+/// The brightest drive up to two settings above `drive` at which `peak`,
+/// scaled by the current, stays within [`BRIGHTER_PEAK_LIMIT`], and that
+/// `affordable` allows.
+fn step_up(drive: u8, peak: u32, affordable: impl Fn(u8) -> bool) -> Option<u8> {
     let now = DRIVE_CURRENT[usize::from(drive & 3)];
     (drive + 1..=(drive + 2).min(3)).rev().find(|&next| {
         let current = DRIVE_CURRENT[usize::from(next)];
         let predicted = u64::from(peak) * u64::from(current) / u64::from(now);
-        predicted <= u64::from(BRIGHTER_PEAK_LIMIT)
-            && spare >= budget_seconds(next, BRIGHTER_FOR * 1000) + SESSION_RESERVE
+        predicted <= u64::from(BRIGHTER_PEAK_LIMIT) && affordable(next)
     })
 }
 

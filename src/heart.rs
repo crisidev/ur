@@ -13,8 +13,9 @@
 //!   and giving up sooner if it won't keep still
 //!   ([`heart_schedule::give_up`]); if it runs out on a calm wrist with a
 //!   pulse too faint to read, it may go on for another 15 s with a
-//!   brighter LED, once or twice ([`heart_schedule::brighter`], an
-//!   experiment), and
+//!   brighter LED, once or twice ([`heart_schedule::brighter`]); awake,
+//!   every other one starts with a brighter LED (see [`Arm`]); both are an
+//!   experiment, and
 //! - while the clock face is showing (see
 //!   [`crate::heart_reading::set_watching`]), continuously,
 //!   since then someone is looking at the number, and
@@ -118,6 +119,32 @@ const RECHECK_SECS: u32 = 30;
 /// Seconds of movement readings kept (one per level check, i.e. a second),
 /// to judge a whole window: an analysis window is ~8 s.
 const MOTION_HISTORY: usize = 8;
+
+/// Which LED a background session starts with: the experiment comparing a
+/// brighter LED with the usual one where readings are hardest, at a desk.
+///
+/// Awake, background sessions take turns: one starts at its level's
+/// drive (`Dim`, 12.5 mA on a wrist), the next two drive settings up
+/// (`Bright`, 30 mA; see [`heart_schedule::bright_start`] for when it's
+/// 20 mA or the usual drive after all), keeping the gain. Taking turns
+/// rather than all bright gives a field log both, at the same desk on the
+/// same day, under the same rules, so it can say whether more light reads
+/// more (and for what LED) instead of comparing days whose wrists differ.
+/// If it does, half the desk sessions have it meanwhile; if it doesn't,
+/// half pay for it.
+///
+/// Asleep (`Asleep`), sessions stay at their level's drive, as night
+/// readings come 88% of the time without it. Watched sessions too, as
+/// they're not in the comparison. A session that fails calm on either arm
+/// may still go on brighter at its end ([`heart_schedule::brighter`]).
+///
+/// TODO: once field logs have judged it, make the winner the rule.
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+enum Arm {
+    Asleep,
+    Dim,
+    Bright,
+}
 
 // ==============================================================================
 // The HRS3300
@@ -372,6 +399,13 @@ pub async fn heart_task(i2c: Device) {
     // Starting at ×2 (12.5 mA): where on-wrist readings settled anyway, so
     // the first second isn't spent climbing to it.
     let mut good_level = 1;
+    // The light on skin: the last second's peak of the last session that
+    // didn't end off the wrist, scaled to 12.5 mA ×1 (0: none yet), to
+    // tell whether a bright arm's start would saturate. Unknown, it starts
+    // bright anyway, and steps back down if it saturates.
+    let mut skin_peak = 0u32;
+    // Whose turn it is, awake (see `Arm`): dim first.
+    let mut bright_turn = false;
     // When to measure in the background. Its first session is due at once,
     // so the clock face has a number soon after boot.
     let mut schedule = Schedule::new();
@@ -410,39 +444,61 @@ pub async fn heart_task(i2c: Device) {
             select(Timer::after_secs(u64::from(wait)), WAKE.wait()).await;
         };
         let background = due.is_some();
+        let asleep = activity::asleep();
+        let mut level = good_level;
+        let base = LEVELS[level].drive;
+        let budget = schedule.budget(uptime());
+        // The arm, and the drive it starts at.
+        let (arm, drive) = match due {
+            None => (Arm::Dim, base),
+            Some(_) if asleep => (Arm::Asleep, base),
+            Some(_) if !bright_turn => (Arm::Dim, base),
+            Some(_) => {
+                let peak = (skin_peak << LEVELS[level].gain)
+                    * heart_schedule::DRIVE_CURRENT[usize::from(base)]
+                    / heart_schedule::DRIVE_CURRENT[0];
+                let bright = heart_schedule::bright_start(base, peak, budget);
+                (Arm::Bright, bright.unwrap_or(base))
+            }
+        };
         if let Some(why) = due {
             let (awake, asleep) = schedule.resting();
             info!(
-                "heart: due ({}); budget {} s, resting {}/{}",
-                why,
-                schedule.budget(uptime()),
-                awake,
-                asleep
+                "heart: due ({}); budget {} s, resting {}/{}; {} drive {}",
+                why, budget, awake, asleep, arm, drive
             );
+            if arm != Arm::Asleep {
+                bright_turn = !bright_turn;
+            }
         }
         // Movement from here on counts towards the next session.
         let before = Before {
             active_polls: activity::take_active_polls(),
             stepless_polls: activity::stepless_polls(),
-            asleep: activity::asleep(),
+            asleep,
         };
 
         let started = Instant::now();
-        let mut level = good_level;
         crate::power::count(crate::power::Count::HeartSessions);
         // What the session spends of the budget, at 12.5 mA's rate (see
         // `heart_schedule::budget_seconds`): a brighter phase costs more.
         let mut spent = 0;
+        let mut peak = 0;
         let outcome = measure(
             &mut hrs,
             &mut level,
+            drive,
             &mut conversions,
-            background.then(|| schedule.budget(uptime())),
+            background.then_some(budget),
             &mut spent,
+            &mut peak,
         )
         .await;
         if matches!(outcome, Ok(Ended::Measured(_))) {
             good_level = level;
+        }
+        if !matches!(outcome, Ok(Ended::NoContact | Ended::TooBright) | Err(())) && peak > 0 {
+            skin_peak = peak;
         }
         if hrs.off().await.is_err() {
             // TODO: retry, or the LED stays lit until the next session.
@@ -581,20 +637,25 @@ enum Ended {
 
 /// One measurement session: turn the sensor on, sample until we have a
 /// reading (and keep going while someone's watching), adjusting the level
-/// as needed. `budget`: the schedule's LED budget at the start, if the
+/// as needed. It starts at `drive`, the level's or a bright arm's (see
+/// [`Arm`]). `budget`: the schedule's LED budget at the start, if the
 /// schedule started it (rather than someone looking at the clock face).
-/// `spent` is set to what the session cost the budget.
+/// `spent` is set to what the session cost the budget, and `skin_peak` to
+/// its last second's peak, scaled to 12.5 mA ×1.
 async fn measure(
     hrs: &mut Hrs3300,
     level: &mut usize,
+    drive: u8,
     conversions: &mut Conversions,
     budget: Option<u32>,
     spent: &mut u32,
+    skin_peak: &mut u32,
 ) -> Result<Ended, ()> {
     let background = budget.is_some();
-    // The LED's drive: `LEVELS[*level]`'s, unless a phase of the session
-    // has gone brighter (see `heart_schedule::brighter`), keeping the gain.
-    let mut drive = LEVELS[*level].drive;
+    // The LED's drive: `LEVELS[*level]`'s, unless the session started
+    // brighter or a phase of it has gone brighter (see
+    // `heart_schedule::brighter`), keeping the gain.
+    let mut drive = drive;
     let at = |level: usize, drive: u8| Level {
         drive,
         gain: LEVELS[level].gain,
@@ -603,8 +664,9 @@ async fn measure(
     // Ends the LED's on-time when the session returns, however it returns.
     let mut led = LedMeter::new(drive, spent);
     // When the session's current phase runs out (its usual limit, or a
-    // brighter phase's), and the brighter phases so far.
-    let (mut limit, mut steps) = (SESSION_LIMIT, 0u8);
+    // brighter phase's), and the brighter phases so far: a bright arm's
+    // start counts as one.
+    let (mut limit, mut steps) = (SESSION_LIMIT, u8::from(drive != LEVELS[*level].drive));
     // Whether the latest window was faint or aperiodic on a calm wrist,
     // and the last whole second's mean and peak: what a brighter phase
     // goes by.
@@ -753,9 +815,14 @@ async fn measure(
                 } else {
                     *level -= 1;
                 }
-            } else if drive == 0 && mean < NO_SKIN << LEVELS[*level].gain {
+            } else if LEVELS[*level].drive == 0
+                && mean * heart_schedule::DRIVE_CURRENT[0]
+                    < (NO_SKIN << LEVELS[*level].gain)
+                        * heart_schedule::DRIVE_CURRENT[usize::from(drive)]
+            {
                 // Off the wrist: little light comes back at the lowest
-                // current; skin reflects several times more.
+                // current (scaled to a brighter one); skin reflects
+                // several times more.
                 return Ok(Ended::NoContact);
             } else if mean < WEAK && *level + 1 < LEVELS.len() {
                 *level += 1;
@@ -767,6 +834,8 @@ async fn measure(
                 drive = LEVELS[*level].drive;
             }
             (last_mean, last_peak) = (mean, peak);
+            *skin_peak = (peak >> LEVELS[before.0].gain) * heart_schedule::DRIVE_CURRENT[0]
+                / heart_schedule::DRIVE_CURRENT[usize::from(before.1)];
             (peak, sum, count) = (0, 0, 0);
             if (*level, drive) != before {
                 debug!("heart: switching to level {}", at(*level, drive));
