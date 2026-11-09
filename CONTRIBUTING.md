@@ -442,6 +442,14 @@ Some host-test crates replay decoded logs, to tune against real wrists:
   Android [Health Connect] export (the tuning so far compared against a
   Garmin worn on the other wrist).
 
+Steps come from the accelerometer's own counter, which a log can't
+replay. A capture build, `UR_ACTIVITY_LOG=trace scripts/release.sh --pre
+accel tmp/accel`, also logs the accelerometer's samples while the wrist
+moves (about twice the log on a busy day, so fetch it twice a day), and
+`scripts/accel_samples.py decoded.log samples.txt [export.db]` extracts
+them, with the counter's steps and a Garmin's, for tuning a step counter
+of our own.
+
 ## Releasing
 
 [CHANGELOG.md]'s `[Unreleased]` section is kept up to date as changes

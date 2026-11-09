@@ -6,7 +6,15 @@
 //!   "feature engine" (a microcontroller programmed by a 6 KB blob Bosch
 //!   publishes) that runs a step counter at very low power, so we never see
 //!   the raw motion behind it. We read its running count and keep today's
-//!   total.
+//!   total. It runs Bosch's parameters for a wrist (see
+//!   [`STEP_COUNTER_PARAMS`]), and counts the way their wrist algorithm
+//!   does: by the arm's swing, two steps a swing, and only once four
+//!   swings in a row (8 steps) have shown it's a walk, when it adds them
+//!   all at once. So a walk of fewer than 8 steps, or a walk without an
+//!   arm swinging (hands full, pushing a pram), counts nothing, and stop-
+//!   and-go walking indoors loses much of what it does count: in the field
+//!   logs, every run of counting starts with 8 to 12 steps at once, and a
+//!   third of the runs stop right there.
 //! - **Movement**: how much the wrist moved each minute, which is what sleep
 //!   tracking runs on. The chip queues accelerometer samples in its FIFO at
 //!   12.5 Hz; every few seconds we drain it and add up how far the
@@ -92,6 +100,16 @@ const FEATURES_LEN: usize = 70;
 /// Within it: the step counter's settings (offset 0x3A) high byte, whose
 /// bit 4 enables counting.
 const STEP_COUNTER_ENABLE: (usize, u8) = (0x3A + 1, 0x10);
+/// Within it too: the step counter's 25 parameters (little-endian words),
+/// which the config's defaults set to Bosch's wrist set: the
+/// `BMA423_WRIST_SC_PARAM_*` values that older versions of Bosch's BMA423
+/// driver wrote from `bma423_select_platform(BMA423_WRIST_CONFIG)`, which
+/// called it the default (the other set being for a phone). They're the
+/// bytes at 0x208 into `bma423_config.bin`, and the window reads them back
+/// on the dev kit. Bosch documents none of them individually, and warns
+/// that they depend on each other, so we leave them alone; setup logs them
+/// (at debug) so a field log shows what a watch ran.
+const STEP_COUNTER_PARAMS: core::ops::Range<usize> = 0x08..0x3A;
 /// The any-motion and no-motion settings (offsets 0x00 and 0x04), two
 /// little-endian words each: the threshold (11 bits, in 1/2048 g), then the
 /// duration (13 bits, in 20 ms steps) with the axes to watch in its top
@@ -162,6 +180,9 @@ fn set_motion(window: &mut [u8], offset: usize, motion: &Motion) {
 /// preceded by its position (in 16-bit words). Even, and small enough to
 /// stage in RAM (the TWIM can't send from flash).
 const CHUNK: usize = 32;
+
+/// One FIFO read's samples (see [`Bma421::drain_fifo`]).
+type Frames = heapless::Vec<[i16; 3], 36>;
 
 struct Bma421 {
     i2c: Device,
@@ -266,6 +287,10 @@ impl Bma421 {
         self.read(REG_FEATURES, &mut features[1..]).await?;
         features[0] = REG_FEATURES;
         let window = &mut features[1..];
+        debug!(
+            "activity: step counter parameters {=[u8]:02x}",
+            window[STEP_COUNTER_PARAMS]
+        );
         window[STEP_COUNTER_ENABLE.0] |= STEP_COUNTER_ENABLE.1;
         set_motion(window, ANY_MOTION_OFFSET, &ANY_MOTION);
         set_motion(window, NO_MOTION_OFFSET, &NO_MOTION);
@@ -337,8 +362,8 @@ impl Bma421 {
         Ok(u32::from_le_bytes(bytes))
     }
 
-    /// Reads queued samples, calling `on_sample` with each (x, y, z) in
-    /// 12-bit counts (1024 per g).
+    /// Reads queued samples, each (x, y, z) in 12-bit counts (1024 per g),
+    /// oldest first.
     ///
     /// One I2C transfer only, so at most 36 frames (252 bytes: the nRF52832's
     /// TWIM moves at most 255 bytes per transfer); anything beyond stays
@@ -356,14 +381,14 @@ impl Bma421 {
     /// carry headers anyway: a bad header means a broken batch, which is
     /// dropped and the FIFO flushed, losing a few seconds of samples
     /// instead of everything after.
-    async fn drain_fifo(&mut self, mut on_sample: impl FnMut([i16; 3])) -> Result<(), ()> {
+    async fn drain_fifo(&mut self) -> Result<Frames, ()> {
         let mut length = [0u8; 2];
         self.read(REG_FIFO_LENGTH, &mut length).await?;
         let queued = usize::from(u16::from_le_bytes(length) & 0x3FFF);
         let mut buffer = [0u8; 252];
         let take = queued.min(buffer.len());
         if take == 0 {
-            return Ok(());
+            return Ok(Frames::new());
         }
         // Advanced power save off for the read, and the 450 µs the chip
         // then needs before the next access. With it on, the FIFO stream
@@ -377,7 +402,7 @@ impl Bma421 {
         read?;
 
         // Parse first, deliver after, so a broken batch delivers nothing.
-        let mut frames = heapless::Vec::<[i16; 3], 36>::new();
+        let mut frames = Frames::new();
         let mut i = 0;
         let broken = loop {
             let Some(&header) = buffer[..take].get(i) else {
@@ -413,12 +438,9 @@ impl Bma421 {
                 i
             );
             self.write(REG_CMD, CMD_FIFO_FLUSH).await?;
-            return Ok(());
+            return Ok(Frames::new());
         }
-        for frame in frames {
-            on_sample(frame);
-        }
-        Ok(())
+        Ok(frames)
     }
 }
 
@@ -982,6 +1004,36 @@ pub fn today() -> Option<crate::day::Day> {
 /// every half hour.)
 const POLL_SECONDS: u64 = 2;
 
+/// The least movement (as in [`Sample::movement`]) over a poll for
+/// [`trace_samples`] to log its samples: under the quietest walks the
+/// chip missed (their middle polls moved 300–500), over a wrist lying
+/// still overnight (under 100), so a night costs little.
+const TRACE_MOVEMENT: u64 = 200;
+
+/// Logs a poll's samples at trace level, for tuning a step counter of our
+/// own offline against another watch (see CONTRIBUTING's Field logs): the
+/// chip's own misses short and stop-and-go walks (see the module docs),
+/// and can't be replayed, but ours could be. Only a build that logs this
+/// module at trace (`UR_ACTIVITY_LOG=trace scripts/release.sh`) has this
+/// line; the release builds compile it out.
+///
+/// Each poll's samples, x, y, z in turn, at 12.5 Hz, oldest first, the
+/// newest a moment before the log line's time, in 1/64 g (so each fits a
+/// byte, halving the log: ±2 g, as the chip measures, is ±128; ample for
+/// steps). That's 80 bytes a poll, 40 a second while it moves (twice the
+/// rest of the log on a busy day), so a capture day's log should be
+/// fetched twice.
+fn trace_samples(frames: &Frames, movement: u64) {
+    if movement < TRACE_MOVEMENT {
+        return;
+    }
+    let mut raw = [0i8; 3 * 36];
+    for (out, &axis) in raw.iter_mut().zip(frames.as_flattened()) {
+        *out = (axis >> 4).clamp(-128, 127) as i8;
+    }
+    defmt::trace!("activity: samples {=[?]}", raw[..3 * frames.len()]);
+}
+
 #[embassy_executor::task]
 pub async fn activity_task(i2c: Device) {
     restore_today();
@@ -1027,20 +1079,27 @@ pub async fn activity_task(i2c: Device) {
         Timer::after_secs(POLL_SECONDS).await;
         crate::system_off::serve().await;
 
-        let mut moved = 0u64;
-        let mut samples = 0u32;
-        let drained = bma
-            .drain_fifo(|now| {
+        // In a block, so the samples are gone by the next `await` rather
+        // than kept in this task's (static) future.
+        let (moved, samples) = {
+            let Ok(frames) = bma.drain_fifo().await else {
+                warn!("activity: reading the accelerometer failed");
+                continue;
+            };
+            let mut moved = 0u64;
+            let mut samples = 0u32;
+            for &now in &frames {
                 if let Some(before) = previous {
                     let d = |i: usize| f32::from(now[i]) - f32::from(before[i]);
                     moved += libm::sqrtf(d(0) * d(0) + d(1) * d(1) + d(2) * d(2)) as u64;
                     samples += 1;
                 }
                 previous = Some(now);
-            })
-            .await;
-        let count = bma.steps().await;
-        let (Ok(()), Ok(count)) = (drained, count) else {
+            }
+            trace_samples(&frames, moved * 8 / u64::from(samples.max(1)));
+            (moved, samples)
+        };
+        let Ok(count) = bma.steps().await else {
             warn!("activity: reading the accelerometer failed");
             continue;
         };
