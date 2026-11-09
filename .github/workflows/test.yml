@@ -4,7 +4,7 @@
 #   between screens, turn-by-turn directions, number parsing, telling
 #   touches apart, the button grid's gestures, BTHome advertisements and
 #   QR code, what a touch does with the screen off, Gadgetbridge's
-#   messages, colours that must differ in every theme), each built into a
+#   messages and link, colours that must differ in every theme), each built into a
 #   host crate under host-tests/ and tested on the computer, with the
 #   pinned toolchain and on beta
 # - sim: the simulator's tests (sim/), which check its screenshots of the
@@ -38,7 +38,7 @@ jobs:
       fail-fast: false
       matrix:
         toolchain: [pinned, beta]
-        crate: [alarm, aranet, arrival, battery, brightness, bthome, buttons, day, decimal, font, gb, gesture, glance, heart_schedule, live, mcuboot, nav, on_time, ppg, qr, route, sleep, snapshot, temperature, theme, wake]
+        crate: [alarm, aranet, arrival, battery, brightness, bthome, buttons, day, decimal, font, gb, gesture, glance, heart_schedule, link, live, mcuboot, nav, on_time, ppg, qr, route, sleep, snapshot, temperature, theme, wake]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
       - name: Install the pinned toolchain

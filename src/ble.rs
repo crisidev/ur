@@ -53,6 +53,7 @@ use trouble_host::prelude::*;
 use crate::aranet::{self, Nearby, Reading};
 use crate::gb::{self, Incoming, LineBuffer, Outgoing};
 use crate::geo::{self, GpsPolicy, Location};
+use crate::link::{self, Link, Verdict};
 use crate::packet_pool::Pool;
 use crate::phone::{PhoneEvent, Unpaired};
 use crate::{activity, clock, dfu, storage};
@@ -63,6 +64,10 @@ const NAME: &str = "Bangle.js ur";
 
 /// Whether a phone is connected, for the status bar.
 pub static CONNECTED: AtomicBool = AtomicBool::new(false);
+/// Whether the last phone judged by [`link::Watch`] was disconnected for
+/// not listening to the UART, and none has worked since: so that one that
+/// still doesn't, once back, isn't disconnected again (and again).
+static RECONNECTED: AtomicBool = AtomicBool::new(false);
 /// Whether a client is connected over a link that never became encrypted,
 /// and why, for the Info screen (see [`not_paired`]).
 pub static UNPAIRED: Mutex<CriticalSectionRawMutex, Cell<Option<Unpaired>>> =
@@ -198,6 +203,8 @@ struct Server {
 /// authentication" for its writes and subscriptions (writes without
 /// response are dropped silently), which tells Android to pair; our
 /// Security Request at connect (see `host_task`) asks for that up front.
+/// Gadgetbridge carries on as if a refused subscription had worked, which
+/// [`link`] notices.
 #[gatt_service(uuid = "6e400001-b5a3-f393-e0a9-e50e24dcca9e")]
 struct UartService {
     /// Phone to watch. Writes arrive in pieces of at most MTU − 3 bytes.
@@ -716,6 +723,12 @@ enum Action {
 /// sends the time first thing): only then does it get our messages, and set
 /// `phone`. Other clients (an updater, a log fetcher) never see them, so
 /// they can't swallow messages meant for the phone.
+///
+/// One that reaches for the UART (writes to it, or is refused that or its
+/// subscription) must also be subscribed to it, and writing, by
+/// [`link::GRACE_MS`] after its link is paired, or it's disconnected, once
+/// (see [`link`] and [`judge_uart`]). The other clients never touch the
+/// UART, so this never cuts short a log fetch or an update.
 async fn serve(
     stack: &Stack<'_, Controller, Pool>,
     server: &Server<'_>,
@@ -751,6 +764,8 @@ async fn serve(
     // Whether a pairing has shown its passkey and not yet ended: one the
     // client cuts short by leaving counts as failed.
     let mut pairing = false;
+    // Whether the phone listens to the UART: see `link`, and `judge_uart`.
+    let mut uart = link::Watch::default();
 
     let reason = loop {
         let idle = async {
@@ -765,8 +780,13 @@ async fn serve(
         let deadline = async {
             let security_deadline =
                 (security == Security::Pending).then_some(last_traffic + SECURITY_GRACE);
+            let uart_deadline = uart.due().map(Instant::from_millis);
             let deadlines = gps_deadline.into_iter().chain(security_deadline);
-            match deadlines.chain(update.stalls_at()).min() {
+            match deadlines
+                .chain(uart_deadline)
+                .chain(update.stalls_at())
+                .min()
+            {
                 Some(deadline) => Timer::at(deadline).await,
                 None => core::future::pending().await,
             }
@@ -825,6 +845,9 @@ async fn serve(
                     gps_deadline = None;
                     send(server, conn, Outgoing::GpsPower(false)).await;
                 }
+                if uart.due().is_some_and(|at| at <= now.as_millis()) {
+                    judge_uart(server, conn, &mut uart, phone.get(), update.active());
+                }
                 continue;
             }
         };
@@ -843,9 +866,23 @@ async fn serve(
                 let mut dfu_handle: Option<u16> = None;
                 let mut dfu_data: Vec<u8, 244> = Vec::new();
                 let mut log_request: Option<u16> = None;
+                // A write to one of our subscriptions (CCCDs), logged
+                // below, once the attribute table has taken it.
+                let mut subscription: Option<u16> = None;
+                if let GattEvent::NotAllowed(refused) = &event {
+                    // Usually a client that hasn't paired (yet): worth
+                    // seeing in a field log, as the client may well carry
+                    // on as if it had worked (see `link`).
+                    let handle = refused.handle();
+                    info!("ble: refused a request for handle {}", handle);
+                    if handle == rx || Some(handle) == server.uart.tx.cccd_handle {
+                        uart.reached_for_uart(Instant::now().as_millis());
+                    }
+                }
                 if let GattEvent::Write(write) = &event {
                     let handle = write.handle();
                     if handle == rx {
+                        uart.reached_for_uart(Instant::now().as_millis());
                         if !phone.get() {
                             become_phone(phone, gps, &mut gps_deadline, request_gps);
                             // Whatever an earlier connection left half-sent
@@ -869,6 +906,14 @@ async fn serve(
                                 dfu_handle = Some(handle);
                             }
                         });
+                    } else if [
+                        server.uart.tx.cccd_handle,
+                        server.dfu.control_point.cccd_handle,
+                        server.log.data.cccd_handle,
+                    ]
+                    .contains(&Some(handle))
+                    {
+                        subscription = Some(handle);
                     }
                 }
                 // The attribute table stores writes and answers reads, and
@@ -876,6 +921,9 @@ async fn serve(
                 match event.accept() {
                     Ok(reply) => reply.send().await,
                     Err(e) => warn!("ble: failed to reply: {}", e),
+                }
+                if let Some(handle) = subscription {
+                    subscribed(server, conn, handle, phone.get());
                 }
                 if let Some(index) = log_request {
                     // A fetch is hundreds of requests; make them quick.
@@ -984,6 +1032,7 @@ async fn serve(
                 pairing = false;
                 if security_level == SecurityLevel::EncryptedAuthenticated {
                     PAIRING_FAILURES.lock(|cell| cell.set((0, Instant::now())));
+                    uart.authenticated(Instant::now().as_millis());
                     if bond.is_some() {
                         save_bonds(stack).await;
                     }
@@ -1017,10 +1066,11 @@ async fn serve(
             }
             GattConnectionEvent::Encrypted { security_level, .. } => {
                 info!("ble: link encrypted ({})", security_level);
-                if security == Security::Pending
-                    && security_level == SecurityLevel::EncryptedAuthenticated
-                {
-                    security = Security::Settled;
+                if security_level == SecurityLevel::EncryptedAuthenticated {
+                    uart.authenticated(Instant::now().as_millis());
+                    if security == Security::Pending {
+                        security = Security::Settled;
+                    }
                 }
             }
             // What the phone actually gave us: the single biggest factor in
@@ -1096,6 +1146,67 @@ fn not_paired(conn: &GattConnection<'_, '_, Pool>, security: &mut Security) {
     UNPAIRED.lock(|cell| cell.set(Some(why)));
     // Not awaited-for space: see `show_passkey`.
     let _ = crate::INPUT.try_send(crate::InputEvent::Phone(PhoneEvent::Unpaired(why)));
+}
+
+/// Judges, at its deadline, whether the phone listens to the UART, and
+/// disconnects one that doesn't, once (see [`link`]): Gadgetbridge then
+/// reconnects, and subscribes afresh over a link that's paired by now.
+/// `talking` is whether it's written to the UART on this connection (it's
+/// the phone; see [`serve`]).
+fn judge_uart(
+    server: &Server<'_>,
+    conn: &GattConnection<'_, '_, Pool>,
+    uart: &mut link::Watch,
+    talking: bool,
+    updating: bool,
+) {
+    let link = Link {
+        authenticated: conn
+            .raw()
+            .security_level()
+            .is_ok_and(|l| l == SecurityLevel::EncryptedAuthenticated),
+        subscribed: server.uart.tx.should_notify(conn),
+        talking,
+        updating,
+    };
+    match uart.check(link, RECONNECTED.load(Ordering::Relaxed)) {
+        Verdict::Working => RECONNECTED.store(false, Ordering::Relaxed),
+        Verdict::Reconnect => {
+            warn!(
+                "ble: the phone isn't listening (subscribed: {}, writing: {}); reconnecting",
+                link.subscribed, link.talking
+            );
+            RECONNECTED.store(true, Ordering::Relaxed);
+            conn.raw().disconnect();
+        }
+        Verdict::Broken => warn!(
+            "ble: the phone still isn't listening (subscribed: {}, writing: {}); see FAQ C05",
+            link.subscribed, link.talking
+        ),
+        Verdict::Wait => {}
+    }
+}
+
+/// A client turned notifications on or off, with a write to the CCCD at
+/// `handle` (one of ours, which the attribute table has taken). Logged,
+/// and if it's the phone subscribing to the UART after it first wrote to
+/// it, it's told the version and the battery again: what was sent before
+/// it subscribed went nowhere (see [`send`]), and Gadgetbridge only hears
+/// those when they change.
+fn subscribed(server: &Server<'_>, conn: &GattConnection<'_, '_, Pool>, handle: u16, phone: bool) {
+    // Read back from the table, rather than parsed from the write.
+    let (name, on) = if Some(handle) == server.uart.tx.cccd_handle {
+        ("uart", server.uart.tx.should_notify(conn))
+    } else if Some(handle) == server.dfu.control_point.cccd_handle {
+        ("dfu", server.dfu.control_point.should_notify(conn))
+    } else {
+        ("log", server.log.data.should_notify(conn))
+    };
+    info!("ble: {=str} notifications {=bool}", name, on);
+    if name == "uart" && on && phone {
+        let _ = OUTBOX.try_send(Outgoing::Version);
+        let _ = OUTBOX.try_send(status(BATTERY.lock(Cell::get)));
+    }
 }
 
 /// Dispatches one line from the phone, as [`gb::parse`] reads it: the UI's
@@ -1298,7 +1409,15 @@ fn make_room_for_bond(stack: &Stack<'_, Controller, Pool>, conn: &GattConnection
 
 /// Sends one message, split into notifications that fit the MTU.
 /// Returns whether it went out (failures are logged).
+///
+/// Not if the client hasn't subscribed to the UART: `notify_raw` would
+/// drop each piece and still say it went out. (Until it subscribes, see
+/// [`subscribed`] and [`judge_uart`].)
 async fn send(server: &Server<'_>, conn: &GattConnection<'_, '_, Pool>, message: Outgoing) -> bool {
+    if !server.uart.tx.should_notify(conn) {
+        debug!("ble: not subscribed; dropped {}", message);
+        return false;
+    }
     let line = message.to_line();
     let chunk = usize::from(conn.raw().att_mtu().saturating_sub(3)).clamp(20, 244);
     // `notify_raw` sends the bytes as they are, where `notify` would want
@@ -1313,26 +1432,33 @@ async fn send(server: &Server<'_>, conn: &GattConnection<'_, '_, Pool>, message:
     true
 }
 
-/// Reports the battery to the phone at connect and whenever its percentage
-/// or charging state changes. (Not the voltage: it jitters by millivolts
-/// from sample to sample, which made this report every minute.)
+/// Reports the battery to the phone at connect, whenever its percentage
+/// or charging state changes, and every half hour regardless (see
+/// [`link::StatusReports`]).
 async fn report_status(phone: &Cell<bool>) {
     while !phone.get() {
         Timer::after_secs(1).await;
     }
-    let mut reported = None;
+    let mut reports = link::StatusReports::default();
     loop {
         let battery = BATTERY.lock(Cell::get);
-        let key = (battery.percent, battery.charging);
-        if reported != Some(key) {
-            let _ = OUTBOX.try_send(Outgoing::Status {
-                percent: battery.percent,
-                charging: battery.charging,
-                millivolts: battery.millivolts,
-            });
-            reported = Some(key);
+        if reports.due(
+            battery.percent,
+            battery.charging,
+            Instant::now().as_millis(),
+        ) {
+            let _ = OUTBOX.try_send(status(battery));
         }
         Timer::after_secs(60).await;
+    }
+}
+
+/// The battery, as a message for the phone.
+fn status(battery: BatteryReport) -> Outgoing {
+    Outgoing::Status {
+        percent: battery.percent,
+        charging: battery.charging,
+        millivolts: battery.millivolts,
     }
 }
 

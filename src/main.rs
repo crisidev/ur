@@ -25,7 +25,8 @@
 //! - [`heart`] / [`ppg`] / [`heart_schedule`]: heart rate from the optical
 //!   sensor, the signal processing behind it, and when to measure.
 //! - [`i2c`]: the shared sensor bus.
-//! - [`ble`] / [`gb`]: Bluetooth, speaking Gadgetbridge's Bangle.js protocol.
+//! - [`ble`] / [`gb`] / [`link`]: Bluetooth, speaking Gadgetbridge's Bangle.js
+//!   protocol, and keeping its link working.
 //! - [`clock`] / [`geo`]: wall-clock time and location, both from the phone,
 //!   and the sunrise/sunset derived from them.
 //! - [`temperature`] / [`aranet`] / [`bthome_sensor`]: the room's
@@ -79,6 +80,7 @@ mod heart;
 mod heart_reading;
 mod heart_schedule;
 mod i2c;
+mod link;
 mod live;
 mod mcuboot;
 mod motor;
