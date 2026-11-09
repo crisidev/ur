@@ -14,8 +14,7 @@
 # right by the code, for which gesture it was (1 tap, 2 double tap, 3
 # hold). A long press and a release fire only the `button` event: they
 # follow a hold, which said the code. So this triggers on the watch's
-# events (by its device id, as Home Assistant's own device triggers do),
-# and takes
+# events (see `triggers:` for why), and takes
 #
 # - taps, double taps, and holds from the dimmer events, which carry both
 #   the code and the gesture, ignoring the `button` events that come with
@@ -71,6 +70,10 @@ blueprint:
         device:
           filter:
             - integration: bthome
+          # Only BTHome devices with buttons (or dimmers): not thermometers.
+          entity:
+            - integration: bthome
+              domain: event
     button_1:
       name: Button 1 on its own (top left)
       icon: mdi:numeric-1-box
@@ -78,6 +81,7 @@ blueprint:
       input:
         button_1_press:
           name: Tap
+          description: Once it's clear no second button follows.
           default: []
           selector:
             action: {}
@@ -106,6 +110,7 @@ blueprint:
       input:
         button_2_press:
           name: Tap
+          description: Once it's clear no second button follows.
           default: []
           selector:
             action: {}
@@ -134,6 +139,7 @@ blueprint:
       input:
         button_3_press:
           name: Tap
+          description: Once it's clear no second button follows.
           default: []
           selector:
             action: {}
@@ -162,6 +168,7 @@ blueprint:
       input:
         button_4_press:
           name: Tap
+          description: Once it's clear no second button follows.
           default: []
           selector:
             action: {}
@@ -190,6 +197,7 @@ blueprint:
       input:
         button_5_press:
           name: Tap
+          description: Once it's clear no second button follows.
           default: []
           selector:
             action: {}
@@ -218,6 +226,7 @@ blueprint:
       input:
         button_6_press:
           name: Tap
+          description: Once it's clear no second button follows.
           default: []
           selector:
             action: {}
@@ -246,6 +255,7 @@ blueprint:
       input:
         button_7_press:
           name: Tap
+          description: Once it's clear no second button follows.
           default: []
           selector:
             action: {}
@@ -274,6 +284,7 @@ blueprint:
       input:
         button_8_press:
           name: Tap
+          description: Once it's clear no second button follows.
           default: []
           selector:
             action: {}
@@ -302,6 +313,7 @@ blueprint:
       input:
         button_9_press:
           name: Tap
+          description: Once it's clear no second button follows.
           default: []
           selector:
             action: {}
@@ -326,6 +338,7 @@ blueprint:
     slot_1:
       name: Code slot 1
       icon: mdi:dialpad
+      description: Any code and gesture, such as 23 double-tapped.
       collapsed: true
       input:
         slot_1_code:
@@ -336,6 +349,7 @@ blueprint:
             number:
               min: 0
               max: 99
+              step: 1
               mode: box
         slot_1_gesture:
           name: Gesture
@@ -343,6 +357,7 @@ blueprint:
           default: press
           selector:
             select:
+              mode: dropdown
               options:
                 - label: Tap
                   value: press
@@ -362,6 +377,7 @@ blueprint:
     slot_2:
       name: Code slot 2
       icon: mdi:dialpad
+      description: Any code and gesture, such as 23 double-tapped.
       collapsed: true
       input:
         slot_2_code:
@@ -372,6 +388,7 @@ blueprint:
             number:
               min: 0
               max: 99
+              step: 1
               mode: box
         slot_2_gesture:
           name: Gesture
@@ -379,6 +396,7 @@ blueprint:
           default: press
           selector:
             select:
+              mode: dropdown
               options:
                 - label: Tap
                   value: press
@@ -398,6 +416,7 @@ blueprint:
     slot_3:
       name: Code slot 3
       icon: mdi:dialpad
+      description: Any code and gesture, such as 23 double-tapped.
       collapsed: true
       input:
         slot_3_code:
@@ -408,6 +427,7 @@ blueprint:
             number:
               min: 0
               max: 99
+              step: 1
               mode: box
         slot_3_gesture:
           name: Gesture
@@ -415,6 +435,7 @@ blueprint:
           default: press
           selector:
             select:
+              mode: dropdown
               options:
                 - label: Tap
                   value: press
@@ -434,6 +455,7 @@ blueprint:
     slot_4:
       name: Code slot 4
       icon: mdi:dialpad
+      description: Any code and gesture, such as 23 double-tapped.
       collapsed: true
       input:
         slot_4_code:
@@ -444,6 +466,7 @@ blueprint:
             number:
               min: 0
               max: 99
+              step: 1
               mode: box
         slot_4_gesture:
           name: Gesture
@@ -451,6 +474,7 @@ blueprint:
           default: press
           selector:
             select:
+              mode: dropdown
               options:
                 - label: Tap
                   value: press
@@ -470,6 +494,7 @@ blueprint:
     slot_5:
       name: Code slot 5
       icon: mdi:dialpad
+      description: Any code and gesture, such as 23 double-tapped.
       collapsed: true
       input:
         slot_5_code:
@@ -480,6 +505,7 @@ blueprint:
             number:
               min: 0
               max: 99
+              step: 1
               mode: box
         slot_5_gesture:
           name: Gesture
@@ -487,6 +513,7 @@ blueprint:
           default: press
           selector:
             select:
+              mode: dropdown
               options:
                 - label: Tap
                   value: press
@@ -506,6 +533,7 @@ blueprint:
     slot_6:
       name: Code slot 6
       icon: mdi:dialpad
+      description: Any code and gesture, such as 23 double-tapped.
       collapsed: true
       input:
         slot_6_code:
@@ -516,6 +544,7 @@ blueprint:
             number:
               min: 0
               max: 99
+              step: 1
               mode: box
         slot_6_gesture:
           name: Gesture
@@ -523,6 +552,7 @@ blueprint:
           default: press
           selector:
             select:
+              mode: dropdown
               options:
                 - label: Tap
                   value: press
@@ -542,6 +572,7 @@ blueprint:
     slot_7:
       name: Code slot 7
       icon: mdi:dialpad
+      description: Any code and gesture, such as 23 double-tapped.
       collapsed: true
       input:
         slot_7_code:
@@ -552,6 +583,7 @@ blueprint:
             number:
               min: 0
               max: 99
+              step: 1
               mode: box
         slot_7_gesture:
           name: Gesture
@@ -559,6 +591,7 @@ blueprint:
           default: press
           selector:
             select:
+              mode: dropdown
               options:
                 - label: Tap
                   value: press
@@ -578,6 +611,7 @@ blueprint:
     slot_8:
       name: Code slot 8
       icon: mdi:dialpad
+      description: Any code and gesture, such as 23 double-tapped.
       collapsed: true
       input:
         slot_8_code:
@@ -588,6 +622,7 @@ blueprint:
             number:
               min: 0
               max: 99
+              step: 1
               mode: box
         slot_8_gesture:
           name: Gesture
@@ -595,6 +630,7 @@ blueprint:
           default: press
           selector:
             select:
+              mode: dropdown
               options:
                 - label: Tap
                   value: press
@@ -614,6 +650,7 @@ blueprint:
     every:
       name: Every press
       icon: mdi:code-braces
+      description: One action for every press, for codes beyond the slots.
       collapsed: true
       input:
         every_press:
@@ -643,6 +680,16 @@ mode: parallel
 max: 10
 max_exceeded: silent
 
+# The trigger is the BTHome integration's bus event, for the chosen watch,
+# rather than its device triggers (`trigger: device`, `domain: bthome`).
+# Those attach this same event trigger underneath, matching the same
+# fields (bthome/device_trigger.py), but are only valid for a button Home
+# Assistant has already seen: with the integration loaded, one unseen
+# button among an automation's device triggers disables the whole
+# automation, until it's reloaded. The event entities' state triggers
+# (`event.…_button_1`) would need each entity picked by hand, once it
+# exists. The event's name and fields haven't changed since BTHome got
+# events (2023.5), and the device triggers rely on them as much.
 triggers:
   - trigger: event
     event_type: bthome_ble_event

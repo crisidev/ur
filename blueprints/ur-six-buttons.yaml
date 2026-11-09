@@ -4,11 +4,8 @@
 #
 # Each press fires a `bthome_ble_event` whose `event_class` is the button
 # (`button_1` … `button_6`) and whose `event_type` is the gesture, as
-# BTHome names it. The trigger is that bus event, for the chosen watch's
-# device id, which is all Home Assistant's own BTHome device triggers
-# match too (bthome/device_trigger.py). Unlike device triggers, though,
-# it doesn't need Home Assistant to have seen each button and gesture
-# first: they're all here from the start.
+# BTHome names it. The automation triggers on that event (see `triggers:`
+# for why), and picks the input for its button and gesture.
 blueprint:
   name: ur watch, six buttons
   author: Jon Gjengset
@@ -40,6 +37,10 @@ blueprint:
         device:
           filter:
             - integration: bthome
+          # Only BTHome devices with buttons (or dimmers): not thermometers.
+          entity:
+            - integration: bthome
+              domain: event
     button_1:
       name: Button 1 (top left)
       icon: mdi:numeric-1-box
@@ -47,11 +48,13 @@ blueprint:
       input:
         button_1_press:
           name: Tap
+          description: Once it's clear no second tap follows.
           default: []
           selector:
             action: {}
         button_1_double_press:
           name: Double tap
+          description: Two taps in a row.
           default: []
           selector:
             action: {}
@@ -80,11 +83,13 @@ blueprint:
       input:
         button_2_press:
           name: Tap
+          description: Once it's clear no second tap follows.
           default: []
           selector:
             action: {}
         button_2_double_press:
           name: Double tap
+          description: Two taps in a row.
           default: []
           selector:
             action: {}
@@ -113,11 +118,13 @@ blueprint:
       input:
         button_3_press:
           name: Tap
+          description: Once it's clear no second tap follows.
           default: []
           selector:
             action: {}
         button_3_double_press:
           name: Double tap
+          description: Two taps in a row.
           default: []
           selector:
             action: {}
@@ -146,11 +153,13 @@ blueprint:
       input:
         button_4_press:
           name: Tap
+          description: Once it's clear no second tap follows.
           default: []
           selector:
             action: {}
         button_4_double_press:
           name: Double tap
+          description: Two taps in a row.
           default: []
           selector:
             action: {}
@@ -179,11 +188,13 @@ blueprint:
       input:
         button_5_press:
           name: Tap
+          description: Once it's clear no second tap follows.
           default: []
           selector:
             action: {}
         button_5_double_press:
           name: Double tap
+          description: Two taps in a row.
           default: []
           selector:
             action: {}
@@ -212,11 +223,13 @@ blueprint:
       input:
         button_6_press:
           name: Tap
+          description: Once it's clear no second tap follows.
           default: []
           selector:
             action: {}
         button_6_double_press:
           name: Double tap
+          description: Two taps in a row.
           default: []
           selector:
             action: {}
@@ -252,6 +265,16 @@ mode: parallel
 max: 10
 max_exceeded: silent
 
+# The trigger is the BTHome integration's bus event, for the chosen watch,
+# rather than its device triggers (`trigger: device`, `domain: bthome`).
+# Those attach this same event trigger underneath, matching the same
+# fields (bthome/device_trigger.py), but are only valid for a button Home
+# Assistant has already seen: with the integration loaded, one unseen
+# button among an automation's device triggers disables the whole
+# automation, until it's reloaded. The event entities' state triggers
+# (`event.…_button_1`) would need each entity picked by hand, once it
+# exists. The event's name and fields haven't changed since BTHome got
+# events (2023.5), and the device triggers rely on them as much.
 triggers:
   - trigger: event
     event_type: bthome_ble_event

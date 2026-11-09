@@ -27,7 +27,11 @@ from pytest_homeassistant_custom_component.common import (
 from homeassistant.components.blueprint.models import Blueprint
 from homeassistant.components.blueprint.schemas import BLUEPRINT_SCHEMA
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import (
+    device_registry as dr,
+    entity_registry as er,
+    selector,
+)
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util, yaml as yaml_util
 
@@ -177,16 +181,40 @@ async def setup(hass: HomeAssistant, path: str, inputs: dict) -> str:
 
 @pytest.mark.parametrize("path", ["ur-six-buttons.yaml", "ur-two-layers.yaml"])
 def test_schema(path: str) -> None:
-    blueprint = Blueprint(
-        yaml_util.load_yaml(BLUEPRINTS / path),
-        expected_domain="automation",
-        schema=BLUEPRINT_SCHEMA,
-    )
+    data = yaml_util.load_yaml(BLUEPRINTS / path)
+    # Home Assistant's own schema, as on import: the metadata, inputs and
+    # sections, each selector's config (`selector.validate_selector`), and
+    # that every `!input` is defined.
+    blueprint = Blueprint(data, expected_domain="automation", schema=BLUEPRINT_SCHEMA)
     # min_version is met by the release under test.
     assert blueprint.validate() is None
-    # Every input is optional.
+
+    # What the schema leaves optional, but the blueprint docs ask for
+    # (https://www.home-assistant.io/docs/blueprint/schema/).
+    metadata = blueprint.metadata
+    for key in ["description", "author", "source_url"]:
+        assert metadata.get(key), key
+    assert metadata["source_url"].endswith(f"/blob/main/blueprints/{path}")
+    assert metadata["homeassistant"]["min_version"]
+    for key, spec in metadata["input"].items():
+        assert spec.get("name"), key
+        for name, input_spec in spec.get("input", {}).items():
+            assert input_spec.get("name"), name
+            assert input_spec.get("selector"), name
+            # "All collapsed inputs must also have a defined default."
+            if spec.get("collapsed"):
+                assert "default" in input_spec, name
+
+    # Every input but the watch is optional, and its default is a value its
+    # selector accepts (the schema takes any default).
     for name, spec in blueprint.inputs.items():
-        assert name == "watch" or "default" in spec, name
+        if name == "watch":
+            continue
+        assert "default" in spec, name
+        selector.selector(spec["selector"])(spec["default"])
+
+    # Every input is used.
+    assert yaml_util.extract_inputs(data) == set(blueprint.inputs)
 
 
 # ==============================================================================
