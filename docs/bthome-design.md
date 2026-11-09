@@ -185,7 +185,7 @@ do each other; at a burst per 5%, that's rare. With two layers, the
 battery still rides in each press's advertisement.
 
 A double tap in this layout is unambiguous (no sequences), so a first
-tap waits only `WAIT_DOUBLE` (0.4 s) for the same button again, and
+tap waits only `WAIT_DOUBLE` (0.3 s) for the same button again, and
 another button, or a hold, sends it at once.
 
 ## 0. Decisions at a glance

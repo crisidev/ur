@@ -75,17 +75,25 @@
 use embassy_time::{Duration, Instant};
 
 /// After a first tap, how long another touch has to start for the two to
-/// be a sequence. Moving to another button and tapping it takes a few
-/// hundred milliseconds; misreading a sequence as two singles would send
-/// two wrong events, which is worse than a single arriving late.
+/// be a sequence. Misreading a sequence as two singles would send two
+/// wrong events, which is worse than a single arriving late, so this is
+/// the longer wait. In the field logs (`touch:` lines, lift to the next
+/// touch's start), a tap followed by one elsewhere on the screen left
+/// 50–310 ms, and 430–580 ms the three slowest times: 0.6 s takes all of
+/// them, where it used to be 0.8 s, for singles that go 0.2 s sooner.
 ///
-/// TODO: tune from field logs (`buttons:` lines), once there are some.
-pub const WAIT_SECOND: Duration = Duration::from_millis(800);
+/// TODO: re-tune from two-layer sequences in field logs (`buttons:`
+/// lines with two-digit codes), once there are some: none so far.
+pub const WAIT_SECOND: Duration = Duration::from_millis(600);
 /// After a tap that a double tap could continue (a sequence's second; with
 /// six buttons, any), how long a tap on the same button has to start for
-/// a double tap: a quick double tap leaves 100–200 ms between lift and
-/// press.
-pub const WAIT_DOUBLE: Duration = Duration::from_millis(400);
+/// a double tap. In the field logs, most taps on the spot the last one
+/// lifted from left 50–160 ms between lift and press (the grid's one
+/// double tap, 128 ms), none 160–200 ms, and the slower ones came in long
+/// runs of steady taps, not as doubles. So 0.3 s is still about twice
+/// the slowest double tap, and every six-button tap goes 0.1 s sooner
+/// than with the 0.4 s this used to be.
+pub const WAIT_DOUBLE: Duration = Duration::from_millis(300);
 
 /// What the last button of a [`Press`] did.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

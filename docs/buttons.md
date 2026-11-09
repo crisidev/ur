@@ -29,7 +29,7 @@ Numbered in reading order:
 Each button is a **code**, 1–6, and has three **gestures**: tap, double
 tap, and hold. That's 18 events.
 
-A tap waits 0.4 s to see whether a double tap follows (a tap on another
+A tap waits 0.3 s to see whether a double tap follows (a tap on another
 button sends it at once), lit while it waits; once sent, the button
 shows its number and the gesture, and buzzes.
 
@@ -57,8 +57,8 @@ So 2, then 3 twice, is 23 double-tapped; 1 three times is 11
 double-tapped; 4, then holding 7, is 47 held. That's 261
 code-and-gesture pairs.
 
-A tap waits briefly to see whether more follows: 0.8 s for a second
-button to start, then 0.4 s for a double tap. The buttons it's waiting on
+A tap waits briefly to see whether more follows: 0.6 s for a second
+button to start, then 0.3 s for a double tap. The buttons it's waiting on
 stay lit; once sent, the last one shows the code and buzzes.
 
 ## Either way

@@ -114,7 +114,7 @@ mod tests {
         assert_eq!(
             run.sent,
             [(
-                1800,
+                1000 + WAIT_SECOND.as_millis(),
                 Press {
                     code: 5,
                     gesture: Tap
@@ -231,14 +231,14 @@ mod tests {
 
     #[test]
     fn a_hold_counts_from_when_it_started() {
-        // The hold starts 0.7 s after the first tap's lift, in time, but is
+        // The hold starts 0.5 s after the first tap's lift, in time, but is
         // only recognised 0.6 s later, well after the wait. The UI loop
         // woke at the deadline with the finger down, so held off.
         let mut run = Run::codes();
         run.tap(4, 1000);
         run.expire(1000 + WAIT_SECOND.as_millis(), true);
         assert!(run.sent.is_empty(), "a finger is down: it may continue");
-        run.touch(9, Touch::Hold, 1700, 2300);
+        run.touch(9, Touch::Hold, 1500, 2100);
         assert_eq!(run.presses(), [(49, Hold)]);
     }
 
@@ -441,6 +441,15 @@ mod tests {
         // A third tap starts afresh, rather than making a triple.
         run.tap(1, 1450).until(10_000);
         assert_eq!(run.presses(), [(1, DoubleTap), (1, Tap)]);
+    }
+
+    #[test]
+    fn six_a_slow_double_tap_still_counts() {
+        // The field logs' slowest double taps leave ~160 ms from lift to
+        // press (see `WAIT_DOUBLE`); one that leaves 250 ms is still one.
+        let mut run = Run::six();
+        run.tap(3, 1000).touch(3, Touch::Tap, 1250, 1250 + TAP_MS);
+        assert_eq!(run.presses(), [(3, DoubleTap)]);
     }
 
     #[test]

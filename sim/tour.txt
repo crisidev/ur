@@ -148,7 +148,7 @@ wait 300ms
 tap 67,13
 wait 100ms
 shot 11f2-layers-waiting.png
-wait 310ms
+wait 210ms
 expect buzzing
 shot 11f3-layers-sent.png
 wait 2s
