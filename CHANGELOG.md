@@ -44,6 +44,9 @@ missing below were test builds for the dev kit.
 
 ### Fixed
 
+- Reconnect Gadgetbridge, once, when it connects but never subscribes to what the watch sends (it then shows no battery and firmware "N/A", and gets nothing from the watch), as it can when it asks before the first pairing has finished; it reconnects at once and subscribes properly, and the README's new FAQ C05 covers the rare case that doesn't fix (ff3b3b2)
+- Report the battery to Gadgetbridge every half hour even when it hasn't changed, so one report missed no longer leaves it stale until the next change (ff3b3b2)
+- Remove a stored setting too short for what it's stored under (left by another build), rather than warning about it in the log at every boot (93fa3e2)
 - Stop the watch sometimes resetting as it saved something to its flash (a setting, the alarms, a pairing, the temperature calibration, the button grid's counter, or confirming an update), or, more rarely, never finishing the save, which kept every later save from happening until a restart (caead12)
 - Play or pause media with the screen off or on a glance only on a long press in the middle of the screen, so an arm folded over the watch, resting against it, no longer does: within a quarter of the screen of the top or bottom edge, or a fifth of a side, a long press there now does nothing; on the awake clock face one anywhere still plays or pauses, bar in the 3 s after a touch woke the screen (which the arm can do too), when it must also be in the middle (introduced in 0.9.0) (41c9753, 2e774fa)
 - Keep an alarm ringing through a call: the call ending (answered, declined, or over), or the phone's "find my watch" stopping, left the alarm on screen but silent; and stop a notification arriving during a call from cutting its buzz short (3451cca)
