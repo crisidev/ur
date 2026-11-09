@@ -31,14 +31,14 @@
 //! (`supportsManualHeartRateMeasurement` is false: "the current code for
 //! onHeartRateTest looks completely broken").
 //!
-//! One thing we add: a [`LIMIT`]. The LED costs ~2.7 mA measuring (up to
-//! ~27 mA with nothing against the sensor, as on a desk, which reflects
-//! enough light that it never gives up), and a stop that never comes (the
-//! phone keeping the connection with Gadgetbridge stuck, say) would
-//! otherwise spend it until the battery is flat. Gadgetbridge can't keep a
-//! session alive past the limit: its chart repeats its request every
-//! second "to keep it measuring", but its Bangle.js driver passes on only
-//! changes. Opening the chart again starts a new session.
+//! There's deliberately no time limit: the chart is open on the phone, so
+//! the wearer is watching, and closing it (or the phone's screen going
+//! off) stops the session. (One couldn't be a keep-alive timeout anyway:
+//! the chart repeats its request every second "to keep it measuring", but
+//! Gadgetbridge's Bangle.js driver passes on only changes, so nothing
+//! arrives during a session.) The LED costs ~2.7 mA measuring, more with
+//! nothing against the sensor, so a stop that never came, the connection
+//! staying up, would cost battery until it did.
 //!
 //! The UI loop ([`crate::ui_loop`]) runs this, once a second, as on the
 //! watch so in the simulator: [`take`] what Gadgetbridge asked for (which
@@ -52,24 +52,13 @@ use core::sync::atomic::{AtomicU32, Ordering};
 // Constants
 // ==============================================================================
 
-/// The longest a session runs without being asked again, in seconds. Long
-/// enough to watch the heart rate through a few minutes of effort and the
-/// recovery after; short enough that a forgotten session costs at most
-/// ~0.5 mAh on a wrist (~4.5 mAh at the LED's top drive), against ~1.5
-/// mAh a day for the background measurements (see
-/// [`crate::heart_schedule::LED_BUDGET`]).
-///
-/// TODO: the wearer may want longer (a workout watched on the phone);
-/// see whether anyone does.
-pub const LIMIT: u32 = 10 * 60;
-
 /// The interval when Gadgetbridge gives none (or none we can use):
 /// Gadgetbridge's own default.
 pub const DEFAULT_INTERVAL: u16 = 10;
 
-/// The longest interval we follow: any longer, and a session ends before
-/// its first report.
-pub const MAX_INTERVAL: u16 = LIMIT as u16;
+/// The longest interval we follow, in seconds: ten minutes between
+/// reports is hardly live any more, and it keeps the interval a `u16`.
+pub const MAX_INTERVAL: u16 = 10 * 60;
 
 /// The oldest a reading may be and still be reported (if the interval is
 /// shorter), in seconds. A clean signal gives one every ~2 s; reporting an
@@ -150,8 +139,6 @@ pub enum Ended {
     Asked,
     /// The phone went away.
     Disconnected,
-    /// It ran for [`LIMIT`].
-    TimedOut,
 }
 
 impl Ended {
@@ -160,7 +147,6 @@ impl Ended {
         match self {
             Self::Asked => "asked",
             Self::Disconnected => "disconnected",
-            Self::TimedOut => "time limit",
         }
     }
 }
@@ -191,8 +177,8 @@ pub enum Poll {
 struct Session {
     heart_rate: bool,
     interval: u16,
-    /// When it (last) started, for [`LIMIT`], and to tell this session's
-    /// readings from older ones.
+    /// When it (last) started, to tell this session's readings from older
+    /// ones.
     started: u32,
     /// When the next report is due.
     next: u32,
@@ -212,7 +198,7 @@ impl Live {
 
     /// Acts on Gadgetbridge's `request`, at `now`, with today's step count
     /// at `steps`: starts a session, or restarts one (with the new
-    /// interval, and the full [`LIMIT`] again), or stops one, saying so.
+    /// interval), or stops one, saying so.
     pub fn ask(&mut self, request: Request, now: u32, steps: u32) -> Option<Ended> {
         if !request.wanted() {
             return self.session.take().map(|_| Ended::Asked);
@@ -249,16 +235,9 @@ impl Live {
         let Some(session) = &mut self.session else {
             return Poll::Idle;
         };
-        let ended = if !connected {
-            Some(Ended::Disconnected)
-        } else if now.saturating_sub(session.started) >= LIMIT {
-            Some(Ended::TimedOut)
-        } else {
-            None
-        };
-        if let Some(ended) = ended {
+        if !connected {
             self.session = None;
-            return Poll::Ended(ended);
+            return Poll::Ended(Ended::Disconnected);
         }
         if now < session.next {
             return Poll::Idle;

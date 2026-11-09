@@ -151,7 +151,7 @@ mod tests {
         let mut live = Live::new();
         let (start, mut steps, mut reported) = (1000, 3_000u32, 0u32);
         live.ask(Request::new(true, true, Some(7)), start, steps);
-        // Up to a report, within the limit.
+        // Up to a report.
         for now in start..=start + 7 * 80 {
             steps += (now * 7919 % 13) / 4;
             if let Poll::Report(report) = live.poll(now, true, steps, None) {
@@ -175,31 +175,23 @@ mod tests {
         assert_eq!(live.poll(110, true, 0, None), Poll::Idle);
     }
 
+    /// No time limit: the chart is open on the phone, so a session runs
+    /// until Gadgetbridge stops it (or the phone goes), however long.
     #[test]
-    fn the_limit_ends_it_unless_asked_again() {
+    fn it_runs_until_stopped() {
         let mut live = Live::new();
         live.ask(BOTH, 100, 0);
-        let mut seconds = 0;
-        let ended = loop {
-            if let Poll::Ended(ended) = live.poll(100 + seconds, true, 0, None) {
-                break (seconds, ended);
+        let mut reports = 0;
+        for now in 100..=100 + 24 * 60 * 60 {
+            match live.poll(now, true, 0, None) {
+                Poll::Idle => {}
+                Poll::Report(_) => reports += 1,
+                Poll::Ended(ended) => panic!("ended at {now}: {ended:?}"),
             }
-            seconds += 1;
-        };
-        assert_eq!(ended, (LIMIT, Ended::TimedOut));
-        assert!(!live.heart_rate());
-
-        // Asked again (the interval changed, say), the limit starts over.
-        live.ask(BOTH, 1000, 0);
-        let again = 1000 + LIMIT - 1;
-        live.ask(Request::new(true, true, Some(5)), again, 0);
-        assert_eq!(live.poll(1000 + LIMIT, true, 0, None), Poll::Idle);
+        }
+        assert_eq!(reports, 24 * 60 * 60 / 10);
         assert!(live.heart_rate());
-        assert_eq!(live.poll(again + LIMIT - 1, true, 0, None), report(0, 0));
-        assert_eq!(
-            live.poll(again + LIMIT, true, 0, None),
-            Poll::Ended(Ended::TimedOut)
-        );
+        assert_eq!(live.ask(STOP, 100 + 24 * 60 * 60, 0), Some(Ended::Asked));
     }
 
     /// A poll that comes late (a busy UI loop) reports once, and the next

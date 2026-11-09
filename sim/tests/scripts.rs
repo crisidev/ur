@@ -541,8 +541,8 @@ fn gadgetbridge_lines() {
 
 /// Gadgetbridge's live activity (`live`): a report every interval, with
 /// the steps since the last and this session's latest heart rate, until
-/// Gadgetbridge stops it, the phone disconnects, or it's run for
-/// `live::LIMIT` (10 minutes).
+/// Gadgetbridge stops it or the phone disconnects, however long that
+/// takes (the chart is open on the phone: no time limit).
 #[test]
 fn live_activity() {
     let dir = out("live");
@@ -561,9 +561,9 @@ fn live_activity() {
         stop.into(),
         "wait 30s\necho disconnecting\n".into(),
         start(5),
-        "wait 6s\ndisconnect\nwait 30s\necho limit\n".into(),
+        "wait 6s\ndisconnect\nwait 30s\necho long\n".into(),
         start(60),
-        "wait 11m\necho end\n".into(),
+        "wait 30m\nwait 30s\necho end\n".into(),
     ]
     .concat();
     std::fs::write(&script, text).expect("the target dir is writable");
@@ -577,8 +577,8 @@ fn live_activity() {
     };
     let (stopping, rest) = log.split_once("live activity: stop").expect("it stops");
     let (stopped, rest) = rest.split_once("disconnecting").expect("it goes on");
-    let (disconnecting, rest) = rest.split_once("limit").expect("it goes on");
-    let (limited, _) = rest.split_once("end").expect("it ends");
+    let (disconnecting, rest) = rest.split_once("long").expect("it goes on");
+    let (long, _) = rest.split_once("end").expect("it ends");
     // The reading from before the session isn't this session's.
     assert_eq!(
         reports(stopping),
@@ -594,10 +594,10 @@ fn live_activity() {
         [r#"{"t":"act","stp":0,"hrm":0,"rt":1}"#],
         "{log}"
     );
-    // A report a minute, nine of them in the ten minutes.
+    // A report a minute for the half hour, with no end in sight.
     assert_eq!(
-        reports(limited),
-        [r#"{"t":"act","stp":0,"hrm":0,"rt":1}"#; 9],
+        reports(long),
+        [r#"{"t":"act","stp":0,"hrm":0,"rt":1}"#; 30],
         "{log}"
     );
 }
