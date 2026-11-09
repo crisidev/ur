@@ -114,8 +114,10 @@ defmt's strings stay in the ELF, so `debug = 2` is free. `cargo bloat
 
 - `str::parse::<f32>()` or `f64`: 18 KB of tables and code. Use
   `decimal::parse`.
-- libm's `f64` `sin`, `cos`, `asin`, `acos`, `fmod`: ~7 KB on top of the
-  `f32` ones, which are already in.
+- Any `f64` arithmetic: the FPU is single precision, so it's soft-float
+  routines, ~3 KB of them, and none is linked now. That includes libm's
+  `sinf` and `cosf`, which compute in `f64` (`geo::sin_deg` doesn't), and
+  libm's `f64` functions, ~7 KB more.
 - `defmt::Debug2Format(&e)`: puts every variant name of `e`'s type in
   flash (bt-hci's errors alone are 2 KB). Log `e` itself when it
   implements `defmt::Format`, as trouble-host's types do.

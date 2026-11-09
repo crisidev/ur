@@ -35,6 +35,7 @@ use core::fmt::Write as _;
 use defmt::{Format, debug, warn};
 use heapless::String;
 
+use crate::decimal::Decimal;
 use crate::phone::{PhoneEvent, TextBuilder};
 use crate::{alarm, route};
 
@@ -113,8 +114,10 @@ pub enum Incoming<'a> {
     /// be, in metres, if it says (in `hdop`, which Gadgetbridge fills with
     /// Android's `Location.getAccuracy()`, not a dilution of precision).
     Gps {
-        latitude: f64,
-        longitude: f64,
+        /// In millionths of a degree, as [`crate::geo::Location`] keeps
+        /// them.
+        latitude_micro: i64,
+        longitude_micro: i64,
         accuracy: Option<f32>,
     },
     /// `{"t":"is_gps_active"}`: Gadgetbridge asking whether we want GPS.
@@ -146,16 +149,19 @@ pub fn parse(line: &[u8]) -> Option<Incoming<'_>> {
     let kind = object.get("t")?.as_raw_str()?;
     Some(match kind {
         "gps" => Incoming::Gps {
-            latitude: object.get("lat")?.as_f64()?,
-            longitude: object.get("lon")?.as_f64()?,
+            latitude_micro: object.get("lat")?.as_number()?.scaled(6),
+            longitude_micro: object.get("lon")?.as_number()?.scaled(6),
             accuracy: object
                 .get("hdop")
-                .and_then(|v| v.as_f64())
-                .map(|m| m as f32),
+                .and_then(|v| v.as_number())
+                .map(Decimal::to_f32),
         },
         "is_gps_active" => Incoming::IsGpsActive,
         "actfetch" => Incoming::ActivityFetch {
-            since_ms: object.get("ts").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64,
+            since_ms: object
+                .get("ts")
+                .and_then(|v| v.as_number())
+                .map_or(0, |ts| ts.scaled(0)),
         },
         _ => {
             let mut text_as_bitmaps = false;
@@ -251,15 +257,20 @@ fn phone_event(kind: &str, object: Object<'_>, bitmaps: &mut bool) -> Option<Pho
             let mut alarms = alarm::Phone::default();
             let items = object.get("d").map(|d| d.items()).into_iter().flatten();
             for alarm in items.filter_map(|v| v.as_object()) {
-                let number = |key| alarm.get(key).and_then(|v| v.as_f64());
-                let (Some(hour), Some(minute)) = (number("h"), number("m")) else {
+                // Whole, and clamped to the type, as `as` from a float did.
+                let number = |key, most: u16| {
+                    let number = alarm.get(key).and_then(|v| v.as_number())?;
+                    Some(number.scaled(0).clamp(0, i64::from(most)) as u16)
+                };
+                let (Some(hour), Some(minute)) = (number("h", u16::MAX), number("m", u16::MAX))
+                else {
                     continue;
                 };
-                let days = number("rep").unwrap_or(0.0) as u8;
+                let days = number("rep", u8::MAX.into()).unwrap_or(0) as u8;
                 // A Bangle.js takes a missing `on` as on.
                 let on = alarm.get("on").and_then(|v| v.as_bool()) != Some(false);
-                if !alarms.push(hour as u16, minute as u16, days, on) {
-                    warn!("gb: dropped an alarm ({}:{})", hour as u16, minute as u16);
+                if !alarms.push(hour, minute, days, on) {
+                    warn!("gb: dropped an alarm ({}:{})", hour, minute);
                 }
             }
             PhoneEvent::Alarms(alarms)
@@ -315,7 +326,7 @@ fn parse_set_time(rest: &[u8]) -> Option<Incoming<'static>> {
     let zone = find(rest, b"E.setTimeZone(")?;
     let zone = &rest[zone + b"E.setTimeZone(".len()..];
     let end = zone.iter().position(|&b| b == b')')?;
-    let hours = crate::decimal::parse(&zone[..end])? as f32;
+    let hours = crate::decimal::parse(&zone[..end])?.to_f32();
     // Offsets are whole quarter-hours in practice (e.g. +5:45); rounding to
     // minutes absorbs float noise in Gadgetbridge's division.
     let offset_minutes = libm::roundf(hours * 60.0) as i16;
@@ -548,7 +559,7 @@ impl<'a> Value<'a> {
         }
     }
 
-    pub fn as_f64(&self) -> Option<f64> {
+    pub fn as_number(&self) -> Option<Decimal> {
         crate::decimal::parse(self.0)
     }
 }

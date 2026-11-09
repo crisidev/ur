@@ -1,5 +1,5 @@
 //! Host tests for the firmware's `decimal` module: Gadgetbridge's numbers,
-//! parsed without core's float tables. `cargo test` runs them.
+//! parsed without core's float tables or `f64`. `cargo test` runs them.
 
 #[path = "../../../src/decimal.rs"]
 #[allow(dead_code)]
@@ -11,15 +11,20 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::decimal::parse;
+    use super::decimal::{Decimal, parse};
     use quickcheck::{QuickCheck, TestResult};
 
-    fn parsed(text: &str) -> Option<f64> {
+    fn parsed(text: &str) -> Option<Decimal> {
         parse(text.as_bytes())
     }
 
+    fn scaled(text: &str, places: i32) -> i64 {
+        parsed(text).unwrap().scaled(places)
+    }
+
     /// What Gadgetbridge sends: coordinates, time zones, timestamps, alarm
-    /// fields, all exactly as `str::parse` reads them.
+    /// fields, all within the digits an `f32` holds, so exactly as
+    /// `str::parse` reads them.
     #[test]
     fn gadgetbridge_numbers() {
         for text in [
@@ -42,26 +47,26 @@ mod tests {
             "1E7",
             "1e+2",
         ] {
-            assert_eq!(parsed(text), Some(text.parse().unwrap()), "{text}");
+            let want: f32 = text.parse().unwrap();
+            assert_eq!(parsed(text).unwrap().to_f32(), want, "{text}");
         }
     }
 
-    /// Past the fast path (here 17 significant digits, as Java prints some
-    /// doubles): off by at most an ulp.
+    /// Coordinates in millionths of a degree, and timestamps, exactly.
     #[test]
-    fn long_coordinates() {
-        for text in [
-            "59.913868800000006",
-            "-0.12775829999999999",
-            "151.20929000000001",
-        ] {
-            let want: f64 = text.parse().unwrap();
-            let got = parsed(text).unwrap();
-            assert!(
-                (got.to_bits() as i64 - want.to_bits() as i64).abs() <= 1,
-                "{text}: {got}"
-            );
-        }
+    fn scaled_exactly() {
+        assert_eq!(scaled("59.9139", 6), 59_913_900);
+        assert_eq!(scaled("-33.86882", 6), -33_868_820);
+        assert_eq!(scaled("-1.0E-4", 6), -100);
+        assert_eq!(scaled("1762436800000", 0), 1_762_436_800_000);
+        assert_eq!(scaled("1.7624368E12", 0), 1_762_436_800_000);
+        // Past the millionths (17 significant digits, as Java prints some
+        // doubles): toward zero.
+        assert_eq!(scaled("59.913868800000006", 6), 59_913_868);
+        assert_eq!(scaled("-0.12775829999999999", 6), -127_758);
+        // Alarm fields: toward zero, too.
+        assert_eq!(scaled("7.9", 0), 7);
+        assert_eq!(scaled("-7.9", 0), -7);
     }
 
     #[test]
@@ -77,63 +82,76 @@ mod tests {
     /// Forms `str::parse` takes and JSON doesn't: still fine.
     #[test]
     fn lenient_forms() {
-        assert_eq!(parsed(".5"), Some(0.5));
-        assert_eq!(parsed("5."), Some(5.0));
-        assert_eq!(parsed("+5"), Some(5.0));
+        assert_eq!(parsed(".5").unwrap().to_f32(), 0.5);
+        assert_eq!(parsed("5.").unwrap().to_f32(), 5.0);
+        assert_eq!(parsed("+5").unwrap().to_f32(), 5.0);
     }
 
     #[test]
     fn extremes() {
-        assert_eq!(parsed("0e400"), Some(0.0));
-        assert_eq!(parsed("1e400"), Some(f64::INFINITY));
-        assert_eq!(parsed("-1e400"), Some(f64::NEG_INFINITY));
-        assert_eq!(parsed("1e-400"), Some(0.0));
-        assert_eq!(parsed("1e99999999999"), Some(f64::INFINITY));
+        assert_eq!(parsed("0e400").unwrap().to_f32(), 0.0);
+        assert_eq!(parsed("1e400").unwrap().to_f32(), f32::INFINITY);
+        assert_eq!(parsed("-1e400").unwrap().to_f32(), f32::NEG_INFINITY);
+        assert_eq!(parsed("1e-400").unwrap().to_f32(), 0.0);
+        assert_eq!(parsed("1e99999999999").unwrap().to_f32(), f32::INFINITY);
+        assert_eq!(scaled("1e400", 0), i64::MAX);
+        assert_eq!(scaled("-1e99999999999", 6), -i64::MAX);
+        assert_eq!(scaled("1e-400", 6), 0);
+        assert_eq!(scaled("0e400", 0), 0);
         // More digits than a u64 holds: the extra ones are dropped, before
         // the point keeping their place.
-        let close = |text: &str, want: f64| {
-            let got = parsed(text).unwrap();
-            assert!(((got - want) / want).abs() < 1e-15, "{text}: {got}");
-        };
-        close("123456789012345678901234", 1.2345678901234568e23);
-        close("0.1234567890123456789012345", 0.12345678901234568);
+        assert_eq!(scaled("123456789012345678901234", -10), 12_345_678_901_234);
+        assert_eq!(
+            scaled("0.1234567890123456789012345", 18),
+            123_456_789_012_345_678
+        );
     }
 
-    /// Within the fast path (≤ 15 significant digits, exponent ≤ 22), exactly
-    /// `str::parse`'s correctly rounded answer.
+    /// `scaled` is the exact value, toward zero, wherever it fits.
     #[test]
-    fn exact_in_the_fast_path() {
-        fn property(mantissa: i64, exponent: i8) -> TestResult {
+    fn scaled_is_exact() {
+        fn property(mantissa: i64, exponent: i8, places: u8) -> TestResult {
             let mantissa = mantissa % 1_000_000_000_000_000;
-            let exponent = i32::from(exponent) % 23;
+            let exponent = i32::from(exponent) % 20;
+            let places = i32::from(places % 10);
             let text = format!("{mantissa}e{exponent}");
-            let want: f64 = text.parse().unwrap();
-            TestResult::from_bool(parsed(&text) == Some(want))
+            let shift = exponent + places;
+            let want = if shift >= 0 {
+                match 10i128
+                    .checked_pow(shift as u32)
+                    .and_then(|p| p.checked_mul(i128::from(mantissa)))
+                {
+                    Some(want) if want.unsigned_abs() <= i64::MAX as u128 => want as i64,
+                    _ => return TestResult::discard(),
+                }
+            } else {
+                // Toward zero, as Rust's integer division is.
+                (i128::from(mantissa) / 10i128.pow(shift.unsigned_abs())) as i64
+            };
+            TestResult::from_bool(scaled(&text, places) == want)
         }
         QuickCheck::new()
             .tests(100_000)
-            .quickcheck(property as fn(i64, i8) -> TestResult);
+            .quickcheck(property as fn(i64, i8, u8) -> TestResult);
     }
 
-    /// Anything as `{}` prints it, however long or far from 1: to 14
-    /// significant digits of `str::parse`'s (the error grows with the
-    /// exponent, from the inexact powers of ten past 10^22). Except right
-    /// at the ends of the range, where that error tips over into infinity
-    /// or zero.
+    /// Anything as `{}` prints an `f32`, however long or far from 1: within
+    /// two ulps of `str::parse`'s, wherever the value is a normal `f32`
+    /// (scaling by a power of ten past 10^38 tips over into infinity).
     #[test]
-    fn close_everywhere() {
-        fn property(value: f64) -> TestResult {
-            if !value.is_finite() || (value != 0.0 && !(1e-290..1e290).contains(&value.abs())) {
+    fn close_to_f32_everywhere() {
+        fn property(value: f32) -> TestResult {
+            if !value.is_normal() || !(1e-30..1e30).contains(&value.abs()) {
                 return TestResult::discard();
             }
             for text in [
                 format!("{value}"),
                 format!("{value:e}"),
-                format!("{:.7}", value),
+                format!("{value:.3}"),
             ] {
-                let want: f64 = text.parse().unwrap();
-                let got = parsed(&text).unwrap();
-                if want != got && ((got - want) / want).abs() > 1e-14 {
+                let want: f32 = text.parse().unwrap();
+                let got = parsed(&text).unwrap().to_f32();
+                if want != 0.0 && (got.to_bits() as i64 - want.to_bits() as i64).abs() > 2 {
                     println!("{text}: {got} vs {want}");
                     return TestResult::failed();
                 }
@@ -142,6 +160,6 @@ mod tests {
         }
         QuickCheck::new()
             .tests(100_000)
-            .quickcheck(property as fn(f64) -> TestResult);
+            .quickcheck(property as fn(f32) -> TestResult);
     }
 }

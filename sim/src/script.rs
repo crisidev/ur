@@ -14,6 +14,7 @@ use crate::activity;
 use crate::aranet;
 use crate::bthome_sensor;
 use crate::clock;
+use crate::decimal;
 use crate::gb::{self, Incoming, LineBuffer, Outgoing};
 use crate::geo;
 use crate::gesture::{Gesture, Touch};
@@ -197,10 +198,15 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
             watch.refresh();
         }
         "location" => {
-            let number = |s: &str| s.parse::<f64>().map_err(|e| format!("location: {s}: {e}"));
+            // In millionths of a degree, read as the watch reads the phone's.
+            let number = |s: &str| {
+                decimal::parse(s.as_bytes())
+                    .map(|d| d.scaled(6))
+                    .ok_or(format!("location: {s}: not a number"))
+            };
             let (latitude, longitude) = (number(need(0, "LAT")?)?, number(need(1, "LON")?)?);
             let location =
-                geo::Location::from_degrees(latitude, longitude).ok_or("location: out of range")?;
+                geo::Location::from_micro(latitude, longitude).ok_or("location: out of range")?;
             geo::set_location(location, true);
             watch.refresh();
         }
@@ -574,13 +580,18 @@ fn gadgetbridge(watch: &mut Watch, line: &str) -> Result<(), String> {
             watch.refresh();
         }
         Some(Incoming::Gps {
-            latitude,
-            longitude,
+            latitude_micro,
+            longitude_micro,
             accuracy,
-        }) => match geo::Location::from_degrees(latitude, longitude) {
+        }) => match geo::Location::from_micro(latitude_micro, longitude_micro) {
             Some(location) => {
                 geo::set_location(location, aranet::precise(accuracy));
-                watch.log(format!("location set: {latitude}, {longitude}"));
+                let degrees = |micro: i64| micro as f64 / 1e6;
+                watch.log(format!(
+                    "location set: {}, {}",
+                    degrees(latitude_micro),
+                    degrees(longitude_micro)
+                ));
                 watch.refresh();
             }
             None => watch.log("location out of range; ignored"),

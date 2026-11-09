@@ -1,21 +1,27 @@
 //! Decimal numbers as Gadgetbridge writes them (`59.9139`, `-3.5`, `1.0E-4`,
-//! `1762436800000`), parsed to `f64`.
+//! `1762436800000`), parsed to their digits and a power of ten, and from
+//! there to an integer at a chosen scale ([`Decimal::scaled`]: millionths
+//! of a degree, milliseconds) or an `f32` ([`Decimal::to_f32`]).
 //!
-//! `str::parse::<f64>` would do, but it's correctly rounded for every input,
-//! which takes 12 KB of tables (`dec2flt`'s powers of five) and 4 KB of code:
-//! 4% of our flash, for a handful of coordinates and timestamps. This is
-//! Clinger's fast path alone: the digits as an integer, times or divided by
-//! an exact power of ten. That's correctly rounded whenever the digits fit
-//! in 53 bits and the exponent is at most 22, which covers every number
-//! Gadgetbridge sends but the odd 17-digit coordinate; beyond it, the result
-//! is off in its last digit or so (more for huge exponents), which nothing
-//! here can notice: locations are kept to a millionth of a degree. Nor can
-//! the other shortcut: a power of ten past 10^308 is infinite, so `1e-400`
-//! is zero, and so is `12e-309` (a subnormal, otherwise).
+//! Not to `f64`, nor with `str::parse`: the M4F's FPU does single
+//! precision only, so `f64` is soft-float routines (~3 KB of flash for
+//! these few numbers), and `str::parse::<f32>` is correctly rounded for
+//! every input, which takes 12 KB of tables (`dec2flt`'s powers of five)
+//! and 4 KB of code. Integers are exact where it matters (coordinates,
+//! timestamps, alarm times), and the `f32`s (a fix's accuracy, a time
+//! zone in hours) are within an ulp or two, far finer than their use.
+
+/// A parsed number: `digits` × 10^`exponent`, negated if `negative`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Decimal {
+    negative: bool,
+    digits: u64,
+    exponent: i32,
+}
 
 /// Parses `[+-]digits[.digits][(e|E)[+-]digits]`, with digits on at least one
 /// side of the point. `None` for anything else, including `inf` and `NaN`.
-pub fn parse(text: &[u8]) -> Option<f64> {
+pub fn parse(text: &[u8]) -> Option<Decimal> {
     let (negative, mut rest) = match text {
         [b'-', rest @ ..] => (true, rest),
         [b'+', rest @ ..] => (false, rest),
@@ -24,7 +30,7 @@ pub fn parse(text: &[u8]) -> Option<f64> {
 
     // The significant digits as an integer, and the power of ten it's off by
     // (from the point, and from digits that don't fit in a u64, which are
-    // dropped: 19 digits is already far past an f64's 17).
+    // dropped: 19 digits is already far past anything here needs).
     let mut digits: u64 = 0;
     let mut exponent: i32 = 0;
     let mut any_digits = false;
@@ -79,30 +85,54 @@ pub fn parse(text: &[u8]) -> Option<f64> {
         return None;
     }
 
-    // Dividing by an exact power of ten rounds once, where multiplying by an
-    // inexact negative power would round twice. (Zero first: `0e400` would
-    // otherwise be zero times infinity.)
-    let magnitude = digits as f64;
-    let value = if digits == 0 {
-        0.0
-    } else if exponent >= 0 {
-        magnitude * power_of_ten(exponent.unsigned_abs())
-    } else {
-        magnitude / power_of_ten(exponent.unsigned_abs())
-    };
-    Some(if negative { -value } else { value })
+    Some(Decimal {
+        negative,
+        digits,
+        exponent,
+    })
 }
 
-/// 10^`exponent`, exact up to 10^22 (every factor on the way is a power of
-/// ten that an f64 holds exactly); infinity from about 10^309.
-fn power_of_ten(mut exponent: u32) -> f64 {
-    let (mut result, mut square) = (1.0, 10.0);
-    while exponent > 0 {
-        if exponent & 1 == 1 {
-            result *= square;
+impl Decimal {
+    /// The number times 10^`places`, toward zero to an integer, and
+    /// saturating at `i64`'s ends.
+    pub fn scaled(self, places: i32) -> i64 {
+        let mut digits = self.digits;
+        let exponent = self.exponent.saturating_add(places);
+        // A step at a time, stopping once nothing more can change: the
+        // exponent may be huge (`1e999999`), but past a u64's 20 digits
+        // every step saturates, or gives zero.
+        for _ in 0..exponent.unsigned_abs().min(20) {
+            digits = if exponent > 0 {
+                digits.saturating_mul(10)
+            } else {
+                digits / 10
+            };
         }
-        square *= square;
-        exponent >>= 1;
+        let magnitude = digits.min(i64::MAX as u64) as i64;
+        if self.negative { -magnitude } else { magnitude }
     }
-    result
+
+    /// The number as the nearest `f32`, or within an ulp or two of it
+    /// (the digits round once to an `f32`, and again on scaling by a power
+    /// of ten, exact only up to 10^10); infinite or zero far out of range.
+    pub fn to_f32(self) -> f32 {
+        let mut power = 1.0f32;
+        // An f32 is infinite from 10^39 and zero below 10^-45, the digits
+        // at most 10^20: past 70 nothing changes.
+        for _ in 0..self.exponent.unsigned_abs().min(70) {
+            power *= 10.0;
+        }
+        // Dividing by an exact power of ten rounds once, where multiplying
+        // by an inexact negative power would round twice. (Zero first: `0e400`
+        // would otherwise be zero times infinity.)
+        let magnitude = self.digits as f32;
+        let value = if self.digits == 0 {
+            0.0
+        } else if self.exponent >= 0 {
+            magnitude * power
+        } else {
+            magnitude / power
+        };
+        if self.negative { -value } else { value }
+    }
 }

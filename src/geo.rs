@@ -35,13 +35,15 @@ pub const HOME: Location = Location {
 };
 
 impl Location {
-    pub fn from_degrees(latitude: f64, longitude: f64) -> Option<Self> {
-        let valid = (-90.0..=90.0).contains(&latitude) && (-180.0..=180.0).contains(&longitude);
+    /// From millionths of a degree, if in range.
+    pub fn from_micro(latitude: i64, longitude: i64) -> Option<Self> {
+        let valid = (-90_000_000..=90_000_000).contains(&latitude)
+            && (-180_000_000..=180_000_000).contains(&longitude);
         // A phone with no fix sometimes reports exactly 0,0.
-        let null_island = latitude == 0.0 && longitude == 0.0;
+        let null_island = latitude == 0 && longitude == 0;
         (valid && !null_island).then_some(Self {
-            latitude_micro: (latitude * 1e6) as i32,
-            longitude_micro: (longitude * 1e6) as i32,
+            latitude_micro: latitude as i32,
+            longitude_micro: longitude as i32,
         })
     }
 

@@ -1111,10 +1111,10 @@ fn interpret(line: &[u8], actions: &mut Vec<Action, 4>) {
             offset_minutes,
         },
         Some(Incoming::Gps {
-            latitude,
-            longitude,
+            latitude_micro,
+            longitude_micro,
             accuracy,
-        }) => match Location::from_degrees(latitude, longitude) {
+        }) => match Location::from_micro(latitude_micro, longitude_micro) {
             Some(location) => Action::Fix(location, aranet::precise(accuracy)),
             None => return,
         },

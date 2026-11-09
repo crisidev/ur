@@ -992,8 +992,8 @@ mod tests {
         assert_eq!(
             parse(line),
             Some(Incoming::Gps {
-                latitude: 59.9127,
-                longitude: 10.7461,
+                latitude_micro: 59_912_700,
+                longitude_micro: 10_746_100,
                 // `hdop` is Android's accuracy, in metres.
                 accuracy: Some(13.231),
             })
@@ -1004,8 +1004,8 @@ mod tests {
         assert_eq!(
             parse(line),
             Some(Incoming::Gps {
-                latitude: -33.8688,
-                longitude: -0.0001,
+                latitude_micro: -33_868_800,
+                longitude_micro: -100,
                 accuracy: Some(3.9),
             })
         );
@@ -1013,8 +1013,8 @@ mod tests {
         assert_eq!(
             parse(br#"GB({"t":"gps","lat":59.9127,"lon":10.7461})"#),
             Some(Incoming::Gps {
-                latitude: 59.9127,
-                longitude: 10.7461,
+                latitude_micro: 59_912_700,
+                longitude_micro: 10_746_100,
                 accuracy: None,
             })
         );
