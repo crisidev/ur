@@ -105,6 +105,8 @@ mod system_off;
 mod temperature;
 mod theme;
 mod touch;
+#[cfg(feature = "touch-probe")]
+mod touch_probe;
 mod ui;
 mod ui_loop;
 mod wake;

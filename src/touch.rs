@@ -42,8 +42,10 @@ use crate::i2c::Device;
 
 pub use crate::gesture::{Gesture, Touch};
 
-const ADDRESS: u8 = 0x15;
+pub(crate) const ADDRESS: u8 = 0x15;
 /// First register of the touch report: gesture, finger count, X, Y.
+/// (`touch-probe` reads from 0x00 instead.)
+#[cfg(not(feature = "touch-probe"))]
 const REG_REPORT: u8 = 0x01;
 /// Interrupt control.
 const REG_IRQ_CTL: u8 = 0xFA;
@@ -208,7 +210,13 @@ pub async fn touch_task(
                 }
 
                 let mut report = [0u8; 6];
-                if let Err(e) = i2c.write_read(ADDRESS, &[REG_REPORT], &mut report).await {
+                // With `touch-probe`, the same six bytes come out of a
+                // wider read, which it logs whole.
+                #[cfg(not(feature = "touch-probe"))]
+                let read = i2c.write_read(ADDRESS, &[REG_REPORT], &mut report).await;
+                #[cfg(feature = "touch-probe")]
+                let read = crate::touch_probe::read(&mut i2c, &mut report).await;
+                if let Err(e) = read {
                     warn!("touch: read failed: {}", e);
                     crate::i2c::reset_controller().await;
                     continue;
@@ -288,7 +296,12 @@ async fn sleep(i2c: &mut Device, reset: &mut Output<'static>) {
 /// Sets up the chip's interrupt behaviour; returns whether that worked.
 async fn configure(i2c: &mut Device) -> bool {
     match i2c.write(ADDRESS, &[REG_IRQ_CTL, IRQ_CTL]).await {
-        Ok(()) => true,
+        Ok(()) => {
+            // While the chip still listens, as it only does now.
+            #[cfg(feature = "touch-probe")]
+            crate::touch_probe::dump_settings(i2c).await;
+            true
+        }
         Err(e) => {
             warn!("touch: configuring interrupts failed: {}", e);
             false

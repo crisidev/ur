@@ -72,3 +72,9 @@ compare = ["debug-input"]
 # erases and writes never overrun their radio timeslots; see
 # `src/flash_stress.rs`. Only for dev kits.
 flash-stress = []
+# Read and log (over RTT) everything the touch controller reports, not just
+# the six bytes used, for `scripts/touch_probe.py` to look for a register
+# that tells a fingertip from a palm; see `src/touch_probe.rs`. Logs ~100
+# lines a second while touched, so not with `field-log`, and only for dev
+# kits: releases leave it out (scripts/release.sh checks).
+touch-probe = []
