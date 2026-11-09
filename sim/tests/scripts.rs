@@ -313,6 +313,51 @@ fn a_press_that_cant_go_to_home_assistant_says_so() {
     assert!(free.contains("buzz: notify"), "{log}");
 }
 
+/// A hold held on to `buttons::LONG_HOLD` (1.5 s) is a long press too,
+/// sent while the finger is still down, to both Home Assistant and the
+/// phone, then the release on the lift; one lifted sooner has none. And
+/// a long press that can't go to Home Assistant shows so, as any press.
+#[test]
+fn a_hold_held_on_is_a_long_press() {
+    let dir = out("long-press");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    std::fs::write(
+        &script,
+        "buttons both\nconnect\nup\nwait 1s\n\
+         press 40,60\nwait 1400ms\nexpect not buzzing\nwait 130ms\nexpect buzzing\n\
+         wait 1s\nlift\nwait 2s\n\
+         echo short\npress 13,20\nwait 1s\nlift\nwait 2s\n\
+         echo busy\nslots full\npress 67,20\nwait 1530ms\nexpect buzzing\nlift\n",
+    )
+    .expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+    let (long, rest) = log.split_once("short").expect("the script runs on");
+    let (short, busy) = rest.split_once("busy").expect("the script runs on");
+    for gesture in ["hold_press", "long_press", "hold_release"] {
+        assert!(
+            long.contains(&format!("button_5 {gesture}")),
+            "{gesture} to Home Assistant: {log}"
+        );
+        assert!(
+            long.contains(&format!(r#""button":5,"gesture":"{gesture}""#)),
+            "{gesture} to the phone: {log}"
+        );
+    }
+    assert!(long.find("long_press") < long.find("release at"), "{log}");
+    assert!(short.contains("button_1 hold_release"), "{log}");
+    assert!(!short.contains("long_press"), "{log}");
+    // With the slots full, none of the three went to Home Assistant, and
+    // each buzzed so; the phone had them all.
+    assert_eq!(busy.matches("not to Home Assistant").count(), 3, "{log}");
+    assert_eq!(busy.matches("buzz: turn").count(), 3, "{log}");
+    assert!(
+        busy.contains(r#""button":3,"gesture":"long_press""#),
+        "{log}"
+    );
+}
+
 /// With a phone connected, a double tap skips without waking the screen
 /// (or ending a glance) only if its first tap is light. A deliberate first
 /// tap wakes it at once, and the second skips on the clock face.

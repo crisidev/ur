@@ -23,7 +23,8 @@
 //! **Six buttons:** six button objects, one per button, in order, so Home
 //! Assistant names them `button_1` to `button_6`. The pressed one's says
 //! what it did: `press` (`01`), `double_press` (`02`), `hold_press`
-//! (`80`), or `hold_release` (`81`, on the lift after a hold); the rest
+//! (`80`), `long_press` (`04`, the same hold, held on), or `hold_release`
+//! (`81`, on the lift after a hold); the rest
 //! say "none" (`00`), which fires nothing. Each button and gesture is a
 //! device trigger in Home Assistant's UI. 14 bytes: no room for the
 //! battery (two more), which goes in an advertisement of its own instead,
@@ -46,7 +47,10 @@
 //! code it was: the one for the gesture turns right (`02`) by the code
 //! (`23` for 2 then 3), so a single event says both, and one trigger can
 //! match it. A release turns no dimmer: only one hold can be down at a
-//! time, so its end needs no code. The dimmers that don't turn carry
+//! time, so its end needs no code. Nor does a long press, for the same
+//! reason, and as there's no fourth dimmer to turn (no room), nor a
+//! fitting one: turning the hold's left would fire an automation that
+//! matches only the code, as FAQ B04's does, for the hold twice. The dimmers that don't turn carry
 //! `00 00`, which fires nothing. With the packet id, and the battery
 //! (`01`, a battery sensor that updates with each press), that's 15
 //! bytes, all there's room for.
@@ -108,11 +112,12 @@ pub fn advert(
         }
         Some(press) => {
             // BTHome's button event, and which dimmer turns (none for a
-            // release).
+            // long press or a release: see the module docs).
             let (event, slot) = match press.gesture {
                 Gesture::Tap => (0x01, Some(0)),
                 Gesture::DoubleTap => (0x02, Some(1)),
                 Gesture::Hold => (0x80, Some(2)),
+                Gesture::LongPress => (0x04, None),
                 Gesture::Release => (0x81, None),
             };
             match layout {

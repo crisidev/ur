@@ -89,6 +89,17 @@ def main() -> None:
         for line in lines[1:]:
             layout, code, gesture, advert = line.split()
             adverts.append((layout, int(code), gesture, bytes.fromhex(advert)))
+        # Every gesture, in both layouts (`main`'s list), so a new one
+        # can't go unchecked.
+        for layout in ("six", "two"):
+            gestures = {g for (lay, _, g, _) in adverts if lay == layout}
+            assert gestures == {
+                "press",
+                "double_press",
+                "hold_press",
+                "long_press",
+                "hold_release",
+            }, (layout, gestures)
     # A parser for each layout: one keeps the last value of every sensor
     # it has seen (as Home Assistant does), so a battery from a two-layer
     # advertisement would linger in the six buttons'. (The battery alone

@@ -46,6 +46,7 @@ fn main() {
         (23, Gesture::DoubleTap),
         (5, Gesture::Tap),
         (5, Gesture::Hold),
+        (5, Gesture::LongPress),
         (5, Gesture::Release),
     ]
     .map(|(code, gesture)| (Layout::TwoLayers, code, gesture));
@@ -55,6 +56,7 @@ fn main() {
             Gesture::Tap,
             Gesture::DoubleTap,
             Gesture::Hold,
+            Gesture::LongPress,
             Gesture::Release,
         ]
         .map(|gesture| (Layout::Six, code, gesture))
@@ -143,6 +145,7 @@ mod tests {
             (0x01, Some(0), Gesture::Tap),
             (0x02, Some(1), Gesture::DoubleTap),
             (0x80, Some(2), Gesture::Hold),
+            (0x04, None, Gesture::LongPress),
             (0x81, None, Gesture::Release),
         ] {
             let (data, len) = bthome::advert(
@@ -173,6 +176,7 @@ mod tests {
             (0x01, Gesture::Tap),
             (0x02, Gesture::DoubleTap),
             (0x80, Gesture::Hold),
+            (0x04, Gesture::LongPress),
             (0x81, Gesture::Release),
         ] {
             for code in 1..=6 {

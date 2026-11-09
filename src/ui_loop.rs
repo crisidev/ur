@@ -79,13 +79,14 @@ pub const TICK: Duration = Duration::from_secs(1);
 
 /// When the loop's timer is due, after a pass, if at all: while text is
 /// scrolling, the next animation frame, and when the button grid has
-/// something due (see `App::deadline`), unless a finger is down
-/// (`finger_down`): that touch decides, and its event wakes the loop.
+/// something due (see `App::deadline`), which, while a finger is down
+/// (`finger_down`), is only a hold becoming a long press: otherwise that
+/// touch decides, and its event wakes the loop.
 pub fn timer_at(app: &App, finger_down: bool) -> Option<Instant> {
     let frame = app
         .animating()
         .then(|| Instant::now() + canvas::MARQUEE_FRAME);
-    let due = app.deadline().filter(|_| !finger_down);
+    let due = app.deadline(finger_down);
     frame.into_iter().chain(due).min()
 }
 

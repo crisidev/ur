@@ -252,7 +252,8 @@ With **GRID** on **2 LAYERS**, that's by design: see
 ### B02: Home Assistant has no trigger for a grid gesture
 
 It lists a BTHome device's events only once it has seen each: tap,
-double-tap and hold each grid button once (with two layers, any one).
+double-tap and hold (for 1.5 s, for "Long press" too) each grid button
+once (with two layers, any one).
 "Hold release" needs Home Assistant 2026.11 or later; older versions
 ignore it.
 
@@ -273,10 +274,11 @@ number, so Home Assistant tells them apart only by their place in the
 advertisement, and an encrypted advertisement has room for about 15
 bytes of data: six buttons, not one per code. So each press fires two
 events instead: a `button` event for the gesture (`press`,
-`double_press`, `hold_press`, then `hold_release` on lifting after a
-hold), and a dimmer event, which can carry a number, turning right by
-the code: `dimmer_1` for a tap, `dimmer_2` for a double tap,
-`dimmer_3` for a hold. To act on one code, trigger on its dimmer, in
+`double_press`, `hold_press`, `long_press` if held on to 1.5 s, then
+`hold_release` on lifting after a hold), and a dimmer event, which can
+carry a number, turning right by the code: `dimmer_1` for a tap,
+`dimmer_2` for a double tap, `dimmer_3` for a hold (none for a long
+press or a release: they follow their hold). To act on one code, trigger on its dimmer, in
 YAML (a **Manual event** trigger in the automation editor). For 2,
 then 3, double-tapped:
 

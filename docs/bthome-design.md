@@ -20,8 +20,9 @@ User documentation: [buttons.md](buttons.md). Code: `src/buttons.rs`
 - **Payload:** §2's four button slots can't carry 90 codes (Home
   Assistant tells repeated objects apart only by position), and a
   button object has no number. So: packet id, battery, one **button**
-  object for the gesture (`press`, `double_press`, `hold_press`, and
-  `hold_release` on the lift), and three **dimmer** objects, one per
+  object for the gesture (`press`, `double_press`, `hold_press`,
+  `long_press` at 1.5 s held, and `hold_release` on the lift), and
+  three **dimmer** objects, one per
   gesture (`dimmer_1` tap, `dimmer_2` double tap, `dimmer_3` hold), the
   active one turning right by the code. 15 B of plaintext, 31 B
   encrypted. Checked against `bthome-ble`'s parser
@@ -128,9 +129,19 @@ encrypted legacy advertisement, let alone one per code. The options:
 
 A hold's start is `hold_press`, sent as the hold is recognised, finger
 still down, as before (the dimmer is `dimmer_3`); lifting sends
-`hold_release` (no dimmer). `long_press` isn't sent: `hold_release`
-pairs with `hold_press` ([bthome-ble#423]), and a third event for the
-same hold would only duplicate one of them. The release's advertisement
+`hold_release` (no dimmer). `long_press` wasn't sent at first:
+`hold_release` pairs with `hold_press` ([bthome-ble#423]). The user
+then wanted all three, as "hold_press triggers once held longer than a
+tap. long_press then triggers when the hold is for an even longer
+time. and hold_release triggers when the press ends." So a hold still
+down 1.5 s after it started (`buttons::LONG_HOLD`; the hold itself is
+recognised at 0.6 s) sends `long_press` (`04`) then, once, finger still
+down: the UI loop's timer runs while a finger is down only for that
+(`Grid::long_at`). No dimmer turns for it, as for a release: it
+follows its hold, which said the code, and there's no fourth dimmer
+(no room); turning `dimmer_3` left by the code would fire automations
+that match only `dimmer_3` and the steps (as FAQ B04's example does)
+for the hold a second time. The release's advertisement
 mustn't cut the hold's short: `ble::burst` now gives a burst 0.8 s on
 the air before the next replaces it (which also fixed the first of two
 presses completed by one touch being lost).

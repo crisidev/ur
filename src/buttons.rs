@@ -39,7 +39,10 @@
 //! A hold also says when it ends, in either layout: lifting the finger
 //! sends a [`Gesture::Release`] with the same code (see [`Grid::lift`]),
 //! for what should last as long as the finger stays down, like dimming a
-//! light.
+//! light. And one held on, to [`LONG_HOLD`] from its start, is a long
+//! press too: a [`Gesture::LongPress`] with the same code, sent then,
+//! while the finger is still down (see [`Grid::expire`]), before the
+//! release. A hold lifted sooner has none.
 //!
 //! Telling them apart takes waiting, since every tap might be the start of
 //! something longer: [`Grid`] holds a tap until it can't be anything else.
@@ -95,6 +98,16 @@ pub const WAIT_SECOND: Duration = Duration::from_millis(600);
 /// than with the 0.4 s this used to be.
 pub const WAIT_DOUBLE: Duration = Duration::from_millis(300);
 
+/// How long from its start a hold must last for a long press too (see
+/// the module docs). The hold itself is recognised at 0.6 s
+/// ([`crate::gesture::LONG_PRESS`]), with a buzz; 0.9 s more is ample to
+/// lift on feeling it (a reaction to a buzz takes ~0.2–0.3 s), so a hold
+/// meant only as a hold doesn't become a long press by accident, while
+/// 1.5 s is still a short, deliberate wait for one that's meant. And the
+/// long press goes at once: the hold's advertisement has had the 0.8 s
+/// on the air it gets before another may replace it (`ble::BURST_FIRST`).
+pub const LONG_HOLD: Duration = Duration::from_millis(1500);
+
 /// What the last button of a [`Press`] did.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(target_os = "none", derive(defmt::Format))]
@@ -105,6 +118,9 @@ pub enum Gesture {
     /// Held down: sent the moment it's recognised, while the finger is
     /// still down.
     Hold,
+    /// Still held, [`LONG_HOLD`] after the hold started: sent then, with
+    /// the finger still down, at most once a hold.
+    LongPress,
     /// The finger lifted after a [`Gesture::Hold`] (of the same code).
     Release,
 }
@@ -118,6 +134,7 @@ impl Gesture {
             Self::Tap => "press",
             Self::DoubleTap => "double_press",
             Self::Hold => "hold_press",
+            Self::LongPress => "long_press",
             Self::Release => "hold_release",
         }
     }
@@ -193,9 +210,14 @@ enum State {
         until: Instant,
     },
     /// A hold of `code` was sent, and its finger is still down: idle, but
-    /// for the release that goes on the lift (see [`Grid::lift`]).
+    /// for the long press due at `long_at` (unless `long`, sent already;
+    /// see [`Grid::expire`]), and the release that goes on the lift (see
+    /// [`Grid::lift`]). A flag rather than an `Option<Instant>`, which
+    /// would grow the state by 8 bytes.
     Held {
         code: u8,
+        long: bool,
+        long_at: Instant,
     },
 }
 
@@ -264,7 +286,11 @@ impl Grid {
                 None,
             ),
             (State::Idle | State::Held { .. }, Touch::Hold) => (
-                State::Held { code: button },
+                State::Held {
+                    code: button,
+                    long: false,
+                    long_at: started + LONG_HOLD,
+                },
                 Some(Press::single(button, Gesture::Hold)),
             ),
             // With six buttons, the same button again (anything else was
@@ -283,6 +309,8 @@ impl Grid {
             (State::First { button: first, .. }, Touch::Hold) => (
                 State::Held {
                     code: first * 10 + button,
+                    long: false,
+                    long_at: started + LONG_HOLD,
                 },
                 Some(Press::sequence(first, button, Gesture::Hold)),
             ),
@@ -302,7 +330,7 @@ impl Grid {
     /// start has gone, and something may be waiting for its end (a light
     /// dimming, say).
     pub fn lift(&mut self) -> Option<Press> {
-        let State::Held { code } = self.state else {
+        let State::Held { code, .. } = self.state else {
             return None;
         };
         self.state = State::Idle;
@@ -314,10 +342,43 @@ impl Grid {
 
     /// Completes what's waiting if its wait is over at `now`, unless a
     /// finger is down: that touch may have started in time, and decides
-    /// (see [`Grid::touch`]).
+    /// (see [`Grid::touch`]). Or, with the finger still down on a hold
+    /// that has lasted [`LONG_HOLD`], its long press, once.
     pub fn expire(&mut self, now: Instant, finger_down: bool) -> Option<Press> {
+        if let State::Held {
+            code,
+            long: false,
+            long_at,
+        } = self.state
+        {
+            if !(finger_down && now >= long_at) {
+                return None;
+            }
+            self.state = State::Held {
+                code,
+                long: true,
+                long_at,
+            };
+            return Some(Press {
+                code,
+                gesture: Gesture::LongPress,
+            });
+        }
         match self.deadline() {
             Some(until) if now >= until && !finger_down => self.flush(),
+            _ => None,
+        }
+    }
+
+    /// When a hold becomes a long press, if one is down and hasn't yet:
+    /// for the UI loop to wake then, finger down (see [`Grid::expire`]).
+    pub fn long_at(&self) -> Option<Instant> {
+        match self.state {
+            State::Held {
+                long: false,
+                long_at,
+                ..
+            } => Some(long_at),
             _ => None,
         }
     }

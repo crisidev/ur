@@ -64,8 +64,9 @@
 //!   more follows, its buttons stay lit; once sent, the last one shows the
 //!   code, in the "good" colour (or "bad", if the phone was all it could
 //!   go to, and it wasn't connected, or it couldn't go to Home Assistant,
-//!   which a banner adds, "SEE FAQ B05"), with a buzz. A swipe, or the
-//!   button, cancels what's waiting.
+//!   which a banner adds, "SEE FAQ B05"), with a buzz. A hold held on
+//!   is a long press too, shown and buzzed the same, as "LONG". A swipe,
+//!   or the button, cancels what's waiting.
 //! - Screens that take over (the alarm editor, a ringing alarm, a call,
 //!   pairing, an update, the storage prompt) get every touch: swipes there
 //!   don't navigate.
@@ -1169,15 +1170,21 @@ impl App {
     }
 
     /// When [`App::on_timer`] next has something to do: the grid's wait
-    /// running out, or its last press to stop showing.
-    pub fn deadline(&self) -> Option<Instant> {
+    /// running out, or its last press to stop showing. While a finger is
+    /// down (`finger_down`), only a hold becoming a long press: anything
+    /// else waits for that touch, whose event wakes the loop.
+    pub fn deadline(&self, finger_down: bool) -> Option<Instant> {
+        if finger_down {
+            return self.grid.long_at();
+        }
         let shown = self.sent.map(|(_, until, _)| until);
         self.grid.deadline().into_iter().chain(shown).min()
     }
 
     /// The UI loop woke for [`App::deadline`] (or near it): sends what the
     /// grid was waiting on, if it's waited long enough, unless a finger is
-    /// down (`finger_down`; see [`buttons::Grid::expire`]).
+    /// down (`finger_down`; see [`buttons::Grid::expire`]); or a hold's
+    /// long press, if the finger still is.
     pub fn on_timer(&mut self, now: Instant, finger_down: bool) {
         if self.sent.is_some_and(|(_, until, _)| now >= until) {
             self.sent = None;
@@ -3203,6 +3210,7 @@ fn draw_key(canvas: &mut Canvas, x: i32, y: i32, key: Key, dark: bool) {
             buttons::Gesture::DoubleTap => "2X",
             // Never shown: a release leaves the hold's on the screen.
             buttons::Gesture::Hold | buttons::Gesture::Release => "HOLD",
+            buttons::Gesture::LongPress => "LONG",
         };
         canvas.text_centered(x + 1 + SIZE / 2, top + 12, how, BACKGROUND);
     }

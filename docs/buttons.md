@@ -27,7 +27,8 @@ Numbered in reading order:
 ```
 
 Each button is a **code**, 1–6, and has three **gestures**: tap, double
-tap, and hold. That's 18 events.
+tap, and hold. That's 18 events, and a hold's long press and release
+(see below).
 
 A tap waits 0.3 s to see whether a double tap follows (a tap on another
 button sends it at once), lit while it waits; once sent, the button
@@ -66,7 +67,9 @@ stay lit; once sent, the last one shows the code and buzzes.
 What each press does is up to Home Assistant or your phone. A hold goes
 at once (after 0.6 s, finger still down), and lifting the finger then
 sends a **release**, for what should last while you hold, like dimming a
-light. To cancel a tap that's waiting, swipe away or press the button.
+light. Held on, to 1.5 s, it's a **long press** too, sent then, finger
+still down (the button shows LONG, and buzzes again), before the
+release: a third thing a hold can do. A hold lifted sooner has none. To cancel a tap that's waiting, swipe away or press the button.
 Two buzzes, and the code in red, mean it had nowhere to go (only the
 app, on a phone that isn't connected), or it couldn't go to Home
 Assistant: then **BTHOME NOT SENT** shows too, even if the phone had
@@ -99,7 +102,8 @@ Presses are encrypted with a key the watch made for itself.
    type) the key.
 3. Make each event once: Home Assistant only lists a device's events
    once it has seen them. With six buttons, tap, double-tap, and hold
-   each button; with two layers, tap, double-tap, and hold any one.
+   (for 1.5 s, for the long press too) each button; with two layers,
+   tap, double-tap, and hold any one.
 
 Each press fires a `bthome_ble_event` with the watch's `address`, an
 `event_class`, and an `event_type`. The gestures' event types are
@@ -110,6 +114,7 @@ BTHome's:
 | tap                  | `press`        |
 | double tap           | `double_press` |
 | hold                 | `hold_press`   |
+| hold, held to 1.5 s  | `long_press`   |
 | lifting after a hold | `hold_release` |
 
 "Hold release" needs Home Assistant 2026.11 or later.
@@ -206,13 +211,18 @@ automation:
 | tap                  | `press`                   | `dimmer_1` `rotate_right`   |
 | double tap           | `double_press`            | `dimmer_2` `rotate_right`   |
 | hold                 | `hold_press`              | `dimmer_3` `rotate_right`   |
+| hold, held to 1.5 s  | `long_press`              | none                        |
 | lifting after a hold | `hold_release`            | none                        |
 
 - **The button** is the gesture alone, whichever code it was: the device
   page's **Button** entity, and device triggers in the automation
   editor ("Press" button, "Hold release" button, …).
 - **The dimmer** for the gesture turns right by the code (`steps: 23` for
-  2, then 3), so one event says both: what most automations want.
+  2, then 3), so one event says both: what most automations want. A
+  long press and a release turn none: they follow their hold, which
+  said the code (there's no room for a fourth dimmer). For a code's
+  long press, trigger on its hold's dimmer, then wait for the "Long
+  press" button event.
 
 (See [bthome-design.md](bthome-design.md) for why.) The device also
 gets a battery sensor, which updates with each press.
@@ -269,8 +279,8 @@ and the condition on button 5's own entity.
 
 ### Releases, the key, and replays
 
-A release goes once its hold has been on the air for 0.8 s, so a quick
-hold's release can come that late.
+A release goes once its hold (or long press) has been on the air for
+0.8 s, so a quick hold's release can come that late.
 
 The key stays across updates. Should the watch lose track of how many
 presses it has sent with it (its flash entry for that lost), it makes a
@@ -298,8 +308,9 @@ layout:
 - extra `button`: the code, a number: 1–6 with six buttons; 1–99, none
   ending in 0 (`23`), with two layers
 - extra `gesture`: `press` (a tap), `double_press` (any of the six
-  buttons, or a pair with two layers), `hold_press`, or `hold_release`
-  (lifting after a hold), as BTHome names them
+  buttons, or a pair with two layers), `hold_press`, `long_press` (the
+  hold, held to 1.5 s), or `hold_release` (lifting after a hold), as
+  BTHome names them
 
 1. In Gadgetbridge, in the watch's settings, turn on **Allow Intents**.
    Without it, Gadgetbridge drops presses, and the watch says "INTENTS

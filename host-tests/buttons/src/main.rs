@@ -91,6 +91,15 @@ mod tests {
             self
         }
 
+        /// The finger stays down until `at`: the UI loop wakes, finger
+        /// down, when a hold becomes a long press, if that's by then.
+        fn held(&mut self, at: u64) -> &mut Self {
+            if let Some(due) = self.grid.long_at().filter(|&d| d <= ms(at)) {
+                self.expire(due.as_millis(), true);
+            }
+            self
+        }
+
         /// The finger lifting at `at`, after a long press.
         fn lift(&mut self, at: u64) -> &mut Self {
             self.sent.extend(self.grid.lift().map(|p| (at, p)));
@@ -102,7 +111,7 @@ mod tests {
         }
     }
 
-    use Gesture::{DoubleTap, Hold, Release, Tap};
+    use Gesture::{DoubleTap, Hold, LongPress, Release, Tap};
 
     #[test]
     fn a_single_tap_goes_once_nothing_follows() {
@@ -152,6 +161,61 @@ mod tests {
         // A sequence's hold too, with the sequence's code.
         run.tap(4, 5000).hold(7, 5300).lift(6000);
         assert_eq!(run.presses()[2..], [(47, Hold), (47, Release)]);
+    }
+
+    #[test]
+    fn a_hold_lifted_before_long_hold_is_no_long_press() {
+        let mut run = Run::six();
+        let end = 1000 + LONG_HOLD.as_millis() - 1;
+        run.hold(5, 1000).held(end).lift(end);
+        assert_eq!(run.presses(), [(5, Hold), (5, Release)]);
+        assert_eq!(run.grid.long_at(), None, "nothing more due");
+    }
+
+    #[test]
+    fn a_hold_held_on_is_a_long_press_once_then_its_release() {
+        let mut run = Run::six();
+        run.hold(5, 1000);
+        let due = 1000 + LONG_HOLD.as_millis();
+        assert_eq!(run.grid.long_at(), Some(ms(due)), "from the touch's start");
+        // Not early, and not once the finger's up (its release decides).
+        run.expire(due - 1, true).expire(due, false);
+        assert_eq!(run.presses(), [(5, Hold)]);
+        run.held(5000);
+        assert_eq!(
+            run.sent[1],
+            (
+                due,
+                Press {
+                    code: 5,
+                    gesture: LongPress
+                }
+            )
+        );
+        // Once: the loop waking again, finger still down, sends nothing.
+        assert_eq!(run.grid.long_at(), None);
+        run.expire(6000, true).held(7000).lift(7000);
+        assert_eq!(run.presses(), [(5, Hold), (5, LongPress), (5, Release)]);
+        // With two layers, a sequence's hold, by its code.
+        let mut run = Run::codes();
+        run.tap(4, 10_000).hold(7, 10_300).held(13_000).lift(13_000);
+        assert_eq!(run.presses(), [(47, Hold), (47, LongPress), (47, Release)]);
+        assert_eq!(LongPress.name(), "long_press");
+    }
+
+    #[test]
+    fn a_long_press_waits_for_no_tap() {
+        // A long press doesn't hold up, or get held up by, the waits for
+        // taps: there's nothing waiting while a hold is down.
+        let mut run = Run::six();
+        run.hold(2, 1000);
+        assert_eq!(run.grid.deadline(), None);
+        assert_eq!(run.grid.waiting(), (None, None));
+        run.held(3000);
+        assert_eq!(run.grid.deadline(), None);
+        // The next touch starts afresh, release or not.
+        run.tap(3, 4000).until(5000);
+        assert_eq!(run.presses(), [(2, Hold), (2, LongPress), (3, Tap)]);
     }
 
     #[test]

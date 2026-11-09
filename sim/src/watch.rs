@@ -702,7 +702,7 @@ impl Board for Hardware<'_> {
                     Gesture::Tap => Some(1),
                     Gesture::DoubleTap => Some(2),
                     Gesture::Hold => Some(3),
-                    Gesture::Release => None,
+                    Gesture::LongPress | Gesture::Release => None,
                 };
                 let dimmer = dimmer.map_or(String::new(), |slot| {
                     format!(", dimmer_{slot} rotate_right steps {}", press.code)
