@@ -112,8 +112,13 @@ impl Header {
 /// The phone's next fetch starts `resend` minutes before what it last got
 /// (the window in which sleep and its stages are still being revised), so the record
 /// starts there too: those minutes may have changed since. Without a fetch
-/// this boot, all of the history is (as far as we know) unsynced.
+/// this boot, all of the history is (as far as we know) unsynced; so it
+/// is after a fetch that went past the newest minute, as the clock has
+/// gone back since (see [`crate::minute_ring`]), and what the phone got
+/// then says nothing of the minutes the history holds now.
 pub fn unsynced_from(newest: i64, synced_through: Option<i64>, resend: i64) -> i64 {
     let oldest = newest - MAX_MINUTES as i64 + 1;
-    synced_through.map_or(oldest, |synced| (synced - resend).max(oldest))
+    synced_through
+        .filter(|&synced| synced <= newest)
+        .map_or(oldest, |synced| (synced - resend).max(oldest))
 }

@@ -149,6 +149,18 @@ mod tests {
     }
 
     #[test]
+    fn a_sync_past_the_newest_minute_saves_the_whole_day() {
+        // The phone fetched up to minute 29_500_600 while its clock was
+        // ten hours ahead; put right, the history dropped those minutes,
+        // and holds new ones the phone hasn't had.
+        let newest = 29_500_000;
+        assert_eq!(
+            unsynced_from(newest, Some(newest + 600), RESEND),
+            newest - MAX_MINUTES as i64 + 1
+        );
+    }
+
+    #[test]
     fn a_full_day_fits() {
         assert_eq!(MAX_BYTES, 32 + 1440 * 6);
         let bytes = record(&samples(MAX_MINUTES));
