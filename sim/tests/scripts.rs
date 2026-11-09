@@ -358,11 +358,13 @@ fn a_hold_held_on_is_a_long_press() {
     );
 }
 
-/// With a phone connected, a double tap skips without waking the screen
-/// (or ending a glance) only if its first tap is light. A deliberate first
-/// tap wakes it at once, and the second skips on the clock face.
+/// With a phone connected, a double tap plays or pauses without waking
+/// the screen (or ending a glance) only if its first tap is light. A
+/// deliberate first tap wakes it at once, and the second plays or pauses
+/// on the clock face, as it would have with the screen off. The awake
+/// clock face's own double tap still skips.
 #[test]
-fn a_double_tap_skips_without_waking_only_after_a_light_first_tap() {
+fn a_double_tap_plays_or_pauses_without_waking_only_after_a_light_first_tap() {
     let dir = out("double-tap");
     let script = dir.join("script.txt");
     std::fs::create_dir_all(&dir).expect("the target dir is writable");
@@ -375,26 +377,35 @@ fn a_double_tap_skips_without_waking_only_after_a_light_first_tap() {
          wait 11s\nglance\ntap 40,40 30\nwait 150ms\ntap 40,40 50\nexpect dim\n\
          expect buzzing\n\
          wait 6s\nglance\ntap 40,40 60\nexpect not dim\nwait 150ms\ntap 40,40 50\n\
-         expect not dim\nexpect buzzing\n",
+         expect not dim\nexpect buzzing\n\
+         echo clock\nwait 2s\ntap 40,40 50\nwait 150ms\ntap 40,40 50\nexpect buzzing\n",
     )
     .expect("the target dir is writable");
     let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
     assert!(ok, "{log}");
-    assert_eq!(log.matches(r#""n":"next""#).count(), 4, "{log}");
+    let (gestures, clock) = log.split_once("] clock\n").expect("the script runs on");
+    assert_eq!(gestures.matches(r#""n":"playpause""#).count(), 4, "{log}");
+    assert_eq!(gestures.matches(r#""n":"next""#).count(), 0, "{log}");
+    assert_eq!(clock.matches(r#""n":"next""#).count(), 1, "{log}");
+    assert_eq!(clock.matches(r#""n":"playpause""#).count(), 0, "{log}");
 }
 
-/// With a phone connected, a long press with the screen off or on a glance
-/// plays or pauses only in the middle of the screen (see `wake::centred`):
-/// a fifth in from the sides, a quarter from the top and bottom. Nearer
-/// the edge, where an arm folded over the watch rests, it does nothing,
-/// not even a buzz, and leaves the screen (and a glance) as it was; one
-/// where a tap would still count too. On the awake clock face, something
-/// woke the screen first, so one at the edge still plays or pauses,
-/// through the touch task's recogniser too; but for 3 s after a touch
-/// woke it (maybe the folded arm), only in the middle.
+/// With a phone connected, a tap, then a touch held (a tap-and-hold),
+/// skips with the screen off or on a glance, through the touch task's
+/// recogniser: the hold must start within 0.5 s of the tap's lift, and in
+/// the middle of the screen (see `wake::centred`), a fifth in from the
+/// sides, a quarter from the top and bottom. A long press on its own
+/// there does nothing, not even a buzz, and leaves the screen (and a
+/// glance) as it was; nor does a pair with either touch nearer the edge,
+/// where an arm folded over the watch rests. After a deliberate tap, which
+/// wakes the screen, the hold skips on the clock face (unless the tap was
+/// at the edge of a glance: then it's the clock face's long press). On the
+/// awake clock face, a long press still plays or pauses anywhere, bar for
+/// 3 s after a touch woke it (maybe the folded arm): then only in the
+/// middle.
 #[test]
-fn a_long_press_plays_or_pauses_only_in_the_middle() {
-    let dir = out("long-centred");
+fn a_tap_and_hold_skips_and_a_lone_long_press_does_nothing() {
+    let dir = out("tap-and-hold");
     let script = dir.join("script.txt");
     std::fs::create_dir_all(&dir).expect("the target dir is writable");
     std::fs::write(
@@ -403,49 +414,67 @@ fn a_long_press_plays_or_pauses_only_in_the_middle() {
          echo awake-edge\nlong 12,40\nexpect buzzing\nwait 2s\n\
          press 75,40\nwait 610ms\nexpect buzzing\nlift\nexpect clock\n\
          wait 11s\nexpect not screen-on\n\
-         echo off\nlong 40,40\nexpect buzzing\nexpect not screen-on\nwait 2s\n\
-         echo off-edge\nlong 12,40\nexpect not buzzing\nlong 40,61\nexpect not buzzing\n\
-         long 40,19\nexpect not buzzing\nexpect not screen-on\n\
-         echo glance\nglance\nlong 40,40\nexpect buzzing\nexpect dim\nwait 10s\n\
-         echo glance-edge\nglance\nlong 64,40\nexpect not buzzing\nlong 40,12\n\
-         expect not buzzing\nlong 40,60\nexpect not buzzing\nexpect dim\n\
-         wait 6s\nexpect not screen-on\n\
+         echo off-lone\nlong 40,40\nexpect not buzzing\npress 40,40\nwait 700ms\n\
+         expect not buzzing\nlift\nexpect not screen-on\nwait 1s\n\
+         echo off\ntap 40,40 30\npress 40,40\nwait 610ms\nexpect buzzing\n\
+         expect not screen-on\nlift\nwait 2s\n\
+         echo off-late\ntap 40,40 30\nwait 600ms\npress 40,40\nwait 700ms\n\
+         expect not buzzing\nlift\nwait 1s\n\
+         echo off-edge\ntap 40,40 30\nlong 12,40\nexpect not buzzing\n\
+         tap 40,40 30\nlong 40,61\nexpect not buzzing\ntap 40,40 30\nlong 40,19\n\
+         expect not buzzing\ntap 40,4 30\nlong 40,40\nexpect not buzzing\n\
+         expect not screen-on\n\
+         echo glance\nglance\ntap 40,40 30\npress 40,40\nwait 610ms\nexpect buzzing\n\
+         expect dim\nlift\nwait 10s\n\
+         echo glance-edge\nglance\nlong 40,40\nexpect not buzzing\n\
+         tap 40,40 30\nlong 64,40\nexpect not buzzing\ntap 40,40 30\nlong 40,12\n\
+         expect not buzzing\ntap 40,77 30\nlong 40,40\nexpect not buzzing\n\
+         expect dim\nwait 6s\nexpect not screen-on\n\
+         echo tap-woke\ntap 40,40\nexpect screen-on\npress 40,40\nwait 610ms\n\
+         expect buzzing\nlift\nwait 11s\nexpect not screen-on\n\
          echo tap-woke-edge\ntap 40,40\nexpect screen-on\nwait 1s\nlong 40,4\n\
          expect not buzzing\nwait 1s\nlong 12,40\nexpect not buzzing\n\
-         echo tap-woke\nlong 40,40\nexpect buzzing\nwait 1500ms\n\
-         echo tap-woke-later\nlong 40,4\nexpect buzzing\nwait 11s\n\
-         expect not screen-on\n\
-         echo glance-tap-woke-edge\nglance\ntap 40,4\nexpect screen-on\nwait 1s\n\
-         long 40,70\nexpect not buzzing\n\
+         echo tap-woke-later\nlong 40,40\nexpect buzzing\nwait 1500ms\n\
+         long 40,4\nexpect buzzing\nwait 11s\nexpect not screen-on\n\
+         echo glance-tap-woke-edge\nglance\ntap 40,4\nexpect screen-on\n\
+         long 40,40\nexpect buzzing\nwait 1s\nlong 40,70\nexpect not buzzing\n\
          echo done\n",
     )
     .expect("the target dir is writable");
     let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
     assert!(ok, "{log}");
-    // Each section, from its echo to the next one's.
+    // Each section, from its echo to the next one's: how many times it
+    // played or paused, and skipped.
     let sections = [
-        ("awake-edge", 2),
-        ("off", 1),
-        ("off-edge", 0),
-        ("glance", 1),
-        ("glance-edge", 0),
-        ("tap-woke-edge", 0),
-        ("tap-woke", 1),
-        ("tap-woke-later", 1),
-        ("glance-tap-woke-edge", 0),
-        ("done", 0),
+        ("awake-edge", 2, 0),
+        ("off-lone", 0, 0),
+        ("off", 0, 1),
+        ("off-late", 0, 0),
+        ("off-edge", 0, 0),
+        ("glance", 0, 1),
+        ("glance-edge", 0, 0),
+        ("tap-woke", 0, 1),
+        ("tap-woke-edge", 0, 0),
+        ("tap-woke-later", 2, 0),
+        // The tap at the edge can't start a tap-and-hold, so the hold
+        // after it is the clock face's long press, in the middle.
+        ("glance-tap-woke-edge", 1, 0),
+        ("done", 0, 0),
     ];
     let at = |name: &str| {
         log.find(&format!("] {name}\n"))
             .unwrap_or_else(|| panic!("{name} echoes: {log}"))
     };
     for pair in sections.windows(2) {
-        let [(name, count), (next, _)] = pair else {
+        let [(name, playpause, next), (following, _, _)] = pair else {
             unreachable!("windows of two")
         };
-        let section = &log[at(name)..at(next)];
-        let playpause = section.matches(r#""n":"playpause""#).count();
-        assert_eq!(playpause, *count, "{name}: {log}");
+        let section = &log[at(name)..at(following)];
+        let counts = (
+            section.matches(r#""n":"playpause""#).count(),
+            section.matches(r#""n":"next""#).count(),
+        );
+        assert_eq!(counts, (*playpause, *next), "{name}: {log}");
     }
 }
 

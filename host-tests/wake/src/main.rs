@@ -48,15 +48,55 @@ mod tests {
         }
     }
 
+    /// Tap, tap: play or pause, with the screen left off.
     #[test]
-    fn a_double_tap_wakes_without_a_phone_and_skips_with() {
+    fn a_double_tap_wakes_without_a_phone_and_plays_or_pauses_with() {
         assert_eq!(
             off(Kind::Tap, MID, 20, true, false),
             Action::Wake { first_tap: false }
         );
-        assert_eq!(off(Kind::Tap, MID, 20, true, true), Action::Next);
+        assert_eq!(off(Kind::Tap, MID, 20, true, true), Action::PlayPause);
         // Even if the second tap is deliberate on its own.
-        assert_eq!(off(Kind::Tap, MID, 90, true, true), Action::Next);
+        assert_eq!(off(Kind::Tap, MID, 90, true, true), Action::PlayPause);
+    }
+
+    /// Tap, then tap-and-hold: the next track, with the screen left off.
+    /// Without a phone, the hold does nothing, as a long press always did.
+    #[test]
+    fn a_tap_and_hold_skips_with_a_phone() {
+        assert_eq!(off(Kind::LongPress, MID, 600, true, true), Action::Next);
+        assert_eq!(off(Kind::LongPress, MID, 600, true, false), Action::Ignore);
+    }
+
+    /// The second touch of a pair must come within half a second of the
+    /// first tap's lift: a tap's lift, or a hold's start (it's reported
+    /// 0.6 s after that, still down).
+    #[test]
+    fn a_pair_s_second_touch_comes_within_half_a_second() {
+        assert_eq!(DOUBLE_TAP_MS, 500);
+        assert!(follows(Kind::Tap, 500, 50));
+        assert!(!follows(Kind::Tap, 501, 50));
+        assert!(follows(Kind::LongPress, 1100, 600));
+        assert!(!follows(Kind::LongPress, 1101, 600));
+        // At once, too: the touch task can't report a touch before the one
+        // before it lifted, but the sums mustn't go wrong if it did.
+        assert!(follows(Kind::LongPress, 600, 600));
+        assert!(follows(Kind::LongPress, 0, 600));
+        // The wearer's double taps from off (0.9.0-m3.1's field log):
+        // second taps of 37–57 ms, 126–156 ms after the first.
+        assert!(follows(Kind::Tap, 156, 57));
+    }
+
+    /// What makes a touch a pair's second, wherever the screen is: a tap
+    /// away from the edge, or a hold in the middle.
+    #[test]
+    fn a_pair_s_second_touch_is_a_tap_inside_or_a_hold_in_the_middle() {
+        assert_eq!(second(Kind::Tap, 40, 40), Some(Action::PlayPause));
+        assert_eq!(second(Kind::Tap, 15, 70), Some(Action::PlayPause));
+        assert_eq!(second(Kind::Tap, 40, 4), None);
+        assert_eq!(second(Kind::LongPress, 40, 40), Some(Action::Next));
+        assert_eq!(second(Kind::LongPress, 40, 12), None);
+        assert_eq!(second(Kind::Swipe, 40, 40), None);
     }
 
     /// The sealed watch's field log (0.9.0-m3.1): the wearer's double taps
@@ -76,18 +116,21 @@ mod tests {
         }
     }
 
+    /// A long press on its own does nothing, anywhere, with the screen off
+    /// or on a glance: an arm folded over the watch made them.
     #[test]
-    fn a_long_press_plays_or_pauses_only_with_a_phone() {
-        assert_eq!(
-            off(Kind::LongPress, MID, 600, false, true),
-            Action::PlayPause
-        );
-        assert_eq!(off(Kind::LongPress, MID, 600, false, false), Action::Ignore);
-        // A tap just before doesn't change that.
-        assert_eq!(
-            off(Kind::LongPress, MID, 600, true, true),
-            Action::PlayPause
-        );
+    fn a_lone_long_press_does_nothing() {
+        for x in (0..80).step_by(4) {
+            for y in (0..80).step_by(4) {
+                for phone in [false, true] {
+                    assert_eq!(
+                        off(Kind::LongPress, (x, y), 600, false, phone),
+                        Action::Ignore
+                    );
+                }
+                assert_eq!(glance(Kind::LongPress, x, y, 600, false), Action::Ignore);
+            }
+        }
     }
 
     /// The middle's corners, in canvas pixels: the first and last columns
@@ -111,24 +154,52 @@ mod tests {
         ]
     }
 
-    /// Only in the middle: an arm folded over the watch rests against its
-    /// edge. Just inside counts, just outside doesn't, on each side, even
-    /// where a tap would wake the screen.
+    /// A tap-and-hold's hold only in the middle: an arm folded over the
+    /// watch rests against its edge. Just inside counts, just outside
+    /// doesn't, on each side, even where a tap would wake the screen (or
+    /// play or pause, as a double tap's second).
     #[test]
-    fn a_long_press_plays_or_pauses_only_in_the_middle() {
+    fn a_tap_and_hold_skips_only_in_the_middle() {
         for at in just_inside() {
-            assert_eq!(
-                off(Kind::LongPress, at, 600, false, true),
-                Action::PlayPause
-            );
+            assert_eq!(off(Kind::LongPress, at, 600, true, true), Action::Next);
         }
         for at in just_outside() {
             assert!(inside(at.0, at.1), "{at:?} is away from a tap's edge");
-            assert_eq!(off(Kind::LongPress, at, 600, false, true), Action::Ignore);
+            assert_eq!(off(Kind::LongPress, at, 600, true, true), Action::Ignore);
             assert_eq!(
                 off(Kind::Tap, at, 86, false, true),
                 Action::Wake { first_tap: true }
             );
+            assert_eq!(off(Kind::Tap, at, 20, true, true), Action::PlayPause);
+        }
+    }
+
+    /// A brush at the edge does nothing, as either touch of a pair, with
+    /// the screen off or on a glance, however long, and doesn't count as a
+    /// first tap either.
+    #[test]
+    fn an_edge_brush_does_nothing() {
+        for at in [(3, 40), (40, 2), (77, 40), (40, 76)] {
+            for recent_tap in [false, true] {
+                for kind in [Kind::Tap, Kind::LongPress] {
+                    for held_ms in [9, 28, 86, 600] {
+                        assert_eq!(
+                            off(kind, at, held_ms, recent_tap, true),
+                            Action::Ignore,
+                            "{kind:?} {at:?} {held_ms} ms"
+                        );
+                    }
+                }
+                // A light tap: neither a pair's first nor its second.
+                assert_eq!(
+                    glance(Kind::Tap, at.0, at.1, 20, recent_tap),
+                    Action::Ignore
+                );
+                assert_eq!(
+                    glance(Kind::LongPress, at.0, at.1, 600, recent_tap),
+                    Action::Ignore
+                );
+            }
         }
     }
 
@@ -151,22 +222,17 @@ mod tests {
     /// (each followed by the phone's new state), the other mid-screen ones
     /// in older logs, and 0.10.0-rc.1's with the screen off or on a glance
     /// (the last at 59 across, on a glance, pausing what a folded arm had
-    /// played 3 s before). All in the middle.
+    /// played 3 s before). All in the middle, so where the wearer holds,
+    /// a tap-and-hold skips.
     #[test]
-    fn the_field_logs_long_presses_by_the_wearer_play_or_pause() {
+    fn the_field_logs_long_presses_by_the_wearer_would_skip_as_a_hold() {
         let played = [(55, 40), (47, 30), (47, 39), (49, 35), (45, 33), (50, 35)];
         let older = [(39, 51), (45, 52), (48, 44), (57, 45)];
         let rc1 = [(43, 47), (52, 48), (46, 53), (59, 32)];
         for at in played.into_iter().chain(older).chain(rc1) {
             assert!(centred(at.0, at.1), "{at:?}");
-            assert_eq!(
-                off(Kind::LongPress, at, 600, false, true),
-                Action::PlayPause
-            );
-            assert_eq!(
-                glance(Kind::LongPress, at.0, at.1, 600, false),
-                Action::PlayPause
-            );
+            assert_eq!(off(Kind::LongPress, at, 600, true, true), Action::Next);
+            assert_eq!(glance(Kind::LongPress, at.0, at.1, 600, true), Action::Next);
         }
     }
 
@@ -178,10 +244,16 @@ mod tests {
     #[test]
     fn the_field_logs_folded_arm_long_presses_do_nothing() {
         // With the screen off: held 9.7 s (the phone paused again 165 s
-        // later), and 1.3 s (the wearer paused again 21 s later).
+        // later), and 1.3 s (the wearer paused again 21 s later). Not
+        // even after a tap, which neither had.
         for at in [(44, 11), (41, 12)] {
             assert!(inside(at.0, at.1), "{at:?}");
-            assert_eq!(off(Kind::LongPress, at, 600, false, true), Action::Ignore);
+            for recent_tap in [false, true] {
+                assert_eq!(
+                    off(Kind::LongPress, at, 600, recent_tap, true),
+                    Action::Ignore
+                );
+            }
         }
         // On a glance: 64 down (the phone paused again 128 s later), and
         // at the top edge (the first of three there in 6 s).
@@ -201,14 +273,51 @@ mod tests {
     /// across, 29 down, with the screen off (the wearer paused again 3 s
     /// later, on a glance, at (59, 32)); and one dead centre, 3 s after a
     /// 369 ms tap woke the screen, on the clock face, which may well have
-    /// been meant. They look like the wearer's.
+    /// been meant. They look like the wearer's. The first now does
+    /// nothing, as no tap came just before it (a 417 ms one at the top
+    /// edge, 1 s before it landed); the second still plays or pauses, on
+    /// the awake clock face.
     #[test]
-    fn the_field_logs_mid_screen_long_presses_still_play_or_pause() {
+    fn the_field_logs_mid_screen_long_presses() {
+        assert_eq!(off(Kind::Tap, (34, 6), 417, false, true), Action::Ignore);
+        assert!(!follows(Kind::LongPress, 1622, 600));
         assert_eq!(
             off(Kind::LongPress, (25, 29), 600, false, true),
-            Action::PlayPause
+            Action::Ignore
         );
         assert!(awake_long_press(47, 48, true));
+    }
+
+    /// 0.10.0-rc.1's field log: the folded arm's taps followed by a hold
+    /// within half a second, each at the top edge. With the screen off, a
+    /// 9 ms tap at (34, 4), then a hold at (31, 4) starting 361 ms after
+    /// its lift; on a glance, a 254 ms tap at (29, 3), which woke the
+    /// screen, then a hold at (34, 3), 9 ms after. Neither skips: the edge
+    /// is out of bounds for both touches.
+    #[test]
+    fn the_field_logs_folded_arm_tap_and_holds_do_nothing() {
+        assert!(follows(Kind::LongPress, 961, 600));
+        assert_eq!(off(Kind::Tap, (34, 4), 9, false, true), Action::Ignore);
+        assert_eq!(
+            off(Kind::LongPress, (31, 4), 600, true, true),
+            Action::Ignore
+        );
+        assert_eq!(
+            glance(Kind::Tap, 29, 3, 254, false),
+            Action::Wake { first_tap: false }
+        );
+        assert_eq!(second(Kind::LongPress, 34, 3), None);
+    }
+
+    /// What still gets through: in the same log, two light taps the arm
+    /// made 9–10 pixels from the bottom edge, 117 ms apart, with the screen
+    /// off. Inside a tap's margin, so a double tap: they skipped then, and
+    /// would play or pause now. (See the TODO in `wake`'s docs.)
+    #[test]
+    fn the_field_logs_folded_arm_double_tap_plays_or_pauses() {
+        assert_eq!(off(Kind::Tap, (15, 71), 18, false, true), Action::FirstTap);
+        assert!(follows(Kind::Tap, 149, 32));
+        assert_eq!(off(Kind::Tap, (15, 70), 32, true, true), Action::PlayPause);
     }
 
     /// On the awake clock face, anywhere: something woke the screen first.
@@ -245,7 +354,7 @@ mod tests {
     fn the_field_logs_long_presses_just_after_a_touch_woke_the_screen() {
         assert_eq!(
             glance(Kind::Tap, 29, 3, 254, false),
-            Action::Wake { first_tap: true }
+            Action::Wake { first_tap: false }
         );
         for (x, y, ms) in [(34, 3, 610), (31, 3, 2750)] {
             assert!(just_woken(ms), "{ms} ms");
@@ -355,10 +464,10 @@ mod tests {
     }
 
     /// On a glance, as from off: a deliberate tap wakes the screen at once
-    /// (and may be the first of a double tap on the clock face), a light one
-    /// waits for a second, and a second skips.
+    /// (and may be the first of a pair finished on the clock face), a light
+    /// one waits for a second, and a second tap plays or pauses.
     #[test]
-    fn a_glance_wakes_on_a_deliberate_tap_and_skips_on_a_light_double_tap() {
+    fn a_glance_wakes_on_a_deliberate_tap_and_plays_or_pauses_on_a_light_double_tap() {
         assert_eq!(tap_on_glance(86, false), Action::Wake { first_tap: true });
         assert_eq!(
             tap_on_glance(DELIBERATE_TAP_MS, false),
@@ -369,53 +478,56 @@ mod tests {
             Action::FirstTap
         );
         assert_eq!(tap_on_glance(20, false), Action::FirstTap);
-        // The second tap skips whatever it's held for.
-        assert_eq!(tap_on_glance(20, true), Action::Next);
-        assert_eq!(tap_on_glance(86, true), Action::Next);
+        // The second tap plays or pauses whatever it's held for.
+        assert_eq!(tap_on_glance(20, true), Action::PlayPause);
+        assert_eq!(tap_on_glance(86, true), Action::PlayPause);
     }
 
-    /// The wearer is looking, so a tap at the edge counts on a glance.
+    /// The wearer is looking, so a deliberate tap at the edge wakes the
+    /// screen from a glance; but it can't start a media gesture there, nor
+    /// can a light one, which does nothing.
     #[test]
-    fn a_glance_takes_taps_at_the_edge() {
+    fn a_glance_wakes_on_a_tap_at_the_edge_but_no_media_gesture_starts_there() {
         assert_eq!(
             glance(Kind::Tap, 2, 40, 86, false),
-            Action::Wake { first_tap: true }
+            Action::Wake { first_tap: false }
         );
-        assert_eq!(glance(Kind::Tap, 40, 77, 20, false), Action::FirstTap);
-        assert_eq!(glance(Kind::Tap, 78, 2, 20, true), Action::Next);
+        assert_eq!(glance(Kind::Tap, 40, 77, 20, false), Action::Ignore);
+        assert_eq!(glance(Kind::Tap, 78, 2, 20, true), Action::Ignore);
+        assert_eq!(
+            glance(Kind::Tap, 78, 2, 86, true),
+            Action::Wake { first_tap: false }
+        );
     }
 
-    /// A long press, though, only in the middle, as with the screen off:
-    /// folding the arms turns the wrist, which can light a glance, as the
-    /// other arm comes to rest against the watch's edge. Nearer the edge
-    /// it does nothing, and the glance goes on.
+    /// A tap-and-hold skips on a glance, with its hold in the middle, as
+    /// with the screen off: folding the arms turns the wrist, which can
+    /// light a glance, as the other arm comes to rest against the watch's
+    /// edge. Nearer the edge, or without the tap, it does nothing, and the
+    /// glance goes on.
     #[test]
-    fn a_glance_plays_or_pauses_only_on_a_long_press_in_the_middle() {
-        assert_eq!(
-            glance(Kind::LongPress, 40, 40, 600, false),
-            Action::PlayPause
-        );
-        // A tap just before doesn't change that.
-        assert_eq!(
-            glance(Kind::LongPress, 40, 40, 600, true),
-            Action::PlayPause
-        );
+    fn a_glance_skips_on_a_tap_and_hold_in_the_middle() {
+        assert_eq!(glance(Kind::LongPress, 40, 40, 600, true), Action::Next);
+        assert_eq!(glance(Kind::LongPress, 40, 40, 600, false), Action::Ignore);
         for (x, y) in just_inside() {
-            assert_eq!(glance(Kind::LongPress, x, y, 600, false), Action::PlayPause);
+            assert_eq!(glance(Kind::LongPress, x, y, 600, true), Action::Next);
         }
         for (x, y) in just_outside().into_iter().chain([(0, 0)]) {
-            assert_eq!(glance(Kind::LongPress, x, y, 600, false), Action::Ignore);
+            assert_eq!(glance(Kind::LongPress, x, y, 600, true), Action::Ignore);
         }
     }
 
-    /// A swipe wakes the screen properly, wherever it starts.
+    /// A swipe wakes the screen properly, wherever it starts, after a
+    /// tap too.
     #[test]
     fn a_swipe_on_a_glance_wakes_the_screen() {
         for (x, y) in [MID, (2, 40)] {
-            assert_eq!(
-                glance(Kind::Swipe, x, y, 120, false),
-                Action::Wake { first_tap: false }
-            );
+            for recent_tap in [false, true] {
+                assert_eq!(
+                    glance(Kind::Swipe, x, y, 120, recent_tap),
+                    Action::Wake { first_tap: false }
+                );
+            }
         }
     }
 }
