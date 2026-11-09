@@ -172,7 +172,8 @@ const MIN_MASKED_CORRELATION: f32 = 0.6;
 const OCTAVE_TOLERANCE: f32 = 0.6;
 
 /// Windows slower than this (BPM) must have a steady light level (see
-/// [`MAX_SLOW_DRIFT`]).
+/// [`MAX_SLOW_DRIFT`]), and a wrist that kept still (see
+/// [`slow_while_busy`]).
 const SLOW_BPM: f32 = 50.0;
 
 /// How far the raw light level may move across a window slower than
@@ -575,6 +576,25 @@ impl Ppg {
             });
         if low > 0.0 { (high - low) / low } else { 0.0 }
     }
+}
+
+/// Whether a window slower than [`SLOW_BPM`] came while the wrist was
+/// busy, awake: at least half of `movement`, the wrist's movement readings
+/// through the window, above `calm` (`heart::CALM`), and the sleep
+/// classifier not saying `asleep`. Such a window isn't to be trusted.
+///
+/// A heart rate under 50 is a resting one, and awake, resting means a
+/// still wrist. A busy wrist, though, can shift the sensor back and forth
+/// slowly enough to correlate like a slow pulse while the light level
+/// stays put, which [`MAX_SLOW_DRIFT`] can't catch. In field logs, every
+/// accepted window under 50 BPM at a desk was wrong (one session read 45
+/// BPM with a Garmin at 71, at movement 450-950), while of 212 asleep,
+/// all but 2 came with a calm wrist, and those 2 were right: turning over
+/// in bed is a few seconds' movement, after which the pulse is as slow
+/// as before.
+pub fn slow_while_busy(bpm: f32, movement: &[u16], calm: u16, asleep: bool) -> bool {
+    let busy = movement.iter().filter(|&&m| m > calm).count();
+    bpm < SLOW_BPM && !asleep && !movement.is_empty() && busy * 2 >= movement.len()
 }
 
 // ==============================================================================

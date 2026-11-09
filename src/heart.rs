@@ -45,9 +45,10 @@ use crate::ppg::{Consensus, Conversions, Ppg};
 // ==============================================================================
 
 /// How long a background session may try before giving up. A clean
-/// signal gives a reading after ~13 s (1 s settling, 8 s window, then two
-/// more estimates 2 s apart that must agree); this leaves room for a few
-/// rejected windows, or the gain adjusting.
+/// signal gives a reading after ~12.5 s (half a second warming up and
+/// settling, 8 s window, then two more estimates 2 s apart that must
+/// agree); this leaves room for a few rejected windows, or the gain
+/// adjusting.
 const SESSION_LIMIT: Duration = Duration::from_secs(30);
 
 /// Wrist movement (see [`activity::movement`]) above which the PPG can't be
@@ -639,6 +640,12 @@ async fn measure(
                 moving,
                 movement.len()
             );
+            continue;
+        }
+        // Nor a slow one while the wrist was merely busy, awake: that's
+        // more likely the sensor shifting than a resting pulse.
+        if crate::ppg::slow_while_busy(bpm, movement.as_slice(), CALM, activity::asleep()) {
+            debug!("heart: window rejected: slow while busy ({} BPM)", bpm);
             continue;
         }
         debug!(

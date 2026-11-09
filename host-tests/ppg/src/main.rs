@@ -510,8 +510,9 @@ const CALM: u16 = 150;
 
 /// A session extracted from a field log by `scripts/ppg_sessions.py`, one
 /// per line: UTC start, a reference rate (another watch's, or 0), the
-/// conversion period, the firmware's outcome, then raw samples, and after
-/// a `|`, the movement at each level check (older extracts have none).
+/// conversion period, the firmware's outcome, then raw samples, after a
+/// `|`, the movement at each level check (older extracts have none), and
+/// after another, `asleep` if the sleep classifier said so.
 struct Recorded {
     start: String,
     reference: f32,
@@ -519,13 +520,15 @@ struct Recorded {
     outcome: String,
     samples: Vec<u32>,
     movement: Vec<u16>,
+    asleep: bool,
 }
 
 fn parse_sessions(text: &str) -> Vec<Recorded> {
     let number = |v: &str| -> f32 { v.parse().expect("a number") };
     text.lines()
         .map(|line| {
-            let (signal, movement) = line.split_once(" | ").unwrap_or((line, ""));
+            let (signal, rest) = line.split_once(" | ").unwrap_or((line, ""));
+            let (movement, sleep) = rest.split_once(" | ").unwrap_or((rest, ""));
             let mut fields = signal.split_whitespace();
             let mut next = || fields.next().expect("session line has its header");
             let (start, reference, period, outcome) = (next(), next(), next(), next());
@@ -539,16 +542,18 @@ fn parse_sessions(text: &str) -> Vec<Recorded> {
                     .split_whitespace()
                     .map(|v| v.parse().expect("a number"))
                     .collect(),
+                asleep: sleep == "asleep",
             }
         })
         .collect()
 }
 
 /// A window's verdict in a replay: the estimator's, or the firmware's
-/// movement veto over an estimate.
+/// movement vetoes over an estimate.
 enum Verdict {
     Window(Result<ppg::Estimate, Rejection>),
     Moving,
+    SlowWhileBusy,
 }
 
 /// Every window of a recorded session, with the sample it ended at, as the
@@ -567,6 +572,16 @@ fn windows(session: &Recorded) -> Vec<(usize, Verdict)> {
             i,
             match verdict {
                 Ok(_) if moving * 2 > recent.len() => Verdict::Moving,
+                Ok(estimate)
+                    if ppg::slow_while_busy(
+                        estimate.bpm_at(session.period),
+                        recent,
+                        CALM,
+                        session.asleep,
+                    ) =>
+                {
+                    Verdict::SlowWhileBusy
+                }
                 verdict => Verdict::Window(verdict),
             },
         ));
@@ -611,6 +626,7 @@ fn replay(path: &str) {
         for (i, verdict) in windows {
             verdicts.push(match verdict {
                 Verdict::Moving => "moving".into(),
+                Verdict::SlowWhileBusy => "slow-busy".into(),
                 Verdict::Window(Ok(estimate)) => {
                     let bpm = estimate.bpm_at(session.period);
                     if let Some(agreed) = consensus.push(bpm)
@@ -877,7 +893,11 @@ mod tests {
     /// Desk sessions from a field log in which the sensor shifted on the
     /// skin, and the shifting passed for a slow pulse: one read 42 BPM
     /// with a Garmin on the other wrist at 67-69. (Its third window isn't
-    /// in the log, which ends each session at its last whole second.)
+    /// in the log, which ends each session at its last whole second.) And
+    /// one from the next day in which a busy wrist (movement 450-950)
+    /// swung the light slowly while its level held, at 44-46 BPM with the
+    /// Garmin at 71: the warm-up fix let its third window through too,
+    /// which made it a reading, until a slow window needed a calm wrist.
     #[test]
     fn a_shifting_sensor_is_not_a_slow_pulse() {
         let text = include_str!("../fixtures/desk-drift.txt");

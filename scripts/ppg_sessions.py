@@ -6,7 +6,9 @@ Writes one line per segment (samples at one level, uninterrupted):
     <utc start> <garmin bpm or 0> <conversion period µs> <outcome> <sample> ... | <movement> ...
 
 with the wrist's movement (`activity::movement`) as the firmware saw it at
-each second's level check, so the replay can veto windows as it does.
+each second's level check, so the replay can veto windows as it does, and
+a third section, `| asleep`, if the sleep classifier said so when the
+segment started (logs from before it, 0.8.x, never do).
 
 Usage: python -I scripts/ppg_sessions.py HEALTH_CONNECT_DB DECODED_LOG OUT
 
@@ -35,9 +37,13 @@ def garmin(t):
     return min(near)[1] if near else 0
 
 
-segments, current, period = [], None, 37500.0
+segments, current, period, asleep = [], None, 37500.0, False
 for line in log:
     up = float(line.split()[0])
+    if "sleep: asleep now" in line:
+        asleep = True
+    elif "sleep: awake now" in line:
+        asleep = False
     # A reading is logged before the session's last part-second of samples
     # (0.9.1 on; earlier logs don't have it), so its segment closes at the
     # next heart line that isn't samples.
@@ -48,7 +54,8 @@ for line in log:
         period = float(m[1])
     elif m := re.search(r"heart: samples \[([\d, ]*)\]", line):
         if current is None:
-            current = {"t": BASE + up - 1, "samples": [], "movement": [], "outcome": "-"}
+            current = {"t": BASE + up - 1, "samples": [], "movement": [], "outcome": "-",
+                       "asleep": asleep}
         current["samples"] += [int(v) for v in m[1].split(", ") if v]
         if mv := re.search(r"movement (\d+)", line):
             current["movement"].append(mv[1])
@@ -71,5 +78,6 @@ with open(sys.argv[3], "w") as out:
     for s in segments:
         mid = s["t"] + len(s["samples"]) * s["period"] / 2e6
         out.write(f"{s['t']:.0f} {garmin(mid)} {s['period']:.1f} {s['outcome']} "
-                  + " ".join(map(str, s["samples"])) + " | " + " ".join(s["movement"]) + "\n")
+                  + " ".join(map(str, s["samples"])) + " | " + " ".join(s["movement"])
+                  + (" | asleep" if s["asleep"] else "") + "\n")
 print(f"{len(segments)} segments, {sum(len(s['samples']) for s in segments)} samples")
