@@ -318,10 +318,13 @@ const HYSTERESIS_DB: i8 = 3;
 /// would become the room's temperature, and calibrate the wrist's.
 ///
 /// Indoors, a sensor in the same room is typically heard at −40 to −75 dBm,
-/// and through a wall at −75 to −90. On the dev kit, two Aranet4s came in
-/// at −63 and −84: one in the room, one past a wall (TODO: replace with
-/// the dev kit's spread once measured). −80 keeps the first with 17 dB to
-/// spare, room for the wrist's own shadow (5–10 dB), and drops the other.
+/// and through a wall at −75 to −90. On the dev kit (on a desk, its case
+/// open), over twelve 3 s scans, the strongest report of each scan was −65
+/// to −67 from an Aranet4 in the room (single reports −65 to −72), and −82
+/// to −84 from one past a wall (−82 to −92). On the wrist, its shadow
+/// takes 5–10 dB off both: the one in the room at about −72 to −77, the
+/// other below −87. −80 lies between, and drops the one past the wall
+/// even off the wrist, where it's at its strongest.
 /// A sensor of one's own across a large room may fall below it, now and
 /// then, on the wrist: the watch then shows its own estimate, as it does
 /// with no sensor at all, which is the safe way to be wrong.
