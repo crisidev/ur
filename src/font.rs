@@ -153,6 +153,35 @@ pub fn glyph(c: char) -> Glyph {
 /// no room for distinct lowercase forms), and anything else unknown becomes
 /// `?`.
 pub fn small_glyph(c: char) -> [u8; 5] {
+    let i = (c as u32).wrapping_sub(' ' as u32) as usize;
+    let packed = match SMALL_ASCII.get(i) {
+        Some(&packed) => packed,
+        None => SMALL_ASCII[usize::from(b'?' - b' ')],
+    };
+    core::array::from_fn(|row| (packed >> (3 * (4 - row))) as u8 & 0b111)
+}
+
+/// [`small_art`] for ASCII from the space to DEL, each glyph's five 3-bit
+/// rows packed into a `u16`, top row highest: built at compile time, so
+/// the art stays readable as a `match` and costs only its bits (192
+/// bytes, where the `match` compiled to ~0.9 KB of code).
+static SMALL_ASCII: [u16; 96] = {
+    let mut table = [0; 96];
+    let mut i = 0;
+    while i < table.len() {
+        let rows = small_art((b' ' + i as u8) as char);
+        let mut row = 0;
+        while row < rows.len() {
+            table[i] = (table[i] << 3) | rows[row] as u16;
+            row += 1;
+        }
+        i += 1;
+    }
+    table
+};
+
+/// The small font's ASCII; see [`small_glyph`].
+const fn small_art(c: char) -> [u8; 5] {
     match c.to_ascii_uppercase() {
         ' ' => [0b000, 0b000, 0b000, 0b000, 0b000],
         '0' => [0b111, 0b101, 0b101, 0b101, 0b111],
