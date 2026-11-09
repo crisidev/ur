@@ -1173,9 +1173,16 @@ impl App {
     /// running out, or its last press to stop showing. While a finger is
     /// down (`finger_down`), only a hold becoming a long press: anything
     /// else waits for that touch, whose event wakes the loop.
+    ///
+    /// The hold's only while the grid's still showing: left with the
+    /// finger down (the button pressed meanwhile, say), `on_timer` won't
+    /// make it a long press, so its time would stay due, and the loop would
+    /// spin until the finger lifted. The hold itself stays, for its
+    /// release.
     pub fn deadline(&self, finger_down: bool) -> Option<Instant> {
         if finger_down {
-            return self.grid.long_at();
+            let on_grid = self.awake && self.screen == Screen::Buttons;
+            return self.grid.long_at().filter(|_| on_grid);
         }
         let shown = self.sent.map(|(_, until, _)| until);
         self.grid.deadline().into_iter().chain(shown).min()
