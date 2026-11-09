@@ -713,9 +713,10 @@ extern "C" fn watchdog_bite(frame: *const u32) -> ! {
     }
 }
 
-/// Our panic handler. Leaves a breadcrumb for [`report_last_reset`], logs
-/// the panic (so a probe, or the field log's next boot, sees it), and
-/// resets, rather than waiting for the watchdog with the watch frozen.
+/// Our panic handler. Leaves a breadcrumb for [`report_last_reset`] (which
+/// the next boot logs), logs the panic for a probe (not in field builds;
+/// see below), and resets, rather than waiting for the watchdog with the
+/// watch frozen.
 ///
 /// The breadcrumb matters for field builds: the panic's own log message is
 /// in RAM that the reset clears before the field log can save it. So the
@@ -779,14 +780,22 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         addr_of_mut!((*crumb).message_len).write_volatile(message.len as u32);
         magic.write_volatile(BREADCRUMB_MAGIC);
     }
-    // Only now, with everything recorded: this is what can panic again (see
-    // above), and then the guard can't tell this panic from a fresh one.
-    // So mark it in progress again for the duration.
-    // SAFETY: As above.
-    unsafe { core::ptr::addr_of_mut!((*crumb).magic).write_volatile(PANICKING_MAGIC) };
-    defmt::error!("{}", defmt::Display2Format(info));
-    // SAFETY: As above.
-    unsafe { core::ptr::addr_of_mut!((*crumb).magic).write_volatile(BREADCRUMB_MAGIC) };
+    // Log it, for a probe, which sees it at once, and in full. Not in field
+    // builds: there it would only reach the RTT buffer, whose RAM the reset
+    // clears before the field log could save it, so the next boot's report
+    // of the breadcrumb is all that's kept either way. Leaving it out there
+    // saves the ~470 bytes of `core::fmt` glue it takes.
+    #[cfg(not(feature = "field-log"))]
+    {
+        // Only now, with everything recorded: this is what can panic again
+        // (see above), and then the guard can't tell this panic from a
+        // fresh one. So mark it in progress again for the duration.
+        // SAFETY: As above.
+        unsafe { core::ptr::addr_of_mut!((*crumb).magic).write_volatile(PANICKING_MAGIC) };
+        defmt::error!("{}", defmt::Display2Format(info));
+        // SAFETY: As above.
+        unsafe { core::ptr::addr_of_mut!((*crumb).magic).write_volatile(BREADCRUMB_MAGIC) };
+    }
     // With a debugger attached, stop where we are so it can look.
     let dhcsr = cortex_m::peripheral::DCB::PTR;
     // SAFETY: Reading DHCSR is side-effect free.
