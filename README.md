@@ -166,7 +166,10 @@ Send the zip over Bluetooth with either of these:
   packet") type, and the zip; then Device, the watch ("InfiniTime" the
   first time, "Bangle.js ur" after that); then Start. For updates, use
   the phone Gadgetbridge paired with the watch: the app relies on that
-  pairing (see [U01](#u01-a-phone-update-fails-at-enabling-bootloader-or-with-gatt-conn-timeout)).
+  pairing (see [U01](#u01-a-phone-update-fails-at-enabling-bootloader-or-with-gatt-conn-timeout)),
+  and on Android, turn on **Keep bond** in the app's Settings first, or
+  the phone forgets that pairing after each update (see
+  [U03](#u03-the-phone-has-to-pair-again-after-every-update)).
 - **A Linux computer**, with `scripts/dfu.py` from this repository
   (`pip install bleak` first). `<MAC>` is the watch's address, which
   `bluetoothctl` shows while scanning.
@@ -333,6 +336,15 @@ found something wrong: it was damaged or cut short on the way, or it
 isn't firmware for this watch (a zip for another device, say). The watch
 keeps the firmware it has. Send the zip again; if it's refused again,
 download it again, and [verify](#verifying) it.
+
+### U03: The phone has to pair again after every update
+
+The Android nRF Device Firmware Update app makes the phone forget its
+pairing with the watch when an update finishes, unless **Keep bond** is
+on in the app's Settings (under "Legacy DFU"); it's off by default. The
+watch still remembers the phone, so it says "PAIRING LOST". Pair again
+as in [C02](#c02-the-watch-says-pairing-lost), and turn on Keep bond
+before the next update.
 
 ## Contributing
 
