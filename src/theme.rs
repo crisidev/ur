@@ -197,16 +197,17 @@ pub static PARCHMENT: Theme = theme("PARCHMENT", [
 /// is usually the most of a night, so the bar is mostly a quiet grey,
 /// with the deep and REM spells standing out of it.
 ///
-/// The track of bars and gauges (the step blocks not yet filled) is red
-/// half-toned the same way: a faded version of the filled blocks' red,
-/// where black would leave the empty blocks invisible.
+/// The track of bars and gauges (the step blocks not yet filled) is that
+/// grey too, white half-toned: black would leave the empty blocks
+/// invisible, and red would make one more red thing competing for
+/// attention.
 /// TODO: idle mode has five more colours (green, blue, and their pairs),
 /// if the dim look may ever have more colour than red.
 #[rustfmt::skip]
 pub static GLANCE: Theme = Theme {
     halftone: 1 << Color::GREY.0 | 1 << Color::TRACK.0,
     ..theme("GLANCE", [
-        0x000000, 0x000000, 0xffffff, 0xff0000, 0xff0000, 0xff0000, 0xff0000,
+        0x000000, 0x000000, 0xffffff, 0xff0000, 0xff0000, 0xffffff, 0xff0000,
         0x000000, 0x000000, 0xff0000, 0xffffff, 0xffffff, 0xff0000, 0xffffff,
         0xff0000, 0xffffff,
     ])
