@@ -771,7 +771,13 @@ impl UiLoop {
             // or its wait running out; the grid shows those that couldn't
             // go, before the pass renders it.
             while let Some(press) = app.take_ha_press() {
-                if !board.advertise(Some(press), app.grid_layout, battery).await {
+                let sent = board.advertise(Some(press), app.grid_layout, battery).await;
+                // (Microseconds before `ha_unsent`'s instant, as the
+                // simulator has it: a frame between them is all but
+                // impossible.)
+                #[cfg(feature = "compare")]
+                crate::compare::ha_press(Instant::now(), press, sent);
+                if !sent {
                     app.ha_unsent(press, Instant::now());
                 }
             }

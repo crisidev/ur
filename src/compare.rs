@@ -40,7 +40,7 @@ use crate::aranet::{Band, Kind, Sighting};
 use crate::day::{Day, HOURS};
 use crate::gesture::Gesture;
 use crate::ui::{PhoneEvent, Status, Unpaired};
-use crate::{InputEvent, alarm};
+use crate::{InputEvent, alarm, buttons};
 
 /// Set in [`Head::magic`] once [`Boot`] is written.
 pub const MAGIC: u32 = 0x7572_4350; // "urCP"
@@ -154,6 +154,10 @@ pub mod kind {
     /// What the pass tells the App besides events changed (see
     /// [`super::state`]): [`super::state`] flags in [`Event::flags`].
     pub const STATE: u8 = 8;
+    /// A button grid press handed to BTHome (see [`super::ha_press`]): its
+    /// code in [`Event::x`], its gesture in [`Event::gesture`] (as
+    /// [`super::ha_gesture_code`]), and [`Event::flags`] 1 if it went out.
+    pub const HA_PRESS: u8 = 9;
 }
 
 /// What [`Event::phone`] says the phone sent: the content isn't kept (the
@@ -413,6 +417,37 @@ pub fn gesture_code(gesture: Gesture) -> u8 {
     }
 }
 
+/// A grid press's gesture, as a [`kind::HA_PRESS`] event says.
+pub fn ha_gesture_code(gesture: buttons::Gesture) -> u8 {
+    match gesture {
+        buttons::Gesture::Tap => 1,
+        buttons::Gesture::DoubleTap => 2,
+        buttons::Gesture::Hold => 3,
+        buttons::Gesture::LongPress => 4,
+        buttons::Gesture::Release => 5,
+    }
+}
+
+/// Which [`phone`] message `message` is, as [`Event::phone`] says.
+pub fn phone_code(message: &PhoneEvent) -> u8 {
+    match message {
+        PhoneEvent::Notification { .. } => phone::NOTIFICATION,
+        PhoneEvent::IncomingCall { .. } => phone::INCOMING_CALL,
+        PhoneEvent::CallOver => phone::CALL_OVER,
+        PhoneEvent::MusicInfo { .. } => phone::MUSIC_INFO,
+        PhoneEvent::MusicState { playing: false } => phone::MUSIC_STATE_PAUSED,
+        PhoneEvent::MusicState { playing: true } => phone::MUSIC_STATE_PLAYING,
+        PhoneEvent::Find { on: true } => phone::FIND,
+        PhoneEvent::Find { on: false } => phone::FIND_OFF,
+        PhoneEvent::Unpaired(_) => phone::UNPAIRED,
+        PhoneEvent::Alarms(_) => phone::ALARMS,
+        PhoneEvent::Route(_) => phone::ROUTE,
+        PhoneEvent::TextAsBitmaps => phone::TEXT_AS_BITMAPS,
+        PhoneEvent::IntentsOff => phone::INTENTS_OFF,
+        PhoneEvent::UpdateRefused => phone::UPDATE_REFUSED,
+    }
+}
+
 /// For the simulator, which reads the events.
 #[cfg(not(target_os = "none"))]
 pub fn gesture_from_code(code: u8) -> Option<Gesture> {
@@ -424,6 +459,19 @@ pub fn gesture_from_code(code: u8) -> Option<Gesture> {
         5 => Gesture::SwipeLeft,
         6 => Gesture::SwipeRight,
         7 => Gesture::Release,
+        _ => return None,
+    })
+}
+
+/// The inverse of [`ha_gesture_code`].
+#[cfg(not(target_os = "none"))]
+pub fn ha_gesture_from_code(code: u8) -> Option<buttons::Gesture> {
+    Some(match code {
+        1 => buttons::Gesture::Tap,
+        2 => buttons::Gesture::DoubleTap,
+        3 => buttons::Gesture::Hold,
+        4 => buttons::Gesture::LongPress,
+        5 => buttons::Gesture::Release,
         _ => return None,
     })
 }
@@ -669,22 +717,7 @@ pub fn input(input: &InputEvent, at: Instant) {
             ..event(kind::TOUCH, at)
         },
         InputEvent::Phone(message) => Event {
-            phone: match message {
-                PhoneEvent::Notification { .. } => phone::NOTIFICATION,
-                PhoneEvent::IncomingCall { .. } => phone::INCOMING_CALL,
-                PhoneEvent::CallOver => phone::CALL_OVER,
-                PhoneEvent::MusicInfo { .. } => phone::MUSIC_INFO,
-                PhoneEvent::MusicState { playing: false } => phone::MUSIC_STATE_PAUSED,
-                PhoneEvent::MusicState { playing: true } => phone::MUSIC_STATE_PLAYING,
-                PhoneEvent::Find { on: true } => phone::FIND,
-                PhoneEvent::Find { on: false } => phone::FIND_OFF,
-                PhoneEvent::Unpaired(_) => phone::UNPAIRED,
-                PhoneEvent::Alarms(_) => phone::ALARMS,
-                PhoneEvent::Route(_) => phone::ROUTE,
-                PhoneEvent::TextAsBitmaps => phone::TEXT_AS_BITMAPS,
-                PhoneEvent::IntentsOff => phone::INTENTS_OFF,
-                PhoneEvent::UpdateRefused => phone::UPDATE_REFUSED,
-            },
+            phone: phone_code(message),
             held_ms: match message {
                 PhoneEvent::MusicInfo { artist, track } => music(artist, track),
                 _ => 0,
@@ -719,6 +752,18 @@ fn update_state(now: Instant, update: impl FnOnce(u8) -> u8) {
             ..event(kind::STATE, now)
         });
     }
+}
+
+/// The UI loop handed `press` to BTHome at `now`, and it went out
+/// (`sent`) or couldn't (so the App was told, at `now`). Whether it did
+/// is up to the radio, which the simulator hasn't got.
+pub fn ha_press(now: Instant, press: buttons::Press, sent: bool) {
+    push(Event {
+        x: press.code,
+        gesture: ha_gesture_code(press.gesture),
+        flags: u8::from(sent),
+        ..event(kind::HA_PRESS, now)
+    });
 }
 
 /// A pass is about to render, at `now`, with `status` and `today`. Call
