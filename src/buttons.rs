@@ -404,9 +404,9 @@ impl Layout {
     }
 }
 
-/// Whether the grid is on, and where its presses go: to Home Assistant
-/// (over BTHome, see `crate::bthome`), to the phone (as an Android intent,
-/// through Gadgetbridge; see `gb::Outgoing::Button`), or both.
+/// Whether the grid is on, and where its presses go: over BTHome (for
+/// Home Assistant, see `crate::bthome`), to the phone (as an Android
+/// intent, through Gadgetbridge; see `gb::Outgoing::Button`), or both.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 #[cfg_attr(target_os = "none", derive(defmt::Format))]
 pub enum Setting {
@@ -414,7 +414,7 @@ pub enum Setting {
     /// nothing until set up at the other end.
     #[default]
     Off,
-    Ha,
+    BtHome,
     Phone,
     Both,
 }
@@ -423,7 +423,7 @@ impl Setting {
     /// As stored (`storage::key::BUTTONS`). Unknown values read as off.
     pub fn from_byte(byte: u8) -> Self {
         match byte {
-            1 => Self::Ha,
+            1 => Self::BtHome,
             2 => Self::Phone,
             3 => Self::Both,
             _ => Self::Off,
@@ -437,19 +437,23 @@ impl Setting {
     /// The next choice, round the cycle (a tap on the Settings screen).
     pub fn next(self) -> Self {
         match self {
-            Self::Off => Self::Ha,
-            Self::Ha => Self::Phone,
+            Self::Off => Self::BtHome,
+            Self::BtHome => Self::Phone,
             Self::Phone => Self::Both,
             Self::Both => Self::Off,
         }
     }
 
+    /// Named for the protocol, not Home Assistant: it's what the watch
+    /// sends, and what Home Assistant's integration for it is called. Both is just "BOTH": "BTHOME+PHONE" doesn't fit beside "BUTTONS"
+    /// on the Settings screen, and in the cycle it follows the two it
+    /// means.
     pub fn name(self) -> &'static str {
         match self {
             Self::Off => "OFF",
-            Self::Ha => "HA",
+            Self::BtHome => "BTHOME",
             Self::Phone => "PHONE",
-            Self::Both => "HA+PHONE",
+            Self::Both => "BOTH",
         }
     }
 
@@ -457,9 +461,9 @@ impl Setting {
         self != Self::Off
     }
 
-    /// Whether presses go to Home Assistant.
-    pub fn ha(self) -> bool {
-        matches!(self, Self::Ha | Self::Both)
+    /// Whether presses go out over BTHome (to Home Assistant).
+    pub fn bthome(self) -> bool {
+        matches!(self, Self::BtHome | Self::Both)
     }
 
     /// Whether presses go to the phone.

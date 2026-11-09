@@ -547,11 +547,11 @@ mod tests {
         assert_eq!(setting, Setting::Off, "round the cycle");
         assert_eq!(
             seen,
-            [Setting::Off, Setting::Ha, Setting::Phone, Setting::Both]
+            [Setting::Off, Setting::BtHome, Setting::Phone, Setting::Both]
         );
-        assert!(Setting::Ha.ha() && !Setting::Ha.phone());
-        assert!(!Setting::Phone.ha() && Setting::Phone.phone());
-        assert!(Setting::Both.ha() && Setting::Both.phone());
+        assert!(Setting::BtHome.bthome() && !Setting::BtHome.phone());
+        assert!(!Setting::Phone.bthome() && Setting::Phone.phone());
+        assert!(Setting::Both.bthome() && Setting::Both.phone());
         assert_eq!(Setting::from_byte(200), Setting::Off);
     }
 }

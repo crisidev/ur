@@ -52,12 +52,13 @@
 //!   theme ("THEME", the next within the current group: dark themes after
 //!   sunset, light ones after sunrise; each group remembers its own), the
 //!   brightness ("LIGHT", auto or soft; see [`crate::brightness`]), the
-//!   button grid ("BUTTONS": off, or where its presses go), its layout
-//!   ("GRID": six buttons, or two layers; with Home Assistant, the latter
-//!   shows FAQ B04, which explains the events it sends then), and, on the
-//!   last row ("HA KEY"), the key Home Assistant needs for them (see
-//!   [`crate::bthome`]): a QR code to scan, then, at a tap, as text with
-//!   the watch's address. Another tap, or anything else, closes it.
+//!   button grid ("BUTTONS": off, or where its presses go: BTHome, the
+//!   phone, or both), its layout ("GRID": six buttons, or two layers; over
+//!   BTHome, the latter shows FAQ B04, which explains the events it sends
+//!   then), and, on the last row ("BTHOME KEY", there only
+//!   while presses go over BTHome), the key Home Assistant needs for them
+//!   (see [`crate::bthome`]): a QR code to scan, then, at a tap, as text
+//!   with the watch's address. Another tap, or anything else, closes it.
 //! - On the button grid, taps and holds are the grid's (see [`buttons`]
 //!   for how they become presses). While a press waits to see whether
 //!   more follows, its buttons stay lit; once sent, the last one shows the
@@ -1113,12 +1114,12 @@ impl App {
                         motor::buzz(Pattern::NOTIFY);
                     }
                 }
-                (Gesture::Tap, Screen::Settings) => match settings_row(touch.y) {
+                (Gesture::Tap, Screen::Settings) => match settings_row(touch.y, self.buttons) {
                     Some(Row::Theme) => self.next_theme(),
                     Some(Row::Light) => self.brightness = self.brightness.next(),
                     Some(Row::Buttons) => self.buttons = self.buttons.next(),
                     Some(Row::Grid) => self.grid_layout = self.grid_layout.next(),
-                    Some(Row::HaKey) => self.go_to(Screen::HaQr, Sweep::RightToLeft),
+                    Some(Row::BtHomeKey) => self.go_to(Screen::HaQr, Sweep::RightToLeft),
                     None => {}
                 },
                 // TODO: remove once something real uses the motor; for now
@@ -1198,7 +1199,7 @@ impl App {
                 gesture: press.gesture.name(),
             });
         }
-        if self.buttons.ha() {
+        if self.buttons.bthome() {
             let _ = self.ha_presses.push(press);
         }
         // A hold's end: the screen keeps showing the hold, which already
@@ -1208,7 +1209,7 @@ impl App {
         }
         // Somewhere it could go. (Home Assistant can't say whether it
         // heard; Gadgetbridge only says if it didn't pass it on.)
-        let sent = to_phone || self.buttons.ha();
+        let sent = to_phone || self.buttons.bthome();
         self.sent = Some((press, now + SENT_TIME, sent));
         motor::buzz(if sent { Pattern::NOTIFY } else { Pattern::TURN });
     }
@@ -2878,8 +2879,8 @@ fn render_info(canvas: &mut Canvas, status: &Status) {
 // ==============================================================================
 //
 // One setting a row, each a tap for its next value, between hairlines:
-// five rows of 14 canvas pixels (~5 mm), as much of a fingertip as fits
-// under the title.
+// up to five rows of 14 canvas pixels (~5 mm), as much of a fingertip as
+// fits under the title.
 
 /// Where the rows start, and how tall each is.
 const SETTINGS_TOP: i32 = 10;
@@ -2892,15 +2893,37 @@ enum Row {
     Light,
     Buttons,
     Grid,
-    HaKey,
+    BtHomeKey,
 }
 
-const ROWS: [Row; 5] = [Row::Theme, Row::Light, Row::Buttons, Row::Grid, Row::HaKey];
+const ROWS: [Row; 5] = [
+    Row::Theme,
+    Row::Light,
+    Row::Buttons,
+    Row::Grid,
+    Row::BtHomeKey,
+];
+
+/// The rows shown with the grid's presses going where `buttons` says:
+/// BTHome's key only while they go over BTHome, as it's of no use
+/// otherwise. It's last, so hiding it moves no other row, and a tap
+/// where it would be is a tap on nothing. (Nothing else changes the
+/// setting while its screen is open: the row only goes at a tap on
+/// BUTTONS.)
+fn settings_rows(buttons: buttons::Setting) -> &'static [Row] {
+    if buttons.bthome() {
+        &ROWS
+    } else {
+        &ROWS[..ROWS.len() - 1]
+    }
+}
 
 /// Which row a tap at `y` is on.
-fn settings_row(y: i32) -> Option<Row> {
+fn settings_row(y: i32, buttons: buttons::Setting) -> Option<Row> {
     let row = y.checked_sub(SETTINGS_TOP)? / SETTINGS_ROW;
-    ROWS.get(usize::try_from(row).ok()?).copied()
+    settings_rows(buttons)
+        .get(usize::try_from(row).ok()?)
+        .copied()
 }
 
 fn render_settings(
@@ -2912,7 +2935,7 @@ fn render_settings(
 ) {
     canvas.clear(BACKGROUND);
     canvas.text(4, 3, "SETTINGS", Color::ACCENT);
-    for (i, row) in ROWS.into_iter().enumerate() {
+    for (i, &row) in settings_rows(buttons).iter().enumerate() {
         let top = SETTINGS_TOP + SETTINGS_ROW * i as i32;
         if i > 0 {
             canvas.fill_rect(4, top, 72, 1, Color::TEXT_FAINT);
@@ -2923,14 +2946,14 @@ fn render_settings(
             Row::Buttons => ("BUTTONS", buttons.name(), Color::TEXT),
             Row::Grid => ("GRID", layout.name(), Color::TEXT),
             // Not a value, but somewhere to go.
-            Row::HaKey => ("HA KEY", "SHOW", Color::TEXT_DIM),
+            Row::BtHomeKey => ("BTHOME KEY", "SHOW", Color::TEXT_DIM),
         };
         let y = top + (SETTINGS_ROW - 5) / 2 + 1;
         canvas.text(4, y, label, Color::TEXT_DIM);
         canvas.text_right(77, y, value, color);
         // Two layers reach Home Assistant unlike six buttons do (as dimmers
         // turned by the code): FAQ B04 says how, and how to automate them.
-        if row == Row::Grid && buttons.ha() && layout == buttons::Layout::TwoLayers {
+        if row == Row::Grid && buttons.bthome() && layout == buttons::Layout::TwoLayers {
             canvas.text(24, y, "B04", Color::TEXT_FAINT);
         }
     }
@@ -2956,7 +2979,7 @@ const HEX: &[u8; 16] = b"0123456789ABCDEF";
 /// find the watch at, for picking it out among what it discovers.
 fn render_ha_key(canvas: &mut Canvas, identity: Option<&Identity>) {
     canvas.clear(BACKGROUND);
-    canvas.text_centered(40, 3, "HA KEY", Color::ACCENT);
+    canvas.text_centered(40, 3, "BTHOME KEY", Color::ACCENT);
     let Some(identity) = identity else {
         canvas.text_centered(40, 36, "NO KEY YET", Color::TEXT_DIM);
         return;

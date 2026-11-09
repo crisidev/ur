@@ -16,7 +16,7 @@ User documentation: [buttons.md](buttons.md). Code: `src/buttons.rs`
   a new Settings screen), making 90 codes: 1–9, and pairs a→b as 10a+b,
   each tapped or held, and pairs double-tapped too (261 events; see
   `buttons.rs`). No swipe dimmer, no labels, no setup page on the title:
-  the key is on Settings → HA KEY.
+  the key is on Settings → HA KEY (since renamed BTHOME KEY).
 - **Payload:** §2's four button slots can't carry 90 codes (Home
   Assistant tells repeated objects apart only by position), and a
   button object has no number. So: packet id, battery, one **button**

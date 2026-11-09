@@ -14,7 +14,7 @@ Gadgetbridge. Two layouts, picked in Settings:
 <p align="center">
   <img src="screenshots/buttons.png" width="150" alt="Six buttons: chunky grey keycaps with red sides, like an arcade cabinet's, in two rows of three; the top middle one is pressed in and white, showing 2 and 2X: 2, double-tapped, just sent">
   <img src="screenshots/buttons-layers.png" width="150" alt="Two layers: nine smaller keycaps in three rows of three; the top right one is pressed in and white, showing 23 and 2X: 2, then 3 double-tapped, just sent">
-  <img src="screenshots/settings.png" width="150" alt="The Settings screen: THEME, LIGHT, BUTTONS (set to HA), GRID (set to 6 BUTTONS), and HA KEY, a row each">
+  <img src="screenshots/settings.png" width="150" alt="The Settings screen: THEME, LIGHT, BUTTONS (set to BTHOME), GRID (set to 6 BUTTONS), and BTHOME KEY, a row each">
 </p>
 
 ## Six buttons
@@ -73,9 +73,9 @@ phone, which isn't connected).
 ## Turning it on
 
 Swipe left from the clock, past the alarms, to **Settings**, and tap
-**BUTTONS** until it says where presses go: **HA** (Home Assistant),
-**PHONE** (Gadgetbridge), or **HA+PHONE**. Tap **GRID** for the layout:
-**6 BUTTONS** or **2 LAYERS**. The grid is then the first screen up from
+**BUTTONS** until it says where presses go: **BTHOME** (Home
+Assistant), **PHONE** (Gadgetbridge), or **BOTH**. Tap **GRID** for the
+layout: **6 BUTTONS** or **2 LAYERS**. The grid is then the first screen up from
 the clock.
 
 ## Home Assistant
@@ -85,10 +85,10 @@ Assistant's BTHome integration picks up through any Bluetooth adapter or
 [ESPHome Bluetooth proxy][proxy] within range: no phone, no pairing.
 Presses are encrypted with a key the watch made for itself.
 
-1. On the watch, **Settings → HA KEY** shows the key as a QR code;
-   scan it with the phone's camera, and copy the text it reads. A tap
-   shows the key as text instead (32 characters), with the watch's
-   Bluetooth address.
+1. On the watch, **Settings → BTHOME KEY** (there while **BUTTONS** is
+   on **BTHOME** or **BOTH**) shows the key as a QR code; scan it with
+   the phone's camera, and copy the text it reads. A tap shows the key
+   as text instead (32 characters), with the watch's Bluetooth address.
 2. Press any grid button. Home Assistant discovers a BTHome device with
    that address (Settings → Devices & services); add it, and paste (or
    type) the key.
@@ -122,7 +122,7 @@ triggers:
   - trigger: event
     event_type: bthome_ble_event
     event_data:
-      address: "E5:12:34:56:78:9A"   # from HA KEY
+      address: "E5:12:34:56:78:9A"   # from BTHOME KEY
       event_class: button_2
       event_type: double_press
 actions:
@@ -140,7 +140,8 @@ step. The device's battery sensor updates then, with no event.
 A button can't carry a number, and an encrypted advertisement has room
 for six buttons, not one per code (Home Assistant names them by their
 place in it). So each press fires two events (FAQ B04 on the watch, by
-the GRID row, points here), for two kinds of automation:
+the GRID row, points here), for two kinds of
+automation:
 
 | Gesture              | `button` event (any code) | Dimmer event, by the code   |
 |----------------------|---------------------------|-----------------------------|
@@ -165,7 +166,7 @@ triggers:
   - trigger: event
     event_type: bthome_ble_event
     event_data:
-      address: "E5:12:34:56:78:9A"   # from HA KEY
+      address: "E5:12:34:56:78:9A"   # from BTHOME KEY
       event_class: dimmer_2          # double tap
       event_properties: { steps: 23 }
 actions:
@@ -217,8 +218,8 @@ The key stays across updates. Should the watch lose track of how many
 presses it has sent with it (its flash entry for that lost), it makes a
 new key rather than risk reusing an encryption counter with the old one,
 which would let a listener decode those presses: Home Assistant then
-asks for the key again (or presses just stop arriving), and **HA KEY**
-shows the new one to give it.
+asks for the key again (or presses just stop arriving), and **BTHOME
+KEY** shows the new one to give it.
 
 The watch can't know whether Home Assistant heard: a lit, buzzing button
 means it was sent. Home Assistant forgets which presses it has seen when

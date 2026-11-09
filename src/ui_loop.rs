@@ -723,7 +723,7 @@ impl UiLoop {
         // `pass`, as this future already sends presses: there, it would
         // grow the UI loop's future (static RAM).
         let mut battery_due = false;
-        if !(app.buttons.ha() && app.grid_layout == buttons::Layout::Six) {
+        if !(app.buttons.bthome() && app.grid_layout == buttons::Layout::Six) {
             self.battery_sent = None;
         } else if Instant::now().as_secs() >= 60 && bthome::battery_due(self.battery_sent, battery)
         {

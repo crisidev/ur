@@ -260,12 +260,12 @@ ignore it.
 The watch made a new key: it lost track of how many presses it had
 encrypted with the old one, and reusing that count would let anyone
 listening decode them. Give Home Assistant the new key from **Settings →
-HA KEY**, as when you [set it up](docs/buttons.md#home-assistant).
+BTHOME KEY**, as when you [set it up](docs/buttons.md#home-assistant).
 
 ### B04: With two layers, presses reach Home Assistant as dimmers
 
 The watch shows B04 by **GRID** when it's on **2 LAYERS** and
-**BUTTONS** sends to Home Assistant. Two layers make codes 1–99 (none
+**BUTTONS** on **BTHOME** or **BOTH**. Two layers make codes 1–99 (none
 ends in 0: the first button is the tens digit, the second the ones),
 and BTHome can't send each as a button of its own. Its buttons carry no
 number, so Home Assistant tells them apart only by their place in the
@@ -284,7 +284,7 @@ triggers:
   - trigger: event
     event_type: bthome_ble_event
     event_data:
-      address: "E5:12:34:56:78:9A"   # from HA KEY
+      address: "E5:12:34:56:78:9A"   # from BTHOME KEY
       event_class: dimmer_2          # double tap
       event_properties: { steps: 23 }
 ```
