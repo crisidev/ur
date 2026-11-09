@@ -8,7 +8,9 @@
 //!   (every 2–20 minutes, depending on movement and recent readings), once
 //!   the wrist has been still for a few seconds after that (see [`CALM`]),
 //!   for up to [`SESSION_LIMIT`] or until it has a reading (typically
-//!   ~11 s), giving up sooner if the wrist won't keep still
+//!   ~11 s), stopping to wait for the next still moment if the wrist gets
+//!   busy before its first windows are in ([`heart_schedule::interrupt`]),
+//!   and giving up sooner if it won't keep still
 //!   ([`heart_schedule::give_up`]), and
 //! - while the clock face is showing (see
 //!   [`crate::heart_reading::set_watching`]), continuously,
@@ -88,6 +90,21 @@ pub const MOTION_LIMIT: u16 = 1500;
 /// 300–2500 throughout never read. Two sessions at 75–240 failed too:
 /// calm is necessary, not sufficient.
 pub const CALM: u16 = 150;
+
+/// Wrist movement (see [`activity::movement`]) above which a background
+/// session's first windows won't read: it stops there, and waits for the
+/// next still moment instead (see [`heart_schedule::interrupt`]).
+///
+/// Sitting at a desk, typing and mousing keep the wrist at 190-680, and
+/// the hand and fingers move the sensor on the skin far more than the
+/// pulse does. Replaying three days of field logs against a Garmin with
+/// every signal check off, windows at 301-700 landed within 5 BPM of it
+/// 15% of the time, against 12% when paired with a Garmin reading from
+/// hours away: no pulse to be had. At 151-300 it was 38% (23% by
+/// chance), and calm, 46% (21%). 12 s stretches of a desk session read
+/// 31% of the time when calm throughout, 16% at worst 151-300, and 1% at
+/// worst 301-700.
+pub const RESTLESS: u16 = 300;
 
 /// How often to look again, while waiting for a background session to
 /// fall due, at whether movement has brought it forward. Precision isn't
@@ -405,7 +422,7 @@ pub async fn heart_task(i2c: Device) {
         let started = Instant::now();
         let mut level = good_level;
         crate::power::count(crate::power::Count::HeartSessions);
-        let outcome = measure(&mut hrs, &mut level, &mut conversions).await;
+        let outcome = measure(&mut hrs, &mut level, &mut conversions, background).await;
         if matches!(outcome, Ok(Ended::Measured(_))) {
             good_level = level;
         }
@@ -424,6 +441,7 @@ pub async fn heart_task(i2c: Device) {
                 info!("heart: no reading after {} s; wrist calm", led_seconds)
             }
             Ok(Ended::GaveUp) => info!("heart: gave up after {} s; wrist busy", led_seconds),
+            Ok(Ended::Interrupted) => info!("heart: stopped after {} s; wrist moving", led_seconds),
             Ok(Ended::NoContact) => info!("heart: not on a wrist (after {} s)", led_seconds),
             Ok(Ended::TooBright) => info!("heart: too much light (after {} s)", led_seconds),
             Err(()) => warn!("heart: lost the sensor mid-session"),
@@ -439,9 +457,15 @@ pub async fn heart_task(i2c: Device) {
             Ok(Ended::TimedOut { calm: false } | Ended::GaveUp) | Err(()) => {
                 (None, Outcome::NoReading)
             }
+            Ok(Ended::Interrupted) => (None, Outcome::Interrupted),
         };
         crate::heart_reading::set_worn(worn);
         schedule.ended(uptime(), led_seconds, outcome, background, before);
+        // A session the schedule didn't count leaves the movement before
+        // it to count towards the next.
+        if outcome == Outcome::Interrupted && schedule.interrupted() {
+            activity::give_back_active_polls(before.active_polls);
+        }
 
         // A session only ends while someone's watching if there's no
         // signal to be had (off the wrist, typically); don't start another
@@ -507,6 +531,9 @@ enum Ended {
     /// No window passed the signal checks, and the wrist kept moving (see
     /// [`heart_schedule::give_up`]).
     GaveUp,
+    /// A background session's wrist got busy before any window passed the
+    /// signal checks (see [`heart_schedule::interrupt`]).
+    Interrupted,
     /// Almost no light comes back even at the highest level.
     NoContact,
     /// The ADC clips even at the lowest level: ambient light is getting in.
@@ -515,11 +542,13 @@ enum Ended {
 
 /// One measurement session: turn the sensor on, sample until we have a
 /// reading (and keep going while someone's watching), adjusting the level
-/// as needed.
+/// as needed. `background`: the schedule started it, rather than someone
+/// looking at the clock face.
 async fn measure(
     hrs: &mut Hrs3300,
     level: &mut usize,
     conversions: &mut Conversions,
+    background: bool,
 ) -> Result<Ended, ()> {
     hrs.on(LEVELS[*level]).await?;
     // Ends the LED's on-time when the session returns, however it returns.
@@ -560,6 +589,15 @@ async fn measure(
             })
         } else if heart_schedule::give_up(elapsed.as_secs() as u32, accepted, busy, checks) {
             Some(Ended::GaveUp)
+        } else if background
+            && heart_schedule::interrupt(
+                elapsed.as_secs() as u32,
+                accepted,
+                movement.recent().is_some_and(|&m| m > RESTLESS),
+                activity::asleep(),
+            )
+        {
+            Some(Ended::Interrupted)
         } else {
             None
         };

@@ -44,12 +44,14 @@
 //! looking, so `heart` measures right away), but their readings count as
 //! measurements, and their LED time comes out of the budget.
 //!
-//! Two rules about the sessions themselves live here too, being as
+//! Three rules about the sessions themselves live here too, being as
 //! hardware-free: a background session only starts once the wrist has
-//! been calm for a few seconds ([`START_CALM_POLLS`]), and gives up early
-//! if it stays busy ([`give_up`]). At a desk, a hand rests for a moment
-//! between movements, and sessions started in that moment spent their
-//! 30 s of LED on a wrist that was soon moving again.
+//! been calm for a few seconds ([`START_CALM_POLLS`]), stops if the wrist
+//! gets busy before its first windows are in, to try again at the next
+//! still moment ([`interrupt`]), and gives up early if it stays busy
+//! ([`give_up`]). At a desk, a hand rests for a moment between movements,
+//! and sessions started in that moment spent their 30 s of LED on a wrist
+//! that was soon moving again.
 //!
 //! Time is whole seconds since boot, as `u32` (136 years). Like
 //! [`crate::sleep`], this knows nothing of hardware or the clock, so it
@@ -161,6 +163,22 @@ pub const START_CALM_POLLS: u8 = 3;
 /// wrist); at 10 s it would have lost six.
 pub const GIVE_UP_AFTER: u32 = 12;
 
+/// Seconds into a background session during which it stops, rather than
+/// carrying on, if the wrist gets restless before any window has passed
+/// the signal checks (see [`interrupt`]): the first two windows'. After
+/// that, [`give_up`] judges the session as a whole.
+pub const INTERRUPT_BEFORE: u32 = GIVE_UP_AFTER;
+
+/// Interrupted background sessions in a row (see [`Outcome::Interrupted`])
+/// of which the last counts as a failure, for the usual back-off. A
+/// wrist that never keeps still for long (a watch carried in the hand,
+/// say) would otherwise spend the LED budget on short tries all day.
+/// Simulated on three desk days' movement (see [`interrupt`]), three
+/// made 0.43, 1.8 and 0.93 readings an hour, against 0.61, 2.1 and 1.1
+/// with no limit, for 25-35% less LED: each extra reading cost ~100 s of
+/// LED, rather than ~150.
+pub const INTERRUPTIONS: u8 = 3;
+
 /// Polls (2 s each) without steps after which a reading counts as resting
 /// (see [`Schedule::ended`]): three minutes, by when the heart rate has
 /// mostly come down after a walk.
@@ -246,6 +264,12 @@ pub enum Outcome {
     CalmNoReading,
     /// No skin, or ambient light flooding the sensor: not on a wrist.
     OffWrist,
+    /// A background session stopped early because the wrist got restless
+    /// (see [`interrupt`]). It isn't counted, as a measurement or a
+    /// failure: the session is still due, and starts again once the wrist
+    /// is calm, unless it's the [`INTERRUPTIONS`]th in a row, which counts
+    /// as [`Outcome::NoReading`]. Its LED time comes out of the budget.
+    Interrupted,
 }
 
 /// What the wrist had been doing when a session started, from `activity`;
@@ -271,7 +295,7 @@ struct Resting {
     candidate: u8,
 }
 
-/// The scheduling state, 20 bytes: the heart task holds it across every
+/// The scheduling state, 24 bytes: the heart task holds it across every
 /// await, so it lives in that task's static future, where RAM is tight.
 #[derive(Clone, Debug)]
 pub struct Schedule {
@@ -290,6 +314,9 @@ pub struct Schedule {
     /// Whether the last reading was elevated (so `interval` is
     /// [`ELEVATED_INTERVAL`] for that reason; for [`Why`]).
     elevated: bool,
+    /// Interrupted background sessions since the last counted one (see
+    /// [`Outcome::Interrupted`]).
+    interruptions: u8,
     /// Resting estimates, awake and asleep.
     resting_awake: Resting,
     resting_asleep: Resting,
@@ -314,6 +341,7 @@ impl Schedule {
             off_wrist: false,
             calm_failures: 0,
             elevated: false,
+            interruptions: 0,
             resting_awake: Resting {
                 bpm: 0,
                 candidate: 0,
@@ -409,6 +437,18 @@ impl Schedule {
         if !background && !matches!(outcome, Outcome::Reading(_)) {
             return;
         }
+        // Stopped for a restless wrist: likewise, until there have been
+        // too many in a row.
+        let outcome = if outcome == Outcome::Interrupted {
+            self.interruptions += 1;
+            if self.interruptions < INTERRUPTIONS {
+                return;
+            }
+            Outcome::NoReading
+        } else {
+            outcome
+        };
+        self.interruptions = 0;
         let moved = moved(active_polls, asleep);
         self.last = now;
         match outcome {
@@ -459,7 +499,10 @@ impl Schedule {
                 };
                 self.interval = next as u16;
             }
-            Outcome::NoReading | Outcome::CalmNoReading | Outcome::OffWrist => {
+            Outcome::NoReading
+            | Outcome::CalmNoReading
+            | Outcome::OffWrist
+            | Outcome::Interrupted => {
                 self.failures = (self.failures + 1).min(MAX_FAILURES);
                 self.off_wrist = outcome == Outcome::OffWrist;
                 self.calm_failures = if outcome == Outcome::CalmNoReading {
@@ -475,6 +518,12 @@ impl Schedule {
                 }
             }
         }
+    }
+
+    /// Whether the last background session was interrupted (see
+    /// [`Outcome::Interrupted`]) and not counted, so it's still due.
+    pub fn interrupted(&self) -> bool {
+        self.interruptions > 0
     }
 
     /// The resting heart rate estimates, awake and asleep (0: none yet).
@@ -524,6 +573,38 @@ fn moved(active_polls: u8, asleep: bool) -> bool {
 /// a reading, so the schedule backs off as after any other.
 pub fn give_up(seconds: u32, accepted: bool, busy: u8, checks: u8) -> bool {
     seconds >= GIVE_UP_AFTER && !accepted && u16::from(busy) * 2 > u16::from(checks)
+}
+
+/// Whether a background session should stop now, `seconds` in, to try
+/// again at the next still moment (see [`Outcome::Interrupted`]): no
+/// window has passed the signal checks yet (`accepted`), it's still within
+/// [`INTERRUPT_BEFORE`], and the wrist is `restless` (above
+/// `heart::RESTLESS`), awake (not `asleep`).
+///
+/// Sitting at a desk, the wrist is rarely still, and a still moment
+/// rarely lasts the ~12 s a reading takes: in a field log of a morning
+/// there (2026-11-09), 11% of the accelerometer's polls were calm, and
+/// three calm polls were followed by six more only 12% of the time. Yet a
+/// still moment is where the readings are, and a restless one has none
+/// (see `heart::RESTLESS`), so a session that has lost its still moment
+/// is better spent on the next.
+///
+/// Replayed on the field logs' sessions (two nights and three desk days,
+/// against a Garmin), stopping would have lost one desk reading of 14,
+/// and two of 136 at night, both awake (one 13 BPM off), and saved
+/// 12-27% of the desk sessions' LED. What the next still moment makes of
+/// it can't be replayed: simulated on three desk days' movement (with a
+/// 12 s stretch that's calm throughout reading 31% of the time; see
+/// `heart::RESTLESS`), trying again made 0.43, 1.8 and 0.93 background
+/// readings an hour where giving up made 0.25, 1.7 and 0.76, for 19, 13
+/// and 10 s more LED an hour. Retrying failed sessions sooner instead
+/// (from 2 minutes rather than 5) took 26-48 s more for 0.37, 1.6 and
+/// 0.99.
+///
+/// Asleep, a restless second is turning over, after which the pulse is
+/// as before; watched, someone is looking, so neither stops.
+pub fn interrupt(seconds: u32, accepted: bool, restless: bool, asleep: bool) -> bool {
+    seconds < INTERRUPT_BEFORE && !accepted && restless && !asleep
 }
 
 /// Whether a session that ran out of time without a reading found the

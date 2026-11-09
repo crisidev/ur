@@ -7,8 +7,10 @@ Writes one line per segment (samples at one level, uninterrupted):
 
 with the wrist's movement (`activity::movement`) as the firmware saw it at
 each second's level check, so the replay can veto windows as it does, and
-a third section, `| asleep`, if the sleep classifier said so when the
-segment started (logs from before it, 0.8.x, never do).
+a third section with `asleep` if the sleep classifier said so when the
+segment started (logs from before it, 0.8.x, never do), and `background`
+if the schedule started the session, rather than someone looking at the
+clock face (logs from before 0.9.0's `heart: due` line never say so).
 
 Usage: python -I scripts/ppg_sessions.py HEALTH_CONNECT_DB DECODED_LOG OUT
 
@@ -38,8 +40,13 @@ def garmin(t):
 
 
 segments, current, period, asleep = [], None, 37500.0, False
+# When the last background session was due: its samples follow within a
+# second or two.
+due_at = float("-inf")
 for line in log:
     up = float(line.split()[0])
+    if "heart: due (" in line:
+        due_at = up
     if "sleep: asleep now" in line:
         asleep = True
     elif "sleep: awake now" in line:
@@ -55,7 +62,7 @@ for line in log:
     elif m := re.search(r"heart: samples \[([\d, ]*)\]", line):
         if current is None:
             current = {"t": BASE + up - 1, "samples": [], "movement": [], "outcome": "-",
-                       "asleep": asleep}
+                       "asleep": asleep, "background": up - due_at < 3}
         current["samples"] += [int(v) for v in m[1].split(", ") if v]
         if mv := re.search(r"movement (\d+)", line):
             current["movement"].append(mv[1])
@@ -66,8 +73,8 @@ for line in log:
     elif current and (m := re.search(r"INFO  heart: (\d+) BPM after", line)):
         current["outcome"] = m[1]
         current["read"] = True
-    elif current and ("switching to level" in line or re.search(r"INFO  heart: (no reading|not on|gave up)", line)):
-        if "no reading" in line or "gave up" in line:
+    elif current and ("switching to level" in line or re.search(r"INFO  heart: (no reading|not on|gave up|stopped)", line)):
+        if re.search(r"no reading|gave up|stopped", line):
             current["outcome"] = "none"
         segments.append(current)
         current = None
@@ -77,7 +84,8 @@ if current:
 with open(sys.argv[3], "w") as out:
     for s in segments:
         mid = s["t"] + len(s["samples"]) * s["period"] / 2e6
+        flags = [f for f in ("asleep", "background") if s[f]]
         out.write(f"{s['t']:.0f} {garmin(mid)} {s['period']:.1f} {s['outcome']} "
                   + " ".join(map(str, s["samples"])) + " | " + " ".join(s["movement"])
-                  + (" | asleep" if s["asleep"] else "") + "\n")
+                  + (" | " + " ".join(flags) if flags else "") + "\n")
 print(f"{len(segments)} segments, {sum(len(s['samples']) for s in segments)} samples")

@@ -142,7 +142,9 @@ mod tests {
     #[test]
     fn the_state_stays_small() {
         // It lives in the heart task's static future, where RAM is tight.
-        assert!(size_of::<Schedule>() <= 20);
+        // (20 bytes until counting interruptions took one more, and
+        // alignment three more.)
+        assert!(size_of::<Schedule>() <= 24);
     }
 
     #[test]
@@ -483,6 +485,78 @@ mod tests {
         assert!(!give_up(29, false, 14, 29));
         // Saturated counts don't wrap.
         assert!(give_up(300, false, u8::MAX, u8::MAX - 1));
+    }
+
+    #[test]
+    fn restless_sessions_stop_before_their_first_windows_are_in() {
+        assert!(interrupt(0, false, true, false));
+        assert!(interrupt(INTERRUPT_BEFORE - 1, false, true, false));
+        // Not once it's had its first windows' chance, nor after one
+        // passed, nor on a wrist that keeps still enough, nor asleep.
+        assert!(!interrupt(INTERRUPT_BEFORE, false, true, false));
+        assert!(!interrupt(3, true, true, false));
+        assert!(!interrupt(3, false, false, false));
+        assert!(!interrupt(3, false, true, true));
+    }
+
+    /// An interrupted session doesn't count: it's still due, and starts
+    /// again at the next still moment, until `INTERRUPTIONS` in a row,
+    /// which back off like any failure. Their LED time is spent, though.
+    #[test]
+    fn interrupted_sessions_try_again_until_too_many() {
+        let mut schedule = Schedule::new();
+        schedule.ended(100, 13, Outcome::Reading(60), true, awake(0));
+        let due = schedule.due(0, false);
+        let budget = schedule.budget(due.0);
+        let mut t = due.0;
+        for _ in 1..INTERRUPTIONS {
+            schedule.ended(t + 4, 4, Outcome::Interrupted, true, awake(0));
+            assert!(schedule.interrupted());
+            assert_eq!(schedule.due(0, false), due);
+            t += 30;
+        }
+        assert!(schedule.budget(t) < budget);
+        schedule.ended(t + 4, 4, Outcome::Interrupted, true, awake(0));
+        assert!(!schedule.interrupted());
+        assert_eq!(
+            schedule.due(0, false),
+            (t + 4 + FAILED_INTERVAL, Why::Retry)
+        );
+        // A counted session starts the count again.
+        let t = t + 4 + FAILED_INTERVAL;
+        schedule.ended(t + 4, 4, Outcome::Interrupted, true, awake(0));
+        schedule.ended(t + 60, 13, Outcome::Reading(60), true, awake(0));
+        assert!(!schedule.interrupted());
+        schedule.ended(t + 400, 4, Outcome::Interrupted, true, awake(0));
+        assert!(schedule.interrupted());
+    }
+
+    /// A desk where the wrist keeps still for 8 s in every 40, just long
+    /// enough to start a session but not to finish one: tries come three
+    /// at a time, a still moment apart, then back off as failures do, so
+    /// the LED stays well within the budget.
+    #[test]
+    fn interruptions_dont_spin() {
+        let mut schedule = Schedule::new();
+        let sessions = simulate(&mut schedule, 0, 4 * HOUR, |t| Moment {
+            calm: t % 40 < 8,
+            outcome: Outcome::Interrupted,
+            seconds: 4,
+            ..resting(t)
+        });
+        let waits = gaps(&sessions);
+        let n = usize::from(INTERRUPTIONS);
+        for (i, wait) in waits.iter().enumerate() {
+            if (i + 1) % n == 0 {
+                assert!(*wait >= FAILED_INTERVAL, "{waits:?}");
+            } else {
+                assert!(*wait < 60, "{waits:?}");
+            }
+        }
+        assert!(
+            led(&sessions, HOUR, 2 * HOUR) < LED_BUDGET / 4,
+            "{sessions:?}"
+        );
     }
 
     /// Giving up counts as a session without a reading: the failure

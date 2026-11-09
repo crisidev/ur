@@ -526,12 +526,17 @@ const MOTION_LIMIT: u16 = 1500;
 const LEVEL_CHECK_SAMPLES: usize = 27;
 /// What `heart::CALM` is: movement above which the wrist is busy.
 const CALM: u16 = 150;
+/// What `heart::RESTLESS` is: movement above which a background session
+/// stops before its first windows are in.
+const RESTLESS: u16 = 300;
 
 /// A session extracted from a field log by `scripts/ppg_sessions.py`, one
 /// per line: UTC start, a reference rate (another watch's, or 0), the
 /// conversion period, the firmware's outcome, then raw samples, after a
 /// `|`, the movement at each level check (older extracts have none), and
-/// after another, `asleep` if the sleep classifier said so.
+/// after another, `asleep` if the sleep classifier said so, and
+/// `background` if the schedule started the session (older extracts never
+/// say, so replay as watched).
 struct Recorded {
     start: String,
     reference: f32,
@@ -540,6 +545,7 @@ struct Recorded {
     samples: Vec<u32>,
     movement: Vec<u16>,
     asleep: bool,
+    background: bool,
 }
 
 fn parse_sessions(text: &str) -> Vec<Recorded> {
@@ -561,7 +567,8 @@ fn parse_sessions(text: &str) -> Vec<Recorded> {
                     .split_whitespace()
                     .map(|v| v.parse().expect("a number"))
                     .collect(),
-                asleep: sleep == "asleep",
+                asleep: sleep.split_whitespace().any(|f| f == "asleep"),
+                background: sleep.split_whitespace().any(|f| f == "background"),
             }
         })
         .collect()
@@ -612,9 +619,19 @@ fn windows(session: &Recorded) -> Vec<(usize, Verdict, bool)> {
     verdicts
 }
 
-/// When a background session would give up on a busy wrist (see
-/// [`heart_schedule::give_up`]), in seconds, if it would.
-fn gives_up_at(session: &Recorded, windows: &[(usize, Verdict, bool)]) -> Option<u32> {
+/// How a session ended before its recording did.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Stopped {
+    /// It gave up on a busy wrist (see [`heart_schedule::give_up`]).
+    GaveUp,
+    /// It stopped for a restless wrist, to try again at the next still
+    /// moment (see [`heart_schedule::interrupt`]).
+    Interrupted,
+}
+
+/// When, in seconds, and how a session would stop short of a reading,
+/// if it would.
+fn stops_at(session: &Recorded, windows: &[(usize, Verdict, bool)]) -> Option<(u32, Stopped)> {
     let (mut checks, mut busy) = (0u8, 0u8);
     for (k, &moved) in session.movement.iter().enumerate() {
         checks += 1;
@@ -626,7 +643,13 @@ fn gives_up_at(session: &Recorded, windows: &[(usize, Verdict, bool)]) -> Option
             .any(|(i, verdict, _)| *i < at as usize && matches!(verdict, Verdict::Window(Ok(_))));
         let seconds = (at as f32 * session.period / 1e6) as u32;
         if heart_schedule::give_up(seconds, accepted, busy, checks) {
-            return Some(seconds);
+            return Some((seconds, Stopped::GaveUp));
+        }
+        let restless = moved > RESTLESS;
+        if session.background
+            && heart_schedule::interrupt(seconds, accepted, restless, session.asleep)
+        {
+            return Some((seconds, Stopped::Interrupted));
         }
     }
     None
@@ -681,14 +704,14 @@ fn replay(path: &str, strict: bool) {
     let text = std::fs::read_to_string(path).expect("readable sessions file");
     let (mut sessions, mut read, mut referenced) = (0, 0, 0);
     let (mut error, mut wrong, mut read_at, mut led) = (0.0, 0, 0.0, 0.0);
-    let (mut gave_up, mut lost) = (0, 0);
+    let (mut gave_up, mut interrupted, mut lost) = (0, 0, 0);
     for session in parse_sessions(&text) {
         let seconds = |i: usize| i as f32 * session.period / 1e6;
         let length = seconds(session.samples.len());
         let mut verdicts = Vec::new();
         let windows = windows(&session);
-        let give_up = gives_up_at(&session, &windows);
-        let end = give_up.map_or(length, |at| (at as f32).min(length));
+        let stop = stops_at(&session, &windows);
+        let end = stop.map_or(length, |(at, _)| (at as f32).min(length));
         let reading = reading(&session, &windows, end, strict);
         for (_, verdict, calm) in windows {
             verdicts.push(match verdict {
@@ -717,12 +740,17 @@ fn replay(path: &str, strict: bool) {
             });
         }
         sessions += 1;
-        if let Some(at) = give_up {
-            gave_up += 1;
+        if let Some((at, how)) = stop {
+            if how == Stopped::GaveUp {
+                gave_up += 1;
+                verdicts.insert(0, format!("[gives up at {at} s]"));
+            } else {
+                interrupted += 1;
+                verdicts.insert(0, format!("[stops at {at} s]"));
+            }
             if session.outcome.parse::<u8>().is_ok() {
                 lost += 1;
             }
-            verdicts.insert(0, format!("[gives up at {at} s]"));
         }
         // The LED is on until the reading, or the end; plus the half
         // second before the first sample.
@@ -756,8 +784,9 @@ fn replay(path: &str, strict: bool) {
         error / referenced.max(1) as f32
     );
     println!(
-        "LED {led:.0} s in all; {gave_up} would give up on a busy wrist, {lost} of them \
-         had read (if in the background, now lost)"
+        "LED {led:.0} s in all; {gave_up} would give up on a busy wrist, {interrupted} stop \
+         for a restless one (to try again later), {lost} of them had read (if in the \
+         background, now lost)"
     );
 }
 
@@ -1085,7 +1114,7 @@ mod tests {
     /// firmware would give up.
     fn replayed(session: &Recorded, strict: bool) -> Option<(u8, f32)> {
         let windows = windows(session);
-        let end = gives_up_at(session, &windows).map_or(f32::INFINITY, |at| at as f32);
+        let end = stops_at(session, &windows).map_or(f32::INFINITY, |(at, _)| at as f32);
         reading(session, &windows, end, strict)
     }
 
@@ -1115,6 +1144,45 @@ mod tests {
         let text = include_str!("../fixtures/calm-pulseless.txt");
         for session in parse_sessions(text) {
             assert_eq!(replayed(&session, false), None, "{}", session.start);
+        }
+    }
+
+    /// Background sessions at a desk (2026-11-09, the Garmin at 84 and
+    /// 80) whose wrist started typing again within seconds: every window
+    /// was rejected, and they gave up at 12 s. They now stop at the first
+    /// restless second, to try again at the next still moment.
+    #[test]
+    fn a_restless_desk_stops_before_its_first_windows() {
+        let text = include_str!("../fixtures/desk-restless.txt");
+        for session in parse_sessions(text) {
+            assert!(session.background, "{}", session.start);
+            let windows = windows(&session);
+            let (at, how) = stops_at(&session, &windows).expect("a stop");
+            assert_eq!(how, Stopped::Interrupted, "{}", session.start);
+            assert!(
+                at < heart_schedule::GIVE_UP_AFTER,
+                "{}: {at} s",
+                session.start
+            );
+            assert_eq!(replayed(&session, false), None, "{}", session.start);
+        }
+    }
+
+    /// Background sessions at a desk that day (the Garmin at 82 and 67)
+    /// whose wrist kept still: neither stops, and both read, one at 28 s.
+    #[test]
+    fn a_still_desk_is_read() {
+        let text = include_str!("../fixtures/desk-calm.txt");
+        for session in parse_sessions(text) {
+            assert!(session.background, "{}", session.start);
+            assert_eq!(stops_at(&session, &windows(&session)), None);
+            let (bpm, at) = replayed(&session, false).expect("a reading");
+            assert!(
+                (f32::from(bpm) - session.reference).abs() <= 5.0,
+                "{}: {bpm} BPM at {at:.0} s against {}",
+                session.start,
+                session.reference
+            );
         }
     }
 
