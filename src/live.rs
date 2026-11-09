@@ -182,7 +182,7 @@ struct Session {
     started: u32,
     /// When the next report is due.
     next: u32,
-    /// Today's steps at the last report, to report the difference.
+    /// The step count at the last report, to report the difference.
     steps: u32,
 }
 
@@ -196,9 +196,9 @@ impl Live {
         Self { session: None }
     }
 
-    /// Acts on Gadgetbridge's `request`, at `now`, with today's step count
-    /// at `steps`: starts a session, or restarts one (with the new
-    /// interval), or stops one, saying so.
+    /// Acts on Gadgetbridge's `request`, at `now`, with the step count at
+    /// `steps` (see [`Live::poll`]): starts a session, or restarts one
+    /// (with the new interval), or stops one, saying so.
     pub fn ask(&mut self, request: Request, now: u32, steps: u32) -> Option<Ended> {
         if !request.wanted() {
             return self.session.take().map(|_| Ended::Asked);
@@ -220,8 +220,10 @@ impl Live {
         self.session.is_some_and(|s| s.heart_rate)
     }
 
-    /// What's due at `now`, given whether the phone is `connected`,
-    /// today's step count (`steps`), and the latest heart rate reading
+    /// What's due at `now`, given whether the phone is `connected`, a
+    /// running count of the steps counted (`steps`, wrapping: not today's
+    /// total, which starts over at midnight and jumps with a new time
+    /// zone), and the latest heart rate reading
     /// and when it was taken (`reading`), if any. Call it once a second
     /// or so: a report late by a call is sent then, and the next comes an
     /// interval after it.
@@ -243,13 +245,7 @@ impl Live {
             return Poll::Idle;
         }
         session.next = now + u32::from(session.interval);
-        // Today's count starts over at midnight: then what's counted since
-        // is the best guess at the steps since the last report.
-        let walked = if steps >= session.steps {
-            steps - session.steps
-        } else {
-            steps
-        };
+        let walked = steps.wrapping_sub(session.steps);
         session.steps = steps;
         let fresh = FRESH.max(u32::from(session.interval));
         let heart_rate = reading

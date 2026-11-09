@@ -99,6 +99,8 @@ Output:
   expect [not] STATE         fail unless: screen-on, dim, quiet-night,
                              buzzing, off (switched off), or clock (the
                              clock face, for someone to read)
+  expect steps N             fail unless today's steps are N, on the clock
+                             face and the Today screen alike
   settings                   what the flash holds (see --flash), as the
                              firmware decodes it
   echo TEXT | verbose on|off | help | quit
@@ -529,6 +531,19 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
         "stop" => {
             let recorded = crate::record::stop()?;
             watch.log(recorded);
+        }
+        "expect" if arg(0) == Some("steps") => {
+            // Today's total, as the clock face shows it, and as the
+            // Today screen adds it up: they must agree.
+            let want: u32 = number(need(1, "N")?)?;
+            let count = activity::steps_today();
+            let chart = activity::today()
+                .map(|day| day.hours.iter().map(|h| u32::from(h.steps)).sum::<u32>());
+            if count != Some(want) || chart != Some(want) {
+                return Err(format!(
+                    "expected {want} steps today (the clock face has {count:?}, Today {chart:?})"
+                ));
+            }
         }
         "expect" => {
             let (negated, what) = match need(0, "STATE")? {

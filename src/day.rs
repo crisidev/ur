@@ -1,5 +1,6 @@
 //! A day's activity hour by hour, for the Today screen (see [`crate::ui`]):
-//! steps, the heart rate's range, and a resting heart rate.
+//! steps, the heart rate's range, and a resting heart rate; and which
+//! steps today's total counts, for the clock face.
 //!
 //! [`crate::activity`] feeds it the day's per-minute samples; this only
 //! adds them up. Hardware-free, so it runs in host tests
@@ -86,5 +87,74 @@ impl Day {
     /// The most steps in any one hour.
     pub fn most_steps(&self) -> u16 {
         self.hours.iter().map(|h| h.steps).max().unwrap_or(0)
+    }
+}
+
+// ==============================================================================
+// Today's step total
+// ==============================================================================
+//
+// The clock face shows a running total of today's steps, kept apart from
+// the per-minute history (which is UTC, and holds a day) because the
+// total counts steps the history can't: those before the phone set the
+// clock. It starts over at local midnight. But the local date also
+// changes without midnight passing: a flight across time zones, or the
+// phone setting a wrong clock right. Flying west across midnight, the
+// date goes back (and comes round again an hour or more later), and a
+// total that merely starts over on every new date counted the evening
+// after landing as a new day, then started over again at the real
+// midnight; flying east, it started over at the change, but not from the
+// new zone's midnight. Either way the total disagreed with the Today
+// screen, which adds up the history since local midnight.
+//
+// So, as phones do, a date that changed other than by midnight passing
+// takes today's total from the history: the steps since the new zone's
+// midnight, exactly what the Today screen shows. Midnight passing is the
+// same rule (there's nothing in the history since midnight yet), so
+// there's no telling the two apart. The history always reaches back far
+// enough: local midnight is never more than a day ago. The cost: the
+// steps counted before the phone first set the clock that day aren't in
+// the history, so they're dropped.
+//
+// A change that keeps the date (a time zone an hour over, summer time)
+// leaves the total alone, though the Today screen, from the new zone's
+// midnight, may then miss the steps between the two midnights: the date
+// didn't change, so nothing says the total is wrong, and it may count
+// steps the history lacks.
+
+/// The local date (days since 1970) of `utc_minute` (minutes since 1970,
+/// UTC), `offset` minutes ahead of UTC.
+pub fn date(utc_minute: i64, offset: i16) -> i64 {
+    (utc_minute + i64::from(offset)).div_euclid(MINUTES_A_DAY)
+}
+
+/// The UTC minute of the local midnight that began `utc_minute`'s day,
+/// `offset` minutes ahead of UTC.
+pub fn midnight(utc_minute: i64, offset: i16) -> i64 {
+    utc_minute - (utc_minute + i64::from(offset)).rem_euclid(MINUTES_A_DAY)
+}
+
+const MINUTES_A_DAY: i64 = 24 * 60;
+
+/// Today's step total on local date `today`, from `steps` counted on
+/// `counted_on` (a local date, or `None` if the clock wasn't known then),
+/// and `since_midnight`, which adds up the history's steps since today's
+/// local midnight (and is only asked when needed).
+///
+/// - Counted today: as counted.
+/// - Counted before the clock was known: today's, as the phone sets the
+///   clock soon after the watch starts.
+/// - Counted on another date: the history since midnight (see above),
+///   even if some were counted before the clock was known (a total
+///   restored after the watch was off keeps its date).
+pub fn steps_today(
+    counted_on: Option<i64>,
+    steps: u32,
+    today: i64,
+    since_midnight: impl FnOnce() -> u32,
+) -> u32 {
+    match counted_on {
+        Some(date) if date != today => since_midnight(),
+        _ => steps,
     }
 }

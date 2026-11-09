@@ -134,15 +134,24 @@ mod tests {
         let mut live = Live::new();
         live.ask(STEPS, 100, 9_000);
         assert_eq!(live.poll(110, true, 9_040, None), report(40, 0));
-        // Midnight: today's count starts over.
-        assert_eq!(live.poll(120, true, 7, None), report(7, 0));
-        assert_eq!(live.poll(130, true, 7, None), report(0, 0));
+        assert_eq!(live.poll(120, true, 9_047, None), report(7, 0));
+        assert_eq!(live.poll(130, true, 9_047, None), report(0, 0));
         // A new interval mid-session doesn't lose the steps since the
         // last report.
         live.ask(Request::new(false, true, Some(5)), 131, 20);
-        assert_eq!(live.poll(136, true, 30, None), report(23, 0));
-        // More than a report holds (after a day without the time, say).
-        assert_eq!(live.poll(141, true, 100_030, None), report(u16::MAX, 0));
+        assert_eq!(live.poll(136, true, 9_070, None), report(23, 0));
+        // More than a report holds.
+        assert_eq!(live.poll(141, true, 109_070, None), report(u16::MAX, 0));
+    }
+
+    /// The count of steps wraps, rather than starting over: the steps
+    /// across the wrap are the difference all the same.
+    #[test]
+    fn the_count_wraps() {
+        let mut live = Live::new();
+        live.ask(STEPS, 100, u32::MAX - 2);
+        assert_eq!(live.poll(110, true, 4, None), report(7, 0));
+        assert_eq!(live.poll(120, true, 7, None), report(3, 0));
     }
 
     /// Whatever the steps do between polls, the reports add up to them.

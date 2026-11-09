@@ -696,3 +696,35 @@ fn summer_time_rings_each_alarm_once() {
     let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
     assert!(ok, "{log}");
 }
+
+/// Today's steps across a time zone change, as phones count them: on a
+/// new date that midnight didn't bring, the steps since the new zone's
+/// midnight, which the Today screen shows too (`expect steps` checks
+/// both). Flying west across midnight, the evening after landing used to
+/// count from 0 as a new day (STEPS 5 under Today's 1,205), and start
+/// over again at the real midnight.
+#[test]
+fn steps_today_follow_a_new_time_zone() {
+    let dir = out("steps-time-zone");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    std::fs::write(
+        &script,
+        "# West over midnight: Oslo to London, landing on the 9th again.\n\
+         time 2026-11-09 23:40 +01:00\nsteps 1000\nexpect steps 1000\n\
+         until 00:10\nsteps 200\nexpect steps 200\n\
+         time 2026-11-09 23:12 +00:00\nexpect steps 1200\n\
+         steps 5\nexpect steps 1205\n\
+         until 00:10\nexpect steps 0\nsteps 7\nexpect steps 7\n\
+         # East over midnight: London to Oslo, landing on the 12th.\n\
+         time 2026-11-11 22:30 +00:00\nsteps 3000\nuntil 23:40\nsteps 50\n\
+         expect steps 3050\n\
+         time 2026-11-12 00:41 +01:00\nexpect steps 50\nsteps 8\nexpect steps 58\n\
+         # The same date an hour over: as it was.\n\
+         time 2026-11-13 15:00 +01:00\nsteps 100\nexpect steps 100\n\
+         time 2026-11-13 14:01 +00:00\nexpect steps 100\n",
+    )
+    .expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+}

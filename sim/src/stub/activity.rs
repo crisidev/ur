@@ -29,6 +29,8 @@ struct State {
     history: BTreeMap<i64, (u16, u8)>,
     /// Today's steps: (local day since 1970, steps).
     today: Option<(i64, u32)>,
+    /// As `activity::steps_counted`.
+    counted: u32,
     last_sleep: Option<Sleep>,
     asleep: bool,
     movement: u16,
@@ -39,6 +41,7 @@ struct State {
 static STATE: Mutex<State> = Mutex::new(State {
     history: BTreeMap::new(),
     today: None,
+    counted: 0,
     last_sleep: None,
     asleep: false,
     movement: 0,
@@ -70,16 +73,46 @@ pub fn last_sleep() -> Option<Sleep> {
     state().last_sleep
 }
 
-/// Today's steps, once the date is known: none yet is 0, as on the watch,
-/// whose step counter's every poll counts towards today.
+/// Today's steps, once the date is known, by the firmware's rule (see
+/// `day::steps_today`): none yet is 0, as on the watch, whose step
+/// counter's every poll counts towards today. Brought up to date first,
+/// as `activity::steps_today` does (the watch's polls do too, but the
+/// simulator has none).
 pub fn steps_today() -> Option<u32> {
-    let today = clock::now()?.days_since_epoch();
-    Some(
-        state()
-            .today
-            .filter(|&(day, _)| day == today)
-            .map_or(0, |(_, steps)| steps),
-    )
+    let now = now_minute()?;
+    let mut state = state();
+    state.today = on(&state, now);
+    Some(state.today.map_or(0, |(_, steps)| steps))
+}
+
+/// As `activity::steps_counted`: a running count, for live reports.
+pub fn steps_counted() -> u32 {
+    state().counted
+}
+
+/// Now, as UTC minutes since 1970 and the UTC offset, once the time is
+/// set.
+fn now_minute() -> Option<(i64, i16)> {
+    Some((
+        clock::now_utc_seconds()?.div_euclid(60),
+        clock::utc_offset_minutes()?,
+    ))
+}
+
+/// Today's total as of `now`, as `activity::Today::on` has it: the
+/// history's since local midnight on a new date.
+fn on(state: &State, (utc_minute, offset): (i64, i16)) -> Option<(i64, u32)> {
+    let (counted_on, steps) = state.today?;
+    let day = crate::day::date(utc_minute, offset);
+    let steps = crate::day::steps_today(Some(counted_on), steps, day, || {
+        let midnight = crate::day::midnight(utc_minute, offset);
+        state
+            .history
+            .range(midnight..=utc_minute)
+            .map(|(_, &(steps, _))| u32::from(steps))
+            .sum()
+    });
+    Some((day, steps))
 }
 
 /// As `activity::today`: the history since local midnight, hour by hour.
@@ -87,9 +120,8 @@ pub fn today() -> Option<crate::day::Day> {
     if let Some(day) = state().today_from_devkit {
         return day;
     }
-    let utc_minute = clock::now_utc_seconds()?.div_euclid(60);
-    let offset = i64::from(clock::utc_offset_minutes()?);
-    let midnight = utc_minute - (utc_minute + offset).rem_euclid(24 * 60);
+    let (utc_minute, offset) = now_minute()?;
+    let midnight = crate::day::midnight(utc_minute, offset);
     let mut day = crate::day::Day::default();
     for (&minute, &(steps, heart_rate)) in state().history.range(midnight..=utc_minute) {
         day.add((minute - midnight) as usize, steps, heart_rate);
@@ -104,33 +136,40 @@ pub fn today() -> Option<crate::day::Day> {
 /// Counts `steps` as walked now, as `activity::walk` does (in today's total
 /// and this minute's history).
 pub fn walk(steps: u32) {
-    let day = clock::now().map(|now| now.days_since_epoch());
-    let minute = clock::now_utc_seconds().map(|s| s.div_euclid(60));
+    let now = now_minute();
     let mut state = state();
-    state.today = match (state.today, day) {
-        (Some((d, total)), Some(day)) if d == day => Some((day, total + steps)),
-        (_, Some(day)) => Some((day, steps)),
-        // Before the time is known, nothing can be filed under a day.
-        (today, None) => today,
+    state.counted = state.counted.wrapping_add(steps);
+    // Before the time is known, nothing can be filed under a day.
+    let Some(now) = now else {
+        return;
     };
-    if let Some(minute) = minute {
-        let sample = state.history.entry(minute).or_default();
-        sample.0 = sample
-            .0
-            .saturating_add(steps.min(u32::from(u16::MAX)) as u16);
-    }
+    add(&mut state, now, steps);
+    let sample = state.history.entry(now.0).or_default();
+    sample.0 = sample
+        .0
+        .saturating_add(steps.min(u32::from(u16::MAX)) as u16);
 }
 
 /// Adds steps to today's total only, for steps already in the history.
 pub fn add_to_today(steps: u32) {
-    let Some(day) = clock::now().map(|now| now.days_since_epoch()) else {
+    let Some(now) = now_minute() else {
         return;
     };
     let mut state = state();
+    let day = crate::day::date(now.0, now.1);
     state.today = match state.today {
-        Some((d, total)) if d == day => Some((day, total + steps)),
-        _ => Some((day, steps)),
+        Some((counted_on, total)) if counted_on == day => Some((day, total + steps)),
+        // Another day's total: today's is the history's, theirs included.
+        Some(_) => on(&state, now),
+        None => Some((day, steps)),
     };
+}
+
+/// Adds `steps` to today's total as of `now` (before they're in the
+/// history, as `activity::add_steps_today` does).
+fn add(state: &mut State, now: (i64, i16), steps: u32) {
+    let (day, total) = on(state, now).unwrap_or((crate::day::date(now.0, now.1), 0));
+    state.today = Some((day, total.saturating_add(steps)));
 }
 
 /// As `activity::record_heart_rate`: a reading in the current minute's

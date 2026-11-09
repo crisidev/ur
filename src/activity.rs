@@ -37,7 +37,7 @@
 //! wrist-turn, which is why glances are recognised in [`crate::glance`].)
 
 use core::cell::{Cell, RefCell};
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, Ordering};
 
 use defmt::{debug, info, warn};
 use embassy_futures::select::{Either, select};
@@ -739,9 +739,41 @@ pub fn last_sleep() -> Option<Sleep> {
 }
 
 struct Today {
-    /// Local date, as days since 1970.
+    /// Local date, as days since 1970 ([`UNKNOWN_DAY`] before the clock is
+    /// known).
     day: i64,
     steps: u32,
+}
+
+impl Today {
+    /// Today's total as of `now` (UTC minute and offset): unchanged on
+    /// the same date, and on a new one, by midnight or a new time zone,
+    /// the history's since local midnight (see
+    /// [`crate::day::steps_today`]).
+    fn on(&self, (utc_minute, offset): (i64, i16)) -> Self {
+        let day = crate::day::date(utc_minute, offset);
+        let counted_on = (self.day != UNKNOWN_DAY).then_some(self.day);
+        let steps = crate::day::steps_today(counted_on, self.steps, day, || {
+            steps_since_midnight(utc_minute, offset)
+        });
+        Self { day, steps }
+    }
+
+    /// Brings the total up to `now` (see [`Today::on`]), keeping the new
+    /// date's. The activity task does at every poll, so the date it's
+    /// kept under is never more than a poll old: otherwise, on a date that
+    /// came back (flying west across midnight), the old total would pass
+    /// for the new day's.
+    fn settle(&mut self, now: (i64, i16)) {
+        let on = self.on(now);
+        if on.day != self.day {
+            if self.day != UNKNOWN_DAY {
+                info!("activity: new day, {} steps so far", on.steps);
+            }
+            *self = on;
+            save_today(self);
+        }
+    }
 }
 
 pub static HISTORY: Mutex<CriticalSectionRawMutex, RefCell<History>> =
@@ -970,14 +1002,49 @@ pub async fn motion_task(i2c: Device, mut interrupt: Input<'static>) {
     }
 }
 
-/// Today's steps, for the clock face.
+/// Today's steps, for the clock face. Brought up to date first, as a
+/// poll would, so a new date (midnight, or a new time zone) shows at once.
 pub fn steps_today() -> Option<u32> {
-    let today = clock::now()?.days_since_epoch();
+    let now = now_minute()?;
     TODAY.lock(|t| {
-        t.borrow()
-            .as_ref()
-            .filter(|t| t.day == today)
-            .map(|t| t.steps)
+        let mut t = t.borrow_mut();
+        let t = t.as_mut()?;
+        t.settle(now);
+        Some(t.steps)
+    })
+}
+
+/// A running count of the steps counted since boot, wrapping, for
+/// [`crate::live`]'s reports of the steps since the last: unlike today's
+/// total, it never starts over or jumps (see [`Today::on`]).
+pub fn steps_counted() -> u32 {
+    STEPS_COUNTED.load(Ordering::Relaxed)
+}
+
+static STEPS_COUNTED: AtomicU32 = AtomicU32::new(0);
+
+/// Now, as UTC minutes since 1970 and the UTC offset, once the phone has
+/// set the clock.
+fn now_minute() -> Option<(i64, i16)> {
+    Some((
+        clock::now_utc_seconds()?.div_euclid(60),
+        clock::utc_offset_minutes()?,
+    ))
+}
+
+/// The history's steps from local midnight to `utc_minute` at `offset`:
+/// what the Today screen adds up. Not after `utc_minute`: when the clock
+/// went back, the minutes after it stay in the history until the next
+/// sample is filed (see [`History::at`]).
+fn steps_since_midnight(utc_minute: i64, offset: i16) -> u32 {
+    let midnight = crate::day::midnight(utc_minute, offset);
+    HISTORY.lock(|history| {
+        history
+            .borrow()
+            .since(midnight)
+            .take_while(|&(minute, _)| minute <= utc_minute)
+            .map(|(_, sample)| u32::from(sample.steps))
+            .sum()
     })
 }
 
@@ -989,12 +1056,16 @@ pub fn steps_today() -> Option<u32> {
 /// TODO: a day with a change to or from summer time has an hour too many
 /// or too few; this files each minute under the offset in force now.
 pub fn today() -> Option<crate::day::Day> {
-    let utc_minute = clock::now_utc_seconds()?.div_euclid(60);
-    let offset = i64::from(clock::utc_offset_minutes()?);
-    let midnight = utc_minute - (utc_minute + offset).rem_euclid(24 * 60);
+    let (utc_minute, offset) = now_minute()?;
+    let midnight = crate::day::midnight(utc_minute, offset);
     let mut day = crate::day::Day::default();
     HISTORY.lock(|history| {
-        for (minute, sample) in history.borrow().since(midnight) {
+        // Up to now, as today's total counts (see `steps_since_midnight`).
+        let history = history.borrow();
+        let samples = history
+            .since(midnight)
+            .take_while(|&(m, _)| m <= utc_minute);
+        for (minute, sample) in samples {
             day.add(
                 (minute - midnight) as usize,
                 sample.steps,
@@ -1243,31 +1314,25 @@ pub fn walk(steps: u32) {
     }
 }
 
-/// Adds steps to today's total, starting a new day at local midnight.
+/// Adds steps to today's total, which starts a new day when the date
+/// changes (see [`Today::on`]). Call before filing the steps in the
+/// history, which would otherwise count them twice on a new date.
 fn add_steps_today(steps: u32) {
-    let day = clock::now().map(|now| now.days_since_epoch());
+    STEPS_COUNTED.fetch_add(steps, Ordering::Relaxed);
+    let now = now_minute();
     TODAY.lock(|today| {
         let mut today = today.borrow_mut();
-        match (&mut *today, day) {
-            // The date just became known: steps so far were today's.
-            (Some(t), Some(day)) if t.day == UNKNOWN_DAY => {
-                t.day = day;
-                t.steps += steps;
-            }
-            (Some(t), Some(day)) if t.day != day => *t = Today { day, steps },
-            (Some(t), _) => t.steps += steps,
-            // Steps before the clock is known count towards whatever day
-            // it turns out to be.
-            (None, day) => {
-                *today = Some(Today {
-                    day: day.unwrap_or(UNKNOWN_DAY),
-                    steps,
-                })
-            }
+        // Steps before the clock is known count towards whatever day it
+        // turns out to be.
+        let t = today.get_or_insert(Today {
+            day: UNKNOWN_DAY,
+            steps: 0,
+        });
+        if let Some(now) = now {
+            t.settle(now);
         }
-        if let Some(t) = &*today {
-            save_today(t);
-        }
+        t.steps = t.steps.saturating_add(steps);
+        save_today(t);
     });
 }
 

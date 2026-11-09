@@ -594,7 +594,7 @@ impl UiLoop {
     /// rate sensor should run for it.
     fn live_activity(&mut self, now: Instant, connected: bool) {
         let seconds = now.as_secs() as u32;
-        let steps = activity::steps_today().unwrap_or(0);
+        let steps = activity::steps_counted();
         if let Some(request) = live::take() {
             if request.wanted() {
                 info!(
