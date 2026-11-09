@@ -511,6 +511,88 @@ mod tests {
     }
 
     #[test]
+    fn summer_time_rings_what_it_skipped() {
+        // An alarm every day at 02:30, and one at 03:10. At 02:00, summer
+        // time moves the clock to 03:00 (Gadgetbridge sends the new offset
+        // a few seconds later, so the watch's clock jumps at 02:00:05).
+        let mut s = Settings::default();
+        let mut p = phone(&[(2, 30, 0x7F, true), (3, 10, 0x7F, true)]);
+        let mut state = State::default();
+        let sunday = MONDAY - 1;
+        let mut rang = rings(
+            &mut s,
+            &mut p,
+            &mut state,
+            at(sunday, 1, 50),
+            at(sunday, 2, 1),
+        );
+        rang.extend(rings(
+            &mut s,
+            &mut p,
+            &mut state,
+            at(sunday, 3, 0),
+            at(sunday, 3, 30),
+        ));
+        // 02:30 rings as the clock reaches 03:00, rather than not at all;
+        // 03:10 at its time.
+        assert_eq!(
+            rang,
+            vec![
+                (at(sunday, 3, 0), Kind::Phone(0)),
+                (at(sunday, 3, 10), Kind::Phone(1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn winter_time_rings_each_alarm_once() {
+        // An alarm every day at 02:30, and one at 03:10. At 03:00, winter
+        // time moves the clock back to 02:00 (again a few seconds late, so
+        // the 03:00 minute was checked before the clock went back).
+        let mut s = Settings::default();
+        let mut p = phone(&[(2, 30, 0x7F, true), (3, 10, 0x7F, true)]);
+        let mut state = State::default();
+        let sunday = MONDAY - 1;
+        let mut rang = Vec::new();
+        let minutes = (at(sunday, 1, 50)..at(sunday, 3, 1))
+            .chain(at(sunday, 2, 0)..at(sunday, 3, 30))
+            .chain(at(MONDAY, 2, 0)..at(MONDAY, 3, 0));
+        for minute in minutes {
+            if let Some(kind) = state.due(&mut s, &mut p, minute * 60, false) {
+                rang.push((minute, kind));
+            }
+        }
+        // 02:30 rings in the first of the two hours only; 03:10 once, after
+        // both; and the next night's 02:30 as usual.
+        assert_eq!(
+            rang,
+            vec![
+                (at(sunday, 2, 30), Kind::Phone(0)),
+                (at(sunday, 3, 10), Kind::Phone(1)),
+                (at(MONDAY, 2, 30), Kind::Phone(0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_clock_set_back_a_little_rings_nothing_twice() {
+        // The phone's clock was 20 minutes fast, and is put right after
+        // 07:00 rang: it doesn't ring again at the right 07:00.
+        let mut s = Settings::default();
+        let mut p = phone(&[(7, 0, 0x7F, true), (7, 30, 0x7F, true)]);
+        let mut state = State::default();
+        let mut due = |minute| state.due(&mut s, &mut p, minute * 60, false);
+        assert_eq!(due(at(MONDAY, 6, 59)), None);
+        assert_eq!(due(at(MONDAY, 7, 0)), Some(Kind::Phone(0)));
+        assert_eq!(due(at(MONDAY, 7, 5)), None);
+        assert_eq!(due(at(MONDAY, 6, 45)), None);
+        assert_eq!(due(at(MONDAY, 7, 0)), None);
+        assert_eq!(due(at(MONDAY, 7, 29)), None);
+        // What comes after the minutes repeated rings as usual.
+        assert_eq!(due(at(MONDAY, 7, 30)), Some(Kind::Phone(1)));
+    }
+
+    #[test]
     fn next_includes_phone_alarms() {
         let s = Settings::default();
         let p = phone(&[(6, 15, FRI, true), (5, 0, 0, false)]);

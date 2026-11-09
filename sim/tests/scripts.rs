@@ -615,3 +615,30 @@ fn live_activity() {
         "{log}"
     );
 }
+
+/// Summer time's changes, as Gadgetbridge sends them (the new offset a
+/// few seconds after the change): an alarm every day at 02:30 rings once
+/// the night the clock goes back, rather than in both 02:00s, and the
+/// night it goes forward over 02:30, at the change, rather than not at
+/// all.
+#[test]
+fn summer_time_rings_each_alarm_once() {
+    let dir = out("summer-time");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    std::fs::write(
+        &script,
+        "# 2026-10-25: 03:00 CEST is 02:00 CET, at 01:00 UTC.\n\
+         time 2026-10-25 01:55 +02:00\nconnect\nphone-alarms 02:30/127\n\
+         until 02:30\nexpect buzzing\nbutton\nuntil 03:00\nwait 5s\n\
+         gb setTime(1792890005);E.setTimeZone(1.0);\n\
+         until 02:30\nexpect not buzzing\nuntil 03:00\nexpect not buzzing\n\
+         # 2026-03-29: 02:00 CET is 03:00 CEST, at 01:00 UTC.\n\
+         time 2026-03-29 01:55 +01:00\nuntil 02:00\nwait 5s\n\
+         gb setTime(1774746005);E.setTimeZone(2.0);\n\
+         wait 2s\nexpect buzzing\n",
+    )
+    .expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+}

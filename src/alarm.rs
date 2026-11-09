@@ -41,11 +41,23 @@ pub const ALARMS: usize = 2;
 /// has ten slots (`BangleJSCoordinator.getAlarmSlotCount`), and a device
 /// can't declare fewer.
 pub const PHONE_ALARMS: usize = 10;
-/// How far back alarms at a time of day still ring, in minutes, when the
-/// checks were held up (by another alarm ringing for up to [`RING_FOR`]).
-/// A clock that jumps further (set by the phone, or a new time zone)
-/// skips what it jumped over rather than ringing for it.
-const CATCH_UP: i64 = 10;
+/// How far the local time may move, in minutes, with alarms at a time of
+/// day still ringing once each, as if it hadn't: an hour, what summer
+/// time moves the clock by (Gadgetbridge sends the new offset seconds
+/// after the change, while connected).
+///
+/// - Forward: the hour that summer time skips, or checks held up by
+///   another alarm ringing for up to [`RING_FOR`]. What the clock moved
+///   over rings at once: an alarm at 02:30 rings at 03:00 the night summer
+///   time starts, as a phone's does, rather than not at all.
+/// - Back: the hour that winter time repeats. What already rang in the
+///   minutes repeated doesn't ring again: an alarm at 02:30 rings once
+///   that night, not twice.
+///
+/// A clock that moves further (set by the phone, or a new time zone)
+/// skips what it jumped over rather than ringing for it, and rings again
+/// for what comes round again.
+const CATCH_UP: i64 = 60;
 
 const DAY: i64 = 24 * 60;
 
@@ -334,8 +346,9 @@ pub struct State {
     smart_rang: Option<i32>,
     /// The last minute (local) checked for alarms at a time of day (the
     /// watch's and the phone's): the next check rings those whose time
-    /// fell in the minutes since. Not stored: after a reset, checking
-    /// starts afresh from the current minute.
+    /// fell in the minutes since. Ahead of the clock for up to
+    /// [`CATCH_UP`] after it moved back (winter time). Not stored: after a
+    /// reset, checking starts afresh from the current minute.
     ///
     /// This is all it takes to ring each occurrence once, however many
     /// alarms there are, so nothing per alarm needs to be kept in RAM. A
@@ -417,10 +430,17 @@ impl State {
             }
         }
         let minute = now.div_euclid(60);
-        // The minutes not yet checked: normally just this one, or a few
-        // after a hold-up (see `CATCH_UP`).
+        // The minutes not yet checked: normally just this one, or more
+        // after a hold-up or the clock moving forward (see `CATCH_UP`).
+        // After it moved back by up to `CATCH_UP`, none: the minutes up to
+        // the last checked were checked already, and nothing rings until
+        // the clock is past them again.
+        //
+        // TODO: an alarm switched on in those minutes, for a time in them
+        // (between 02:00 and 03:00 the night winter time starts), waits
+        // for the next day.
         let after = match self.checked.map(i64::from) {
-            Some(checked) if (minute - CATCH_UP..=minute).contains(&checked) => checked,
+            Some(checked) if (minute - CATCH_UP..=minute + CATCH_UP).contains(&checked) => checked,
             _ => minute - 1,
         };
         // The earliest alarm in those minutes rings. Others at the very
@@ -446,7 +466,8 @@ impl State {
             }
             return Some(kind);
         }
-        self.checked = Some(minute as i32);
+        // (Not back to `minute` while the clock repeats checked minutes.)
+        self.checked = Some(after.max(minute) as i32);
         if settings.smart {
             let latest = self.pending_smart(settings, minute);
             let in_window = minute >= latest - SMART_WINDOW;

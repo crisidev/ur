@@ -169,7 +169,10 @@ for its layout: six buttons, or two layers. To set
 an alarm or timer, tap it, then swipe the hours and minutes. Alarms set
 in Gadgetbridge are read-only on the watch; a one-off one switches
 itself off once it has rung, without Gadgetbridge hearing of it, so
-switch it off and on there to set it again.
+switch it off and on there to set it again. Alarms follow the phone's
+time zone and summer time, from when Gadgetbridge sends the change (at
+once, if connected); the night summer time starts or ends, each rings
+once, one in the skipped hour as the clock jumps.
 
 Gadgetbridge forwards directions from Google Maps and OsmAnd by default;
 turn CoMaps on in its settings, under "Navigation apps".
