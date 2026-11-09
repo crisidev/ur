@@ -61,7 +61,8 @@ def decode(parser: BTHomeBluetoothDeviceData, address: str, advert: bytes, at: f
 
 def main() -> None:
     lines = sys.stdin.read().splitlines()
-    if len(sys.argv) == 3:
+    from_log = len(sys.argv) == 3
+    if from_log:
         address, key = sys.argv[1], sys.argv[2]
         adverts = []
         # In order: one touch can complete two presses, logged before
@@ -113,7 +114,8 @@ def main() -> None:
             expected = {"button": (gesture, None)}
             if gesture in dimmer:
                 expected[dimmer[gesture]] = ("rotate_right", {"steps": code})
-            assert battery == [82], battery
+            # The battery rides along (`main` sends 82%; a watch, its own).
+            assert battery == [82] or (from_log and len(battery) == 1), battery
         assert events == expected, (events, expected)
     print("ok")
 

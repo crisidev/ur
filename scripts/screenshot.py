@@ -35,6 +35,8 @@ until it disconnects, for the music screen and the clock's media icon; it
 only shows while the phone is connected.
 `steps:N` counts N steps as walked now (up to 65535), to test what keeps
 them across resets and updates.
+`doubletap:X,Y` taps twice, 0.1 s apart, quicker than two `tap`s over
+the probe can (for the button grid's double taps).
 `bitmaps` sends a notification as Gadgetbridge does with its "Text as
 Bitmaps" setting on (a word as an image), through the watch's parser.
 `press:X,Y` puts a simulated finger down at X,Y (or moves it there, if
@@ -85,6 +87,7 @@ KINDS = {
     "press": 16,
     "lift": 17,
     "bitmaps": 18,
+    "doubletap": 19,
 }
 
 

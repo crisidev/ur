@@ -38,7 +38,9 @@ static UR_CANVAS: AtomicPtr<Canvas> = AtomicPtr::new(core::ptr::null_mut());
 /// updates), 16 a simulated finger down at, or moved to, (`x`, `y`), held
 /// there until 17 lifts it (see [`input_task`]), 18 [`BITMAPS_LINE`], a
 /// notification as Gadgetbridge sends it with "Text as Bitmaps" on,
-/// through the phone's parser) and the next two the canvas x and y.
+/// through the phone's parser), 19 two taps 0.1 s apart (a double tap,
+/// too quick for two inputs over the probe; for the button grid)) and the
+/// next two the canvas x and y.
 /// Cleared once taken.
 #[unsafe(no_mangle)]
 static UR_INPUT: AtomicU32 = AtomicU32::new(0);
@@ -131,6 +133,14 @@ pub async fn input_task() {
                 // SAFETY: A NUL-terminated string, as the handler needs.
                 unsafe { crate::field_log::sdc_fault(file.as_ptr(), u32::from(y)) };
                 continue;
+            }
+            // A tap now, and another at the next poll, 0.1 s on (re-armed
+            // as input 2): rather than a loop here, which would keep a
+            // `Touch` across its awaits, in this task's future (static
+            // RAM).
+            19 => {
+                UR_INPUT.store(u32::from_le_bytes([2, x, y, 0]), Ordering::Relaxed);
+                Gesture::Tap
             }
             16 | 17 => {
                 let scale = crate::canvas::SCALE as u8;
