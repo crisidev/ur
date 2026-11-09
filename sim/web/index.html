@@ -4,59 +4,317 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ur: the watch, in a browser</title>
+<meta name="color-scheme" content="dark light">
+<!-- The logo (as on the landing page, site.html), as the tab's icon. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-1 -3 17 17'%3E%3Crect x='-1' y='-3' width='17' height='17' fill='%23101010'/%3E%3Cpath fill='%23e8e8e8' d='M0 0h2v10h-2zM4 0h2v10h-2zM2 8h2v2h-2zM8 0h2v10h-2zM10 0h2v2h-2zM12 2h2v2h-2zM10 4h2v2h-2zM12 6h2v4h-2z'/%3E%3C/svg%3E">
 <style>
-  body { margin: 0; padding: 1rem; background: #5c5c60; color: #eee;
-         font: 14px/1.4 system-ui, sans-serif; display: flex; flex-wrap: wrap;
-         gap: 1rem; align-items: flex-start; }
-  /* The watch, at its own size or smaller: pixels stay square. */
-  canvas { max-width: 100%; image-rendering: pixelated; touch-action: none;
-           cursor: pointer; }
-  #side { flex: 1; min-width: 18rem; max-width: 46rem; display: flex;
-          flex-direction: column; gap: 0.5rem; }
-  #status { font-weight: bold; }
-  #log { background: #1a1a1c; padding: 0.5rem; height: 22rem; overflow: auto;
-         margin: 0; font: 12px/1.35 ui-monospace, monospace; white-space: pre-wrap; }
-  .error { color: #ff8a80; }
-  .command { color: #9ecbff; }
-  input[type=text] { width: 100%; box-sizing: border-box; font: inherit;
-                     font-family: ui-monospace, monospace; padding: 0.3rem; }
-  kbd { background: #333; border-radius: 3px; padding: 0 0.3em; }
-  a { color: #9ecbff; }
+  /*
+   * The watch's themes (src/theme.rs), as on the landing page (site.html):
+   * Arcade, white and red on black, by night, and Parchment, brown ink on
+   * cream, by day, here by the system's setting rather than the sun. The
+   * console is Terminal's phosphor green, and the status line Handheld's
+   * LCD, whatever the system's setting: a terminal and an LCD look like
+   * one either way.
+   */
+  :root {
+    --bg: #101010;
+    --panel: #1c1c1c;
+    --text: #e8e8e8;
+    --dim: #a8a8a8;
+    --faint: #606060;
+    --track: #303030;
+    --accent: #d82828;
+    --shadow: #5a1010;
+    /* The accent is too dark to read as small text on black; this is
+       Arcade's low-battery red. */
+    --link: #ff5050;
+    --on-accent: #ffffff;
+
+    /* Terminal. */
+    --term-bg: #020c04;
+    --term-text: #4dff7a;
+    --term-dim: #2aa84a;
+    --term-faint: #146b2c;
+    --term-track: #0a2a12;
+    --term-bright: #b8ffc8;
+    /* Handheld. */
+    --lcd-bg: #c3cf8c;
+    --lcd-text: #1e2a14;
+    --lcd-shadow: #8a9f3a;
+
+    /* What the module draws round the watch (sim/src/case.rs's
+       DESK_COLOR): the canvas's own corners are this, so the frame the
+       watch sits in must be too, or it shows as a box. */
+    --desk: #5c5c60;
+
+    --mono: ui-monospace, "Cascadia Mono", "JetBrains Mono", Menlo, Consolas,
+            "DejaVu Sans Mono", "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #e8dcb8;
+      --panel: #ded0a8;
+      --text: #3a2414;
+      --dim: #6a4a2a;
+      --faint: #a08860;
+      --track: #c0a878;
+      --accent: #a02820;
+      --shadow: #c0a878;
+      --link: #a02820;
+      --on-accent: #e8dcb8;
+    }
+  }
+
+  /*
+   * Everything in the system's monospace font: this is a tool's panel,
+   * not prose, and short labels in capitals read as the watch's own (its
+   * 3×5 font is all capitals). No web font: the page loads with nothing
+   * but itself, its script and the module.
+   * TODO: the watch's 3×5 font (src/font.rs) as a tiny web font, for the
+   * labels, as site.html would like for its headings too.
+   */
+  * { box-sizing: border-box; }
+  html { background: var(--bg); color: var(--text);
+         font: 14px/1.4 var(--mono); }
+  body { margin: 0; min-height: 100vh; }
+  a { color: var(--link); }
+  button, input, select { font: inherit; color: inherit; }
+  /* Square, two pixels wide, offset: a focus ring as the watch would draw
+     one. Only for the keyboard, so a clicked button doesn't keep a ring. */
+  :focus { outline: none; }
+  :focus-visible { outline: 2px dashed var(--link); outline-offset: 2px; }
+
+  /*
+   * The bar along the top, as the landing page's: the logo, what this is,
+   * and the way back.
+   */
+  .bar { display: flex; align-items: center; gap: 0.6rem 1rem; flex-wrap: wrap;
+         padding: 0.6rem max(1rem, calc(50% - 40rem)); border-bottom: 2px solid var(--track); }
+  .bar .brand { display: flex; align-items: center; gap: 0.7rem; color: var(--text);
+                text-decoration: none; font-weight: bold; letter-spacing: 0.12em; }
+  .bar .brand span { color: var(--dim); }
+  .logo .shadow { fill: var(--shadow); }
+  .logo .ink { fill: var(--text); }
+  .bar nav { margin-left: auto; }
+  .bar nav a { text-decoration: none; text-transform: uppercase; letter-spacing: 0.08em;
+               font-weight: bold; }
+  .bar nav a:hover { text-decoration: underline; text-underline-offset: 3px; }
+  /* On a phone, the bar stays one line. */
+  .bar .narrow { display: none; }
+  @media (max-width: 36rem) {
+    .bar .wide { display: none; }
+    .bar .narrow { display: inline; }
+  }
+  /* The watch's transition between screens: a dithered checkerboard in
+     the accent. */
+  .dither { height: 6px; background: repeating-conic-gradient(var(--accent) 0 25%, transparent 0 50%)
+                                    0 0 / 4px 4px; }
+
+  /*
+   * Two columns side by side, the watch and what drives it, or on a
+   * narrow window, one above the other. The watch's column takes what the
+   * other leaves; the script below sizes the watch to fit it.
+   */
+  main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(21rem, 30rem);
+         gap: 1.5rem; align-items: start; max-width: 82rem; margin: 0 auto;
+         padding: 1.25rem 1rem 2rem; }
+  @media (max-width: 50rem) {
+    main { grid-template-columns: minmax(0, 1fr); gap: 1rem; padding: 0.75rem 0.75rem 1.5rem; }
+  }
+
+  /*
+   * The watch, on its desk, framed like a window, with a hard shadow as
+   * the clock's digits have. Its size comes from the script (`fit`), so it
+   * never changes while the watch runs.
+   */
+  #stage { display: grid; justify-content: center; }
+  .unit { display: grid; }
+  .desk { background: var(--desk); border: 2px solid var(--text);
+          box-shadow: 6px 6px 0 var(--shadow); line-height: 0; }
+  canvas { image-rendering: pixelated; image-rendering: crisp-edges;
+           touch-action: none; cursor: pointer; }
+  /* The status line, as an LCD readout under the watch. Width 0, so a
+     long line wraps rather than widening the watch's frame; room for
+     three lines on a phone and two beside, held even when it's shorter,
+     so the controls under it don't jump as it changes (the height is
+     the border box's: the lines, the padding and the border). */
+  #status { width: 0; min-width: 100%; margin-top: 0.9rem; padding: 0.35rem 0.6rem;
+            min-height: calc(2lh + 0.7rem + 4px); background: var(--lcd-bg); color: var(--lcd-text);
+            border: 2px solid var(--lcd-text); box-shadow: 4px 4px 0 var(--lcd-shadow);
+            font-weight: bold; font-variant-numeric: tabular-nums; }
+  @media (max-width: 50rem) { #status { min-height: calc(3lh + 0.7rem + 4px); } }
+  .hint { color: var(--dim); margin: 1rem 0 0; font-size: 0.9rem; width: 0; min-width: 100%; }
+
+  /*
+   * The controls: panels with a title in the accent's capitals, as the
+   * watch's screens have.
+   */
+  #side { display: flex; flex-direction: column; gap: 1.25rem; min-width: 0; }
+  .panel { background: var(--panel); border: 2px solid var(--track); padding: 0.75rem; }
+  h2 { margin: 0 0 0.6rem; font-size: 0.85rem; letter-spacing: 0.14em; color: var(--link);
+       text-transform: uppercase; }
+  /* A row: its label, then its buttons. */
+  .row { display: grid; grid-template-columns: 5.5rem 1fr; align-items: center; gap: 0.5rem; }
+  .row + .row { margin-top: 0.55rem; }
+  .row > span { color: var(--dim); text-transform: uppercase; letter-spacing: 0.08em;
+                font-size: 0.8rem; }
+  .row > div { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+  @media (max-width: 22rem) {
+    .row { grid-template-columns: 1fr; gap: 0.3rem; }
+  }
+
+  /*
+   * Buttons: raised on a hard shadow, and pressed into it, flat, as a
+   * real one would be. Each shows its key.
+   */
+  button, .button { display: inline-flex; align-items: center; gap: 0.5em; padding: 0.3em 0.55em;
+                    background: var(--bg); border: 2px solid var(--dim); border-radius: 0;
+                    box-shadow: 3px 3px 0 var(--shadow); cursor: pointer;
+                    text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.85rem;
+                    white-space: nowrap; user-select: none; }
+  button:hover, .button:hover { border-color: var(--text); }
+  button:active, .button:active { transform: translate(3px, 3px); box-shadow: none; }
+  kbd { font: inherit; font-size: 0.8em; min-width: 1.6em; text-align: center; padding: 0 0.3em;
+        background: var(--track); color: var(--text); border-bottom: 2px solid var(--faint); }
+  button.arrow { padding: 0.3em 0.4em; }
+  /* Recording, from the status line: the button goes red and blinks its
+     dot, as a camera's light. */
+  #record.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  #record.on::before { content: ""; width: 0.6em; height: 0.6em; background: currentColor;
+                       animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { visibility: hidden; } }
+  @media (prefers-reduced-motion: reduce) { #record.on::before { animation: none; } }
+
+  /* A checkbox as a pixel square, filled when it's on. */
+  .check { display: inline-flex; align-items: center; gap: 0.5em; cursor: pointer;
+           text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.85rem; }
+  .check input { appearance: none; margin: 0; width: 1.05rem; height: 1.05rem;
+                 border: 2px solid var(--dim); background: var(--bg); cursor: pointer; }
+  .check input:checked { background: var(--accent);
+                         box-shadow: inset 0 0 0 2px var(--bg); }
+  /* A select, with a stepped arrow drawn in whole pixels. */
+  .select { position: relative; display: inline-flex; }
+  .select select { appearance: none; padding: 0.3em 2em 0.3em 0.55em; border: 2px solid var(--dim);
+                   border-radius: 0; background: var(--bg); font-size: 0.85rem; cursor: pointer;
+                   box-shadow: 3px 3px 0 var(--shadow); text-transform: uppercase; }
+  .select select:hover { border-color: var(--text); }
+  .select::after { content: ""; position: absolute; right: 0.65em; top: calc(50% - 3px);
+                   width: 10px; height: 6px; background: var(--text); pointer-events: none;
+                   clip-path: polygon(0 0, 10px 0, 10px 2px, 8px 2px, 8px 4px, 6px 4px, 6px 6px,
+                                      4px 6px, 4px 4px, 2px 4px, 2px 2px, 0 2px); }
+  /* The file picker: the label is the button; the input stays focusable,
+     only unseen, so its ring goes on the label. */
+  .file input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  .file:focus-within { outline: 2px dashed var(--link); outline-offset: 2px; }
+
+  /*
+   * The console: a terminal, in Terminal's greens, with faint scan lines.
+   * A fixed height, so a long `wait`'s thousands of lines scroll within it.
+   */
+  .console { background: var(--term-bg); color: var(--term-dim); border: 2px solid var(--term-faint);
+             box-shadow: 6px 6px 0 var(--term-track); }
+  .console h2 { color: var(--term-bright); padding: 0.5rem 0.75rem 0; margin: 0; }
+  #log { margin: 0; padding: 0.5rem 0.75rem; height: 17rem; overflow: auto;
+         font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
+         scrollbar-color: var(--term-faint) var(--term-bg);
+         background: repeating-linear-gradient(transparent 0 2px, rgb(77 255 122 / 0.03) 2px 4px); }
+  @media (max-width: 50rem) { #log { height: 12rem; } }
+  #log .error { color: var(--link); }
+  #log .command { color: var(--term-bright); }
+  .prompt { display: flex; align-items: center; gap: 0.5ch; padding: 0.45rem 0.75rem;
+            border-top: 2px solid var(--term-track); color: var(--term-text); }
+  .prompt::before { content: ">"; font-weight: bold; }
+  .prompt input { flex: 1; min-width: 0; padding: 0; border: 0; background: none;
+                  color: var(--term-text); caret-color: var(--term-text); caret-shape: block; }
+  .prompt input::placeholder { color: var(--term-faint); }
+  .prompt:focus-within { background: var(--term-track); }
+
+  footer { color: var(--dim); font-size: 0.85rem; }
 </style>
 </head>
 <body>
-<canvas id="watch"></canvas>
-<div id="side">
+<header class="bar">
   <!-- On the published site (site.sh), the landing page is the folder
        above; served alone, as build.sh makes it, this is just the page
        again. -->
-  <nav><a href="../">← ur</a>: what it is, and how to install it</nav>
-  <div id="status">loading…</div>
-  <div>
-    <button data-key="f">+1 minute</button>
-    <button data-key="h">+1 hour</button>
-    <button data-key="s">Screenshot</button>
-    <button data-key="r">Record / stop</button>
-    <label title="As the real panel shows them (a model; see sim/src/panel.rs), or as sent to it, as screenshots are">
-      <input id="mimic" type="checkbox" checked> The panel's colours</label>
-    <label>Theme <select id="theme"><option value="auto">auto (the sun's)</option></select></label>
-    <label>Run a script <input id="script" type="file" accept=".txt,text/plain"></label>
+  <a class="brand" href="../" title="ur: what it is, and how to install it">
+    <svg class="logo" viewBox="0 0 15 11" width="30" height="22" aria-label="ur">
+      <!-- U: 101 101 101 101 111; R: 110 101 110 101 101, two units a
+           pixel, shadowed one down and right, as the clock's digits are. -->
+      <path class="shadow" transform="translate(1 1)"
+            d="M0 0h2v10h-2zM4 0h2v10h-2zM2 8h2v2h-2zM8 0h2v10h-2zM10 0h2v2h-2zM12 2h2v2h-2zM10 4h2v2h-2zM12 6h2v4h-2z"/>
+      <path class="ink"
+            d="M0 0h2v10h-2zM4 0h2v10h-2zM2 8h2v2h-2zM8 0h2v10h-2zM10 0h2v2h-2zM12 2h2v2h-2zM10 4h2v2h-2zM12 6h2v4h-2z"/>
+    </svg>
+    <span>SIMULATOR</span>
+  </a>
+  <nav><a href="../">← <span class="wide">What it is, and how to install it</span><span class="narrow">About ur</span></a></nav>
+</header>
+<div class="dither"></div>
+<main>
+  <div id="stage">
+    <div class="unit">
+      <!-- The size the module draws the watch at (ur.width × ur.height),
+           so the page is laid out right before the module loads; the
+           script sets it from the module anyway. -->
+      <div class="desk"><canvas id="watch" width="609" height="822"></canvas></div>
+      <div id="status" role="status">loading…</div>
+      <p class="hint">The pointer is a finger: tap, hold still for a long press, drag
+        to swipe. Click the button on the watch's left edge to press it.</p>
+    </div>
   </div>
-  <input id="command" type="text" placeholder="a command, as in a script (help lists them)"
-         autocomplete="off" spellcheck="false">
-  <pre id="log"></pre>
-  <div>
-    The pointer is a finger: tap, hold still for a long press, drag to swipe.
-    Click the button on the watch's left edge to press it. Keys:
-    <kbd>Space</kbd> the button, <kbd>G</kbd> a glance, <kbd>N</kbd> a notification,
-    <kbd>M</kbd> music, <kbd>C</kbd> a call, arrows swipe, <kbd>T</kbd> tap,
-    <kbd>L</kbd> long press, <kbd>F</kbd>/<kbd>H</kbd> a minute/hour on,
-    <kbd>S</kbd> a screenshot, <kbd>R</kbd> record a GIF (again to stop and download it),
-    <kbd>P</kbd> the panel's colours, or as sent to it.
-    The firmware's own UI code, compiled to WebAssembly: see
-    <a href="https://github.com/jonhoo/ur/tree/main/sim">sim/</a>.
+  <div id="side">
+    <section class="panel">
+      <h2>Controls</h2>
+      <div class="row"><span>Watch</span><div>
+        <button data-key=" ">Button <kbd>Space</kbd></button>
+        <button data-key="t">Tap <kbd>T</kbd></button>
+        <button data-key="l">Long <kbd>L</kbd></button>
+        <button data-key="g">Glance <kbd>G</kbd></button>
+      </div></div>
+      <div class="row"><span>Swipe</span><div>
+        <button class="arrow" data-key="ArrowLeft" aria-label="Swipe left"><kbd>←</kbd></button>
+        <button class="arrow" data-key="ArrowUp" aria-label="Swipe up"><kbd>↑</kbd></button>
+        <button class="arrow" data-key="ArrowDown" aria-label="Swipe down"><kbd>↓</kbd></button>
+        <button class="arrow" data-key="ArrowRight" aria-label="Swipe right"><kbd>→</kbd></button>
+      </div></div>
+      <div class="row"><span>Phone</span><div>
+        <button data-key="n" title="A notification (each press, another)">Notify <kbd>N</kbd></button>
+        <button data-key="m" title="Music: play or pause">Music <kbd>M</kbd></button>
+        <button data-key="c" title="A call rings, or the one ringing ends">Call <kbd>C</kbd></button>
+      </div></div>
+      <div class="row"><span>Time</span><div>
+        <button data-key="f">+1 minute <kbd>F</kbd></button>
+        <button data-key="h">+1 hour <kbd>H</kbd></button>
+      </div></div>
+      <div class="row"><span>Capture</span><div>
+        <button data-key="s" title="Downloads a PNG of the screen">Screenshot <kbd>S</kbd></button>
+        <button id="record" data-key="r" title="A GIF of the screen: again to stop and download it">Record <kbd>R</kbd></button>
+      </div></div>
+      <div class="row"><span>Display</span><div>
+        <label class="select" title="The watch's theme"><select id="theme" aria-label="Theme">
+          <option value="auto">Auto (the sun's)</option></select></label>
+        <label class="check" title="As the real panel shows them (a model; see sim/src/panel.rs), or as sent to it, as screenshots are">
+          <input id="mimic" type="checkbox" checked> Panel's colours <kbd>P</kbd></label>
+      </div></div>
+      <div class="row"><span>Script</span><div>
+        <label class="button file">Run a script…
+          <input id="script" type="file" accept=".txt,text/plain"></label>
+      </div></div>
+    </section>
+    <section class="console">
+      <h2>Console</h2>
+      <pre id="log" aria-live="polite"></pre>
+      <label class="prompt"><input id="command" type="text"
+        placeholder="a command, as in a script (help lists them)"
+        aria-label="Command" autocomplete="off" spellcheck="false"></label>
+    </section>
+    <footer>
+      The firmware's own UI code, compiled to WebAssembly: see
+      <a href="https://github.com/jonhoo/ur/tree/main/sim">sim/</a>.
+    </footer>
   </div>
-</div>
+</main>
 <script type="module">
 // The page runs the loop the window does (sim/src/window.rs): each
 // animation frame, the time since the last passes on the watch, and the
@@ -64,10 +322,53 @@
 import { load, ERROR, STATUS, THEMES } from "./ur.js";
 
 const canvas = document.getElementById("watch");
+const stage = document.getElementById("stage");
 const log = document.getElementById("log");
 const status = document.getElementById("status");
+const record = document.getElementById("record");
 const themes = document.getElementById("theme");
 const typed = document.getElementById("command");
+
+// ==============================================================================
+// The watch's size on the page
+// ==============================================================================
+
+// The module draws ZOOM of its pixels for each of the watch's (ZOOM in
+// sim/src/web.rs). The watch is shown as big as fits, but with each of
+// its pixels a whole number of the screen's, so the pixel art stays
+// crisp and even rather than some of its pixels a screen pixel wider
+// than others. On a laptop's screen that's often 3, the real panel's
+// own 240 pixels; on a phone's, more.
+const ZOOM = 4;
+// Beside the controls, the watch fits under the bar, its status line
+// under it; on a narrow screen, above the controls, it leaves some of
+// them in view.
+const wide = matchMedia("(min-width: 50.01rem)");
+function fit() {
+  const dpr = window.devicePixelRatio || 1;
+  // Less the desk's border, either side, and its shadow.
+  const roomX = stage.clientWidth - 2 * 2 - 6;
+  // From where the watch starts on the page (wherever it's scrolled to)
+  // to the bottom of the first screenful, less what's under the watch:
+  // the status line, the space above it, the shadows, and a little room.
+  const top = stage.getBoundingClientRect().top + window.scrollY;
+  const roomY = wide.matches
+    ? window.innerHeight - top - status.offsetHeight - 40
+    : window.innerHeight * 0.72;
+  // At most the size the module draws it: bigger is only blockier.
+  const most = Math.min(1, roomX / canvas.width, roomY / canvas.height);
+  const screenPixels = Math.max(1, Math.floor(most * ZOOM * dpr));
+  const scale = screenPixels / (ZOOM * dpr);
+  canvas.style.width = `${canvas.width * scale}px`;
+  canvas.style.height = `${canvas.height * scale}px`;
+}
+fit();
+// A resize covers the page's zoom and the layout's switch too.
+window.addEventListener("resize", fit);
+
+// ==============================================================================
+// The module
+// ==============================================================================
 
 // The log keeps its last lines; a long `wait` can print thousands.
 function show(text, className) {
@@ -82,6 +383,11 @@ function show(text, className) {
 function print(kind, text) {
   if (kind === STATUS) {
     status.textContent = text;
+    // The status line says when a recording runs (sim/src/web.rs's
+    // `ur_status`), whether R, the button, or a typed `record` began it.
+    const recording = text.includes(" · recording");
+    record.classList.toggle("on", recording);
+    record.setAttribute("aria-pressed", recording);
   } else if (kind === THEMES) {
     for (const name of text.split("\n")) themes.add(new Option(name, name));
   } else if (kind === ERROR) {
@@ -118,6 +424,7 @@ function guard(f) {
 
 canvas.width = ur.width;
 canvas.height = ur.height;
+fit();
 const context = canvas.getContext("2d");
 guard(() => ur.themes());
 
@@ -158,6 +465,7 @@ document.addEventListener("keydown", (event) => {
   }
   if (guard(() => ur.key(event.key))) event.preventDefault();
 });
+// Each button is its key, as if pressed.
 for (const button of document.querySelectorAll("button[data-key]")) {
   button.addEventListener("click", () => guard(() => ur.key(button.dataset.key)));
 }

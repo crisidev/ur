@@ -55,8 +55,9 @@ no phone. `time now` and `connect` get it going.
 
 The same watch, compiled to WebAssembly, on a web page: the window's
 watch, mouse (or touchscreen) and keys (bar quitting), time running with
-the browser's clock, buttons to skip a minute or an hour, a theme
-picker, and a box for commands, as typed into the terminal. Screenshots
+the browser's clock, a button for each key (each showing its key, so
+a phone can press them too), a theme picker, and a box for commands,
+as typed into the terminal. Screenshots
 (`S`, or `shot`) and recordings (`R`, or `record` … `stop`) download. A
 script file runs from the page too. It
 starts in use, not as after a reset: the time set from the browser's
