@@ -985,6 +985,51 @@ mod proofs {
         wearer.finish();
     }
 
+    /// Every press has a code of one or two digits, neither of them 0,
+    /// even if the layout changes between touches (the wearer above
+    /// keeps to one; the Settings screen can change it, though leaving
+    /// the grid's screen for it cancels what was waiting). `ui::draw_key`
+    /// writes the code into two characters, and panics if it doesn't
+    /// fit; BTHome and the phone get it as a byte.
+    ///
+    /// For any four events, the lot unchecked: no lift need follow a
+    /// hold here.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn every_code_fits_two_digits_whatever_the_layout() {
+        let mut grid = Grid::default();
+        let mut now = 0;
+        let fits = |press: Option<Press>| {
+            if let Some(press) = press {
+                assert!(1 <= press.code && press.code <= 99 && press.last() != 0);
+            }
+        };
+        for _ in 0..4 {
+            let later: u64 = kani::any();
+            kani::assume(now <= later && later <= LATEST);
+            now = later;
+            let at = Instant::from_ticks(now);
+            match kani::any::<u8>() {
+                0 => {
+                    let layout = any_layout();
+                    let touch = if kani::any() { Touch::Tap } else { Touch::Hold };
+                    let started: u64 = kani::any();
+                    kani::assume(started <= now);
+                    let started = Instant::from_ticks(started);
+                    let [waited, completed] =
+                        grid.touch(layout, any_button(layout), touch, started, at);
+                    fits(waited);
+                    fits(completed);
+                }
+                1 => fits(grid.lift()),
+                2 => {
+                    grid.cancel();
+                }
+                _ => fits(grid.expire(at, kani::any())),
+            }
+        }
+    }
+
     /// The UI loop can't spin: after its timer fires and `on_timer` has
     /// run, whatever it next waits for (`ui::App::deadline`) is still to
     /// come. This mirrors those two functions, since `ui` isn't
