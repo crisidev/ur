@@ -145,8 +145,8 @@ knows all the events up front.
    open the buttons you want, and give them actions. Leave the rest
    empty.
 
-With two layers, a long press or release gets the code of the hold
-before it, from the watch's dimmer entities: leave those enabled.
+With two layers, a release gets the code of the hold before it, from
+the watch's dimmer entities: leave those enabled.
 
 Each event's action starts as the event arrives, even while an earlier
 one's still runs, so a hold's action can loop until the release. To dim

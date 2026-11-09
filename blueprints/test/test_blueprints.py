@@ -124,12 +124,18 @@ class Watch:
     def layers(self, code: int, gesture: str) -> None:
         """A press with GRID on 2 LAYERS: the button, then its dimmer.
 
-        A long press and a release turn no dimmer: they follow their hold.
+        A long press turns the hold's dimmer the other way. A release turns
+        none: it follows its hold.
         """
         events = [("button", gesture, None)]
-        dimmer = {"press": 1, "double_press": 2, "hold_press": 3}.get(gesture)
+        dimmer = {
+            "press": ("dimmer_1", "rotate_right"),
+            "double_press": ("dimmer_2", "rotate_right"),
+            "hold_press": ("dimmer_3", "rotate_right"),
+            "long_press": ("dimmer_3", "rotate_left"),
+        }.get(gesture)
         if dimmer:
-            events.append((f"dimmer_{dimmer}", "rotate_right", {"steps": code}))
+            events.append((*dimmer, {"steps": code}))
         self.advert(*events)
 
 
@@ -343,6 +349,9 @@ async def test_two_layers(hass: HomeAssistant) -> None:
         "slot_3_code": 47,
         "slot_3_gesture": "hold_release",
         "slot_3_action": record("slot 47 release"),
+        "slot_4_code": 47,
+        "slot_4_gesture": "long_press",
+        "slot_4_action": record("slot 47 long"),
     }
     await setup(hass, "ur-two-layers.yaml", inputs)
 
@@ -384,6 +393,25 @@ async def test_two_layers(hass: HomeAssistant) -> None:
     assert await press(3, "press") == [("3 press", 3, "press"), ("every", 3, "press")]
     assert await press(31, "hold_press") == [("every", 31, "hold_press")]
     assert await press(31, "hold_release") == [("every", 31, "hold_release")]
+
+    # A long press says its own code, so it doesn't need its hold heard:
+    # here, the last dimmer heard is a tap of 5.
+    assert await press(5, "press") == [("5 press", 5, "press"), ("every", 5, "press")]
+    assert await press(47, "long_press") == [
+        ("every", 47, "long_press"),
+        ("slot 47 long", 47, "long_press"),
+    ]
+    assert await press(5, "press") == [("5 press", 5, "press"), ("every", 5, "press")]
+    assert await press(4, "long_press") == [
+        ("4 long_press", 4, "long_press"),
+        ("every", 4, "long_press"),
+    ]
+
+    # The `button` event's long press runs nothing on its own: the dimmer's
+    # carries it, with the code.
+    watch.advert(("button", "long_press", None))
+    await hass.async_block_till_done()
+    assert ran(calls) == []
 
     # Another watch, and the six buttons' events, run nothing.
     other.layers(5, "press")

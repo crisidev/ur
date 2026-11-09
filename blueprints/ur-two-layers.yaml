@@ -12,23 +12,23 @@
 # What the watch sends (see docs/buttons.md): each tap, double tap, or hold
 # fires a `button` event for the gesture and a `dimmer_N` event, turning
 # right by the code, for which gesture it was (1 tap, 2 double tap, 3
-# hold). A long press and a release fire only the `button` event: they
-# follow a hold, which said the code. So this triggers on the watch's
+# hold). A long press fires the `button` event and turns `dimmer_3` (the
+# hold's) left by the code. A release fires only the `button` event: it
+# follows a hold, which said the code. So this triggers on the watch's
 # events (see `triggers:` for why), and takes
 #
-# - taps, double taps, and holds from the dimmer events, which carry both
-#   the code and the gesture, ignoring the `button` events that come with
-#   them, so each press runs once;
-# - long presses and releases from the `button` event, with the code of
-#   the hold they follow.
+# - taps, double taps, holds, and long presses from the dimmer events,
+#   which carry both the code and the gesture, ignoring the `button` events
+#   that come with them, so each press runs once;
+# - releases from the `button` event, with the code of the hold they
+#   follow.
 #
-# The automation keeps no memory between runs, so that code comes from
-# Home Assistant's dimmer entities: the hold's dimmer event, the last
-# before its long press or release (a finger is down all the while),
-# left the code in its entity's `steps` attribute. Should Home Assistant
-# miss the hold's advertisement but hear its release, the release gets
-# the code before it; Bluetooth repeats each advertisement, which makes
-# that rare.
+# The automation keeps no memory between runs, so a release's code comes
+# from Home Assistant's dimmer entities: the hold's dimmer event (or its
+# long press's), the last before the release (a finger is down all the
+# while), left the code in its entity's `steps` attribute. Should Home
+# Assistant miss both but hear the release, the release gets the code
+# before it; Bluetooth repeats each advertisement, which makes that rare.
 blueprint:
   name: ur watch, two layers
   author: Jon Gjengset
@@ -699,19 +699,20 @@ triggers:
 variables:
   watch: !input watch
   # The gesture, as BTHome names it, or '' for the events that only repeat
-  # another's: the `button` event's tap, double tap and hold (their
-  # dimmers carry the code too), and anything else (such as a dimmer
-  # turning left, which the watch never sends).
+  # another's: the `button` event's tap, double tap, hold, and long press
+  # (their dimmers carry the code too), and anything else. A long press
+  # turns the hold's dimmer the other way, so nothing for a hold runs
+  # again.
   gesture: >-
     {{ {
       'dimmer_1/rotate_right': 'press',
       'dimmer_2/rotate_right': 'double_press',
       'dimmer_3/rotate_right': 'hold_press',
-      'button/long_press': 'long_press',
+      'dimmer_3/rotate_left': 'long_press',
       'button/hold_release': 'hold_release',
     }.get(trigger.event.data.event_class ~ '/' ~ trigger.event.data.event_type, '') }}
-  # A dimmer's steps, or, for a long press or release, the steps of the
-  # dimmer entity that changed last: the hold's (see the top of the file).
+  # A dimmer's steps, or, for a release, the steps of the dimmer entity
+  # that changed last: the hold's (see the top of the file).
   code: >-
     {%- if trigger.event.data.event_class.startswith('dimmer_') -%}
       {{ trigger.event.data.event_properties.steps | int(0) }}
