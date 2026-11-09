@@ -36,8 +36,9 @@ on top:
   move, while you sleep, or while it's high, and only once your wrist is
   still, so the LED isn't spent on readings that fail. If your wrist gets
   busy again first (typing, say), it stops and tries at the next still
-  moment. If a still wrist gives none, it tries again within 10 minutes,
-  for up to an hour. To
+  moment. If a still wrist gives none, it tries a brighter LED for a few
+  more seconds (an experiment), and again within 10 minutes, for up to
+  an hour. To
   watch it live (with your steps), open Gadgetbridge's Live activity
   chart: the watch measures continuously while it's open.
 - **A dim glance:** turn your wrist, and the time shows dimly for a few
