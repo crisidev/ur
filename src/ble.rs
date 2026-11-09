@@ -713,9 +713,13 @@ const IDLE_AFTER: Duration = Duration::from_secs(30);
 /// logs show Android itself settling on 112.5–123.8 ms with latency 7 a
 /// few seconds later; asking for latency 2 here (AOSP's
 /// `CONNECTION_PRIORITY_LOW_POWER`) undid that and roughly tripled the
-/// idle connection events. With 7, it's ~1 event a second. Anything from
-/// the phone waits at most ~1 s longer; what the watch sends doesn't wait,
-/// since a peripheral may use any connection event.
+/// idle connection events. With 7, it's ~1 event a second. What the watch
+/// sends doesn't wait, since a peripheral may use any connection event.
+/// What the phone sends does: we only hear it when we listen, so the
+/// first packet of a burst waits up to ~1 s, and, were we to stay that
+/// deaf, each further packet as long again (a 27-byte packet a second, a
+/// notification's line in 6 s). So a write from the phone has us
+/// [`listen`] at every event until the burst is over.
 async fn slow_down(stack: &Stack<'_, Controller, Pool>, conn: &GattConnection<'_, '_, Pool>) {
     let params = RequestedConnParams {
         min_connection_interval: Duration::from_millis(100),
@@ -726,6 +730,38 @@ async fn slow_down(stack: &Stack<'_, Controller, Pool>, conn: &GattConnection<'_
     };
     if let Err(e) = conn.raw().update_connection_params(stack, &params).await {
         warn!("ble: asking for a slower connection failed: {}", e);
+    }
+}
+
+/// How long the phone has been quiet when we stop [`listen`]ing at every
+/// connection event. Gadgetbridge sends a burst's lines (a notification,
+/// the music playing, the alarms) back to back, well within this.
+const BURST_OVER_AFTER: Duration = Duration::from_secs(5);
+
+/// Has the controller wake at every connection event (`on`), or only when
+/// it has something to send or the peripheral latency is up (`!on`, as it
+/// starts). Peripheral latency is what we *may* skip, not what we must, so
+/// this is ours alone to choose: unlike asking the phone for latency 0 (a
+/// connection update, which the phone may refuse and which takes effect
+/// several events later, then another to go back), it costs no radio
+/// traffic, and the very next event hears the phone. At the idle
+/// parameters that's ~9 events a second instead of ~1, for the
+/// [`BURST_OVER_AFTER`] after a write: ~40 events, a fraction of a
+/// millicoulomb, per burst.
+async fn listen(
+    stack: &Stack<'_, Controller, Pool>,
+    conn: &GattConnection<'_, '_, Pool>,
+    on: bool,
+) {
+    use nrf_sdc::vendor::{NordicPeripheralLatencyModeSet, NordicPeripheralLatencyModeSetParams};
+    // SDC_HCI_VS_PERIPHERAL_LATENCY_MODE_DISABLE and _ENABLE.
+    let mode = if on { 0x01 } else { 0x00 };
+    let command = NordicPeripheralLatencyModeSet::new(NordicPeripheralLatencyModeSetParams {
+        handle: conn.raw().handle(),
+        mode,
+    });
+    if let Err(e) = stack.command(command).await {
+        warn!("ble: setting the peripheral latency mode failed: {}", e);
     }
 }
 
@@ -782,6 +818,11 @@ async fn serve(
     // the idle parameters (see `slow_down`).
     let mut last_traffic = Instant::now();
     let mut slowed = false;
+    // Whether a write from the phone has us `listen`ing at every connection
+    // event, until `BURST_OVER_AFTER` after `last_traffic`. Regardless of
+    // `slowed`: Android picks latency 7 on its own, seconds into a
+    // connection.
+    let mut listening = false;
     // Whether the link's security is still to be judged (see
     // `not_paired`), at `last_traffic + SECURITY_GRACE`: while it is,
     // `last_traffic` stays at the connection's start. (It only matters once
@@ -796,8 +837,11 @@ async fn serve(
     let mut uart = link::Watch::default();
 
     let reason = loop {
+        // The end of a burst comes first (it's sooner), then the slowing.
         let idle = async {
-            if phone.get() && !slowed && !update.active() {
+            if listening {
+                Timer::at(last_traffic + BURST_OVER_AFTER).await
+            } else if phone.get() && !slowed && !update.active() {
                 Timer::at(last_traffic + IDLE_AFTER).await
             } else {
                 core::future::pending().await
@@ -844,8 +888,13 @@ async fn serve(
                 continue;
             }
             Either4::Fourth(()) => {
-                slow_down(stack, conn).await;
-                slowed = true;
+                if listening {
+                    listen(stack, conn, false).await;
+                    listening = false;
+                } else {
+                    slow_down(stack, conn).await;
+                    slowed = true;
+                }
                 continue;
             }
             Either4::Third(()) => {
@@ -897,6 +946,8 @@ async fn serve(
                 // A write to one of our subscriptions (CCCDs), logged
                 // below, once the attribute table has taken it.
                 let mut subscription: Option<u16> = None;
+                // A write to the UART: more of the phone's burst may follow.
+                let mut from_phone = false;
                 if let GattEvent::NotAllowed(refused) = &event {
                     // Usually a client that hasn't paired (yet): worth
                     // seeing in a field log, as the client may well carry
@@ -911,6 +962,7 @@ async fn serve(
                     let handle = write.handle();
                     if handle == rx {
                         uart.reached_for_uart(Instant::now().as_millis());
+                        from_phone = true;
                         if !phone.get() {
                             become_phone(phone, gps, &mut gps_deadline, request_gps);
                             // Whatever an earlier connection left half-sent
@@ -949,6 +1001,12 @@ async fn serve(
                 match event.accept() {
                     Ok(reply) => reply.send().await,
                     Err(e) => warn!("ble: failed to reply: {}", e),
+                }
+                // Even a failed one counts: a controller refusing it would
+                // otherwise be asked (and a warning logged) at every write.
+                if from_phone && !listening {
+                    listen(stack, conn, true).await;
+                    listening = true;
                 }
                 if let Some(handle) = subscription {
                     subscribed(server, conn, handle, phone.get());
