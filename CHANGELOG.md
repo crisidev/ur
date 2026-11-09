@@ -25,7 +25,7 @@ missing below were test builds for the dev kit.
 ### Changed
 
 - Move Info to the right of the clock, after the alarms, from the end of the screens below it (5f5acf2)
-- Show the room's temperature on the clock face rather than the watch's own: a nearby room sensor's (underlined at the degree sign), or else, on the wrist, an estimate from the watch's own that calibrates itself against any room sensor it meets at a room's temperature, 10–35 °C (roughly ±2–3 °C once calibrated), or the watch's own off the wrist (e1711da, 2e1f1e1, 13c30c8)
+- Show the room's temperature on the clock face rather than the watch's own: a nearby room sensor's, to the tenth (`21.4°`), or else, to the degree (`21°`), on the wrist, an estimate from the watch's own that calibrates itself against any room sensor it meets at a room's temperature, 10–35 °C (roughly ±2–3 °C once calibrated), or the watch's own off the wrist (e1711da, 2e1f1e1, 13c30c8, 216a6f9)
 - Redesign the clock face's lower half: the date with small seconds under the time, the heart rate and the next alarm or timer in one row, and the day's steps as ten blocks rather than a number: 1,000 a block (×1K) towards a fixed goal of 10,000, then 10,000 a block (×10K) past it, full at 100,000 (the exact count is on Today, a swipe right) (a02d355, 718c01d)
 - Show a faded Bluetooth rune struck through in red on the clock face while the phone isn't connected, rather than a Bluetooth rune while it is; the note for music playing moves to the top left corner in its place (2e1f1e1, a1c8505)
 - Move THEME and LIGHT from Info to the new Settings screen, leaving Info to the watch's status (3f335fe)
