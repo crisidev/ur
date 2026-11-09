@@ -280,9 +280,29 @@ mod tests {
                     storage::load::<1>(storage::key::BRIGHTNESS).await,
                     Some([7])
                 );
-                assert_eq!(storage::load::<3>(storage::key::BRIGHTNESS).await, None);
                 assert!(storage::remove(storage::key::BRIGHTNESS).await);
                 assert_eq!(storage::load::<1>(storage::key::BRIGHTNESS).await, None);
+                // The shorter one is removed, rather than failing at every
+                // boot: as a dev kit had, a 1-byte item where the phone's
+                // alarms take 41. The rest stays.
+                assert!(storage::save(storage::key::PHONE_ALARMS, &[0]).await);
+                assert_eq!(
+                    storage::load::<{ crate::alarm::Phone::BYTES }>(storage::key::PHONE_ALARMS)
+                        .await,
+                    None
+                );
+                assert_eq!(storage::load::<1>(storage::key::PHONE_ALARMS).await, None);
+                assert_eq!(
+                    storage::load(storage::key::ALARMS).await,
+                    Some([(1999 % 251) as u8; crate::alarm::Settings::BYTES])
+                );
+                // And the next one saved under its key is read as usual.
+                let phone_alarms = [3; crate::alarm::Phone::BYTES];
+                assert!(storage::save(storage::key::PHONE_ALARMS, &phone_alarms).await);
+                assert_eq!(
+                    storage::load(storage::key::PHONE_ALARMS).await,
+                    Some(phone_alarms)
+                );
             },
             &mut None,
         );

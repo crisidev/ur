@@ -25,7 +25,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embedded_storage_async::nor_flash::NorFlash;
 use sequential_storage::cache::{Cache, Uncached};
-use sequential_storage::map::{MapConfig, MapStorage, SerializationError};
+use sequential_storage::map::{MapConfig, MapStorage};
 
 /// The internal flash, through MPSL timeslots. In the simulator (`sim/`), which
 /// runs this module too, a model of it, with the same pages and the same
@@ -100,7 +100,8 @@ pub fn init(flash: Flash) {
 }
 
 /// Loads the value stored under `key`, if any. Storage errors (e.g.
-/// corruption) are logged and treated as "nothing stored".
+/// corruption) are logged and treated as "nothing stored"; an item too
+/// short for its key is removed (see [`load_into`]).
 pub async fn load<const N: usize>(key: u8) -> Option<[u8; N]> {
     let mut value = [0; N];
     load_into(key, &mut value).await.then_some(value)
@@ -111,27 +112,48 @@ pub async fn load<const N: usize>(key: u8) -> Option<[u8; N]> {
 /// Not generic over the value's size, unlike `load`: a `fetch_item` per
 /// size was a copy of the map's lookup per size, ~0.7 KB each. As for the
 /// `[u8; N]` that took, a longer item gives its first `value.len()`
-/// bytes, and a shorter one is an error.
+/// bytes, and a shorter one is removed.
+///
+/// Removed, rather than left to fail every boot: no firmware of ours
+/// reads it, as an item's layout only ever changes under a new key (see
+/// [`key`]), so a shorter one is a leftover, of a test build say (a dev
+/// kit had a 1-byte item under [`key::PHONE_ALARMS`], which takes 41).
+/// Left, it read as nothing anyway, and logged a warning at every boot
+/// until the setting was next saved. Only that case: any other error
+/// (reading the flash, or a corrupt page) isn't this item's fault, and
+/// removing it then could lose a good value.
 async fn load_into(key: u8, value: &mut [u8]) -> bool {
     let mut buffer = [0u8; BUFFER];
     let mut store = STORE.lock().await;
     let Store(store) = store.as_mut().expect("storage::init runs at boot");
-    match store.fetch_item::<&[u8]>(&mut buffer, &key).await {
+    let short = match store.fetch_item::<&[u8]>(&mut buffer, &key).await {
         Ok(Some(stored)) if stored.len() >= value.len() => {
             value.copy_from_slice(&stored[..value.len()]);
-            true
+            return true;
         }
-        Ok(None) => false,
-        result => {
-            let e = result
-                .err()
-                .unwrap_or(sequential_storage::Error::SerializationError(
-                    SerializationError::BufferTooSmall,
-                ));
+        Ok(Some(stored)) => stored.len(),
+        Ok(None) => return false,
+        Err(e) => {
             warn!("storage: loading key {} failed: {}", key, e);
-            false
+            return false;
         }
+    };
+    match store.remove_item(&mut buffer, &key).await {
+        Ok(()) => warn!(
+            "storage: key {} held {} bytes, not {}; removed",
+            key,
+            short,
+            value.len()
+        ),
+        Err(e) => warn!(
+            "storage: key {} held {} bytes, not {}; removing failed: {}",
+            key,
+            short,
+            value.len(),
+            e
+        ),
     }
+    false
 }
 
 /// Stores `value` under `key`; returns whether that worked (failures are
