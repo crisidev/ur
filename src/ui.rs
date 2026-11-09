@@ -2327,7 +2327,7 @@ fn render_clock(
     }
     canvas.text(4, NOTE_Y, &date, Color::TEXT_DIM);
     for (digit, x) in [seconds / 10, seconds % 10].into_iter().zip([64, 70]) {
-        let glyph = &font::DIGITS[digit as usize];
+        let glyph = digit_glyph(digit);
         canvas.sprite(x, NOTE_Y - 1, font::DIGIT_W, glyph, 1, Color::ACCENT);
     }
 
@@ -2564,7 +2564,8 @@ fn render_route_glance(canvas: &mut Canvas, status: &Status, step: &route::Step)
 /// seconds matter), "42 MIN" under an hour, "2H05" beyond.
 fn countdown(seconds: i64) -> heapless::String<8> {
     let mut text = heapless::String::new();
-    let seconds = seconds.max(0);
+    // Hours stop at 99, as the editor's two digits do (see `render_editor`).
+    let seconds = seconds.clamp(0, 100 * 3600 - 1);
     let result = if seconds < 10 * 60 {
         write!(text, "{}:{:02}", seconds / 60, seconds % 60)
     } else if seconds < 60 * 60 {
@@ -2937,11 +2938,16 @@ fn render_editor(
     // the right, matching where to swipe.
     let (pair, labels, color) = match left {
         Some(left) if left < 60 * 60 => ((left / 60, left % 60), ("MIN", "SEC"), Color::ACCENT),
-        Some(left) => (
-            (left / 3600, left / 60 % 60),
-            ("HOURS", "MINUTES"),
-            Color::ACCENT,
-        ),
+        // Two digits of hours: a timer is at most `alarm::MAX_TIMER`, but
+        // should more ever be left, it reads 99:59 rather than overflowing.
+        Some(left) => {
+            let left = left.min(100 * 3600 - 1);
+            (
+                (left / 3600, left / 60 % 60),
+                ("HOURS", "MINUTES"),
+                Color::ACCENT,
+            )
+        }
         None => (
             (i64::from(value / 60), i64::from(value % 60)),
             ("HOURS", "MINUTES"),
@@ -3030,9 +3036,16 @@ fn render_find(canvas: &mut Canvas, elapsed: Duration) {
 
 /// One big 5×7 digit at `scale`, with a 1 px drop shadow down and right.
 fn draw_digit(canvas: &mut Canvas, x: i32, y: i32, digit: u64, scale: i32, color: Color) {
-    let glyph = &font::DIGITS[digit as usize];
+    let glyph = digit_glyph(digit);
     canvas.sprite(x + 1, y + 1, font::DIGIT_W, glyph, scale, Color::SHADOW);
     canvas.sprite(x, y, font::DIGIT_W, glyph, scale, color);
+}
+
+/// The 5×7 glyph for `digit`. A value too big for its cell (a bug
+/// upstream) draws as 9 rather than indexing out of range: a wrong digit
+/// on the screen beats a panic and a reset.
+fn digit_glyph(digit: u64) -> &'static [u8; 7] {
+    &font::DIGITS[digit.min(9) as usize]
 }
 
 /// The battery: an icon filled to the charge, and the percentage. While
@@ -3955,7 +3968,12 @@ fn draw_big_number(canvas: &mut Canvas, y: i32, text: &str, color: Color) {
         match c {
             '.' => mark(canvas, 18, 3),
             '-' => mark(canvas, 9, 9),
-            digit => draw_digit(canvas, x, y, u64::from(digit as u8 - b'0'), 3, color),
+            // Anything else isn't a digit either: drawn as one too big
+            // (see `digit_glyph`), rather than underflowing.
+            digit => {
+                let value = digit.to_digit(10).unwrap_or(u32::MAX);
+                draw_digit(canvas, x, y, u64::from(value), 3, color)
+            }
         }
         x += advance(c);
     }
