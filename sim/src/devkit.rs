@@ -166,9 +166,15 @@ impl DevKit {
 
     /// Runs an esprobe command, a few times over if the probe's bridge
     /// times out now and then (it does), or its USB serial device drops
-    /// out for a second (it has): everything here reads, or writes a word
-    /// that's as good written twice. Returns what it printed.
+    /// out for a second (it has). Only for what's as good done twice:
+    /// reads, and writes of what's there already after the first (not the
+    /// dev kit's input word, which it clears as it takes it: see
+    /// [`Self::inject`]). Returns what it printed.
     fn esprobe(args: &[&str]) -> Result<Vec<u8>, String> {
+        Self::esprobe_tries(args, 5)
+    }
+
+    fn esprobe_tries(args: &[&str], most: u32) -> Result<Vec<u8>, String> {
         let mut tries = 0;
         loop {
             let started = StdInstant::now();
@@ -184,13 +190,18 @@ impl DevKit {
                 return Ok(output.stdout);
             }
             tries += 1;
-            if tries == 5 {
+            if tries == most {
                 return Err(format!(
                     "esprobe {}: {}",
                     args.join(" "),
                     String::from_utf8_lossy(&output.stderr).trim()
                 ));
             }
+            eprintln!(
+                "  (esprobe {} failed; again: {})",
+                args.first().unwrap_or(&""),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
             // 0.2, 0.4, 0.8, 1.6 s: a USB device takes a moment to return.
             std::thread::sleep(StdDuration::from_millis(200 << (tries - 1)));
         }
@@ -411,8 +422,33 @@ impl DevKit {
     fn inject(&self, kind: u8, x: u8, y: u8, extra: u8) -> Result<(), String> {
         self.wait_for_input_taken()?;
         let word = u32::from_le_bytes([kind, x, y, extra]);
-        self.write_word(self.input, word)?;
-        self.wait_for_input_taken()
+        let logged = self.head()?.written;
+        let write = [
+            "core",
+            "write",
+            &format!("{:#x}", self.input),
+            &format!("{word:#x}"),
+        ];
+        for _ in 0..5 {
+            // Once at a time: the bridge can report a failure after the
+            // core has the word, and the dev kit takes it (within its
+            // 100 ms poll) and clears it, so a blind retry is a second
+            // input. (One went in twice, a second apart: seed 4010.)
+            if Self::esprobe_tries(&write, 1).is_ok() {
+                return self.wait_for_input_taken();
+            }
+            // Long enough for the dev kit to take it and log it, even
+            // behind a whole-screen redraw (~0.5 s).
+            std::thread::sleep(StdDuration::from_millis(600));
+            // Still there (not taken yet), or taken (and logged: every input
+            // is, bar a finger's press or move, which is as good twice).
+            if self.read_words(self.input, 1)?[0] != 0 || self.head()?.written != logged {
+                eprintln!("  (esprobe failed writing the input, but it got there)");
+                return self.wait_for_input_taken();
+            }
+            eprintln!("  (esprobe failed writing the input; again)");
+        }
+        Err("esprobe: writing the dev kit's input failed five times".into())
     }
 
     fn wait_for_input_taken(&self) -> Result<(), String> {
