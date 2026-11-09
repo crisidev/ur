@@ -1,6 +1,8 @@
 """Decodes the advertisements `cargo run --release` prints with Home
 Assistant's own BTHome parser (`bthome-ble`), and checks it fires what
-docs/buttons.md says, for either layout of the grid, with the key verified:
+docs/buttons.md says, for either layout of the grid, with the key verified;
+then feeds them all, in order, through one parser, as Home Assistant does
+(its replay and repeat checks span advertisements of every kind):
 
     cargo run --release | uv run --with bthome-ble python -I check.py
 
@@ -92,6 +94,8 @@ def main() -> None:
     # advertisement would linger in the six buttons'. (The battery alone
     # is its own "layout".)
     parsers = {}
+    # What each advertisement should fire, for the pass below.
+    expectations = []
     dimmer = {"press": "dimmer_1", "double_press": "dimmer_2", "hold_press": "dimmer_3"}
     for i, (layout, code, gesture, advert) in enumerate(adverts):
         if layout not in parsers:
@@ -99,6 +103,7 @@ def main() -> None:
         events, battery = decode(parsers[layout], address, advert, 1000.0 + 10 * i)
         print(f"{len(advert)} B: {events}, battery {battery}")
         if code is None:
+            expectations.append(None)
             continue
         if layout == "battery":
             # The battery alone: no events.
@@ -117,6 +122,20 @@ def main() -> None:
             # The battery rides along (`main` sends 82%; a watch, its own).
             assert battery == [82] or (from_log and len(battery) == 1), battery
         assert events == expected, (events, expected)
+        expectations.append(expected)
+    # Then all of them through one parser, in order, as Home Assistant has
+    # one per device: the battery's own advertisements between the
+    # presses, a second apart (so its packet id check, for 4 s, is on),
+    # each heard twice, as a burst's repeats are.
+    ha = BTHomeBluetoothDeviceData(bindkey=bytes.fromhex(key))
+    at = 2000.0
+    for (_, _, _, advert), expected in zip(adverts, expectations):
+        events, _ = decode(ha, address, advert, at)
+        if expected is not None:
+            assert events == expected, ("one parser", events, expected)
+        repeat, _ = decode(ha, address, advert, at + 0.02)
+        assert repeat == {}, ("a repeat fired", repeat)
+        at += 1.0
     print("ok")
 
 

@@ -59,6 +59,12 @@ fn main() {
         ]
         .map(|gesture| (Layout::Six, code, gesture))
     });
+    // The battery on its own first, as six buttons send it soon after
+    // they're turned on: 82%. Then the presses, and 77%, with the counter
+    // only ever going up, as on the watch, so one parser can take them all
+    // in order, as Home Assistant's does.
+    let (data, len) = bthome::advert(None, Layout::Six, 82, 255, &identity);
+    println!("battery 82 - {}", hex(&data[..len]));
     for (counter, (layout, code, gesture)) in (256..).zip(two.into_iter().chain(six)) {
         let (data, len) = bthome::advert(
             Some(Press { code, gesture }),
@@ -73,11 +79,8 @@ fn main() {
         };
         println!("{layout} {code} {} {}", gesture.name(), hex(&data[..len]));
     }
-    // The battery on its own, as six buttons send it: 82%, then 77%.
-    for (counter, battery) in [(400, 82), (401, 77)] {
-        let (data, len) = bthome::advert(None, Layout::Six, battery, counter, &identity);
-        println!("battery {battery} - {}", hex(&data[..len]));
-    }
+    let (data, len) = bthome::advert(None, Layout::Six, 77, 400, &identity);
+    println!("battery 77 - {}", hex(&data[..len]));
 }
 
 fn hex(bytes: &[u8]) -> String {
