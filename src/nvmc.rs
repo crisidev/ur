@@ -18,21 +18,24 @@
 //!   borrowed and panics. On a dev kit saving back to back, within ~70
 //!   saves. Here, the callback and the driver never use the state at the
 //!   same time instead (see [`SLOT`]), so there's nothing to lock.
-//! - It wakes the waiting future from the slot's interrupt, which our
-//!   critical sections don't mask (they're MPSL's, which leave its radio
-//!   interrupts running), so the wake can race the executor's run queue.
-//!   On the dev kit, a save once never finished. Here, MPSL's signal that
-//!   the session went idle, which comes in thread mode, wakes it.
 //! - It books 85 ms (+ 1 ms) for a page erase: the nRF52840's figure. The
 //!   nRF52832's product specification allows up to 89.7 ms (see
 //!   [`ERASE_PAGE_US`]).
+//!
+//! With nrf-mpsl's driver, a save on the dev kit also once never finished.
+//! That was first blamed on its waking the future from the slot's
+//! interrupt, but embassy-executor's run queue is lock-free on this core,
+//! so a wake from any priority is safe; the hang is unexplained. Here,
+//! MPSL's signal that the session went idle, which comes in thread mode,
+//! wakes the future, which is safe either way.
 //!
 //! A debugger can still make a slot overrun: probe-rs halts the core for
 //! ~20 ms each time a session (an `esprobe` command) starts and ends, and
 //! a halt in a slot outlasts it. A watch without a probe never halts.
 //!
-//! TODO: report these upstream (nrf-sdc's nrf-mpsl), and go back to its
-//! driver once fixed.
+//! TODO: go back to nrf-mpsl's driver once a release has the lock fix
+//! (on its `main` since alexmoon/nrf-sdc#124) and the nRF52832's erase
+//! time (docs/upstream/).
 
 use core::cell::{RefCell, UnsafeCell};
 use core::future::poll_fn;
