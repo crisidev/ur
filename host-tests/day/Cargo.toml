@@ -9,3 +9,10 @@ publish = false
 [workspace]
 
 [dependencies]
+
+# `cargo kani` builds with `--cfg kani`, for the proofs in `src/main.rs`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[dev-dependencies]
+bolero = "0.13.7"

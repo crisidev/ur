@@ -354,3 +354,289 @@ mod steps_today {
         assert_eq!(watch.steps(), 0);
     }
 }
+
+/// The whole day against a plainer sum of the same samples, for random
+/// days: what the proofs below leave out (see
+/// `proofs::a_day_rests_exactly_when_an_hour_has_readings_enough`).
+/// `cargo test` tries a few hundred days; `cargo bolero test
+/// properties::any_day_rests_within_its_range` fuzzes for more.
+#[cfg(test)]
+mod properties {
+    use super::day::*;
+
+    /// Any samples, each minute at most once, as `activity::today` adds
+    /// them (some beyond the day, which don't count): the day's sums are
+    /// what adding them up by hand gives, and the resting heart rate, the
+    /// lowest hourly average, lies within the day's range.
+    #[test]
+    fn any_day_rests_within_its_range() {
+        bolero::check!()
+            .with_type::<Vec<(u16, u16, u8)>>()
+            .for_each(|samples| {
+                let mut day = Day::default();
+                let mut seen = [false; HOURS * 60 + 60];
+                // Each hour's steps and readings, by hand.
+                let mut steps = [0u32; HOURS];
+                let mut readings: [Vec<u32>; HOURS] = Default::default();
+                for &(minute, stepped, heart_rate) in samples {
+                    let minute = usize::from(minute) % seen.len();
+                    if core::mem::replace(&mut seen[minute], true) {
+                        continue;
+                    }
+                    day.add(minute, stepped, heart_rate);
+                    if minute < HOURS * 60 {
+                        steps[minute / 60] += u32::from(stepped);
+                        if heart_rate > 0 {
+                            readings[minute / 60].push(heart_rate.into());
+                        }
+                    }
+                }
+
+                let most = steps.iter().max().expect("24 hours");
+                assert_eq!(u32::from(day.most_steps()), (*most).min(u16::MAX.into()));
+
+                let all = || readings.iter().flatten().copied();
+                let range = all().min().zip(all().max());
+                assert_eq!(day.heart_range().map(|(l, h)| (l.into(), h.into())), range);
+
+                let resting = readings
+                    .iter()
+                    .filter(|hour| hour.len() >= usize::from(RESTING_READINGS))
+                    .map(|hour| hour.iter().sum::<u32>() / hour.len() as u32)
+                    .min();
+                assert_eq!(day.resting().map(u32::from), resting);
+                if let (Some(resting), Some((low, high))) = (resting, range) {
+                    assert!(low <= resting && resting <= high);
+                }
+            });
+    }
+}
+
+/// Proofs about a day's sums, for every sample and every day, where the
+/// tests above add up chosen ones. `cargo kani` runs them (one at a time
+/// with `--harness`: CBMC takes memory).
+///
+/// They lean on what `activity::today` does: it builds a day afresh from
+/// the history, a minute at a time, each once. So no hour gets more than
+/// 60 readings, which is what `Hour::heart_sum`'s docs count on; see
+/// `more_readings_than_minutes_would_misreport` for why it matters.
+#[cfg(kani)]
+mod proofs {
+    use super::day::*;
+
+    /// The most heart rate readings an hour gets: one a minute.
+    const READINGS: u8 = 60;
+
+    /// Whether an hour is one that adding up at most [`READINGS`]
+    /// readings can give: none and nothing to say of them, or a lowest no
+    /// higher than the highest, and a sum between that many of each.
+    fn sound(hour: &Hour) -> bool {
+        let count = u16::from(hour.heart_count);
+        if count == 0 {
+            return hour.heart_sum == 0 && hour.heart_min == 0 && hour.heart_max == 0;
+        }
+        let (min, max) = (u16::from(hour.heart_min), u16::from(hour.heart_max));
+        hour.heart_count <= READINGS
+            && 1 <= min
+            && min <= max
+            && min * count <= hour.heart_sum
+            && hour.heart_sum <= max * count
+    }
+
+    /// Any hour at all, sound or not.
+    fn any_hour() -> Hour {
+        Hour {
+            steps: kani::any(),
+            heart_min: kani::any(),
+            heart_max: kani::any(),
+            heart_sum: kani::any(),
+            heart_count: kani::any(),
+        }
+    }
+
+    fn any_day() -> Day {
+        any_morning(HOURS)
+    }
+
+    /// Any day with nothing after its first `hours` hours.
+    fn any_morning(hours: usize) -> Day {
+        let mut day = Day::default();
+        for hour in &mut day.hours[..hours] {
+            *hour = any_hour();
+        }
+        day
+    }
+
+    /// Any sample, for any minute (in the day or not), added to any day:
+    /// nothing panics or overflows, a minute outside the day changes
+    /// nothing, and one inside changes its own hour alone. If that hour
+    /// was sound with room for a reading, it still is, with the steps
+    /// added (saturating) and the reading, if there was one, counted
+    /// once: so by induction every day `activity::today` builds is sound.
+    #[kani::proof]
+    #[kani::unwind(25)]
+    fn a_minute_goes_into_its_hour_alone() {
+        let before = any_day();
+        let (minute, steps, heart_rate): (usize, u16, u8) = kani::any();
+        let mut day = before;
+        day.add(minute, steps, heart_rate);
+
+        if minute >= HOURS * 60 {
+            assert_eq!(day, before);
+            return;
+        }
+        let other: usize = kani::any();
+        kani::assume(other < HOURS && other != minute / 60);
+        assert_eq!(day.hours[other], before.hours[other]);
+
+        let (was, is) = (before.hours[minute / 60], day.hours[minute / 60]);
+        assert_eq!(is.steps, was.steps.saturating_add(steps));
+        if heart_rate == 0 {
+            // Not measured: the hour's heart rate is as it was.
+            assert_eq!(Hour { steps: 0, ..is }, Hour { steps: 0, ..was });
+        } else if sound(&was) && was.heart_count < READINGS {
+            assert!(sound(&is));
+            assert_eq!(is.heart_count, was.heart_count + 1);
+            assert_eq!(is.heart_sum, was.heart_sum + u16::from(heart_rate));
+            assert!(is.heart_min <= heart_rate && heart_rate <= is.heart_max);
+            // The first reading is both ends; later ones only widen them.
+            if was.heart_count == 0 {
+                assert_eq!((is.heart_min, is.heart_max), (heart_rate, heart_rate));
+            } else {
+                assert!(is.heart_min <= was.heart_min && was.heart_max <= is.heart_max);
+                assert!(is.heart_min == was.heart_min || is.heart_min == heart_rate);
+                assert!(is.heart_max == was.heart_max || is.heart_max == heart_rate);
+            }
+        }
+    }
+
+    /// One hour of readings, any sound one, in an otherwise empty day: its average is the resting heart rate exactly when it
+    /// has [`RESTING_READINGS`], lies between its lowest and highest
+    /// reading (an average of readings can't be lower or higher than
+    /// all of them), and so fits the `u8` it's cut down to.
+    /// `ui::render_today` prints it into three characters.
+    ///
+    /// In the day's first hour, rather than any: CBMC then knows the
+    /// other hours are empty, and is done in seconds, where with the
+    /// hour unknown it didn't finish in the minutes it was given.
+    #[kani::proof]
+    #[kani::unwind(25)]
+    fn an_hours_average_is_between_its_ends() {
+        let hour = any_hour();
+        kani::assume(sound(&hour));
+        let mut day = Day::default();
+        day.hours[0] = hour;
+
+        match day.resting() {
+            Some(resting) => {
+                assert!(hour.heart_count >= RESTING_READINGS);
+                assert!(hour.heart_min <= resting && resting <= hour.heart_max);
+                let average = hour.heart_sum / u16::from(hour.heart_count);
+                assert_eq!(u16::from(resting), average);
+            }
+            None => assert!(hour.heart_count < RESTING_READINGS),
+        }
+    }
+
+    /// For a day whose hours each have a lowest reading no higher than
+    /// their highest, if any (as sound hours do), nothing panics or
+    /// overflows, and:
+    ///
+    /// - the range is the lowest and highest of the hours measured, lowest
+    ///   first, and there is one exactly when any hour was measured
+    ///   (`ui::render_today` draws each hour's bar from its `heart_min`
+    ///   to its `heart_max` on a scale from the range, so a bar never
+    ///   leaves the chart);
+    /// - the most steps is some hour's, and no hour has more.
+    fn has_its_range_and_its_busiest_hour(day: Day) {
+        let most = day.most_steps();
+        let range = day.heart_range();
+        let (mut measured, mut busiest, mut none_busier) = (false, false, true);
+        let (mut lowest, mut highest, mut within) = (false, false, true);
+        for hour in &day.hours {
+            busiest |= hour.steps == most;
+            none_busier &= hour.steps <= most;
+            if hour.heart_count > 0 {
+                kani::assume(1 <= hour.heart_min && hour.heart_min <= hour.heart_max);
+                measured = true;
+                if let Some((low, high)) = range {
+                    lowest |= hour.heart_min == low;
+                    highest |= hour.heart_max == high;
+                    within &= low <= hour.heart_min && hour.heart_max <= high;
+                }
+            }
+        }
+
+        assert!(busiest && none_busier);
+        assert_eq!(range.is_some(), measured);
+        if let Some((low, high)) = range {
+            assert!(1 <= low && low <= high);
+            assert!(lowest && highest && within);
+        }
+    }
+
+    /// [`has_its_range_and_its_busiest_hour`], for any day with nothing
+    /// after 6 am: seconds for CBMC, where a whole day takes it minutes.
+    #[kani::proof]
+    #[kani::unwind(25)]
+    fn a_morning_has_its_range_and_its_busiest_hour() {
+        has_its_range_and_its_busiest_hour(any_morning(6));
+    }
+
+    /// [`has_its_range_and_its_busiest_hour`], for any day at all.
+    #[kani::proof]
+    #[kani::unwind(25)]
+    fn a_day_has_its_range_and_its_busiest_hour() {
+        has_its_range_and_its_busiest_hour(any_day());
+    }
+
+    /// For any day at all, sound or not (the simulator makes them from
+    /// bytes a dev kit sent, see `compare::Pass::day`), working out the
+    /// resting heart rate doesn't panic, overflow or divide by zero, and
+    /// there is one exactly when some hour has [`RESTING_READINGS`].
+    ///
+    /// That it's the lowest of those hours' averages is left to the
+    /// property test (`tests::any_day_rests_within_its_range`): here,
+    /// CBMC would have to show its division and `Hour::resting`'s agree,
+    /// hour by hour, and hadn't for a three-hour day in two minutes (nor
+    /// for a whole one in 15).
+    #[kani::proof]
+    #[kani::unwind(25)]
+    fn a_day_rests_exactly_when_an_hour_has_readings_enough() {
+        let day = any_day();
+        let resting = day.resting();
+        let mut rested = false;
+        for hour in &day.hours {
+            rested |= hour.heart_count >= RESTING_READINGS;
+        }
+        assert_eq!(resting.is_some(), rested);
+    }
+
+    /// What one reading a minute is worth: an hour given more than 255
+    /// (its count's most) keeps adding to its sum but stops counting, so
+    /// its average climbs past every reading, and past 255 wraps round:
+    /// 256 readings of 255 BPM rest at 0. This proof is
+    /// [`an_hours_average_is_between_its_ends`]'s claim for an hour of
+    /// more readings, and is expected to fail.
+    ///
+    /// Nothing does that today (see the module docs); it's here so that
+    /// whoever feeds a `Day` differently finds out.
+    #[kani::proof]
+    #[kani::should_panic]
+    #[kani::unwind(25)]
+    fn more_readings_than_minutes_would_misreport() {
+        let mut day = Day::default();
+        // An hour that has had 255 readings of any one rate, soundly.
+        let rate: u8 = kani::any();
+        kani::assume(rate > 0);
+        day.hours[0] = Hour {
+            steps: 0,
+            heart_min: rate,
+            heart_max: rate,
+            heart_sum: u16::from(rate) * 255,
+            heart_count: 255,
+        };
+        day.add(0, 0, rate);
+        assert_eq!(day.resting(), Some(rate));
+    }
+}
