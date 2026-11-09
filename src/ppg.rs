@@ -78,8 +78,18 @@ const MAX_LAG: usize = (60.0 * SAMPLE_HZ / MIN_BPM) as usize + 1;
 /// only sharpen its shape and don't help find the period. (These hold at
 /// the nominal sample rate; the sensor's real rate moves them by a few
 /// percent, which doesn't matter.)
+// Only the test designs from these; the filters hold its results.
+#[cfg_attr(not(test), allow(dead_code))]
 const HIGHPASS_HZ: f32 = 0.5;
+#[cfg_attr(not(test), allow(dead_code))]
 const LOWPASS_HZ: f32 = 4.0;
+
+/// `Biquad::design(HIGHPASS_HZ, true)` and `(LOWPASS_HZ, false)`, as the
+/// test below checks.
+const HIGHPASS: Biquad =
+    Biquad::from_bits([0x3f6b8974, 0xbfeb8974, 0x3f6b8974, 0xbfeab7c0, 0x3f58b651]);
+const LOWPASS: Biquad =
+    Biquad::from_bits([0x3e0640c4, 0x3e8640c4, 0x3e0640c4, 0xbf3f6f1c, 0x3e8b5fc1]);
 
 /// How much the signal's amplitude may vary across the window: the ratio
 /// of the loudest to the quietest quarter. A pulse's amplitude wanders
@@ -154,7 +164,12 @@ struct Biquad {
 }
 
 impl Biquad {
-    fn new(cutoff_hz: f32, highpass: bool) -> Self {
+    /// The cookbook's section for `cutoff_hz`. Only for checking
+    /// [`HIGHPASS`] and [`LOWPASS`], which hold its results: on the watch,
+    /// `libm`'s `sinf` and `cosf` compute in `f64`, whose soft-float
+    /// routines (the M4F's FPU is single precision) cost ~3 KB of flash.
+    #[cfg(test)]
+    fn design(cutoff_hz: f32, highpass: bool) -> Self {
         let w0 = 2.0 * core::f32::consts::PI * cutoff_hz / SAMPLE_HZ;
         let cos = libm::cosf(w0);
         let alpha = libm::sinf(w0) / (2.0 * core::f32::consts::FRAC_1_SQRT_2);
@@ -170,6 +185,21 @@ impl Biquad {
             b2: b0 / a0,
             a1: -2.0 * cos / a0,
             a2: (1.0 - alpha) / a0,
+            z1: 0.0,
+            z2: 0.0,
+        }
+    }
+
+    /// A section with coefficients `[b0, b1, b2, a1, a2]`, as their bits
+    /// (exact, unlike decimal literals).
+    const fn from_bits(bits: [u32; 5]) -> Self {
+        let [b0, b1, b2, a1, a2] = bits;
+        Self {
+            b0: f32::from_bits(b0),
+            b1: f32::from_bits(b1),
+            b2: f32::from_bits(b2),
+            a1: f32::from_bits(a1),
+            a2: f32::from_bits(a2),
             z1: 0.0,
             z2: 0.0,
         }
@@ -271,8 +301,8 @@ impl Default for Ppg {
 impl Ppg {
     pub fn new() -> Self {
         Self {
-            highpass: [Biquad::new(HIGHPASS_HZ, true); 2],
-            lowpass: Biquad::new(LOWPASS_HZ, false),
+            highpass: [HIGHPASS; 2],
+            lowpass: LOWPASS,
             offset: None,
             window: [0.0; WINDOW],
             next: 0,
@@ -639,5 +669,24 @@ impl Consensus {
             return None;
         }
         Some(libm::roundf(sorted[AGREEING / 2]) as u8)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_filters_are_the_cookbooks() {
+        let bits = |s: Biquad| [s.b0, s.b1, s.b2, s.a1, s.a2].map(f32::to_bits);
+        let designed = [
+            bits(Biquad::design(HIGHPASS_HZ, true)),
+            bits(Biquad::design(LOWPASS_HZ, false)),
+        ];
+        assert_eq!(
+            [bits(HIGHPASS), bits(LOWPASS)],
+            designed,
+            "{designed:#010x?}"
+        );
     }
 }

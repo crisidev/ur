@@ -11,7 +11,7 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::{Duration, Instant};
-use libm::{acosf, ceil, cosf, floor, sinf, sqrtf};
+use libm::{acosf, sqrtf};
 
 use crate::clock::{self, DateTime};
 
@@ -45,10 +45,10 @@ impl Location {
         })
     }
 
-    fn degrees(self) -> (f64, f64) {
+    fn degrees(self) -> (f32, f32) {
         (
-            f64::from(self.latitude_micro) / 1e6,
-            f64::from(self.longitude_micro) / 1e6,
+            self.latitude_micro as f32 / 1e6,
+            self.longitude_micro as f32 / 1e6,
         )
     }
 
@@ -276,42 +276,50 @@ pub fn is_daytime() -> bool {
 /// minute or two at mid latitudes: checked against published Oslo times for
 /// the solstices (03:53/22:43, 09:18/15:12).
 ///
-/// The dates need `f64` (a Julian date's 2.4 million days leave an `f32`
-/// a quarter-day resolution), but the trigonometry is in `f32`: its
-/// arguments are small angles, and its errors (around 1e-7) move the times
-/// by milliseconds. The `f64` versions, with `fmod` (see `wrap`), cost
-/// 7.5 KB of flash.
+/// All in `f32` and integers: the M4F's FPU does single precision only,
+/// and `f64`'s soft-float routines (with `libm`'s `sinf` and `cosf`, which
+/// compute in `f64` too) cost ~8 KB of flash. A Julian date's 2.4 million
+/// days would leave an `f32` a quarter-day resolution, so the whole days
+/// stay integers: the mean anomaly's daily turn is taken modulo 360° in
+/// integer hundred-millionths of a degree (exact), and they cancel out of
+/// the time of day. What's left in `f32` is under a day, or under a few
+/// turns of angle: the times come out within ~0.02 s of the `f64`
+/// equation's (which itself is off by a minute or two).
 ///
 /// TODO: cache per (date, location, offset) if this ever shows up in
-/// profiles; it's a few dozen soft-float operations, once per frame.
+/// profiles; it's a few dozen float operations, once per frame.
 fn compute_sun(today: &DateTime, location: Location, offset_minutes: i16) -> Sun {
     let (latitude, longitude) = location.degrees();
-    let sin_deg = |d: f64| f64::from(sinf(d.to_radians() as f32));
-    let cos_deg = |d: f64| f64::from(cosf(d.to_radians() as f32));
 
-    // Days since the J2000 epoch, at local solar noon of today's date.
-    let days_since_1970 = today.days_since_epoch() as f64;
-    let julian_noon = days_since_1970 + 2_440_588.0;
-    let n = ceil(julian_noon - 2_451_545.0 + 0.0008);
-    let mean_solar_time = n - longitude / 360.0;
+    // Days since the J2000 epoch, at local solar noon of today's date:
+    // the equation's `ceil(julian_noon - 2_451_545 + 0.0008)`, where
+    // `julian_noon` is the date's whole Julian day number,
+    // `days_since_epoch + 2_440_588`. Then the mean solar time, `n` days
+    // plus the part of one that the longitude takes.
+    let n = today.days_since_epoch() - 10_956;
+    let part = -longitude / 360.0;
 
-    // Where the sun is along its (elliptical) path, and the solar transit
-    // (local noon) as a Julian date.
-    let anomaly = wrap(357.5291 + 0.985_600_28 * mean_solar_time, 360.0);
+    // Where the sun is along its (elliptical) path: the mean anomaly,
+    // 357.5291° + 0.98560028° a day, the whole days' share exactly (in
+    // 1e-8 degrees, `n` would have to pass 9e10 to overflow).
+    let whole_days = (35_752_910_000 + 98_560_028 * n).rem_euclid(36_000_000_000) as f32 / 1e8;
+    // (0.98560028 to an `f32`: the part is under a day, so that rounding
+    // is under 1e-8°.)
+    let anomaly = wrap(whole_days + 0.985_600_3 * part, 360.0);
     let center =
         1.9148 * sin_deg(anomaly) + 0.02 * sin_deg(2.0 * anomaly) + 0.0003 * sin_deg(3.0 * anomaly);
     let ecliptic_longitude = wrap(anomaly + center + 180.0 + 102.9372, 360.0);
-    let transit = 2_451_545.0 + mean_solar_time + 0.0053 * sin_deg(anomaly)
-        - 0.0069 * sin_deg(2.0 * ecliptic_longitude);
+    // The solar transit (local noon), in days after the `n`th's J2000 noon.
+    let transit = part + 0.0053 * sin_deg(anomaly) - 0.0069 * sin_deg(2.0 * ecliptic_longitude);
 
     // The hour angle at which the sun's upper edge crosses the horizon,
     // including atmospheric refraction (the −0.833°).
     let sin_declination = sin_deg(ecliptic_longitude) * sin_deg(23.4397);
     // cos(asin(x)); the declination is within ±23.44°, so its cosine is
     // positive.
-    let cos_declination = f64::from(sqrtf(1.0 - (sin_declination * sin_declination) as f32));
+    let cos_declination = sqrtf(1.0 - sin_declination * sin_declination);
     let cos_hour_angle = (sin_deg(-0.833) - sin_deg(latitude) * sin_declination)
-        / (cos_deg(latitude) * cos_declination);
+        / (sin_deg(90.0 - latitude) * cos_declination);
     if cos_hour_angle > 1.0 {
         return Sun {
             sunrise: 0,
@@ -324,11 +332,15 @@ fn compute_sun(today: &DateTime, location: Location, offset_minutes: i16) -> Sun
             sunset: 24 * 60,
         };
     }
-    let hour_angle = f64::from(acosf(cos_hour_angle as f32)).to_degrees();
+    let hour_angle = acosf(cos_hour_angle).to_degrees();
 
-    let local_minute = |julian: f64| {
-        let unix_seconds = (julian - 2_440_587.5) * 86_400.0 + f64::from(offset_minutes) * 60.0;
-        (wrap(unix_seconds, 86_400.0) / 60.0) as u16
+    // A Julian date's days start at noon, and J2000's whole days are
+    // whole days after the Unix epoch's (2_451_545 - 2_440_587.5 =
+    // 10_957.5), so only the half day and the parts are left of the time
+    // of day.
+    let local_minute = |days: f32| {
+        let seconds = (0.5 + days) * 86_400.0 + f32::from(offset_minutes) * 60.0;
+        (wrap(seconds, 86_400.0) / 60.0) as u16
     };
     Sun {
         sunrise: local_minute(transit - hour_angle / 360.0),
@@ -336,17 +348,79 @@ fn compute_sun(today: &DateTime, location: Location, offset_minutes: i16) -> Sun
     }
 }
 
-/// `x` modulo `m`, in `0..m` (`f64::rem_euclid` needs `std`, and `fmod` is
-/// big). For our `x`, at most a few billion, the quotient's floor and its
-/// product with `m` are exact; only the division can round, which the end
-/// corrects.
-fn wrap(x: f64, m: f64) -> f64 {
-    let r = x - m * floor(x / m);
-    if r < 0.0 {
-        r + m
-    } else if r >= m {
-        r - m
-    } else {
-        r
+/// `x` modulo `m`, in `0..m`, for `x` within a few `m` of it (`fmodf`'s
+/// generality costs flash).
+fn wrap(mut x: f32, m: f32) -> f32 {
+    while x < 0.0 {
+        x += m;
+    }
+    while x >= m {
+        x -= m;
+    }
+    x
+}
+
+/// The sine of an angle in degrees, within a few turns of zero, to an
+/// `f32`'s precision; [`compute_sun`] says why not `libm`'s.
+fn sin_deg(degrees: f32) -> f32 {
+    // Into −180°..180°, then −90°..90° by sin(180° − x) = sin(x). Every
+    // step is exact: each subtracts floats within a factor of two of each
+    // other (Sterbenz's lemma), so an angle of a few turns loses nothing.
+    let turns = (degrees / 360.0) as i32 as f32;
+    let mut x = degrees - 360.0 * turns;
+    if x > 180.0 {
+        x -= 360.0;
+    } else if x < -180.0 {
+        x += 360.0;
+    }
+    if x > 90.0 {
+        x = 180.0 - x;
+    } else if x < -90.0 {
+        x = -180.0 - x;
+    }
+    // Taylor's series to x¹¹, whose remainder within ±π/2 is under 6e-8.
+    let r = x.to_radians();
+    let r2 = r * r;
+    // r (1 − r²/(2·3) (1 − r²/(4·5) (… (1 − r²/(10·11))))), inside out.
+    let mut factor = 1.0;
+    for k in [11.0f32, 9.0, 7.0, 5.0, 3.0] {
+        factor = 1.0 - r2 / (k * (k - 1.0)) * factor;
+    }
+    r * factor
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Published Oslo times for the 2025 solstices (in summer time, then
+    /// winter time), which the `f64` equation this replaced also gave.
+    #[test]
+    fn oslo_at_the_solstices() {
+        let date = |month, day| DateTime {
+            year: 2025,
+            month,
+            day,
+            hour: 12,
+            minute: 0,
+            second: 0,
+        };
+        let summer = compute_sun(&date(6, 21), HOME, 120);
+        assert_eq!((summer.sunrise, summer.sunset), (3 * 60 + 53, 22 * 60 + 43));
+        let winter = compute_sun(&date(12, 21), HOME, 60);
+        assert_eq!((winter.sunrise, winter.sunset), (9 * 60 + 18, 15 * 60 + 12));
+    }
+
+    /// To a few `f32` steps, for every angle the equation takes.
+    #[test]
+    fn sine_in_degrees() {
+        for tenth in -10_800..=10_800 {
+            let degrees = tenth as f32 / 10.0;
+            let expected = (f64::from(degrees)).to_radians().sin();
+            assert!(
+                (f64::from(sin_deg(degrees)) - expected).abs() < 3e-7,
+                "{degrees}"
+            );
+        }
     }
 }
