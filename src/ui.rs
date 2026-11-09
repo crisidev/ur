@@ -63,7 +63,8 @@
 //!   for how they become presses). While a press waits to see whether
 //!   more follows, its buttons stay lit; once sent, the last one shows the
 //!   code, in the "good" colour (or "bad", if the phone was all it could
-//!   go to, and it wasn't connected), with a buzz. A swipe, or the
+//!   go to, and it wasn't connected, or it couldn't go to Home Assistant,
+//!   which a banner adds, "SEE FAQ B05"), with a buzz. A swipe, or the
 //!   button, cancels what's waiting.
 //! - Screens that take over (the alarm editor, a ringing alarm, a call,
 //!   pairing, an update, the storage prompt) get every touch: swipes there
@@ -330,6 +331,9 @@ enum Shows {
     IntentsOff,
     /// That an update was refused (see [`PhoneEvent::UpdateRefused`]).
     UpdateRefused,
+    /// That a grid press couldn't go to Home Assistant (see
+    /// [`App::ha_unsent`]).
+    Unsent,
 }
 
 /// How many notifications the history above the clock keeps. Each costs
@@ -822,6 +826,7 @@ impl App {
             Shows::TextAsBitmaps => ("TEXT AS BITMAPS", "SEE FAQ N02"),
             Shows::IntentsOff => ("INTENTS OFF", "SEE FAQ C04"),
             Shows::UpdateRefused => ("UPDATE REFUSED", "SEE FAQ U02"),
+            Shows::Unsent => ("BTHOME NOT SENT", "SEE FAQ B05"),
         };
         app.clear();
         who.clear();
@@ -1209,7 +1214,9 @@ impl App {
             return;
         }
         // Somewhere it could go. (Home Assistant can't say whether it
-        // heard; Gadgetbridge only says if it didn't pass it on.)
+        // heard; Gadgetbridge only says if it didn't pass it on. The
+        // watch can say it couldn't send it at all, once it's tried: see
+        // `ha_unsent`.)
         let sent = to_phone || self.buttons.bthome();
         self.sent = Some((press, now + SENT_TIME, sent));
         motor::buzz(if sent { Pattern::NOTIFY } else { Pattern::TURN });
@@ -1222,6 +1229,28 @@ impl App {
         } else {
             Some(self.ha_presses.remove(0))
         }
+    }
+
+    /// A press from [`App::take_ha_press`] couldn't go out (see
+    /// `bthome::send`; nearly always both Bluetooth connections in use):
+    /// as a press that went nowhere, its button turns the "bad" colour,
+    /// and it buzzes so; and a banner points at the README's FAQ, as
+    /// "INTENTS OFF" does for the app.
+    ///
+    /// Even with BUTTONS on BOTH, where the phone may have had it: the
+    /// phone is usually one of the two connections, so a grid that only
+    /// went red with nowhere to go would never show this, and Home
+    /// Assistant's automations would silently miss it. (A phone that's
+    /// away is another matter: the status bar shows it, and there's
+    /// nothing to fix.)
+    pub fn ha_unsent(&mut self, press: Press, now: Instant) {
+        // A hold's end shows nothing of its own (see `send_press`); its
+        // start's colour has likely gone by now. The banner says it.
+        if press.gesture != buttons::Gesture::Release {
+            self.sent = Some((press, now + SENT_TIME, false));
+        }
+        self.show_banner(Shows::Unsent, now);
+        motor::buzz(Pattern::TURN);
     }
 
     /// Controls the phone's media from the clock face, while a phone is

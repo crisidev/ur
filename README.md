@@ -295,6 +295,13 @@ With **6 BUTTONS** instead, each button is its own BTHome button
 each button and gesture, no YAML needed. See
 [docs/buttons.md](docs/buttons.md#home-assistant).
 
+### B05: The watch says "BTHOME NOT SENT"
+
+The watch couldn't send that grid press to Home Assistant: both its
+Bluetooth connections were in use, usually the phone plus a computer
+(fetching the field log, or updating it). Disconnect the computer, and
+press again.
+
 ### C01: The watch says "NOT PAIRED"
 
 A phone or computer connected without pairing, and ur only talks to

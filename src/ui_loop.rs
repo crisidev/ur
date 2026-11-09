@@ -129,13 +129,13 @@ pub trait Board {
     /// (`bthome::identity`), for the Settings screen.
     fn bthome(&mut self) -> Option<Identity>;
     /// Advertises a press of the button grid, laid out as `layout`, or
-    /// with none, the battery alone (`bthome::send`).
+    /// with none, the battery alone (`bthome::send`); `false` if it can't.
     fn advertise(
         &mut self,
         press: Option<Press>,
         layout: buttons::Layout,
         battery: u8,
-    ) -> impl Future<Output = ()>;
+    ) -> impl Future<Output = bool>;
 
     /// Switches the watch off ([`crate::system_off::shut_down`]), showing
     /// why. On the watch this never returns: the next thing that happens is
@@ -736,10 +736,15 @@ impl UiLoop {
         }
         async move {
             // The button grid's presses for Home Assistant, from an input
-            // or its wait running out.
+            // or its wait running out; the grid shows those that couldn't
+            // go, before the pass renders it.
             while let Some(press) = app.take_ha_press() {
-                board.advertise(Some(press), app.grid_layout, battery).await;
+                if !board.advertise(Some(press), app.grid_layout, battery).await {
+                    app.ha_unsent(press, Instant::now());
+                }
             }
+            // TODO: a battery reading that couldn't go waits for the next
+            // 5% step, as if it had.
             if battery_due {
                 board.advertise(None, app.grid_layout, battery).await;
             }

@@ -104,7 +104,8 @@ tap                               # snooze
   (again to move it), `lift`.
 - **The phone:** `gb` (see below), `connect`, `time`, `location`,
   `notify`, `call`, `music`, `find`, `phone-alarms`, `nav`, `unpaired`,
-  `passkey`, `update`.
+  `passkey`, `update`, `slots full` (both Bluetooth connections in use,
+  so the button grid's presses can't go to Home Assistant).
 - **The wearer and the watch:** `battery` (and charging), `steps`,
   `heart`, `temperature`, `asleep`, `movement`, `last-night`,
   `demo-day` (a day of steps and heart rates so far), `alarm`, `smart`,
@@ -341,7 +342,8 @@ log lines go to it, and files download.
 - **Bluetooth.** Only the phone's messages: `gb` parses its lines as the
   watch does, but no radio, GATT, or MTU-sized pieces carry them.
   Pairing, bonds, updates, GPS requests and the activity sync don't run;
-  `passkey` and `update` only show their screens.
+  `passkey` and `update` only show their screens, and `slots full` only
+  what the grid does when its presses can't go.
 - **Flash, in part.** Settings are saved and loaded (see
   [The flash](#the-flash)), but a location from the phone isn't saved,
   and Bluetooth bonds and the SPI flash (the activity record, field logs)

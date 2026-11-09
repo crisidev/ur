@@ -50,6 +50,9 @@ The phone:
   nav ACTION [DISTANCE [STREET]] | nav off    e.g. nav left \"150 m\" Storgata
   unpaired not-paired|pairing-lost|off
   passkey NNNNNN|off | update PERCENT|off|refused
+  slots full|free            both Bluetooth connections in use (the phone
+                             and a computer, say), so the grid's presses
+                             can't go to Home Assistant
 The wearer and the watch:
   battery MV [charging|charged|unplugged]
   steps N | heart BPM|off    a heart rate measured now (shown for 30 min)
@@ -303,6 +306,10 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
             } else {
                 watch.refresh();
             }
+        }
+        "slots" => {
+            watch.slots_full = on_off(need(0, "full|free")?, "full", "free")?;
+            watch.log(format!("connection slots {}", args[0]));
         }
         "update" => match need(0, "PERCENT|off|refused")? {
             // As `dfu` does when it won't install what arrived.

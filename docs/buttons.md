@@ -68,7 +68,10 @@ at once (after 0.6 s, finger still down), and lifting the finger then
 sends a **release**, for what should last while you hold, like dimming a
 light. To cancel a tap that's waiting, swipe away or press the button.
 Two buzzes, and the code in red, mean it had nowhere to go (only the
-app, on a phone that isn't connected).
+app, on a phone that isn't connected), or it couldn't go to Home
+Assistant: then **BTHOME NOT SENT** shows too, even if the phone had
+it, as both of the watch's Bluetooth connections were in use (see
+[FAQ B05](../README.md#b05-the-watch-says-bthome-not-sent)).
 
 ## Turning it on
 

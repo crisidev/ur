@@ -128,10 +128,22 @@ const BURST_FIRST: Duration = Duration::from_millis(800);
 /// mid-burst, and there's no second advertising set, which our
 /// SoftDevice Controller library hasn't got.
 ///
-/// TODO: while both slots serve a connection (the phone and an update, or
-/// a log fetch), neither advertises, and a burst that ends meanwhile is
-/// never sent.
-pub fn burst(data: [u8; 31], len: usize) {
+/// So while both slots serve a connection (the phone and an update, or a
+/// computer fetching the field log), neither advertises, and there's
+/// nothing to send it with: then it's not set at all, and this returns
+/// `false`, for the grid to show it went nowhere (README FAQ B05). Not
+/// set, rather than left for a slot that frees up within the burst: the
+/// grid would have shown it unsent by then.
+///
+/// TODO: a burst under way, or waiting its turn, when a connection takes
+/// the last free slot stops there, though it reported itself sent; it
+/// may have been heard already. Telling the grid later would need a way
+/// back to it from here.
+pub fn burst(data: [u8; 31], len: usize) -> bool {
+    if ACTIVE.lock(|active| active.borrow().len()) >= CONNECTIONS {
+        warn!("ble: every slot busy; burst not sent");
+        return false;
+    }
     let now = Instant::now();
     let len = len as u8;
     BURST.lock(|b| {
@@ -146,6 +158,7 @@ pub fn burst(data: [u8; 31], len: usize) {
         b.set(Some(Burst { data, len, until }));
     });
     BURST_NEW.signal(());
+    true
 }
 
 /// Messages for the phone, from anywhere in the firmware; sent while
@@ -1236,7 +1249,9 @@ async fn pairing_failed<C: trouble_host::Controller>(stack: &Stack<'_, C, Pool>)
     restore_bonds(stack).await;
 }
 
-/// Who's connected right now, so pairing never evicts their bonds.
+/// Who's connected right now, so pairing never evicts their bonds, and
+/// [`burst`] knows whether a slot is left to advertise. Each slot is in it
+/// from the moment it has a connection until it's done serving it.
 static ACTIVE: Mutex<CriticalSectionRawMutex, RefCell<Vec<Identity, CONNECTIONS>>> =
     Mutex::new(RefCell::new(Vec::new()));
 

@@ -281,6 +281,38 @@ fn the_bthome_key_stays_until_tapped_away() {
     assert!(ok, "{log}");
 }
 
+/// With both connection slots busy, a press can't go to Home Assistant:
+/// it buzzes as one that went nowhere (the tour shows it red, with FAQ
+/// B05), even with BUTTONS on BOTH, where the phone still has it. Once a
+/// slot is free, presses go again.
+#[test]
+fn a_press_that_cant_go_to_home_assistant_says_so() {
+    let dir = out("unsent");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    std::fs::write(
+        &script,
+        "buttons both\nconnect\nup\nwait 1s\n\
+         slots full\ntap 67,20\nwait 400ms\nexpect buzzing\n\
+         slots free\nwait 5s\ntap 13,20\nwait 400ms\n",
+    )
+    .expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+    let unsent = log
+        .find("not to Home Assistant: every connection slot busy")
+        .expect("the first press isn't sent");
+    let (first, second) = log.split_at(unsent);
+    assert!(!first.contains("to Home Assistant:"), "{log}");
+    let (busy, free) = second
+        .split_once("connection slots free")
+        .expect("the slots free up");
+    assert!(busy.contains("buzz: turn"), "{log}");
+    assert!(busy.contains(r#""button":3"#), "{log}");
+    assert!(free.contains("to Home Assistant: button_1 press"), "{log}");
+    assert!(free.contains("buzz: notify"), "{log}");
+}
+
 /// With a phone connected, a double tap skips without waking the screen
 /// (or ending a glance) only if its first tap is light. A deliberate first
 /// tap wakes it at once, and the second skips on the clock face.

@@ -81,6 +81,10 @@ pub struct Watch {
     pub unpaired: Option<Unpaired>,
     pub passkey: Option<u32>,
     pub update_progress: Option<u8>,
+    /// Whether both connection slots are serving (the phone and a
+    /// computer, say), so that nothing advertises the grid's presses for
+    /// Home Assistant (see `ble::burst`).
+    pub slots_full: bool,
 
     /// Whether the first pass has run (see `power_on`).
     started: bool,
@@ -140,6 +144,7 @@ impl Watch {
             unpaired: None,
             passkey: None,
             update_progress: None,
+            slots_full: false,
             started: false,
             next_tick: now + ui_loop::TICK,
             timer: None,
@@ -438,6 +443,7 @@ impl Watch {
             daytime,
             finger,
             bthome_counter,
+            slots_full,
             ..
         } = self;
         let board = Hardware {
@@ -449,6 +455,7 @@ impl Watch {
             daytime: *daytime,
             finger_down: finger.is_some(),
             bthome_counter,
+            slots_full: *slots_full,
         };
         (app, ui, canvas, on_frame, board)
     }
@@ -595,6 +602,7 @@ struct Hardware<'a> {
     daytime: Option<bool>,
     finger_down: bool,
     bthome_counter: &'a mut u32,
+    slots_full: bool,
 }
 
 impl Hardware<'_> {
@@ -665,15 +673,22 @@ impl Board for Hardware<'_> {
         Some(DEMO_IDENTITY)
     }
 
-    /// What `bthome::send` would advertise, with the demo key, printed.
+    /// What `bthome::send` would advertise, with the demo key, printed;
+    /// or, with every connection slot busy, that it couldn't.
     fn advertise(
         &mut self,
         press: Option<Press>,
         layout: Layout,
         battery: u8,
-    ) -> impl Future<Output = ()> {
+    ) -> impl Future<Output = bool> {
         let counter = *self.bthome_counter;
         *self.bthome_counter += 1;
+        if self.slots_full {
+            log(format!(
+                "not to Home Assistant: every connection slot busy (counter {counter})"
+            ));
+            return std::future::ready(false);
+        }
         let (data, len) = bthome::advert(press, layout, battery, counter, &DEMO_IDENTITY);
         let hex: String = data[..len].iter().map(|b| format!("{b:02x}")).collect();
         // What Home Assistant fires for it (see `bthome`'s docs).
@@ -698,7 +713,7 @@ impl Board for Hardware<'_> {
         log(format!(
             "to Home Assistant: {events} (counter {counter}): {hex}"
         ));
-        async {}
+        std::future::ready(true)
     }
 
     /// As `system_off::shut_down`: says why for a few seconds, then goes

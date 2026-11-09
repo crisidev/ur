@@ -338,23 +338,26 @@ mod device {
     /// reserved in flash before it's used, so a reset can never make it
     /// repeat with another press: a repeat would let anyone listening
     /// decrypt both (CTR mode). If flash can't reserve one, nothing is sent.
-    pub async fn send(press: Option<Press>, layout: Layout, battery: u8) {
+    ///
+    /// Returns whether it's going out: not without a key, a counter, or a
+    /// free connection slot to advertise it (see `ble::burst`).
+    pub async fn send(press: Option<Press>, layout: Layout, battery: u8) -> bool {
         let Some(identity) = identity() else {
             warn!("bthome: no key");
-            return;
+            return false;
         };
         let (next, reserved) = COUNTER.lock(Cell::get);
         if next >= reserved {
             let reserve = next + RESERVE;
             if !storage::save(storage::key::BTHOME_COUNTER, &reserve.to_le_bytes()).await {
                 warn!("bthome: couldn't reserve a counter; not sent");
-                return;
+                return false;
             }
             COUNTER.lock(|c| c.set((next, reserve)));
         }
         COUNTER.lock(|c| c.set((next + 1, c.get().1)));
         let (data, len) = advert(press, layout, battery, next, &identity);
         info!("bthome: {=u32} {=[u8]:02x}", next, data[..len]);
-        crate::ble::burst(data, len);
+        crate::ble::burst(data, len)
     }
 }

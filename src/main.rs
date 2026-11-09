@@ -295,7 +295,7 @@ impl Board for Hardware {
         press: Option<buttons::Press>,
         layout: buttons::Layout,
         battery: u8,
-    ) -> impl Future<Output = ()> {
+    ) -> impl Future<Output = bool> {
         bthome::send(press, layout, battery)
     }
 

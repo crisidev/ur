@@ -121,11 +121,21 @@ long 40,60
 expect buzzing
 wait 100ms
 shot 11f-grid-held.png
-# 1, then a swipe: cancelled, nothing sent.
+# With both Bluetooth connections in use (the phone and a computer,
+# say), nothing can advertise 3 for Home Assistant: it turns red, with a
+# banner pointing to FAQ B05.
+slots full
+tap 67,20
+wait 400ms
+expect buzzing
+shot 11f0-grid-unsent.png
+slots free
+# 1, then a swipe: cancelled, nothing sent. (A shorter wait after, for
+# the 0.4 s above: the screenshots below show the seconds.)
 wait 2s
 tap 13,20
 down
-wait 2s
+wait 1600ms
 expect not buzzing
 
 # The GRID row: two layers, codes 1-99 from nine buttons, alone or in

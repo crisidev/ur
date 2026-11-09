@@ -32,8 +32,13 @@ User documentation: [buttons.md](buttons.md). Code: `src/buttons.rs`
   data for the BTHome payload (name in the scan response) at 20 ms for
   1.2 s. No stop/start dance around connections, and a phone can still
   connect mid-burst. If both slots are serving (phone plus an update or
-  log fetch), nothing advertises, and a burst is lost (a TODO in
-  `ble::burst`).
+  log fetch), nothing advertises, so `ble::burst` refuses the press,
+  and the grid shows it red, with "BTHOME NOT SENT / SEE FAQ B05" (even
+  with BUTTONS on BOTH, as the phone is usually one of the two). A
+  non-connectable burst of its own then cost ~1.1 KB of flash and
+  ~230 B of RAM (branch `haevents`), too much for a case a
+  disconnect fixes. A burst cut short by the last slot filling is still
+  reported sent (a TODO in `ble::burst`).
 - **Encryption:** as planned (key from the RNG at first boot, counter
   from 256, reserved 64 at a time in flash; storage keys 31 and 32), but
   CCM is hand-rolled over the already-linked `aes` 0.8 (four block
@@ -44,7 +49,9 @@ User documentation: [buttons.md](buttons.md). Code: `src/buttons.rs`
   `button` and `gesture`), for Tasker: the BUTTONS setting picks either,
   or both.
 - **Feedback:** the last button shows the code for 0.8 s, with a buzz;
-  red and two buzzes if it could go nowhere. No "SENT" text.
+  red and two buzzes if it could go nowhere, or `bthome::send` couldn't
+  send it (no free slot, or no counter), which `Board::advertise`
+  returns to the UI loop, for `App::ha_unsent`. No "SENT" text.
 
 Sources: `tmp/ha-research/` (REPORT.md, `web/bthome_format.txt`,
 `web/bthome_encryption.txt`, `web/ha_bthome.txt`, the Gadgetbridge sources),
