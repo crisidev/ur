@@ -409,7 +409,9 @@ Nordic's SoftDevice Controller or MPSL (`SoftDevice Controller ASSERT:
 <file>, <line>`, which identifies the assert to Nordic). A `defmt::panic!`
 (or `defmt::unwrap!`, as dependencies use) only shows `explicit panic` at
 defmt's own location: its message went to the log, which the reset lost,
-so the backtrace is what says where it was. A hang with interrupts masked
+so the backtrace is what says where it was. (So `ur-logging` leaves out
+the log lines of the dependencies that log nothing else; see
+`scripts/release.sh`.) A hang with interrupts masked
 can't be caught: the watchdog's interrupt never runs, so only the reset
 reason says it happened.
 

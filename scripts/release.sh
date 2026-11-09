@@ -146,7 +146,20 @@ variant() {
 }
 
 variant ur "info"
-variant ur-logging "info,ur::heart=trace,ur::activity=debug" --features field-log
+# The field log adds the heart rate sensor's samples and the accelerometer's
+# readings, and leaves out the dependencies whose every log line (at `info`
+# and up) is the message of a `defmt::panic!`, `unwrap!` or `assert!`. In a
+# field build that message only reaches the RTT buffer, whose RAM the
+# panic's reset clears before the field log can save it: the next boot's
+# report of the panic is all that's kept either way (see CONTRIBUTING's
+# Field logs). Leaving them out saves ~960 bytes of flash. Their only other
+# lines say the same on every boot of a build, which a probe on `ur` shows:
+# nrf-sdc's that its memory is too big (or too small, and then `main`
+# panics), embassy-nrf's about the reset pin. trouble-host stays: its errors
+# and warnings are worth keeping. Check these crates' new log lines when
+# updating them.
+panics_only=embassy_executor=off,embassy_sync=off,embassy_time=off,embassy_nrf=off,bt_hci=off,nrf_mpsl=off,nrf_sdc=off
+variant ur-logging "info,ur::heart=trace,ur::activity=debug,$panics_only" --features field-log
 
 (cd "$out" && sha256sum -- ur-*"$version"* >sha256.sum)
 echo "== built $UR_VERSION into $out" >&2
