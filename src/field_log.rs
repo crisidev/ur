@@ -118,39 +118,40 @@ fn frames(room: usize) -> Option<(&'static [u8], &'static [u8])> {
     let write = channel.write.load(Ordering::Acquire) as usize;
     let read = channel.read.load(Ordering::Relaxed) as usize;
     let waiting = (write + size - read) % size;
-    let first = waiting.min(size - read);
-    // SAFETY: Bytes between the read and write cursors are written, and left
-    // alone by defmt-rtt until we move the read cursor past them (which
-    // only `consume` does, after the caller is done with these).
-    let (first, second) = unsafe {
-        (
-            core::slice::from_raw_parts(channel.buffer.add(read), first),
-            core::slice::from_raw_parts(channel.buffer, waiting - first),
-        )
-    };
     // Frames end in a zero byte; anything after the last one is a frame
-    // still being written.
-    let mut ends = first
-        .iter()
-        .chain(second)
-        .enumerate()
-        .filter(|&(_, &b)| b == 0)
-        .map(|(i, _)| i + 1);
-    let Some(next) = ends.next() else {
+    // still being written. `fits` is the end of the last frame within
+    // `room`. A plain loop over the ring, rather than iterator adapters
+    // over its two pieces: ~250 bytes less flash.
+    let mut whole = false;
+    let mut fits = 0;
+    for i in 0..waiting {
+        // SAFETY: Bytes between the read and write cursors are written, and
+        // left alone by defmt-rtt until we move the read cursor past them
+        // (which only `consume` does, after the caller is done with these).
+        if unsafe { channel.buffer.add((read + i) % size).read() } == 0 {
+            whole = true;
+            if i >= room {
+                break;
+            }
+            fits = i + 1;
+        }
+    }
+    if !whole {
         if waiting == size - 1 {
             // Full, without a frame end: a frame too big for the buffer,
             // which we drop rather than stall on.
             consume(waiting);
         }
         return None;
-    };
-    let fits = if next > room {
-        0
-    } else {
-        ends.take_while(|&end| end <= room).last().unwrap_or(next)
-    };
-    let in_first = fits.min(first.len());
-    Some((&first[..in_first], &second[..fits - in_first]))
+    }
+    let in_first = fits.min(size - read);
+    // SAFETY: As above: the first `fits` bytes after the read cursor.
+    unsafe {
+        Some((
+            core::slice::from_raw_parts(channel.buffer.add(read), in_first),
+            core::slice::from_raw_parts(channel.buffer, fits - in_first),
+        ))
+    }
 }
 
 #[cfg(feature = "field-log")]
