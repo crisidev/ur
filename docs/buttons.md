@@ -129,13 +129,13 @@ knows all the events up front.
 - **Six buttons**: a section per button, with an action for each
   gesture: tap, double tap, hold, long press, and release.
 
-  [![Import the six-button blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fjonhoo%2Fur%2Fmain%2Fblueprints%2Fur-six-buttons.yaml)
+  [![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fjonhoo%2Fur%2Fmain%2Fblueprints%2Fur-six-buttons.yaml)
 - **Two layers**: a section per button on its own (tap, hold, long
   press, release), eight slots for any code and gesture (23,
   double-tapped, say), and one action for every press, with `code` and
   `gesture` to tell them apart, for the rest.
 
-  [![Import the two-layer blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fjonhoo%2Fur%2Fmain%2Fblueprints%2Fur-two-layers.yaml)
+  [![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fjonhoo%2Fur%2Fmain%2Fblueprints%2Fur-two-layers.yaml)
 
 1. Click the badge for your layout, or in Home Assistant, **Settings →
    Automations & scenes → Blueprints → Import blueprint**, and paste the
