@@ -103,6 +103,7 @@ everything on its own, and passes sleep and heart rate on to [Health
 Connect] if you like. For the themes to follow your sun rather than
 Oslo's, the phone has to share its location: see
 [C03](#c03-the-watch-never-gets-a-location-from-the-phone).
+A few Gadgetbridge defaults need changing: see [docs/gadgetbridge.md](docs/gadgetbridge.md).
 
 **The clock face** shows the time, date, battery, heart rate, the next
 alarm or timer, and the room's temperature: a nearby room sensor's, to
