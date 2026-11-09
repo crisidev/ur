@@ -1,0 +1,3 @@
+# What `cargo bolero test` finds on the way (see `fuzz` in `src/main.rs`):
+# thousands of small files. An input worth keeping becomes a test.
+/src/__fuzz__/

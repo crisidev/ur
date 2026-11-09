@@ -1491,3 +1491,355 @@ mod tests {
         );
     }
 }
+
+/// Fuzzing, with Bolero: what the tests above try with a few thousand
+/// random lines, a coverage-guided fuzzer tries with as many as it's given
+/// time for, keeping the ones that reach new code.
+///
+/// `cargo test` runs each harness over a few hundred random inputs (and
+/// any saved in a corpus), so they're regression tests too. To fuzz one
+/// properly (nightly, for the sanitizer):
+///
+/// ```text
+/// cargo +nightly bolero test fuzz::any_line_is_safe_to_parse --engine libfuzzer -T 10min
+/// ```
+#[cfg(test)]
+mod fuzz {
+    use super::alarm::PHONE_ALARMS;
+    use super::gb::{self, CallAction, Incoming, LineBuffer, MusicCommand, Outgoing};
+    use super::phone::PhoneEvent;
+
+    /// What a fuzzed line starts with, and ends with, picked by its first
+    /// byte: nothing, or a message of each kind up to where its fields
+    /// go, or a field's string, so the fuzzer needn't find `GB({"t":"`
+    /// by itself before it gets anywhere.
+    const FRAMES: [(&str, &str); 20] = [
+        ("", ""),
+        ("GB(", ")"),
+        ("GB({", "})"),
+        ("setTime(", ""),
+        ("setTime(1762436800);E.setTimeZone(", ");"),
+        (r#"GB({"t":"notify","#, "})"),
+        (r#"GB({"t":"notify","src":"Signal","title":""#, r#""})"#),
+        (
+            r#"GB({"t":"notify","sender":"Kari","title":atob(""#,
+            r#"")})"#,
+        ),
+        (r#"GB({"t":"call","cmd":"incoming","name":""#, r#""})"#),
+        (r#"GB({"t":"call","#, "})"),
+        (r#"GB({"t":"musicinfo","artist":""#, r#""})"#),
+        (r#"GB({"t":"musicstate","#, "})"),
+        (r#"GB({"t":"find","#, "})"),
+        (r#"GB({"t":"alarm","d":["#, "]})"),
+        (r#"GB({"t":"alarm","d":[{"h":7,"m":30,"#, "}]})"),
+        (r#"GB({"t":"nav","instr":""#, r#""})"#),
+        (r#"GB({"t":"nav","#, "})"),
+        (r#"GB({"t":"gps","lat":59.9139,"lon":"#, "})"),
+        (r#"GB({"t":"act","#, "})"),
+        (r#"GB({"t":"actfetch","ts":"#, "})"),
+    ];
+
+    /// A string of the UI's is one line, as its labels need: no control
+    /// characters (line breaks and tabs arrive as spaces).
+    fn one_line(text: &str) {
+        assert!(
+            !text.chars().any(|c| ('\u{8}'..='\u{d}').contains(&c)),
+            "a line break or tab in {text:?}"
+        );
+    }
+
+    /// What `parse` promises of what it returns, whatever it was given.
+    fn check(parsed: &Incoming<'_>, line: &[u8]) {
+        match parsed {
+            // Only a time a phone could mean (see `parse_set_time`).
+            Incoming::SetTime {
+                utc_seconds,
+                offset_minutes,
+            } => {
+                assert!((1_577_836_800..4_102_444_800).contains(utc_seconds));
+                assert!((-18 * 60..=18 * 60).contains(offset_minutes));
+            }
+            Incoming::Gps { accuracy, .. } => {
+                assert!(!accuracy.is_some_and(f32::is_nan), "an accuracy that's NaN");
+            }
+            Incoming::IsGpsActive | Incoming::ActivityFetch { .. } | Incoming::Live { .. } => {}
+            // The kind is the line's own `t`.
+            Incoming::Ignored(kind) => {
+                let quoted = format!("\"{kind}\"");
+                assert!(line.windows(quoted.len()).any(|w| w == quoted.as_bytes()));
+            }
+            Incoming::Phone { event, .. } => match event {
+                // As `TextBuilder` leaves text: no space at either end,
+                // nor two together, and nothing but what the font draws.
+                PhoneEvent::Notification { app, who } => {
+                    for text in [app.to_string(), who.to_string()] {
+                        assert!(!text.starts_with(' ') && !text.ends_with(' '));
+                        assert!(!text.contains("  "), "two spaces in {text:?}");
+                        assert!(!text.chars().any(char::is_control));
+                        assert!(
+                            text.chars()
+                                .all(|c| u32::from(c) < 0x100 || c == '\u{2026}'),
+                            "beyond Latin-1 in {text:?}"
+                        );
+                    }
+                    assert!(app.chars().count() <= 24 && who.chars().count() <= 40);
+                }
+                PhoneEvent::IncomingCall { caller } => one_line(caller),
+                PhoneEvent::MusicInfo { artist, track } => {
+                    one_line(artist);
+                    one_line(track);
+                }
+                // Only times of day there are (see `alarm::Phone::push`).
+                PhoneEvent::Alarms(alarms) => {
+                    assert!(alarms.alarms().len() <= PHONE_ALARMS);
+                    for alarm in alarms.alarms() {
+                        assert!(alarm.time < 24 * 60 && alarm.days < 0x80);
+                    }
+                }
+                // Trimmed, with plain spaces for Google Maps' no-break
+                // ones; and a step says something.
+                PhoneEvent::Route(Some(step)) => {
+                    for text in [step.street.as_str(), step.distance.as_str()] {
+                        one_line(text);
+                        assert!(!text.starts_with(' ') && !text.ends_with(' '));
+                        assert!(!text.contains('\u{a0}'));
+                    }
+                }
+                _ => {}
+            },
+        }
+    }
+
+    /// No line panics the parser (or overflows, or reads out of bounds:
+    /// the fuzzer builds with the address sanitizer), whether it's
+    /// nothing like a message or all but one; and what it makes of a line
+    /// is something the UI can take (see `check`).
+    ///
+    /// The line arrives the way it would, too: through a [`LineBuffer`],
+    /// which hands over the same line however Gadgetbridge cuts it up.
+    #[test]
+    fn any_line_is_safe_to_parse() {
+        bolero::check!().for_each(|bytes: &[u8]| {
+            let Some((&frame, rest)) = bytes.split_first() else {
+                return;
+            };
+            let (start, end) = FRAMES[usize::from(frame) % FRAMES.len()];
+            let line = [start.as_bytes(), rest, end.as_bytes()].concat();
+            let parsed = gb::parse(&line);
+            if let Some(parsed) = &parsed {
+                check(parsed, &line);
+            }
+
+            // Now as bytes on the air, if it's a line that can be sent:
+            // `\n` ends one, and the buffer strips what frames it.
+            let sendable = !line.contains(&b'\n')
+                && line.first() != Some(&b'\x10')
+                && line.last() != Some(&b'\r')
+                && line.len() <= 1024 - 2;
+            if sendable {
+                let sent = [b"\x10", &line[..], b"\r\n"].concat();
+                // Cut anywhere, by the frame byte's other bits.
+                let cut = usize::from(frame) * 7 % sent.len();
+                let mut buffer = LineBuffer::new();
+                let mut lines = 0;
+                let mut receive = |received: &[u8]| {
+                    lines += 1;
+                    assert_eq!(received, &line[..]);
+                    assert_eq!(gb::parse(received), parsed);
+                };
+                buffer.push(&sent[..cut], &mut receive);
+                buffer.push(&sent[cut..], &mut receive);
+                assert_eq!(lines, 1);
+            }
+        });
+    }
+
+    /// Whatever bytes arrive, in whatever pieces, the [`LineBuffer`]
+    /// hands over the lines a reading of its docs would: what's between
+    /// the `\n`s, less the `\x10`s in front and one `\r` behind, but for
+    /// lines longer than it holds (1024 bytes), dropped whole, and the
+    /// unfinished line at the end, kept for more.
+    #[test]
+    fn any_bytes_come_out_as_their_lines() {
+        bolero::check!()
+            .with_type::<(Vec<u8>, Vec<u8>)>()
+            .for_each(|(bytes, cuts)| {
+                // Long lines too: the first byte says how many times over.
+                let Some((&times, bytes)) = bytes.split_first() else {
+                    return;
+                };
+                let bytes = bytes.repeat(1 + usize::from(times) % 40);
+
+                let mut expected: Vec<&[u8]> = bytes.split(|&b| b == b'\n').collect();
+                expected.pop(); // unfinished
+                let expected: Vec<&[u8]> = expected
+                    .into_iter()
+                    .filter(|line| line.len() <= 1024)
+                    .map(|mut line| {
+                        while let Some(rest) = line.strip_prefix(b"\x10") {
+                            line = rest;
+                        }
+                        line.strip_suffix(b"\r").unwrap_or(line)
+                    })
+                    .collect();
+
+                let mut buffer = LineBuffer::new();
+                let mut lines: Vec<Vec<u8>> = Vec::new();
+                let mut rest = &bytes[..];
+                for &cut in cuts {
+                    let (now, later) = rest.split_at(usize::from(cut).min(rest.len()));
+                    buffer.push(now, |line| lines.push(line.to_vec()));
+                    rest = later;
+                }
+                buffer.push(rest, |line| lines.push(line.to_vec()));
+                assert_eq!(lines, expected);
+            });
+    }
+
+    /// Every message the watch can send, with any numbers in it, fits its
+    /// line (`to_line` panics otherwise), is one line of JSON, with the
+    /// values it was given, by a JSON parser that isn't ours; and by
+    /// ours, wrapped as the phone would send it, has the `t` it should.
+    ///
+    /// The minute of an activity sample is taken within what its
+    /// milliseconds can say as an `i64`, 292 million years either side of
+    /// 1970: beyond, `to_line` overflows multiplying it out, which the
+    /// history's minutes (the clock's, and so within the times
+    /// `parse_set_time` believes) come nowhere near.
+    #[test]
+    fn any_message_is_a_line_of_json() {
+        type Numbers = (u8, i64, u16, u16, u8, u32, bool);
+        bolero::check!().with_type::<Numbers>().for_each(
+            |&(which, minute, steps, movement, heart_rate, millivolts, flag)| {
+                let utc_minute = minute % (i64::MAX / 60_000);
+                let kind = [
+                    None,
+                    Some("LIGHT_SLEEP"),
+                    Some("DEEP_SLEEP"),
+                    Some("REM_SLEEP"),
+                ][usize::from(heart_rate) % 4];
+                // `buttons::Gesture::name`.
+                let gesture = [
+                    "press",
+                    "double_press",
+                    "hold_press",
+                    "long_press",
+                    "hold_release",
+                ][usize::from(steps) % 5];
+                let (message, t) = match which % 10 {
+                    0 => (Outgoing::Version, "ver"),
+                    1 => (
+                        Outgoing::Status {
+                            percent: heart_rate,
+                            charging: flag,
+                            millivolts,
+                        },
+                        "status",
+                    ),
+                    2 => (Outgoing::GpsPower(flag), "gps_power"),
+                    3 => (Outgoing::ActivityFetch { done: flag }, "actfetch"),
+                    4 => (Outgoing::NoTracks, "actTrksList"),
+                    5 => (
+                        Outgoing::Activity {
+                            utc_minute,
+                            steps,
+                            movement,
+                            heart_rate,
+                            kind,
+                        },
+                        "act",
+                    ),
+                    6 => (
+                        Outgoing::Call(
+                            [CallAction::Accept, CallAction::Reject, CallAction::Ignore]
+                                [usize::from(steps) % 3],
+                        ),
+                        "call",
+                    ),
+                    7 => (
+                        Outgoing::Music(
+                            [
+                                MusicCommand::PlayPause,
+                                MusicCommand::Next,
+                                MusicCommand::Previous,
+                            ][usize::from(steps) % 3],
+                        ),
+                        "music",
+                    ),
+                    8 => (Outgoing::Live { steps, heart_rate }, "act"),
+                    _ => (
+                        Outgoing::Button {
+                            code: heart_rate,
+                            gesture,
+                        },
+                        "intent",
+                    ),
+                };
+                let line = message.to_line();
+                let json = line.strip_suffix("\r\n").expect("ends in \\r\\n");
+                assert!(!json.contains(['\r', '\n']), "more than one line");
+
+                let value: serde_json::Value = serde_json::from_str(json).expect("JSON");
+                assert_eq!(value["t"], t);
+                match message {
+                    Outgoing::Status { .. } => {
+                        assert_eq!(value["bat"], heart_rate);
+                        assert_eq!(value["chg"], u8::from(flag));
+                        // Volts, to the hundredth below.
+                        let volts = value["volt"].as_f64().expect("a number");
+                        let hundredths = f64::from(millivolts / 10);
+                        assert!((volts * 100.0 - hundredths).abs() < 0.5);
+                    }
+                    Outgoing::GpsPower(on) => assert_eq!(value["status"], on),
+                    Outgoing::ActivityFetch { done } => {
+                        assert_eq!(value["state"], if done { "end" } else { "start" });
+                    }
+                    Outgoing::Activity { .. } => {
+                        assert_eq!(value["ts"], utc_minute * 60_000);
+                        assert_eq!(value["stp"], steps);
+                        assert_eq!(value["mov"], movement);
+                        assert_eq!(value["hrm"], heart_rate);
+                        assert_eq!(value.get("act").and_then(|kind| kind.as_str()), kind);
+                    }
+                    Outgoing::Live { .. } => {
+                        assert_eq!(value["stp"], steps);
+                        assert_eq!(value["hrm"], heart_rate);
+                        assert_eq!(value["rt"], 1);
+                    }
+                    Outgoing::Button { .. } => {
+                        assert_eq!(value["action"], "ur.watch.BUTTON");
+                        assert_eq!(value["extra"]["button"], heart_rate);
+                        assert_eq!(value["extra"]["gesture"], gesture);
+                    }
+                    _ => {}
+                }
+
+                // And as our own reader takes it: the kinds the phone
+                // sends too come back as those, the rest by their `t`.
+                let wrapped = format!("GB({json})");
+                let read = gb::parse(wrapped.as_bytes()).expect("a message");
+                match message {
+                    Outgoing::ActivityFetch { .. } => {
+                        assert_eq!(read, Incoming::ActivityFetch { since_ms: 0 });
+                    }
+                    Outgoing::Activity { .. } | Outgoing::Live { .. } => assert_eq!(
+                        read,
+                        Incoming::Live {
+                            heart_rate: heart_rate != 0,
+                            steps: steps != 0,
+                            interval: None
+                        }
+                    ),
+                    Outgoing::Call(_) => assert_eq!(
+                        read,
+                        Incoming::Phone {
+                            event: PhoneEvent::CallOver,
+                            text_as_bitmaps: false
+                        }
+                    ),
+                    _ => assert_eq!(read, Incoming::Ignored(t)),
+                }
+            },
+        );
+    }
+}
