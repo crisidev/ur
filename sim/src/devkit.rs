@@ -165,8 +165,9 @@ impl DevKit {
     }
 
     /// Runs an esprobe command, a few times over if the probe's bridge
-    /// times out now and then (it does): everything here reads, or writes
-    /// a word that's as good written twice. Returns what it printed.
+    /// times out now and then (it does), or its USB serial device drops
+    /// out for a second (it has): everything here reads, or writes a word
+    /// that's as good written twice. Returns what it printed.
     fn esprobe(args: &[&str]) -> Result<Vec<u8>, String> {
         let mut tries = 0;
         loop {
@@ -183,14 +184,15 @@ impl DevKit {
                 return Ok(output.stdout);
             }
             tries += 1;
-            if tries == 3 {
+            if tries == 5 {
                 return Err(format!(
                     "esprobe {}: {}",
                     args.join(" "),
                     String::from_utf8_lossy(&output.stderr).trim()
                 ));
             }
-            std::thread::sleep(StdDuration::from_millis(200));
+            // 0.2, 0.4, 0.8, 1.6 s: a USB device takes a moment to return.
+            std::thread::sleep(StdDuration::from_millis(200 << (tries - 1)));
         }
     }
 
@@ -678,6 +680,7 @@ impl<'a> Follower<'a> {
                         .map_err(|_| format!("notify: {h} hours ago?"))
                 })?;
                 let (app, who) = script::test_notification(n);
+                self.settle_sent()?;
                 self.sent.push_back(Sent {
                     event: PhoneEvent::Notification {
                         app: app.into(),
@@ -909,6 +912,23 @@ impl<'a> Follower<'a> {
             name: format!("{name}-ha"),
             what: std::mem::take(&mut self.ha_differences).join("; "),
         }]
+    }
+
+    /// Waits until the dev kit has logged every line sent to it (or they're
+    /// overdue, for [`Self::check_phone`] to report). A test notification
+    /// injected over the probe arrives at once, so it can overtake a
+    /// Gadgetbridge line still on its way over the air (seconds, on an
+    /// idle link). The dev kit would then log them in an order this can't
+    /// tell from a wrong one: it matches what it sent by kind, in order.
+    fn settle_sent(&mut self) -> Result<(), String> {
+        while let Some(due) = self.sent.iter().map(|sent| sent.due).max() {
+            let Some(left) = due.checked_duration_since(StdInstant::now()) else {
+                break;
+            };
+            std::thread::sleep(left.min(POLL));
+            self.catch_up(None)?;
+        }
+        Ok(())
     }
 
     /// Checks what the dev kit sent the phone (this computer) against what
