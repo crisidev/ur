@@ -25,7 +25,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embedded_storage_async::nor_flash::NorFlash;
 use sequential_storage::cache::{Cache, Uncached};
-use sequential_storage::map::{MapConfig, MapStorage};
+use sequential_storage::map::{MapConfig, MapStorage, SerializationError};
 
 /// The internal flash, through MPSL timeslots. In the simulator (`sim/`), which
 /// runs this module too, a model of it, with the same pages and the same
@@ -102,25 +102,46 @@ pub fn init(flash: Flash) {
 /// Loads the value stored under `key`, if any. Storage errors (e.g.
 /// corruption) are logged and treated as "nothing stored".
 pub async fn load<const N: usize>(key: u8) -> Option<[u8; N]> {
+    let mut value = [0; N];
+    load_into(key, &mut value).await.then_some(value)
+}
+
+/// [`load`], into `value`; returns whether anything was stored.
+///
+/// Not generic over the value's size, unlike `load`: a `fetch_item` per
+/// size was a copy of the map's lookup per size, ~0.7 KB each. As for the
+/// `[u8; N]` that took, a longer item gives its first `value.len()`
+/// bytes, and a shorter one is an error.
+async fn load_into(key: u8, value: &mut [u8]) -> bool {
     let mut buffer = [0u8; BUFFER];
     let mut store = STORE.lock().await;
     let Store(store) = store.as_mut().expect("storage::init runs at boot");
-    match store.fetch_item::<[u8; N]>(&mut buffer, &key).await {
-        Ok(value) => value,
-        Err(e) => {
+    match store.fetch_item::<&[u8]>(&mut buffer, &key).await {
+        Ok(Some(stored)) if stored.len() >= value.len() => {
+            value.copy_from_slice(&stored[..value.len()]);
+            true
+        }
+        Ok(None) => false,
+        result => {
+            let e = result
+                .err()
+                .unwrap_or(sequential_storage::Error::SerializationError(
+                    SerializationError::BufferTooSmall,
+                ));
             warn!("storage: loading key {} failed: {}", key, e);
-            None
+            false
         }
     }
 }
 
 /// Stores `value` under `key`; returns whether that worked (failures are
-/// logged).
-pub async fn save<const N: usize>(key: u8, value: &[u8; N]) -> bool {
+/// logged). A slice, not an array, so there's one copy of this whatever
+/// the size.
+pub async fn save(key: u8, value: &[u8]) -> bool {
     let mut buffer = [0u8; BUFFER];
     let mut store = STORE.lock().await;
     let Store(store) = store.as_mut().expect("storage::init runs at boot");
-    let result = store.store_item(&mut buffer, &key, value).await;
+    let result = store.store_item(&mut buffer, &key, &value).await;
     if let Err(e) = &result {
         warn!("storage: saving key {} failed: {}", key, e);
     }

@@ -272,6 +272,15 @@ mod tests {
                     storage::load::<1>(storage::key::BRIGHTNESS).await,
                     Some([1999u32 as u8])
                 );
+                // An item of another size than asked for, as an older
+                // layout may have left: a longer one gives its first bytes,
+                // a shorter one nothing.
+                assert!(storage::save(storage::key::BRIGHTNESS, &[7, 8]).await);
+                assert_eq!(
+                    storage::load::<1>(storage::key::BRIGHTNESS).await,
+                    Some([7])
+                );
+                assert_eq!(storage::load::<3>(storage::key::BRIGHTNESS).await, None);
                 assert!(storage::remove(storage::key::BRIGHTNESS).await);
                 assert_eq!(storage::load::<1>(storage::key::BRIGHTNESS).await, None);
             },
