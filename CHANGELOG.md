@@ -45,6 +45,7 @@ missing below were test builds for the dev kit.
 
 ### Fixed
 
+- Get notifications, music and alarms from the phone onto the watch within about a second once the connection has been quiet for 30 s, rather than a few seconds a line (a long notification took up to 12 s, a burst of them longer): the watch now asks for Bluetooth's long packets, and while the phone is sending, listens at every turn rather than every eighth (4b3ed08, b4575d7)
 - Reconnect Gadgetbridge, once, when it connects but never subscribes to what the watch sends (it then shows no battery and firmware "N/A", and gets nothing from the watch), as it can when it asks before the first pairing has finished; it reconnects at once and subscribes properly, and the README's new FAQ C05 covers the rare case that doesn't fix (ff3b3b2)
 - Report the battery to Gadgetbridge every half hour even when it hasn't changed, so one report missed no longer leaves it stale until the next change (ff3b3b2)
 - Remove a stored setting too short for what it's stored under (left by another build), rather than warning about it in the log at every boot (93fa3e2)
