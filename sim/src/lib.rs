@@ -283,6 +283,8 @@ mod cli;
 mod devkit;
 #[cfg(not(target_arch = "wasm32"))]
 mod diff;
+#[cfg(not(target_arch = "wasm32"))]
+mod fuzz;
 #[cfg(all(feature = "window", not(target_arch = "wasm32")))]
 mod window;
 

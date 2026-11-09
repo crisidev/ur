@@ -11,7 +11,9 @@ use crate::watch::Watch;
 const USAGE: &str = "\
 Usage: ur-sim [--window] [--flash FILE] [--out DIR] [--speed N] [--zoom N]
               [--sent-colours] [SCRIPT ...]
-       ur-sim --devkit ELF [--out DIR] SCRIPT ...
+       ur-sim --devkit ELF [--peer ADDRESS] [--storage FILE] [--out DIR] SCRIPT ...
+       ur-sim --fuzz ELF [--peer ADDRESS] [--seed N] [--runs N] [--steps N]
+              [--dry] [--out DIR]
        ur-sim --diff BEFORE AFTER [--out DIR]
 
 Runs the ur firmware's UI on this computer. With scripts, runs them (each
@@ -35,6 +37,19 @@ after running any scripts, and takes commands typed into the terminal.
                run the scripts' inputs on it, replay what its UI did, and
                check each `compare NAME` frame against it, pixel for pixel
                (see README.md)
+  --peer ADDRESS
+               with --devkit or --fuzz: this computer is the dev kit's phone
+               (paired with it; ADDRESS is the dev kit's), for `gb`,
+               `connect` and `disconnect` (see scripts/gb-peer.py)
+  --storage FILE
+               with --devkit: write FILE (12 KiB) over the dev kit's
+               storage first
+  --fuzz ELF   random scripts on a dev kit running ELF, from random
+               settings, each followed as --devkit does; a run that finds
+               a difference is shrunk to a repro under --out (see
+               src/fuzz.rs). --seed N (default 1), --runs N (default 10),
+               --steps N (default 150); --dry runs the scripts on the
+               simulator alone
   --diff BEFORE AFTER
                compare the screenshots (every PNG) under two directories,
                pixel for pixel; write the differences under --out (as
@@ -51,6 +66,9 @@ pub struct Options {
     /// In the window, the real panel's colours (see `panel`).
     pub mimic: bool,
     pub devkit: Option<PathBuf>,
+    pub fuzz: Option<PathBuf>,
+    pub setup: crate::devkit::Setup,
+    pub fuzzing: crate::fuzz::Fuzz,
     /// `--diff BEFORE AFTER`.
     pub diff: Option<(PathBuf, PathBuf)>,
     pub flash: Option<PathBuf>,
@@ -79,7 +97,17 @@ pub fn main() -> ExitCode {
         };
     }
     if let Some(elf) = &options.devkit {
-        return match crate::devkit::run(elf, &options.scripts, &options.output.dir) {
+        return match crate::devkit::run(elf, &options.scripts, &options.output.dir, &options.setup)
+        {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("ur-sim: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if let Some(elf) = &options.fuzz {
+        return match crate::fuzz::run(elf, &options.output.dir, &options.setup, &options.fuzzing) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("ur-sim: {e}");
@@ -178,6 +206,17 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
         zoom: 4,
         mimic: true,
         devkit: None,
+        fuzz: None,
+        setup: crate::devkit::Setup {
+            peer: None,
+            storage: None,
+        },
+        fuzzing: crate::fuzz::Fuzz {
+            seed: 1,
+            runs: 10,
+            steps: 150,
+            dry: false,
+        },
         diff: None,
         flash: None,
     };
@@ -196,6 +235,21 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
             }
             "--devkit" => options.devkit = Some(args.next().ok_or("--devkit needs an ELF")?.into()),
             "--flash" => options.flash = Some(args.next().ok_or("--flash needs a FILE")?.into()),
+            "--fuzz" => options.fuzz = Some(args.next().ok_or("--fuzz needs an ELF")?.into()),
+            "--peer" => options.setup.peer = Some(args.next().ok_or("--peer needs an ADDRESS")?),
+            "--storage" => {
+                options.setup.storage = Some(args.next().ok_or("--storage needs a FILE")?.into());
+            }
+            "--dry" => options.fuzzing.dry = true,
+            "--seed" | "--runs" | "--steps" => {
+                let n = args.next().ok_or(format!("{arg} needs N"))?;
+                let n: u64 = n.parse().map_err(|_| format!("{arg} {n}?"))?;
+                match arg.as_str() {
+                    "--seed" => options.fuzzing.seed = n,
+                    "--runs" => options.fuzzing.runs = n,
+                    _ => options.fuzzing.steps = n as usize,
+                }
+            }
             "--diff" => {
                 let before = args.next().ok_or("--diff needs BEFORE and AFTER")?;
                 let after = args.next().ok_or("--diff needs BEFORE and AFTER")?;
@@ -216,11 +270,14 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
     if options.devkit.is_some() && (options.window || options.scripts.is_empty()) {
         return Err("--devkit runs scripts, without the window".into());
     }
+    if options.fuzz.is_some() && (options.window || !options.scripts.is_empty()) {
+        return Err("--fuzz writes its own scripts, and runs them without the window".into());
+    }
     if options.diff.is_some()
         && (options.window || options.devkit.is_some() || !options.scripts.is_empty())
     {
         return Err("--diff compares screenshots; it runs no scripts".into());
     }
-    options.window |= options.scripts.is_empty();
+    options.window |= options.scripts.is_empty() && options.fuzz.is_none();
     Ok(Some(options))
 }

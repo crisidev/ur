@@ -29,6 +29,7 @@ Inputs (X,Y in canvas pixels, 0-79; 40,40 if left out):
   button [2] | glance        (2: a double press, 0.2 s apart)
   tap [X,Y [MS]] | long [X,Y] | up|down|left|right [X,Y]
                             a recognised gesture (a tap held MS ms, not 80)
+  double X,Y                two taps 0.1 s apart (a double tap on the grid)
   press X,Y | lift          a finger down (or moved), and up: through the
                             touch task's recogniser, so holding it still
                             for 0.6 s is a long press, and moving it a swipe
@@ -170,6 +171,22 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
                 y,
                 held_ms,
             }));
+        }
+        // Two taps 0.1 s apart, as the dev kit's input 19 (too quick for
+        // two over the probe): a double tap, for the button grid.
+        "double" => {
+            let (x, y) = point(need(0, "X,Y")?)?;
+            let tap = || {
+                InputEvent::Touch(Touch {
+                    gesture: Gesture::Tap,
+                    x,
+                    y,
+                    held_ms: 80,
+                })
+            };
+            watch.input(tap());
+            watch.advance(Duration::from_millis(100));
+            watch.input(tap());
         }
         "press" => {
             let (x, y) = point(need(0, "X,Y")?)?;
@@ -552,17 +569,7 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
 /// replies printed. What `ble` would do over the radio (GPS requests, the
 /// activity sync) isn't simulated.
 fn gadgetbridge(watch: &mut Watch, line: &str) -> Result<(), String> {
-    // On the wire, the line is ISO-8859-1, between Espruino's "don't echo
-    // this" and a newline: each of the script's characters up to U+00FF is
-    // one byte, and Gadgetbridge escapes the rest.
-    let mut bytes = vec![0x10];
-    for c in line.chars() {
-        let byte = u8::try_from(u32::from(c)).map_err(|_| {
-            format!("gb: {c:?} isn't ISO-8859-1; escape it as Gadgetbridge does (\\uXXXX)")
-        })?;
-        bytes.push(byte);
-    }
-    bytes.push(b'\n');
+    let bytes = gb_wire(line)?;
 
     // As `ble`: whoever writes to the UART is the phone.
     if !watch.connected {
@@ -640,6 +647,21 @@ fn gadgetbridge(watch: &mut Watch, line: &str) -> Result<(), String> {
         None => watch.log("not a line the watch understands; ignored"),
     });
     Ok(())
+}
+
+/// A `gb` line as Gadgetbridge puts it on the wire: ISO-8859-1, between
+/// Espruino's "don't echo this" and a newline. Each of the script's
+/// characters up to U+00FF is one byte, and Gadgetbridge escapes the rest.
+pub fn gb_wire(line: &str) -> Result<Vec<u8>, String> {
+    let mut bytes = vec![0x10];
+    for c in line.chars() {
+        let byte = u8::try_from(u32::from(c)).map_err(|_| {
+            format!("gb: {c:?} isn't ISO-8859-1; escape it as Gadgetbridge does (\\uXXXX)")
+        })?;
+        bytes.push(byte);
+    }
+    bytes.push(b'\n');
+    Ok(bytes)
 }
 
 /// Runs a script file, line by line, stopping at the first error.

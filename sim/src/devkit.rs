@@ -20,8 +20,10 @@
 //! and where they differ (magenta), side by side.
 
 use std::collections::VecDeque;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration as StdDuration, Instant as StdInstant};
 
 use embassy_time::Instant;
@@ -29,15 +31,19 @@ use embassy_time::Instant;
 use crate::alarm;
 use crate::battery::Battery;
 use crate::brightness;
+use crate::buttons::Press;
 use crate::canvas::{Canvas, HEIGHT, WIDTH};
 use crate::clock::{self, DateTime};
 use crate::compare::{self, Event, Export, Head, Music, Pass, kind, phone};
 use crate::display::{Display, PANEL, SIZE, rgb888};
+use crate::flash::{Flash, REGION_BYTES};
+use crate::gb::{self, Incoming, LineBuffer};
 use crate::gesture::{Gesture, Touch};
 use crate::script;
 use crate::shot;
 use crate::ui::{App, PhoneEvent, Status, ThemeChoice, Unpaired};
-use crate::{InputEvent, activity, debug, time};
+use crate::ui_loop::{Stored, UiLoop};
+use crate::{InputEvent, activity, debug, storage, time};
 
 const TARGET: [&str; 2] = ["--target", "nRF52832_xxAA"];
 /// A music info's artist or track, as `PhoneEvent::MusicInfo` holds it.
@@ -49,32 +55,48 @@ const INPUT_TIMEOUT: StdDuration = StdDuration::from_secs(3);
 /// [`compare::EVENTS`] it keeps (a tick a second).
 const POLL: StdDuration = StdDuration::from_secs(2);
 
-pub fn run(elf: &Path, scripts: &[PathBuf], out: &Path) -> Result<(), String> {
+/// What `--devkit` (and `--fuzz`) set up besides the dev kit: this
+/// computer as its phone, at `peer` (its Bluetooth address), and the
+/// storage it starts from.
+pub struct Setup {
+    pub peer: Option<String>,
+    pub storage: Option<PathBuf>,
+}
+
+pub fn run(elf: &Path, scripts: &[PathBuf], out: &Path, setup: &Setup) -> Result<(), String> {
     let devkit = DevKit::open(elf)?;
-    let mut follower = Follower::start(devkit)?;
+    let storage = match &setup.storage {
+        Some(path) => {
+            Some(std::fs::read(path).map_err(|e| format!("reading {}: {e}", path.display()))?)
+        }
+        None => None,
+    };
+    let mut rig = Rig::new(setup.peer.clone());
+    let mut follower = Follower::start(&devkit, &mut rig, storage.as_deref(), out)?;
     let mut failed = Vec::new();
     for path in scripts {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("reading {}: {e}", path.display()))?;
         for (n, line) in text.lines().enumerate() {
             let at = |e: String| format!("{}:{}: {e}", path.display(), n + 1);
-            if let Some(Mismatch { name, pixels }) = follower.execute(line, out).map_err(at)? {
-                eprintln!("MISMATCH: {name}: {pixels} pixels differ");
+            for Finding { name, what } in follower.execute(line, out).map_err(at)? {
+                eprintln!("MISMATCH: {name}: {what}");
                 failed.push(name);
             }
         }
     }
     if failed.is_empty() {
-        eprintln!("every frame matched");
+        eprintln!("everything matched");
         Ok(())
     } else {
-        Err(format!("frames differ: {}", failed.join(", ")))
+        Err(format!("differ: {}", failed.join(", ")))
     }
 }
 
-struct Mismatch {
-    name: String,
-    pixels: usize,
+/// Where the simulator and the dev kit disagreed.
+pub struct Finding {
+    pub name: String,
+    pub what: String,
 }
 
 // ==============================================================================
@@ -90,6 +112,19 @@ struct DevKit {
     export: u32,
     /// The last theme's palette, by its address: they don't change.
     palette: std::cell::RefCell<Option<(u32, Palette)>>,
+    /// What the storage writes and resets have taken so far.
+    spent: std::cell::Cell<Spent>,
+}
+
+/// Wall time the dev kit spent other than on a script's steps: writing
+/// its storage, and resetting (to the app's first export, past the
+/// bootloader's 5 s).
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Spent {
+    pub writes: u32,
+    pub writing: StdDuration,
+    pub resets: u32,
+    pub resetting: StdDuration,
 }
 
 impl DevKit {
@@ -125,6 +160,7 @@ impl DevKit {
             canvas: std::cell::Cell::new(None),
             export: find("UR_COMPARE")?,
             palette: std::cell::RefCell::new(None),
+            spent: std::cell::Cell::default(),
         })
     }
 
@@ -212,6 +248,49 @@ impl DevKit {
             &format!("{value:#x}"),
         ])
         .map(drop)
+    }
+
+    /// The storage region (`storage::RANGE`), as on the chip.
+    fn read_storage(&self) -> Result<Vec<u8>, String> {
+        self.read_bytes(storage::RANGE.start, REGION_BYTES)
+    }
+
+    /// Writes `image` over the storage region, unless it's there already,
+    /// and checks it took. The dev kit needs a reset after (`esprobe
+    /// flash` resets it, but not as `reset` does).
+    ///
+    /// As an ELF of that region alone, through `esprobe flash`, which
+    /// erases and writes only its pages: 0.7 s. (`esprobe program`, with a
+    /// raw image, first backs the whole 512 KB flash up: 15 s, for every
+    /// run, and every try while shrinking.)
+    fn write_storage(&self, image: &[u8], scratch: &Path) -> Result<(), String> {
+        if image.len() != REGION_BYTES {
+            return Err(format!(
+                "a storage image is {REGION_BYTES} bytes, not {}",
+                image.len()
+            ));
+        }
+        // A run that saved nothing (or a try while shrinking that didn't)
+        // left it as it was.
+        if self.read_storage()? == image {
+            return Ok(());
+        }
+        let started = StdInstant::now();
+        std::fs::create_dir_all(scratch)
+            .map_err(|e| format!("creating {}: {e}", scratch.display()))?;
+        let elf = scratch.join("storage.elf");
+        std::fs::write(&elf, storage_elf(image))
+            .map_err(|e| format!("writing {}: {e}", elf.display()))?;
+        let path = elf.to_str().ok_or("a path isn't UTF-8")?;
+        Self::esprobe(&["flash", path])?;
+        if self.read_storage()? != image {
+            return Err("the dev kit's storage isn't what was written".into());
+        }
+        let mut spent = self.spent.get();
+        spent.writes += 1;
+        spent.writing += started.elapsed();
+        self.spent.set(spent);
+        Ok(())
     }
 
     /// Everything exported but the events.
@@ -303,6 +382,7 @@ impl DevKit {
     /// does. The export is cleared first, so its boot isn't mistaken for
     /// the last one's.
     fn reset(&self) -> Result<Head, String> {
+        let begun = StdInstant::now();
         Self::esprobe(&["core", "reset-halt"])?;
         let magic = self.export + std::mem::offset_of!(Head, magic) as u32;
         self.write_word(magic, 0)?;
@@ -311,6 +391,10 @@ impl DevKit {
         loop {
             let head = self.head()?;
             if head.magic == compare::MAGIC {
+                let mut spent = self.spent.get();
+                spent.resets += 1;
+                spent.resetting += begun.elapsed();
+                self.spent.set(spent);
                 return Ok(head);
             }
             if started.elapsed() > StdDuration::from_secs(15) {
@@ -420,17 +504,23 @@ struct Palette {
 // ==============================================================================
 
 /// What the phone said, for a phone event the dev kit logs without its
-/// content: the simulator knows what it injected.
-enum Sent {
-    Notification {
-        app: &'static str,
-        who: &'static str,
-        backdate_minutes: i64,
-    },
+/// content: the simulator knows what it injected (a test notification, or
+/// what a Gadgetbridge line it sent says), so it expects it, in order.
+struct Sent {
+    event: PhoneEvent,
+    /// For a test notification (see `debug::take_backdate_minutes`).
+    backdate_minutes: i64,
+    /// When it was sent, to notice one the dev kit never got.
+    at: StdInstant,
 }
 
-struct Follower {
-    devkit: DevKit,
+/// How long the dev kit may take to log what the phone sent, or to send
+/// the phone what its UI asked: past this, it never will.
+const PHONE_GRACE: StdDuration = StdDuration::from_secs(3);
+
+pub struct Follower<'a> {
+    devkit: &'a DevKit,
+    rig: &'a mut Rig,
     app: App,
     canvas: Box<Canvas>,
     display: Display,
@@ -442,33 +532,39 @@ struct Follower {
     air: bool,
     daytime: bool,
     sent: VecDeque<Sent>,
+    /// What the simulator's UI asked to send the phone (its lines), while
+    /// the dev kit's was connected, since the last check.
+    outbox: Vec<String>,
+    /// The button grid's presses the simulator's UI handed BTHome, which
+    /// the dev kit's hasn't yet (as its `HA_PRESS` events say), and when.
+    ha_presses: VecDeque<(Press, StdInstant)>,
+    /// Where the two differed, since the last check.
+    ha_differences: Vec<String>,
+    /// The storage a `reset` rebooted the dev kit with, since the last
+    /// look.
+    rebooted: Option<Vec<u8>>,
 }
 
-impl Follower {
-    fn start(devkit: DevKit) -> Result<Self, String> {
+impl<'a> Follower<'a> {
+    /// Resets the dev kit (onto `storage` first, if given), and follows
+    /// it from its boot.
+    fn start(
+        devkit: &'a DevKit,
+        rig: &'a mut Rig,
+        storage: Option<&[u8]>,
+        scratch: &Path,
+    ) -> Result<Self, String> {
+        rig.tidy()?;
+        if let Some(image) = storage {
+            eprintln!("writing the dev kit's storage");
+            devkit.write_storage(image, scratch)?;
+        }
         eprintln!("resetting the dev kit");
         let boot = devkit.reset()?.boot;
-        time::set(Instant::from_ticks(boot.at));
-        let themes = ThemeChoice {
-            light: boot.theme_light,
-            dark: boot.theme_dark,
-        };
-        let mut app = App::new(
-            Instant::from_ticks(boot.at),
-            themes,
-            alarm::Settings::from_bytes(boot.alarms),
-        );
-        app.phone_alarms = alarm::Phone::from_bytes(boot.phone_alarms);
-        app.brightness = brightness::Setting::from_byte(boot.brightness);
-        app.buttons = crate::buttons::Setting::from_byte(boot.buttons);
-        app.grid_layout = crate::buttons::Layout::from_byte(boot.grid);
-        eprintln!(
-            "following the dev kit from its boot at {} s of uptime",
-            boot.at / 32_768
-        );
         let mut follower = Self {
             devkit,
-            app,
+            rig,
+            app: boot_app(&boot),
             canvas: Box::new(Canvas::new()),
             display: Display,
             replayed: 0,
@@ -476,15 +572,55 @@ impl Follower {
             air: false,
             daytime: false,
             sent: VecDeque::new(),
+            outbox: Vec::new(),
+            ha_presses: VecDeque::new(),
+            ha_differences: Vec::new(),
+            rebooted: None,
         };
-        follower.catch_up(None)?;
+        follower.follow(&boot)?;
         Ok(follower)
     }
 
-    fn execute(&mut self, line: &str, out: &Path) -> Result<Option<Mismatch>, String> {
+    /// Follows the dev kit from the boot it just made: its UI is new, its
+    /// events counted afresh.
+    fn follow(&mut self, boot: &compare::Boot) -> Result<(), String> {
+        time::set(Instant::from_ticks(boot.at));
+        self.app = boot_app(boot);
+        self.replayed = 0;
+        (self.connected, self.air, self.daytime) = (false, false, false);
+        self.sent.clear();
+        self.outbox.clear();
+        self.ha_presses.clear();
+        self.ha_differences.clear();
+        if let Some(peer) = &mut self.rig.peer {
+            peer.poll();
+            peer.received.clear();
+        }
+        eprintln!(
+            "following the dev kit from its boot at {} s of uptime",
+            boot.at / 32_768
+        );
+        self.catch_up(None)
+    }
+
+    /// The storage the last `reset` rebooted the dev kit with, if one has
+    /// since the last call: from there, the dev kit and the simulator know
+    /// no more than a run's start does (bar the clock, and a thermometer
+    /// left advertising), so what follows can be tried from there alone.
+    pub fn take_rebooted(&mut self) -> Option<Vec<u8>> {
+        self.rebooted.take()
+    }
+
+    pub fn execute(&mut self, line: &str, out: &Path) -> Result<Vec<Finding>, String> {
+        // As in a script for the simulator alone: the rest of the line,
+        // unsplit.
+        if let Some(rest) = line.trim_start().strip_prefix("gb ") {
+            self.gadgetbridge(rest.trim())?;
+            return Ok(Vec::new());
+        }
         let words = script::split(line)?;
         let Some((command, args)) = words.split_first() else {
-            return Ok(None);
+            return Ok(Vec::new());
         };
         let arg = |i: usize| args.get(i).map(String::as_str);
         let point = |i: usize| arg(i).map_or(Ok((40, 40)), script::point);
@@ -515,6 +651,10 @@ impl Follower {
                 };
                 self.inject(kind, x as u8, y as u8, ms)?;
             }
+            "double" => {
+                let (x, y) = script::point(arg(0).ok_or("double: needs X,Y")?)?;
+                self.inject(19, x as u8, y as u8, 0)?;
+            }
             "press" => {
                 let (x, y) = script::point(arg(0).ok_or("press: needs X,Y")?)?;
                 self.inject(16, x as u8, y as u8, 0)?;
@@ -529,10 +669,13 @@ impl Follower {
                         .map_err(|_| format!("notify: {h} hours ago?"))
                 })?;
                 let (app, who) = script::test_notification(n);
-                self.sent.push_back(Sent::Notification {
-                    app,
-                    who,
+                self.sent.push_back(Sent {
+                    event: PhoneEvent::Notification {
+                        app: app.into(),
+                        who: who.into(),
+                    },
                     backdate_minutes: i64::from(hours) * 60,
+                    at: StdInstant::now(),
                 });
                 self.inject(9, n, hours, 0)?;
             }
@@ -581,12 +724,65 @@ impl Follower {
             }
             "compare" => {
                 let name = arg(0).ok_or("compare: needs a NAME")?;
-                return self.compare(name, out).map(|pixels| {
-                    (pixels > 0).then(|| Mismatch {
+                let mut findings = Vec::new();
+                let pixels = self.compare(name, out)?;
+                if pixels > 0 {
+                    findings.push(Finding {
                         name: name.to_owned(),
-                        pixels,
-                    })
-                });
+                        what: format!("{pixels} pixels differ"),
+                    });
+                }
+                findings.extend(self.check_phone(name));
+                findings.extend(self.check_ha(name));
+                return Ok(findings);
+            }
+            "connect" => {
+                self.rig.connect()?;
+                self.catch_up(None)?;
+            }
+            "disconnect" => {
+                self.rig.peer()?.request("disconnect")?;
+                self.catch_up(None)?;
+            }
+            "bthome-temp" => {
+                self.rig.advertiser = None;
+                match arg(0).ok_or("bthome-temp: needs C, or off")? {
+                    "off" => {}
+                    celsius => {
+                        let celsius: f64 = celsius
+                            .parse()
+                            .map_err(|_| format!("bthome-temp {celsius}? (C, or off)"))?;
+                        let hundredths = (celsius * 100.0).round();
+                        if !(f64::from(i16::MIN)..=f64::from(i16::MAX)).contains(&hundredths) {
+                            return Err(format!("bthome-temp {celsius}: out of BTHome's range"));
+                        }
+                        self.rig.advertiser = Some(Advertiser::start(hundredths as i16)?);
+                    }
+                }
+            }
+            // Restarts the dev kit (as a watchdog or a crash would), and
+            // checks it boots with the settings its UI had: what it saved.
+            "reset" => {
+                let expected = self.settle()?;
+                // What it boots with: a start as good as the run's own
+                // (see `take_rebooted`).
+                self.rebooted = Some(self.devkit.read_storage()?);
+                let boot = self.devkit.reset()?.boot;
+                let booted = Persisted::of(&boot_app(&boot));
+                self.follow(&boot)?;
+                return Ok(Persisted::differ("reset", &booted, &expected)
+                    .into_iter()
+                    .collect());
+            }
+            // Checks the dev kit's storage holds what its UI has: what
+            // it would boot with.
+            "check-storage" => {
+                let expected = self.settle()?;
+                let image = self.devkit.read_storage()?;
+                let stored = Persisted::of(&booted_from(image)?);
+                return Ok(Persisted::differ("storage", &stored, &expected)
+                    .into_iter()
+                    .collect());
             }
             // What the dev kit's UI is doing, as the simulator's, having
             // replayed the same, says.
@@ -618,10 +814,152 @@ impl Follower {
                 ));
             }
         }
-        Ok(None)
+        Ok(Vec::new())
+    }
+
+    /// `gb LINE`: sends the line, as Gadgetbridge would, from this
+    /// computer; expects what it makes the UI do, as `ble::interpret`
+    /// passes it on.
+    fn gadgetbridge(&mut self, line: &str) -> Result<(), String> {
+        let bytes = script::gb_wire(line)?;
+        let mut expected = Vec::new();
+        LineBuffer::new().push(&bytes, |line| {
+            if let Some(Incoming::Phone {
+                event,
+                text_as_bitmaps,
+            }) = gb::parse(line)
+            {
+                expected.push(event);
+                if text_as_bitmaps {
+                    expected.push(PhoneEvent::TextAsBitmaps);
+                }
+            }
+        });
+        let at = StdInstant::now();
+        self.sent.extend(expected.into_iter().map(|event| Sent {
+            event,
+            backdate_minutes: 0,
+            at,
+        }));
+        let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        // Following the dev kit meanwhile: a long line takes seconds over
+        // the air, while its UI may log ten events a second (scrolling
+        // text), more than its export keeps.
+        let started = StdInstant::now();
+        self.rig.peer()?.begin(&format!("send {hex}"))?;
+        loop {
+            self.catch_up(None)?;
+            if self
+                .rig
+                .peer()?
+                .answer(StdDuration::from_millis(500))?
+                .is_some()
+            {
+                break;
+            }
+        }
+        let took = started.elapsed();
+        if took > StdDuration::from_secs(1) {
+            eprintln!("  phone: {} bytes took {took:.1?} to send", bytes.len());
+        }
+        self.catch_up(None)
+    }
+
+    /// Waits for the dev kit to save what its UI changed (it saves after
+    /// each event, but flash takes its turn with the radio), and returns
+    /// what the simulator's UI says it should have.
+    fn settle(&mut self) -> Result<Persisted, String> {
+        std::thread::sleep(StdDuration::from_secs(2));
+        self.catch_up(None)?;
+        Ok(Persisted::of(&self.app))
+    }
+
+    /// Checks the button grid's presses for Home Assistant, since the last
+    /// check: the dev kit's UI's against the simulator's.
+    fn check_ha(&mut self, name: &str) -> Vec<Finding> {
+        // The dev kit's come once its radio's done with each (a burst of
+        // adverts), so a moment after the simulator's.
+        for (press, at) in &self.ha_presses {
+            if at.elapsed() > PHONE_GRACE {
+                self.ha_differences.push(format!(
+                    "the simulator's UI pressed {} {:?}; the dev kit's nothing",
+                    press.code, press.gesture
+                ));
+            }
+        }
+        (self.ha_presses).retain(|(_, at)| at.elapsed() <= PHONE_GRACE);
+        if self.ha_differences.is_empty() {
+            return Vec::new();
+        }
+        vec![Finding {
+            name: format!("{name}-ha"),
+            what: std::mem::take(&mut self.ha_differences).join("; "),
+        }]
+    }
+
+    /// Checks what the dev kit sent the phone (this computer) against what
+    /// the simulator's UI asked to send, since the last check; and that the
+    /// dev kit got everything sent to it.
+    fn check_phone(&mut self, name: &str) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        let late: Vec<_> = self
+            .sent
+            .iter()
+            .filter(|sent| sent.at.elapsed() > PHONE_GRACE)
+            .map(|sent| describe(&InputEvent::Phone(sent.event.clone())))
+            .collect();
+        if !late.is_empty() {
+            self.sent.retain(|sent| sent.at.elapsed() <= PHONE_GRACE);
+            findings.push(Finding {
+                name: format!("{name}-phone-in"),
+                what: format!("the dev kit's UI never got {}", late.join(", ")),
+            });
+        }
+        let Some(peer) = &mut self.rig.peer else {
+            self.outbox.clear();
+            return findings;
+        };
+        // The UI's own messages: the rest (the time, the battery, activity)
+        // the dev kit's Bluetooth task sends of its own accord.
+        let ui = |line: &String| {
+            [r#"{"t":"call""#, r#"{"t":"music""#, r#"{"t":"intent""#]
+                .iter()
+                .any(|prefix| line.starts_with(prefix))
+        };
+        let deadline = StdInstant::now() + PHONE_GRACE;
+        loop {
+            peer.poll();
+            if peer.received.iter().filter(|line| ui(line)).count() >= self.outbox.len()
+                || StdInstant::now() > deadline
+            {
+                break;
+            }
+            std::thread::sleep(StdDuration::from_millis(100));
+        }
+        let theirs: Vec<String> = peer.received.drain(..).filter(|line| ui(line)).collect();
+        let ours = std::mem::take(&mut self.outbox);
+        if theirs != ours {
+            findings.push(Finding {
+                name: format!("{name}-phone-out"),
+                what: format!("the dev kit sent the phone {theirs:?}; the simulator's UI {ours:?}"),
+            });
+        }
+        findings
     }
 
     fn inject(&mut self, kind: u8, x: u8, y: u8, extra: u8) -> Result<(), String> {
+        // A tap (or a finger, which may make one) on the storage mode
+        // prompt would switch the dev kit off: a button cancels it instead,
+        // as anything but a tap does. (By the simulator's UI, which has
+        // seen what the dev kit's has.)
+        self.catch_up(None)?;
+        let (kind, x, y, extra) = if matches!(kind, 2 | 16 | 19) && self.app.offering_storage_mode()
+        {
+            eprintln!("  (a button, not the tap, on the storage mode prompt)");
+            (1, 0, 0, 0)
+        } else {
+            (kind, x, y, extra)
+        };
         self.devkit.inject(kind, x, y, extra)?;
         self.catch_up(None)
     }
@@ -705,6 +1043,39 @@ impl Follower {
                 self.app.set_daytime(daytime);
                 None
             }
+            kind::HA_PRESS => {
+                let press = Press {
+                    code: event.x,
+                    gesture: compare::ha_gesture_from_code(event.gesture)
+                        .ok_or("the dev kit logged an unknown grid gesture")?,
+                };
+                let sent = event.flags != 0;
+                eprintln!(
+                    "  dev kit: a grid press for Home Assistant, {} {:?}{} at {:.3} s",
+                    press.code,
+                    press.gesture,
+                    if sent { "" } else { ", not sent" },
+                    seconds(at)
+                );
+                match self.ha_presses.pop_front() {
+                    Some((ours, _)) if ours == press => {}
+                    ours => self.ha_differences.push(format!(
+                        "the dev kit's UI pressed {} {:?}; the simulator's {}",
+                        press.code,
+                        press.gesture,
+                        ours.map_or("nothing".to_owned(), |(ours, _)| format!(
+                            "{} {:?}",
+                            ours.code, ours.gesture
+                        ))
+                    )),
+                }
+                // Whether it went is the radio's say, as the simulator's
+                // `slots full` is.
+                if !sent {
+                    self.app.ha_unsent(press, at);
+                }
+                None
+            }
             kind::TIMER => {
                 let finger_down = event.flags & compare::flag::FINGER_DOWN != 0;
                 self.app.on_timer(at, finger_down);
@@ -719,32 +1090,54 @@ impl Follower {
         // What the events set off on the dev kit (buzzes, messages for the
         // phone) isn't drawn: drop it here, so it doesn't pile up.
         while crate::motor::take_request().is_some() {}
-        while crate::ble::OUTBOX.try_receive().is_ok() {}
-        while self.app.take_ha_press().is_some() {}
+        // What it sends the phone is checked (see `check_phone`): the dev
+        // kit's goes nowhere unless connected.
+        while let Ok(message) = crate::ble::OUTBOX.try_receive() {
+            if self.connected {
+                self.outbox.push(message.to_line().trim_end().to_owned());
+            }
+        }
+        while let Some(press) = self.app.take_ha_press() {
+            self.ha_presses.push_back((press, StdInstant::now()));
+        }
         Ok(())
     }
 
-    /// What the phone sent, by the kind the dev kit logged.
+    /// What the phone sent, by the kind the dev kit logged: what this sent
+    /// it, in order.
     fn phone(&mut self, event: &Event) -> Result<PhoneEvent, String> {
-        Ok(match event.phone {
-            phone::NOTIFICATION => match self.sent.pop_front() {
-                Some(Sent::Notification {
-                    app,
-                    who,
-                    backdate_minutes,
-                }) => {
-                    debug::backdate_next(backdate_minutes);
-                    PhoneEvent::Notification {
-                        app: app.into(),
-                        who: who.into(),
+        let next = self
+            .sent
+            .front()
+            .map(|sent| compare::phone_code(&sent.event));
+        if next == Some(event.phone) {
+            let sent = self.sent.pop_front().expect("there's a next");
+            // From starting to send to seeing it here (to within a look, of
+            // 0.5 s while sending): how long the line took over the air.
+            let took = sent.at.elapsed();
+            if took > StdDuration::from_secs(1) {
+                eprintln!("  phone: the dev kit had it {took:.1?} after it was sent");
+            }
+            return Ok(match sent.event {
+                PhoneEvent::Notification { app, who } => {
+                    debug::backdate_next(sent.backdate_minutes);
+                    PhoneEvent::Notification { app, who }
+                }
+                PhoneEvent::MusicInfo { artist, track } => {
+                    // The text as the dev kit got it, too: the same.
+                    let got = self.devkit.music(event.held_ms)?;
+                    if got != (artist.clone(), track.clone()) {
+                        return Err(format!(
+                            "the dev kit's music info says {got:?}, not \
+                             ({artist:?}, {track:?}) as sent"
+                        ));
                     }
+                    PhoneEvent::MusicInfo { artist, track }
                 }
-                None => {
-                    return Err("the dev kit got a notification this didn't send \
-                                (is a phone connected to it?)"
-                        .into());
-                }
-            },
+                other => other,
+            });
+        }
+        Ok(match event.phone {
             // The `media` input's (see `src/debug.rs`), or a connected
             // phone's own: what the dev kit got, either way.
             phone::MUSIC_INFO => {
@@ -758,9 +1151,16 @@ impl Follower {
             phone::FIND => PhoneEvent::Find { on: true },
             phone::FIND_OFF => PhoneEvent::Find { on: false },
             other => {
+                let expected = match &self.sent.front() {
+                    Some(sent) => format!(
+                        ", expecting {}",
+                        describe(&InputEvent::Phone(sent.event.clone()))
+                    ),
+                    None => String::new(),
+                };
                 return Err(format!(
                     "the dev kit got a message from the phone (kind {other}) this can't \
-                     reproduce (is a phone connected to it?)"
+                     reproduce{expected} (is a phone connected to it?)"
                 ));
             }
         })
@@ -927,6 +1327,67 @@ impl Follower {
     }
 }
 
+/// `image` as an ELF that `esprobe flash` writes to the storage region:
+/// one loadable section (`.storage`, as probe-rs wants a section as well
+/// as the segment), at [`storage::RANGE`]'s start.
+fn storage_elf(image: &[u8]) -> Vec<u8> {
+    const HEADER: u32 = 52;
+    const SEGMENT: u32 = 32;
+    const SECTION: u32 = 40;
+    let names = b"\0.storage\0.shstrtab\0";
+    let address = storage::RANGE.start;
+    let data_at = HEADER + SEGMENT;
+    let names_at = data_at + image.len() as u32;
+    let sections_at = (names_at + names.len() as u32).next_multiple_of(4);
+    let words = |words: &[u32]| {
+        words
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .collect::<Vec<_>>()
+    };
+    let halves = |halves: &[u16]| {
+        halves
+            .iter()
+            .flat_map(|h| h.to_le_bytes())
+            .collect::<Vec<_>>()
+    };
+    let mut elf = b"\x7fELF\x01\x01\x01\0\0\0\0\0\0\0\0\0".to_vec();
+    // An executable, for ARM, version 1, entering at the data (unused),
+    // with its segment table, sections, and flags (EABI 5, hard float).
+    elf.extend(halves(&[2, 40]));
+    elf.extend(words(&[1, address, HEADER, sections_at, 0x0500_0400]));
+    elf.extend(halves(&[
+        HEADER as u16,
+        SEGMENT as u16,
+        1,
+        SECTION as u16,
+        3,
+        2,
+    ]));
+    // The segment: loaded, at `address`, read and execute.
+    let size = image.len() as u32;
+    elf.extend(words(&[1, data_at, address, address, size, size, 5, 4]));
+    elf.extend(image);
+    elf.extend(names);
+    elf.resize(sections_at as usize, 0);
+    elf.extend([0; SECTION as usize]);
+    // `.storage`: bits, allocated and executable; then the names.
+    elf.extend(words(&[1, 1, 6, address, data_at, size, 0, 0, 4, 0]));
+    elf.extend(words(&[
+        10,
+        3,
+        0,
+        0,
+        names_at,
+        names.len() as u32,
+        0,
+        0,
+        1,
+        0,
+    ]));
+    elf
+}
+
 /// How long the dev kit took to push its frame to the panel, if it pushed
 /// anything, and how long the simulator's panel says that push takes (see
 /// `display::cost`). The simulator's own push of the frame isn't
@@ -978,7 +1439,23 @@ fn describe(event: &InputEvent) -> String {
             touch.y,
             touch.held_ms
         ),
-        InputEvent::Phone(_) => "a message from the phone".into(),
+        InputEvent::Phone(message) => format!(
+            "a message from the phone ({})",
+            match message {
+                PhoneEvent::Notification { .. } => "a notification",
+                PhoneEvent::IncomingCall { .. } => "a call",
+                PhoneEvent::CallOver => "the call over",
+                PhoneEvent::MusicInfo { .. } => "music info",
+                PhoneEvent::MusicState { .. } => "music state",
+                PhoneEvent::Find { .. } => "find",
+                PhoneEvent::Unpaired(_) => "unpaired",
+                PhoneEvent::Alarms(_) => "alarms",
+                PhoneEvent::Route(_) => "a route",
+                PhoneEvent::TextAsBitmaps => "text as bitmaps",
+                PhoneEvent::IntentsOff => "intents off",
+                PhoneEvent::UpdateRefused => "update refused",
+            }
+        ),
     }
 }
 
@@ -998,6 +1475,393 @@ fn side_by_side(path: &Path, sim: &[u16], devkit: &[u16]) -> Result<(), String> 
             .collect(),
     };
     shot::save_difference(path, &image(sim), &image(devkit)).map(|_| ())
+}
+
+// ==============================================================================
+// Settings: what the dev kit boots with
+// ==============================================================================
+
+/// The UI the dev kit's boot made, from the settings it exported.
+fn boot_app(boot: &compare::Boot) -> App {
+    let themes = ThemeChoice {
+        light: boot.theme_light,
+        dark: boot.theme_dark,
+    };
+    let mut app = App::new(
+        Instant::from_ticks(boot.at),
+        themes,
+        alarm::Settings::from_bytes(boot.alarms),
+    );
+    app.phone_alarms = alarm::Phone::from_bytes(boot.phone_alarms);
+    app.brightness = brightness::Setting::from_byte(boot.brightness);
+    app.buttons = crate::buttons::Setting::from_byte(boot.buttons);
+    app.grid_layout = crate::buttons::Layout::from_byte(boot.grid);
+    app
+}
+
+/// The UI a watch with this storage would boot with, through the
+/// firmware's own loading (`ui_loop::Stored`).
+fn booted_from(image: Vec<u8>) -> Result<App, String> {
+    let flash = Flash::from_bytes(image).ok_or("the storage read short")?;
+    storage::init(flash);
+    Ok(UiLoop::boot(crate::watch::run(Stored::load(), &mut None)).0)
+}
+
+/// The settings the watch keeps in flash, as bytes, to compare.
+#[derive(PartialEq, Debug)]
+struct Persisted {
+    light_theme: u8,
+    dark_theme: u8,
+    brightness: u8,
+    buttons: u8,
+    grid: u8,
+    alarms: [u8; alarm::Settings::BYTES],
+    phone_alarms: [u8; alarm::Phone::BYTES],
+}
+
+impl Persisted {
+    fn of(app: &App) -> Self {
+        Self {
+            light_theme: app.themes.light,
+            dark_theme: app.themes.dark,
+            brightness: app.brightness.to_byte(),
+            buttons: app.buttons.to_byte(),
+            grid: app.grid_layout.to_byte(),
+            alarms: app.alarms.to_bytes(),
+            phone_alarms: app.phone_alarms.to_bytes(),
+        }
+    }
+
+    /// What differs between the dev kit's (`got`) and what the simulator's
+    /// UI says it should be.
+    fn differ(name: &str, got: &Self, expected: &Self) -> Option<Finding> {
+        let mut what = Vec::new();
+        let mut field = |field: &str, got: &dyn std::fmt::Debug, expected: &dyn std::fmt::Debug| {
+            let (got, expected) = (format!("{got:?}"), format!("{expected:?}"));
+            if got != expected {
+                what.push(format!("{field} {got} (the simulator's UI: {expected})"));
+            }
+        };
+        field("light theme", &got.light_theme, &expected.light_theme);
+        field("dark theme", &got.dark_theme, &expected.dark_theme);
+        field("brightness", &got.brightness, &expected.brightness);
+        field("buttons", &got.buttons, &expected.buttons);
+        field("grid", &got.grid, &expected.grid);
+        field("alarms", &got.alarms, &expected.alarms);
+        field("phone alarms", &got.phone_alarms, &expected.phone_alarms);
+        (!what.is_empty()).then(|| Finding {
+            name: name.to_owned(),
+            what: format!("the dev kit's {}", what.join("; ")),
+        })
+    }
+}
+
+/// The dev kit, and what stands around it, for run after run (`--fuzz`).
+pub struct Bench {
+    devkit: DevKit,
+    rig: Rig,
+}
+
+impl Bench {
+    pub fn open(elf: &Path, peer: Option<String>) -> Result<Self, String> {
+        Ok(Self {
+            devkit: DevKit::open(elf)?,
+            rig: Rig::new(peer),
+        })
+    }
+
+    pub fn read_storage(&self) -> Result<Vec<u8>, String> {
+        self.devkit.read_storage()
+    }
+
+    /// What its storage writes and resets have taken so far.
+    pub fn spent(&self) -> Spent {
+        self.devkit.spent.get()
+    }
+
+    /// A run: the dev kit reset onto `storage`, and followed.
+    pub fn follow(&mut self, storage: &[u8], scratch: &Path) -> Result<Follower<'_>, String> {
+        Follower::start(&self.devkit, &mut self.rig, Some(storage), scratch)
+    }
+
+    /// Puts the dev kit's storage back as it was, and resets it; then,
+    /// with this computer as its phone, sets its clock to the real time,
+    /// as the runs set it to others (and it'd record its activity at
+    /// theirs until its phone next connects).
+    pub fn restore(&mut self, original: &[u8], scratch: &Path) -> Result<(), String> {
+        self.rig.tidy()?;
+        self.devkit.write_storage(original, scratch)?;
+        self.devkit.reset()?;
+        if self.rig.address.is_some() {
+            // Best effort: the storage, which matters more, is back.
+            if let Err(e) = self.real_time() {
+                eprintln!("fuzz: couldn't set the dev kit's clock to the real time: {e}");
+            }
+        }
+        Ok(())
+    }
+
+    fn real_time(&mut self) -> Result<(), String> {
+        let utc = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_secs();
+        // This computer's offset, `+0100` or the like, as hours.
+        let output = Command::new("date")
+            .arg("+%z")
+            .output()
+            .map_err(|e| format!("running date: {e}"))?;
+        let zone = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let minutes = |digits: &str| digits.parse::<i64>().map_err(|e| format!("{zone}: {e}"));
+        let (sign, digits) = zone.split_at_checked(1).ok_or("date +%z said nothing")?;
+        let (hours, rest) = digits.split_at_checked(2).ok_or("date +%z's hours")?;
+        let offset = (minutes(hours)? * 60 + minutes(rest)?) * if sign == "-" { -1 } else { 1 };
+        let line = set_time_line(utc as i64, offset as f64 / 60.0);
+        let hex: String = (script::gb_wire(&line)?.iter())
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        self.rig.connect()?;
+        let peer = self.rig.peer()?;
+        peer.request(&format!("send {hex}"))?;
+        peer.request("disconnect")?;
+        eprintln!("fuzz: the dev kit's clock is at the real time again ({utc}, UTC{zone})");
+        Ok(())
+    }
+}
+
+/// Gadgetbridge's line setting the clock to `utc` (seconds), in a time
+/// zone `zone` hours from UTC.
+pub fn set_time_line(utc: i64, zone: f64) -> String {
+    format!(
+        "setTime({utc});E.setTimeZone({zone:.1});(s=>s&&(s.timezone={zone:.1},\
+         require('Storage').write('setting.json',s)))(require('Storage').readJSON('setting.json',1))"
+    )
+}
+
+// ==============================================================================
+// This computer, as the dev kit's phone
+// ==============================================================================
+
+/// What stands around the dev kit: this computer as its phone, and as a
+/// BTHome thermometer. Kept from one run to the next (`--fuzz`).
+pub struct Rig {
+    address: Option<String>,
+    peer: Option<Peer>,
+    advertiser: Option<Advertiser>,
+}
+
+impl Rig {
+    pub fn new(address: Option<String>) -> Self {
+        Self {
+            address,
+            peer: None,
+            advertiser: None,
+        }
+    }
+
+    /// The phone, started at its first use.
+    fn peer(&mut self) -> Result<&mut Peer, String> {
+        if self.peer.is_none() {
+            let address = self.address.as_deref().ok_or(
+                "this needs this computer as the dev kit's phone: pair them, and pass \
+                 --peer ADDRESS (the dev kit's Bluetooth address)",
+            )?;
+            self.peer = Some(Peer::start(address)?);
+        }
+        Ok(self.peer.as_mut().expect("started above"))
+    }
+
+    /// Connects the phone, in a process of its own if its last link went
+    /// down: a second connection in the same process hears every
+    /// notification twice, which reads as the dev kit sending everything
+    /// twice.
+    fn connect(&mut self) -> Result<(), String> {
+        if let Some(peer) = &mut self.peer {
+            peer.poll();
+            if peer.dropped {
+                self.peer = None;
+            }
+        }
+        self.peer()?.request("connect").map(drop)
+    }
+
+    /// Back as a run starts: no thermometer, no phone connected.
+    fn tidy(&mut self) -> Result<(), String> {
+        self.advertiser = None;
+        if let Some(peer) = &mut self.peer {
+            peer.request("disconnect")?;
+        }
+        Ok(())
+    }
+}
+
+/// `scripts/gb-peer.py`, Gadgetbridge's stand-in, as a child process (see
+/// its docs for what it's told and says).
+struct Peer {
+    child: Child,
+    stdin: ChildStdin,
+    lines: mpsc::Receiver<String>,
+    /// What the watch sent, not yet a whole line.
+    partial: Vec<u8>,
+    /// The lines the watch sent, since they were last taken.
+    received: Vec<String>,
+    /// The link went down since the process started (see
+    /// `scripts/gb-peer.py`'s `dropped`).
+    dropped: bool,
+    /// What it was last asked (its verb), until it's answered, and by
+    /// when.
+    asked: Option<(String, StdInstant)>,
+}
+
+impl Peer {
+    fn start(address: &str) -> Result<Self, String> {
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/gb-peer.py");
+        let mut child = Command::new("uv")
+            .args(["run", "--quiet", "--with", "bleak", "python"])
+            .arg(&script)
+            .arg(address)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("running {} (with uv): {e}", script.display()))?;
+        let stdin = child.stdin.take().expect("piped");
+        let stdout = child.stdout.take().expect("piped");
+        let (send, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if send.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(Self {
+            child,
+            stdin,
+            lines,
+            partial: Vec::new(),
+            received: Vec::new(),
+            dropped: false,
+            asked: None,
+        })
+    }
+
+    /// Tells it `command`, and waits for its answer, taking in what the
+    /// watch sends meanwhile.
+    fn request(&mut self, command: &str) -> Result<(), String> {
+        self.begin(command)?;
+        loop {
+            if self.answer(StdDuration::from_secs(1))?.is_some() {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Tells it `command`, for [`Peer::answer`] to wait for its answer.
+    fn begin(&mut self, command: &str) -> Result<(), String> {
+        writeln!(self.stdin, "{command}").map_err(|e| format!("the phone's stand-in: {e}"))?;
+        let verb = command.split(' ').next().unwrap_or_default();
+        // Connecting may scan for ten seconds, then take thirty.
+        self.asked = Some((
+            verb.to_owned(),
+            StdInstant::now() + StdDuration::from_secs(60),
+        ));
+        Ok(())
+    }
+
+    /// Waits up to `wait` for the answer to what [`Peer::begin`] asked:
+    /// `Some` once it's done.
+    fn answer(&mut self, wait: StdDuration) -> Result<Option<()>, String> {
+        let (verb, deadline) = self.asked.clone().ok_or("nothing was asked")?;
+        let until = (StdInstant::now() + wait).min(deadline);
+        loop {
+            let left = until.saturating_duration_since(StdInstant::now());
+            let line = match self.lines.recv_timeout(left) {
+                Ok(line) => line,
+                Err(_) if StdInstant::now() < deadline => return Ok(None),
+                Err(_) => return Err(format!("the phone's stand-in didn't answer {verb}")),
+            };
+            if line == "ok" {
+                self.asked = None;
+                return Ok(Some(()));
+            }
+            if let Some(why) = line.strip_prefix("error ") {
+                self.asked = None;
+                return Err(format!("the phone's stand-in, at {verb}: {why}"));
+            }
+            self.take(&line);
+        }
+    }
+
+    /// Takes in what it said since.
+    fn poll(&mut self) {
+        while let Ok(line) = self.lines.try_recv() {
+            self.take(&line);
+        }
+    }
+
+    fn take(&mut self, line: &str) {
+        if let Some(hex) = line.strip_prefix("rx ") {
+            let bytes = (0..hex.len() / 2)
+                .filter_map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok());
+            self.partial.extend(bytes);
+            while let Some(end) = self.partial.iter().position(|&b| b == b'\n') {
+                let line: Vec<u8> = self.partial.drain(..=end).collect();
+                let line = String::from_utf8_lossy(&line).trim_end().to_owned();
+                eprintln!("  phone: got {line}");
+                self.received.push(line);
+            }
+        } else if line == "dropped" {
+            eprintln!("  phone: the dev kit disconnected");
+            self.dropped = true;
+        } else {
+            eprintln!("  phone: {line}");
+        }
+    }
+}
+
+impl Drop for Peer {
+    fn drop(&mut self) {
+        // Disconnects as it goes; if it won't, it's stopped.
+        let _ = writeln!(self.stdin, "quit");
+        let deadline = StdInstant::now() + StdDuration::from_secs(10);
+        while StdInstant::now() < deadline {
+            if let Ok(Some(_)) = self.child.try_wait() {
+                return;
+            }
+            std::thread::sleep(StdDuration::from_millis(100));
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// `scripts/bthome-advertise.sh`: this computer advertising as a BTHome
+/// thermometer, until dropped.
+struct Advertiser(Child);
+
+impl Advertiser {
+    fn start(hundredths: i16) -> Result<Self, String> {
+        use std::os::unix::process::CommandExt;
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/bthome-advertise.sh");
+        Command::new("bash")
+            .arg(&script)
+            .arg(hundredths.to_string())
+            .stdout(Stdio::null())
+            // Its own process group, so it and its `bluetoothctl` stop
+            // together.
+            .process_group(0)
+            .spawn()
+            .map(Self)
+            .map_err(|e| format!("running {}: {e}", script.display()))
+    }
+}
+
+impl Drop for Advertiser {
+    fn drop(&mut self) {
+        let group = format!("-{}", self.0.id());
+        let _ = Command::new("kill").args(["-TERM", "--", &group]).status();
+        let _ = self.0.wait();
+    }
 }
 
 #[cfg(test)]

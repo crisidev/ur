@@ -101,8 +101,9 @@ tap                               # snooze
 ```
 
 - **Inputs:** `button` (`button 2`: a double press), `glance`, `tap`,
-  `long`, `up`/`down`/`left`/`right` (at `X,Y`), or a finger: `press X,Y`
-  (again to move it), `lift`.
+  `long`, `up`/`down`/`left`/`right` (at `X,Y`), `double X,Y` (two taps
+  0.1 s apart, quicker than two over a dev kit's probe), or a finger:
+  `press X,Y` (again to move it), `lift`.
 - **The phone:** `gb` (see below), `connect`, `time`, `location`,
   `notify`, `call`, `music`, `find`, `phone-alarms`, `nav`, `unpaired`,
   `passkey`, `update`, `slots full` (both Bluetooth connections in use,
@@ -253,6 +254,52 @@ artist and track it gets, so the simulator shows the same. Its other
 messages the simulator can't know, and they stop the run.
 `devkit-compare.txt` goes round every screen it
 can reach (and puts back what it changes).
+
+With `--peer ADDRESS` (the dev kit's Bluetooth address), this computer is
+the dev kit's phone, through `scripts/gb-peer.py` (which needs `uv`, and
+the computer paired with the dev kit; see `scripts/dfu.py`). Then a
+script can `connect` and `disconnect`, and send `gb` lines over the air,
+as Gadgetbridge would: the simulator expects what each line makes the UI
+do, and checks, at each `compare`, that the dev kit's UI got it, and that
+what the dev kit sent the phone (calls answered, media commands, the
+button grid's intents) is what the simulator's UI asked for. A phone of
+your own must not be connected to the dev kit meanwhile: forget the dev
+kit in Gadgetbridge and Android. Besides, with a dev kit:
+
+- `bthome-temp C` advertises from this computer as a BTHome thermometer
+  (`scripts/bthome-advertise.sh`), and `bthome-temp off` stops.
+- `reset` restarts the dev kit, and checks it boots with the settings its
+  UI had (what it saved); the simulator then follows the new boot.
+- `check-storage` reads the dev kit's storage and checks it holds what
+  its UI has, read as the firmware reads it at boot.
+- `--storage FILE` writes FILE (the 12 KiB storage region; see below)
+  over the dev kit's storage before it starts.
+
+A tap on the storage mode prompt, which would switch the dev kit off, goes
+in as a button press, which cancels it.
+
+### Fuzzing
+
+`--fuzz ELF` writes the scripts itself: random ones, from a seed, of
+everything above (with `--peer`, Bluetooth too), each run from random
+settings saved over the dev kit's own storage, and a `compare` after every
+step. Runs are long (150 steps), as each starts with a reset (about 10 s,
+mostly the bootloader's). A run that finds a difference is cut after the
+step that showed it and shrunk, a fresh run each try: from the last reboot
+before it (a `reset` step: its storage is all that came before), the last
+few steps first, then twice as many, then steps taken out while it still
+shows, for at most 30 tries or 20 minutes. What's left is written to
+`finding-SEED/` (a script and a storage image, to run with `--devkit
+--storage`, and what it found):
+
+```sh
+cargo run --release -- --fuzz ../target/thumbv7em-none-eabihf/release/ur \
+    --peer E3:65:DE:6D:FE:A9 --seed 1 --runs 10 --out ../tmp/fuzz
+```
+
+The dev kit's storage is read first (`original-storage.bin`) and written
+back at the end. `--dry` runs the scripts on the simulator alone, to check
+the generator (`tests/fuzz.rs` does).
 
 Each `compare` also says how long the dev kit took to push its frame
 to the panel (if that pass pushed anything), and how long the

@@ -85,6 +85,19 @@ impl Flash {
         }
     }
 
+    /// The region as these bytes (say, a dev kit's, read over the probe);
+    /// `None` unless they're the region's size.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_bytes(bytes: Vec<u8>) -> Option<Self> {
+        (bytes.len() == REGION_BYTES).then_some(Self { bytes, file: None })
+    }
+
+    /// The region's bytes, as on the chip.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
     /// The flash kept in `path`: what's there, or erased flash if there's
     /// no file yet (it's written at the first change).
     ///

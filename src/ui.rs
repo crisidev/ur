@@ -670,6 +670,14 @@ impl App {
         }
     }
 
+    /// Whether it's asking to switch to storage mode, which a tap would
+    /// confirm: for the simulator's dev kit fuzzer, which mustn't switch
+    /// the dev kit off.
+    #[cfg(not(target_os = "none"))]
+    pub fn offering_storage_mode(&self) -> bool {
+        self.screen == Screen::Storage
+    }
+
     /// Whether the Air screen is on screen, for a scan to refresh it.
     pub fn showing_air(&self) -> bool {
         self.awake

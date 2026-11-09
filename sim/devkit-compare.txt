@@ -119,9 +119,9 @@ compare 21-woken
 # BUTTONS to BTHome: the KEY row, then Home Assistant's key, as a QR code
 # (drawn over the panel, so compared only around it) and as text; and the
 # grid below the clock, with its bar for the screens below it (the Air
-# screen, if an Aranet4's near). None of its buttons is tapped: each would
-# advertise a press to whatever Home Assistant is near. Then BUTTONS back
-# round to OFF.
+# screen, if an Aranet4's near). Its presses go out as BTHome adverts (no
+# Home Assistant acts on the dev kit's), and each compare checks the dev
+# kit's UI handed its radio the presses the simulator's did.
 left
 left
 wait 1s
@@ -141,18 +141,69 @@ wait 1s
 up
 wait 1s
 compare 25-grid
+# 2: lit while it waits 0.3 s for a second tap, then sent.
+tap 40,20
+wait 100ms
+compare 25a-grid-waiting
+wait 600ms
+compare 25b-grid-sent
+# 5, double-tapped (both taps in one go: two over the probe are too slow).
+wait 2s
+double 40,60
+wait 300ms
+compare 25c-grid-double
+# 3, held: a hold at once, a long press at 1.5 s, then the release.
+wait 2s
+press 67,20
+wait 1s
+compare 25d-grid-held
+wait 1500ms
+compare 25e-grid-long
+lift
+wait 500ms
+compare 25f-grid-released
+wait 2s
+
+# GRID to two layers: 2, then 3, a sequence (it waits 0.6 s for a
+# second; the probe's taps are ~0.3 s apart, back to back); then 7 alone.
 down
 wait 1s
 left
 left
 wait 1s
+tap 40,58
+wait 1s
+compare 26-settings-layers
+button
+wait 1s
+up
+wait 1s
+compare 27-layers
+tap 40,13
+tap 67,13
+wait 100ms
+compare 27a-layers-sequence
+wait 1s
+tap 13,67
+wait 1s
+compare 27b-layers-single
+wait 2s
+
+# Back as they were: GRID to six, BUTTONS round to OFF.
+down
+wait 1s
+left
+left
+wait 1s
+tap 40,58
+wait 500ms
 tap 40,44
 wait 500ms
 tap 40,44
 wait 500ms
 tap 40,44
 wait 1s
-compare 26-settings-buttons-off
+compare 28-settings-buttons-off
 button
 wait 1s
 
