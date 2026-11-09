@@ -40,8 +40,8 @@ on top:
   CoMaps navigates, so does the next turn, with two taps as it comes
   within 50 m.
 - **Media gestures:** long-press the clock face to play or pause, and
-  double-tap to skip, on a glance or with the screen off too; a buzz
-  says it took.
+  double-tap to skip, on a glance or with the screen off too (there, in
+  the middle); a buzz says it took.
 - **Screens in four directions** around the clock: the past to one side,
   alarms and settings to the other, notifications above, music below.
 - **A button grid** for Home Assistant or Tasker: six buttons, each
@@ -136,8 +136,9 @@ bar on an edge means there's more that way.
   silences a call or stops an alarm or "find my watch" (as does a tap),
   and a double press ends a quiet night.
 - **Long-press** (the watch buzzes once it's taken, at 0.6 s) plays or
-  pauses on the clock face, switches an alarm or timer on or off, and on
-  Info, offers storage mode.
+  pauses on the clock face (with the screen off or glancing, only in the
+  middle, not near an edge, where a folded arm rests), switches an alarm
+  or timer on or off, and on Info, offers storage mode.
 - **Double-tap** the clock face for the next track. Tap lightly to skip
   without waking the screen; a firm first tap wakes it. Without a phone
   connected, a double tap wakes the screen instead.

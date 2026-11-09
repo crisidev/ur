@@ -383,6 +383,58 @@ fn a_double_tap_skips_without_waking_only_after_a_light_first_tap() {
     assert_eq!(log.matches(r#""n":"next""#).count(), 4, "{log}");
 }
 
+/// With a phone connected, a long press with the screen off or on a glance
+/// plays or pauses only in the middle of the screen (see `wake::centred`).
+/// Nearer the edge, where an arm folded over the watch rests, it does
+/// nothing, not even a buzz, and leaves the screen (and a glance) as it
+/// was; one where a tap would still count too. On the awake clock face,
+/// something woke the screen first, so one at the edge still plays or
+/// pauses, through the touch task's recogniser too.
+#[test]
+fn a_long_press_plays_or_pauses_only_in_the_middle() {
+    let dir = out("long-centred");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    std::fs::write(
+        &script,
+        "connect\nwait 1s\n\
+         echo awake-edge\nlong 12,40\nexpect buzzing\nwait 2s\n\
+         press 75,40\nwait 610ms\nexpect buzzing\nlift\nexpect clock\n\
+         wait 11s\nexpect not screen-on\n\
+         echo off\nlong 40,40\nexpect buzzing\nexpect not screen-on\nwait 2s\n\
+         echo off-edge\nlong 12,40\nexpect not buzzing\nlong 40,66\nexpect not buzzing\n\
+         expect not screen-on\n\
+         echo glance\nglance\nlong 40,40\nexpect buzzing\nexpect dim\nwait 10s\n\
+         echo glance-edge\nglance\nlong 64,40\nexpect not buzzing\nlong 40,12\n\
+         expect not buzzing\nexpect dim\nwait 6s\nexpect not screen-on\n\
+         echo done\n",
+    )
+    .expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+    // Each section, from its echo to the next one's.
+    let sections = [
+        ("awake-edge", 2),
+        ("off", 1),
+        ("off-edge", 0),
+        ("glance", 1),
+        ("glance-edge", 0),
+        ("done", 0),
+    ];
+    let at = |name: &str| {
+        log.find(&format!("] {name}\n"))
+            .unwrap_or_else(|| panic!("{name} echoes: {log}"))
+    };
+    for pair in sections.windows(2) {
+        let [(name, count), (next, _)] = pair else {
+            unreachable!("windows of two")
+        };
+        let section = &log[at(name)..at(next)];
+        let playpause = section.matches(r#""n":"playpause""#).count();
+        assert_eq!(playpause, *count, "{name}: {log}");
+    }
+}
+
 #[test]
 fn a_double_press_ends_the_quiet_night() {
     let dir = out("double-press");
