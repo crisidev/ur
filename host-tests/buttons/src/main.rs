@@ -964,11 +964,11 @@ mod proofs {
         wearer.finish();
     }
 
-    /// The same for the longest things there are to press, which four
-    /// events can't reach with anything before or after them: five taps
-    /// and holds in a row (two sequences double-tapped overlap in five),
-    /// each followed by whatever the timer and the finger's lift make of
-    /// it.
+    /// The same for the longest thing there is to press, a sequence
+    /// double-tapped, which takes three of four events, leaving one to
+    /// go before or after it: here, five taps and holds in a row (room
+    /// for a touch both before and after), each followed by whatever the
+    /// timer and the finger's lift make of it.
     #[kani::proof]
     #[kani::unwind(6)]
     fn any_five_touches_are_accounted_for() {
