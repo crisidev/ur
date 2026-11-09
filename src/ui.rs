@@ -54,8 +54,8 @@
 //!   brightness ("LIGHT", auto or soft; see [`crate::brightness`]), the
 //!   button grid ("BUTTONS": off, or where its presses go: BTHome, the
 //!   phone, or both), its layout ("GRID": six buttons, or two layers; over
-//!   BTHome, the latter shows FAQ B04, which explains the events it sends
-//!   then), and, on the last row ("BTHOME KEY", there only
+//!   BTHome, the latter shows "*B04", a caveat: FAQ B04 explains the
+//!   events it sends then), and, on the last row ("BTHOME KEY", there only
 //!   while presses go over BTHome), the key Home Assistant needs for them
 //!   (see [`crate::bthome`]): a QR code to scan, then, at a tap, as text
 //!   with the watch's address. Another tap, or anything else, closes it.
@@ -2953,8 +2953,10 @@ fn render_settings(
         canvas.text_right(77, y, value, color);
         // Two layers reach Home Assistant unlike six buttons do (as dimmers
         // turned by the code): FAQ B04 says how, and how to automate them.
+        // The asterisk, as on a footnote, says it's a caveat to the value
+        // beside it, not a value of its own.
         if row == Row::Grid && buttons.bthome() && layout == buttons::Layout::TwoLayers {
-            canvas.text(24, y, "B04", Color::TEXT_FAINT);
+            canvas.text(24, y, "*B04", Color::TEXT_FAINT);
         }
     }
 }

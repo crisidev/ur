@@ -264,7 +264,7 @@ BTHOME KEY**, as when you [set it up](docs/buttons.md#home-assistant).
 
 ### B04: With two layers, presses reach Home Assistant as dimmers
 
-The watch shows B04 by **GRID** when it's on **2 LAYERS** and
+The watch shows **\*B04** by **GRID** when it's on **2 LAYERS** and
 **BUTTONS** on **BTHOME** or **BOTH**. Two layers make codes 1–99 (none
 ends in 0: the first button is the tens digit, the second the ones),
 and BTHome can't send each as a button of its own. Its buttons carry no

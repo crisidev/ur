@@ -139,8 +139,8 @@ step. The device's battery sensor updates then, with no event.
 
 A button can't carry a number, and an encrypted advertisement has room
 for six buttons, not one per code (Home Assistant names them by their
-place in it). So each press fires two events (FAQ B04 on the watch, by
-the GRID row, points here), for two kinds of
+place in it). So each press fires two events (the watch's **\*B04**,
+by the GRID row, is FAQ B04, which points here), for two kinds of
 automation:
 
 | Gesture              | `button` event (any code) | Dimmer event, by the code   |

@@ -152,7 +152,7 @@ above, its codes "going to 99", but never with a trailing 0 (or 0
 itself): the first button is the tens digit, the second the ones (81
 pairs and 9 singles). With six buttons, BTHome should carry standard
 button events, not dimmers; with two layers, nothing changes, but
-Settings shows FAQ B04 by the GRID row (`2 LAYERS  B04`), which
+Settings shows FAQ B04 by the GRID row (`*B04  2 LAYERS`), which
 explains the dimmers and why. Gadgetbridge's intent stays the same
 (`button` 1–6).
 
