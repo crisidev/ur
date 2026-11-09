@@ -547,11 +547,13 @@ mod tests {
         assert_eq!(setting, Setting::Off, "round the cycle");
         assert_eq!(
             seen,
-            [Setting::Off, Setting::BtHome, Setting::Phone, Setting::Both]
+            [Setting::Off, Setting::BtHome, Setting::App, Setting::Both]
         );
-        assert!(Setting::BtHome.bthome() && !Setting::BtHome.phone());
-        assert!(!Setting::Phone.bthome() && Setting::Phone.phone());
-        assert!(Setting::Both.bthome() && Setting::Both.phone());
+        assert!(Setting::BtHome.bthome() && !Setting::BtHome.app());
+        assert!(!Setting::App.bthome() && Setting::App.app());
+        assert!(Setting::Both.bthome() && Setting::Both.app());
         assert_eq!(Setting::from_byte(200), Setting::Off);
+        // As stored by earlier builds, which called the app the phone.
+        assert_eq!(Setting::from_byte(2), Setting::App);
     }
 }

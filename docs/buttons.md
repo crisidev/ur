@@ -68,15 +68,15 @@ at once (after 0.6 s, finger still down), and lifting the finger then
 sends a **release**, for what should last while you hold, like dimming a
 light. To cancel a tap that's waiting, swipe away or press the button.
 Two buzzes, and the code in red, mean it had nowhere to go (only the
-phone, which isn't connected).
+app, on a phone that isn't connected).
 
 ## Turning it on
 
 Swipe left from the clock, past the alarms, to **Settings**, and tap
 **BUTTONS** until it says where presses go: **BTHOME** (Home
-Assistant), **PHONE** (Gadgetbridge), or **BOTH**. Tap **GRID** for the
-layout: **6 BUTTONS** or **2 LAYERS**. The grid is then the first screen up from
-the clock.
+Assistant), **VIA APP** (Gadgetbridge, for Tasker and the like), or
+**BOTH**. Tap **GRID** for the layout: **6 BUTTONS** or **2 LAYERS**.
+The grid is then the first screen up from the clock.
 
 ## Home Assistant
 
@@ -231,9 +231,10 @@ use the grid for lights and scenes, not locks.
 
 ## Gadgetbridge and Tasker
 
-Each press goes to Gadgetbridge, which sends it on as an Android
-broadcast intent, for [Tasker], MacroDroid, Automate, and the like, the
-same with either layout:
+With **BUTTONS** on **VIA APP** or **BOTH**, each press goes to
+Gadgetbridge, which sends it on as an Android broadcast intent, for
+[Tasker], MacroDroid, Automate, and the like, the same with either
+layout:
 
 - action `ur.watch.BUTTON`
 - extra `button`: the code, a number: 1–6 with six buttons; 1–99, none

@@ -69,7 +69,7 @@ The wearer and the watch:
   demo-day                   fill today's history so far with a typical day
   alarm 1|2 HH:MM [on|off] | smart on|off [HH:MM [HH:MM]] | timer 1|2 MIN
   theme NAME|auto            pick a theme, and its time of day (auto: the sun's)
-  buttons off|bthome|phone|both
+  buttons off|bthome|app|both
                              the button grid, and where its presses go (as
                              the Settings screen's BUTTONS row)
   grid 6|99                  the button grid's layout: six buttons, or two
@@ -436,12 +436,12 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
         },
         "buttons" => {
             use crate::buttons::Setting;
-            watch.app.buttons = match need(0, "off|bthome|phone|both")? {
+            watch.app.buttons = match need(0, "off|bthome|app|both")? {
                 "off" => Setting::Off,
                 "bthome" => Setting::BtHome,
-                "phone" => Setting::Phone,
+                "app" => Setting::App,
                 "both" => Setting::Both,
-                other => return Err(format!("buttons: {other}? (off, bthome, phone, or both)")),
+                other => return Err(format!("buttons: {other}? (off, bthome, app, or both)")),
             };
             watch.refresh();
         }

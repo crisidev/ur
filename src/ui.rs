@@ -52,8 +52,8 @@
 //!   theme ("THEME", the next within the current group: dark themes after
 //!   sunset, light ones after sunrise; each group remembers its own), the
 //!   brightness ("LIGHT", auto or soft; see [`crate::brightness`]), the
-//!   button grid ("BUTTONS": off, or where its presses go: BTHome, the
-//!   phone, or both), its layout ("GRID": six buttons, or two layers; over
+//!   button grid ("BUTTONS": off, or where its presses go: "BTHOME",
+//!   "VIA APP" for Gadgetbridge on the phone, or "BOTH"), its layout ("GRID": six buttons, or two layers; over
 //!   BTHome, the latter shows "*B04", a caveat: FAQ B04 explains the
 //!   events it sends then), and, on the last row ("BTHOME KEY", there only
 //!   while presses go over BTHome), the key Home Assistant needs for them
@@ -1193,7 +1193,7 @@ impl App {
     /// Assistant, `main` picks it up (see [`App::take_ha_press`]).
     fn send_press(&mut self, press: Press, now: Instant) {
         defmt::info!("buttons: {=u8} {=str}", press.code, press.gesture.name());
-        let to_phone = self.buttons.phone() && self.connected;
+        let to_phone = self.buttons.app() && self.connected;
         if to_phone {
             send(Outgoing::Button {
                 code: press.code,

@@ -405,8 +405,9 @@ impl Layout {
 }
 
 /// Whether the grid is on, and where its presses go: over BTHome (for
-/// Home Assistant, see `crate::bthome`), to the phone (as an Android
-/// intent, through Gadgetbridge; see `gb::Outgoing::Button`), or both.
+/// Home Assistant, see `crate::bthome`), via the app (Gadgetbridge, on
+/// the phone, which sends each on as an Android intent; see
+/// `gb::Outgoing::Button`), or both.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 #[cfg_attr(target_os = "none", derive(defmt::Format))]
 pub enum Setting {
@@ -415,7 +416,7 @@ pub enum Setting {
     #[default]
     Off,
     BtHome,
-    Phone,
+    App,
     Both,
 }
 
@@ -424,7 +425,7 @@ impl Setting {
     pub fn from_byte(byte: u8) -> Self {
         match byte {
             1 => Self::BtHome,
-            2 => Self::Phone,
+            2 => Self::App,
             3 => Self::Both,
             _ => Self::Off,
         }
@@ -438,21 +439,24 @@ impl Setting {
     pub fn next(self) -> Self {
         match self {
             Self::Off => Self::BtHome,
-            Self::BtHome => Self::Phone,
-            Self::Phone => Self::Both,
+            Self::BtHome => Self::App,
+            Self::App => Self::Both,
             Self::Both => Self::Off,
         }
     }
 
-    /// Named for the protocol, not Home Assistant: it's what the watch
-    /// sends, and what Home Assistant's integration for it is called. Both is just "BOTH": "BTHOME+PHONE" doesn't fit beside "BUTTONS"
-    /// on the Settings screen, and in the cycle it follows the two it
-    /// means.
+    /// BTHome is named for the protocol, not Home Assistant: it's what
+    /// the watch sends, and what Home Assistant's integration for it is
+    /// called. The app is "VIA APP": presses go through an app,
+    /// Gadgetbridge, which passes them on to others (Tasker and the like);
+    /// "GADGETBRIDGE" wouldn't fit. Both is just "BOTH": "BTHOME+APP"
+    /// would crowd "BUTTONS" on the Settings screen, and in the cycle it
+    /// follows the two it means.
     pub fn name(self) -> &'static str {
         match self {
             Self::Off => "OFF",
             Self::BtHome => "BTHOME",
-            Self::Phone => "PHONE",
+            Self::App => "VIA APP",
             Self::Both => "BOTH",
         }
     }
@@ -466,8 +470,8 @@ impl Setting {
         matches!(self, Self::BtHome | Self::Both)
     }
 
-    /// Whether presses go to the phone.
-    pub fn phone(self) -> bool {
-        matches!(self, Self::Phone | Self::Both)
+    /// Whether presses go to the app (Gadgetbridge, on the phone).
+    pub fn app(self) -> bool {
+        matches!(self, Self::App | Self::Both)
     }
 }
