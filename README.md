@@ -313,6 +313,10 @@ triggers:
       event_properties: { steps: 23 }
 ```
 
+Or skip the YAML: the two-layer [blueprint](docs/buttons.md#blueprints)
+matches codes and gestures for you. [docs/buttons.md](docs/buttons.md#with-two-layers)
+covers both ways in full.
+
 With **6 BUTTONS** instead, each button is its own BTHome button
 (`button_1` to `button_6`), with a trigger in the automation editor for
 each button and gesture, no YAML needed. See
