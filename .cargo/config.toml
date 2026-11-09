@@ -10,9 +10,11 @@ target = "thumbv7em-none-eabihf"
 runner = "scripts/run-esprobe.sh"
 # `aes_compact` picks the `aes` crate's smaller, slower software AES: 0.8 KB
 # less flash, and AES only runs a few blocks at a time (pairing, BTHome
-# packets). A worktree nested in the checkout passes this twice (see
-# build.rs), which is harmless for a `--cfg`.
-rustflags = ["--cfg", "aes_compact"]
+# packets). `target-cpu`: the target's default is any ARMv7E-M; telling
+# LLVM it's a Cortex-M4 (which the nRF52832 is) saves ~0.2 KB. A worktree
+# nested in the checkout passes these twice (see build.rs), which is
+# harmless for both.
+rustflags = ["--cfg", "aes_compact", "-C", "target-cpu=cortex-m4"]
 # The linker scripts are passed by build.rs, not `rustflags` here; see there
 # for why.
 
