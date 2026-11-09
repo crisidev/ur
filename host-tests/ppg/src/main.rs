@@ -538,7 +538,9 @@ const RESTLESS: u16 = 300;
 /// `background` if the schedule started the session (older extracts never
 /// say, so replay as watched), the LED's `drive=N` (0 if not said), and
 /// `brighter` if the segment carries on the one before it with a brighter
-/// LED (see `heart_schedule::brighter`).
+/// LED (see `heart_schedule::brighter`), `cont` if it carries on after a
+/// level change, and `arm=dim` or `arm=bright` for an awake background
+/// session in the LED experiment (see `heart::Arm`).
 struct Recorded {
     start: String,
     reference: f32,
@@ -550,6 +552,9 @@ struct Recorded {
     background: bool,
     drive: u8,
     brighter: bool,
+    cont: bool,
+    /// The LED experiment's arm: `Some(true)` bright, `Some(false)` dim.
+    bright: Option<bool>,
 }
 
 fn parse_sessions(text: &str) -> Vec<Recorded> {
@@ -578,6 +583,11 @@ fn parse_sessions(text: &str) -> Vec<Recorded> {
                     .find_map(|f| f.strip_prefix("drive="))
                     .map_or(0, |d| d.parse().expect("a drive")),
                 brighter: sleep.split_whitespace().any(|f| f == "brighter"),
+                cont: sleep.split_whitespace().any(|f| f == "cont"),
+                bright: sleep
+                    .split_whitespace()
+                    .find_map(|f| f.strip_prefix("arm="))
+                    .map(|arm| arm == "bright"),
             }
         })
         .collect()
@@ -646,7 +656,9 @@ enum Stopped {
 /// [`heart_schedule::give_up`] goes by are the whole session's, which a
 /// segment doesn't have.
 fn stops_at(session: &Recorded, windows: &[(usize, Verdict, bool)]) -> Option<(u32, Stopped)> {
-    if session.brighter {
+    // Likewise a segment after a level change (rare on a wrist, but a
+    // bright start that saturates steps back down).
+    if session.brighter || session.cont {
         return None;
     }
     let (mut checks, mut busy) = (0u8, 0u8);
@@ -726,7 +738,13 @@ fn goes_brighter(
         .iter()
         .copied()
         .max()?;
-    let steps = u8::from(session.brighter);
+    // A bright arm's start counts as a step, as in `heart::measure`.
+    let steps = if session.cont && session.bright == Some(true) {
+        // Stepped back down from a bright start: for good.
+        heart_schedule::BRIGHTER_STEPS
+    } else {
+        u8::from(session.brighter || (session.bright == Some(true) && session.drive > 0))
+    };
     (last_failed && calm)
         .then(|| heart_schedule::brighter(session.drive, steps, peak, heart_schedule::LED_BUDGET))
         .flatten()
@@ -810,6 +828,56 @@ fn reading(
     None
 }
 
+/// One arm of the LED experiment (see `heart::Arm`), over a replay: what
+/// the sessions that started on it made of their LED.
+#[derive(Default)]
+struct Arm {
+    sessions: usize,
+    /// Sessions by the drive they started at (a bright arm falls back to
+    /// 20 mA, or the usual drive, without the headroom or budget).
+    drives: [usize; 4],
+    /// Readings, in the replay and by the firmware that recorded them.
+    read: usize,
+    recorded: usize,
+    /// LED seconds, and their cost at 12.5 mA's rate (the budget's).
+    led: f32,
+    weighted: f32,
+    /// Error against the reference, over the readings that have one.
+    error: f32,
+    referenced: usize,
+    /// Each session's first phase: pulse over DC, and median window
+    /// quality (its median over the sessions is what's printed: a few
+    /// sessions on a moving wrist would swamp a mean).
+    pulse_dc: Vec<f32>,
+    quality: Vec<f32>,
+}
+
+impl Arm {
+    fn print(&self, name: &str) {
+        let median = |v: &[f32]| {
+            let mut v: Vec<_> = v.iter().copied().filter(|x| x.is_finite()).collect();
+            v.sort_by(f32::total_cmp);
+            v.get(v.len() / 2).copied().unwrap_or(f32::NAN)
+        };
+        println!(
+            "  {name:6} {:3} sessions (at drive {:?}), {:2} read ({} recorded), {:.2} per \
+             LED minute ({:.2} at 12.5 mA's cost), LED {:.0} s; MAE {:.1} BPM over {}; \
+             pulse/DC {:.2}‰, quality {:.2}",
+            self.sessions,
+            self.drives,
+            self.read,
+            self.recorded,
+            self.read as f32 * 60.0 / self.led.max(1.0),
+            self.read as f32 * 60.0 / self.weighted.max(1.0),
+            self.led,
+            self.error / self.referenced.max(1) as f32,
+            self.referenced,
+            median(&self.pulse_dc) * 1000.0,
+            median(&self.quality),
+        );
+    }
+}
+
 /// Replays sessions extracted from a field log through `Ppg` and
 /// `Consensus`, vetoing windows on movement as the firmware does, and
 /// prints each window's verdict next to the reference, the reading the
@@ -837,6 +905,8 @@ fn replay(path: &str, strict: bool) {
     let (mut would_brighten, mut brighter, mut brighter_read) = (0, 0, 0);
     let mut before: Option<Light> = None;
     let mut compared = Vec::new();
+    // The LED experiment's arms: dim, bright.
+    let mut arms = [Arm::default(), Arm::default()];
     for session in parse_sessions(&text) {
         let seconds = |i: usize| i as f32 * session.period / 1e6;
         let mut length = seconds(session.samples.len());
@@ -849,6 +919,7 @@ fn replay(path: &str, strict: bool) {
         let end = stop.map_or(length, |(at, _)| (at as f32).min(length));
         let reading = reading(&session, &windows, end, strict);
         let lit = light(&session, &windows);
+        let (lit_pulse, lit_dc, lit_quality) = (lit.pulse, lit.dc, lit.quality);
         if session.brighter {
             brighter += 1;
             brighter_read += usize::from(reading.is_some());
@@ -900,8 +971,8 @@ fn replay(path: &str, strict: bool) {
                 }
             });
         }
-        // A brighter phase is the same session going on.
-        sessions += usize::from(!session.brighter);
+        // A brighter phase, or a new level, is the same session going on.
+        sessions += usize::from(!session.brighter && !session.cont);
         if let Some((at, how)) = stop {
             if how == Stopped::GaveUp {
                 gave_up += 1;
@@ -916,7 +987,31 @@ fn replay(path: &str, strict: bool) {
         }
         // The LED is on until the reading, or the end; plus the half
         // second before the first sample.
-        led += 0.5 + reading.map_or(end, |(_, at)| at);
+        let lit_for = 0.5 + reading.map_or(end, |(_, at)| at);
+        led += lit_for;
+        if let Some(bright) = session.bright {
+            let arm = &mut arms[usize::from(bright)];
+            if !session.brighter && !session.cont {
+                let name = if bright { "bright" } else { "dim" };
+                verdicts.insert(0, format!("[{name} at drive {}]", session.drive));
+                arm.sessions += 1;
+                arm.drives[usize::from(session.drive & 3)] += 1;
+                arm.pulse_dc.push(lit_pulse / lit_dc);
+                arm.quality.push(lit_quality);
+            }
+            arm.led += lit_for;
+            arm.weighted += lit_for
+                * heart_schedule::DRIVE_CURRENT[usize::from(session.drive & 3)] as f32
+                / heart_schedule::DRIVE_CURRENT[0] as f32;
+            arm.recorded += usize::from(session.outcome.parse::<u8>().is_ok());
+            if let Some((bpm, _)) = reading {
+                arm.read += 1;
+                if session.reference > 0.0 {
+                    arm.referenced += 1;
+                    arm.error += (f32::from(bpm) - session.reference).abs();
+                }
+            }
+        }
         let verdict = match reading {
             Some((bpm, at)) => {
                 read += 1;
@@ -977,6 +1072,13 @@ fn replay(path: &str, strict: bool) {
             mean(|c| c.3),
             compared.len()
         );
+    }
+    if arms.iter().any(|arm| arm.sessions > 0) {
+        // Awake background sessions, taking turns at a dim and a bright
+        // start: the same wrist, day, and rules.
+        println!("LED experiment, awake (dim vs bright start):");
+        arms[0].print("dim");
+        arms[1].print("bright");
     }
 }
 
@@ -1385,6 +1487,27 @@ mod tests {
     /// 80) whose wrist started typing again within seconds: every window
     /// was rejected, and they gave up at 12 s. They now stop at the first
     /// restless second, to try again at the next still moment.
+    /// The LED experiment's arms (see `heart::Arm`) parse, and a bright
+    /// start counts as a brighter step, as `heart::measure` counts it.
+    #[test]
+    fn arms_are_parsed() {
+        let line = "1 70 37500.0 none 2500 2510 | 30 | background drive=2 arm=bright";
+        let session = &parse_sessions(line)[0];
+        assert_eq!(
+            (session.bright, session.drive, session.cont),
+            (Some(true), 2, false)
+        );
+        let session = &parse_sessions(&line.replace("drive=2 arm=bright", "cont arm=dim"))[0];
+        assert_eq!(
+            (session.bright, session.drive, session.cont),
+            (Some(false), 0, true)
+        );
+        assert_eq!(
+            parse_sessions(&line.replace(" arm=bright", ""))[0].bright,
+            None
+        );
+    }
+
     #[test]
     fn a_restless_desk_stops_before_its_first_windows() {
         let text = include_str!("../fixtures/desk-restless.txt");

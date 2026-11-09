@@ -15,7 +15,10 @@ The third section also has the LED's `drive=N` (0-3: 12.5-40 mA; logs
 before 0.10's brighter phases have it from the level lines too), and
 `brighter` for a segment that went on with a brighter LED after the one
 before it ran out (see `heart_schedule::brighter`): the same session, its
-flags carried over.
+flags carried over. A segment after a level change within a session
+(a bright start stepping back down, say) carries them over too, marked
+`cont`. Awake background sessions from 0.10's LED experiment (see
+`heart::Arm`) say their arm, `arm=dim` or `arm=bright`.
 
 Usage: python -I scripts/ppg_sessions.py HEALTH_CONNECT_DB DECODED_LOG OUT
 
@@ -45,8 +48,11 @@ def garmin(t):
 
 
 segments, current, period, asleep, drive = [], None, 37500.0, False, 0
-# The segment a brighter phase carries on from, until its samples start.
-carried = None
+# The segment a brighter phase, or a new level, carries on from, until its
+# samples start, and which of those it is.
+carried, carried_flag = None, None
+# The arm of the session in progress, from its `due` line.
+arm = None
 # When the last background session was due: its samples follow within a
 # second or two.
 due_at = float("-inf")
@@ -54,6 +60,8 @@ for line in log:
     up = float(line.split()[0])
     if "heart: due (" in line:
         due_at = up
+        m = re.search(r"; (Dim|Bright) drive \d", line)
+        arm = m[1].lower() if m else None
     if "sleep: asleep now" in line:
         asleep = True
     elif "sleep: awake now" in line:
@@ -70,10 +78,12 @@ for line in log:
         if current is None:
             current = {"t": BASE + up - 1, "samples": [], "movement": [], "outcome": "-",
                        "asleep": asleep, "background": up - due_at < 3,
-                       "drive": drive, "brighter": False}
+                       "drive": drive, "brighter": False, "cont": False,
+                       "arm": arm if up - due_at < 3 else None}
             if carried:
                 current.update(asleep=carried["asleep"], background=carried["background"],
-                               brighter=True)
+                               arm=carried["arm"])
+                current[carried_flag] = True
                 carried = None
         current["samples"] += [int(v) for v in m[1].split(", ") if v]
         if mv := re.search(r"movement (\d+)", line):
@@ -89,20 +99,26 @@ for line in log:
         # The phase before ran out without a reading.
         current["outcome"] = "none"
         segments.append(current)
-        carried, current = current, None
-    elif current and ("switching to level" in line or re.search(r"INFO  heart: (no reading|not on|gave up|stopped)", line)):
-        if re.search(r"no reading|gave up|stopped", line):
-            current["outcome"] = "none"
+        carried, carried_flag, current = current, "brighter", None
+    elif current and "switching to level" in line:
         segments.append(current)
-        current = None
+        carried, carried_flag, current = current, "cont", None
+    elif re.search(r"INFO  heart: (no reading|not on|gave up|stopped|too much)", line):
+        if current:
+            if re.search(r"no reading|gave up|stopped", line):
+                current["outcome"] = "none"
+            segments.append(current)
+        current, carried = None, None
 if current:
     segments.append(current)
 
 with open(sys.argv[3], "w") as out:
     for s in segments:
         mid = s["t"] + len(s["samples"]) * s["period"] / 2e6
-        flags = [f for f in ("asleep", "background", "brighter") if s[f]]
+        flags = [f for f in ("asleep", "background", "brighter", "cont") if s[f]]
         flags.append(f"drive={s['drive']}")
+        if s["arm"]:
+            flags.append(f"arm={s['arm']}")
         out.write(f"{s['t']:.0f} {garmin(mid)} {s['period']:.1f} {s['outcome']} "
                   + " ".join(map(str, s["samples"])) + " | " + " ".join(s["movement"])
                   + " | " + " ".join(flags) + "\n")

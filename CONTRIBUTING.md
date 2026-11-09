@@ -442,6 +442,16 @@ Some host-test crates replay decoded logs, to tune against real wrists:
   Android [Health Connect] export (the tuning so far compared against a
   Garmin worn on the other wrist).
 
+  For 0.10's LED experiment (`heart::Arm`), its last lines compare the
+  awake background sessions that started dim with those that started
+  bright: sessions, readings (replayed, and as recorded), readings per
+  minute of LED (and per minute at 12.5 mA's cost), error against the
+  reference, and the median pulse/DC and window quality. Bright helps
+  if it reads more often at no worse error, ideally even per minute at
+  12.5 mA's cost; a pulse/DC that doesn't change says the extra light
+  only lit the same tissue. A desk day has a few dozen sessions on
+  each arm, so look at a couple of days before deciding.
+
 Steps come from the accelerometer's own counter, which a log can't
 replay. A capture build, `UR_ACTIVITY_LOG=trace scripts/release.sh --pre
 accel tmp/accel`, also logs the accelerometer's samples while the wrist
