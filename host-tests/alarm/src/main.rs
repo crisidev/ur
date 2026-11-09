@@ -213,29 +213,27 @@ mod tests {
         assert_eq!(s.at, [false, false]);
     }
 
+    /// An uptime (seconds since boot) unlike any local time in these
+    /// tests, so mixing the two up shows.
+    const BOOTED: i64 = 12_345;
+
     #[test]
     fn the_timer_rings_after_its_duration() {
-        let mut s = Settings {
+        let s = Settings {
             timers: [25, 3],
             ..Settings::default()
         };
         let mut state = State::default();
-        let start = at(MONDAY, 10, 0) * 60;
-        state.start_timer(0, &s, start);
+        let now = at(MONDAY, 10, 0) * 60;
+        state.start_timer(0, &s, BOOTED);
         assert_eq!(
-            state.next(&s, &Phone::default(), start),
-            Some((Kind::Timer(0), start + 25 * 60))
+            state.next(&s, &Phone::default(), now, BOOTED),
+            Some((Kind::Timer(0), now + 25 * 60))
         );
-        assert_eq!(state.remaining(0, start + 61), Some(25 * 60 - 61));
+        assert_eq!(state.remaining(0, BOOTED + 61), Some(25 * 60 - 61));
         // To the second.
-        assert_eq!(
-            state.due(&mut s, &mut Phone::default(), start + 25 * 60 - 1, false),
-            None
-        );
-        assert_eq!(
-            state.due(&mut s, &mut Phone::default(), start + 25 * 60, false),
-            Some(Kind::Timer(0))
-        );
+        assert_eq!(state.elapsed(BOOTED + 25 * 60 - 1), None);
+        assert_eq!(state.elapsed(BOOTED + 25 * 60), Some(Kind::Timer(0)));
         assert_eq!(state.timers[0], None);
         // The duration is remembered.
         assert_eq!(s.timers[0], 25);
@@ -243,41 +241,64 @@ mod tests {
 
     #[test]
     fn two_timers_run_side_by_side() {
-        let mut s = Settings {
+        let s = Settings {
             timers: [5, 2],
             ..Settings::default()
         };
         let mut state = State::default();
-        let start = at(MONDAY, 10, 0) * 60;
-        state.start_timer(0, &s, start);
-        state.start_timer(1, &s, start + 30);
+        state.start_timer(0, &s, BOOTED);
+        state.start_timer(1, &s, BOOTED + 30);
+        let now = at(MONDAY, 10, 0) * 60;
         assert_eq!(
-            state.next(&s, &Phone::default(), start),
-            Some((Kind::Timer(1), start + 30 + 120))
+            state.next(&s, &Phone::default(), now, BOOTED),
+            Some((Kind::Timer(1), now + 30 + 120))
         );
-        let rings: Vec<_> = (start..start + 600)
-            .filter_map(|now| {
-                state
-                    .due(&mut s, &mut Phone::default(), now, false)
-                    .map(|k| (now - start, k))
-            })
+        let rings: Vec<_> = (BOOTED..BOOTED + 600)
+            .filter_map(|uptime| state.elapsed(uptime).map(|k| (uptime - BOOTED, k)))
             .collect();
         assert_eq!(rings, vec![(150, Kind::Timer(1)), (300, Kind::Timer(0))]);
     }
 
+    /// A timer is a duration: the phone setting the clock, or a new time
+    /// zone, moves neither when it rings nor what it says is left. (When
+    /// it counted local seconds, a clock set back 8.7 days left 209 hours
+    /// on a 10-minute timer, which the editor's two digits of hours
+    /// couldn't show: a panic.)
+    #[test]
+    fn a_timer_ignores_the_clock() {
+        let s = Settings {
+            timers: [10, 3],
+            ..Settings::default()
+        };
+        let mut state = State::default();
+        state.start_timer(0, &s, BOOTED);
+        let now = at(MONDAY, 10, 0) * 60;
+        // Three zones west, a minute in: the clock face's next alarm is
+        // still 9 minutes away, at the new local time.
+        let west = now + 60 - 3 * 3600;
+        assert_eq!(
+            state.next(&s, &Phone::default(), west, BOOTED + 60),
+            Some((Kind::Timer(0), west + 9 * 60))
+        );
+        assert_eq!(state.remaining(0, BOOTED + 60), Some(9 * 60));
+        assert_eq!(state.elapsed(BOOTED + 10 * 60 - 1), None);
+        assert_eq!(state.elapsed(BOOTED + 10 * 60), Some(Kind::Timer(0)));
+    }
+
     #[test]
     fn snooze_rings_again() {
-        let mut s = Settings::default();
         let mut state = State::default();
-        state.snooze(at(MONDAY, 7, 0) * 60);
-        let rang = first_ring(
-            &mut s,
-            &mut state,
-            at(MONDAY, 7, 0),
-            at(MONDAY, 8, 0),
-            |_| false,
+        state.snooze(BOOTED);
+        let rang =
+            (BOOTED..BOOTED + 3600).find_map(|uptime| state.elapsed(uptime).map(|k| (uptime, k)));
+        assert_eq!(rang, Some((BOOTED + SNOOZE, Kind::Snooze)));
+        // Before then, the clock face shows when, in local time.
+        state.snooze(BOOTED);
+        let now = at(MONDAY, 7, 0) * 60;
+        assert_eq!(
+            state.next(&Settings::default(), &Phone::default(), now, BOOTED),
+            Some((Kind::Snooze, now + SNOOZE))
         );
-        assert_eq!(rang, Some((at(MONDAY, 7, 0) + SNOOZE / 60, Kind::Snooze)));
     }
 
     #[test]
@@ -289,11 +310,11 @@ mod tests {
         };
         let state = State::default();
         assert_eq!(
-            state.next(&s, &Phone::default(), at(MONDAY, 1, 0) * 60),
+            state.next(&s, &Phone::default(), at(MONDAY, 1, 0) * 60, BOOTED),
             Some((Kind::At(0), at(MONDAY, 6, 0) * 60))
         );
         assert_eq!(
-            state.next(&s, &Phone::default(), at(MONDAY, 6, 30) * 60),
+            state.next(&s, &Phone::default(), at(MONDAY, 6, 30) * 60, BOOTED),
             Some((Kind::Smart, at(MONDAY, 7, 0) * 60))
         );
     }
@@ -598,7 +619,7 @@ mod tests {
         let p = phone(&[(6, 15, FRI, true), (5, 0, 0, false)]);
         let state = State::default();
         assert_eq!(
-            state.next(&s, &p, at(MONDAY, 12, 0) * 60),
+            state.next(&s, &p, at(MONDAY, 12, 0) * 60, BOOTED),
             Some((Kind::Phone(0), at(MONDAY + 4, 6, 15) * 60))
         );
     }

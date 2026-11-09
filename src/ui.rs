@@ -1120,9 +1120,7 @@ impl App {
             match event {
                 InputEvent::Button => self.stop_ringing(),
                 InputEvent::Touch(touch) if touch.gesture == Gesture::Tap => {
-                    if let Some(minute) = self.local_second {
-                        self.alarm_state.snooze(minute);
-                    }
+                    self.alarm_state.snooze(now.as_secs() as i64);
                     self.stop_ringing();
                 }
                 _ => {}
@@ -1131,7 +1129,7 @@ impl App {
         }
 
         if let Some(editing) = self.editing {
-            self.on_editor_input(editing, event);
+            self.on_editor_input(editing, event, now);
             return;
         }
 
@@ -1184,7 +1182,7 @@ impl App {
                 // A quick switch, without opening the editor.
                 (Gesture::LongPress, Screen::Alarms) => {
                     if let Some(row) = alarm_at(touch.x, touch.y) {
-                        self.toggle(row);
+                        self.toggle(row, now);
                         motor::buzz(Pattern::NOTIFY);
                     }
                 }
@@ -1389,23 +1387,25 @@ impl App {
     }
 
     /// Switches a row's alarm on or off; for the timer, starts or stops it.
-    fn toggle(&mut self, row: Editing) {
+    fn toggle(&mut self, row: Editing, now: Instant) {
         match row {
             Editing::SmartWeekday | Editing::SmartWeekend => self.alarms.smart = !self.alarms.smart,
             Editing::At(i) => self.alarms.at[usize::from(i)] ^= true,
             Editing::Timer(i) => {
                 let i = usize::from(i);
-                match (self.alarm_state.timers[i], self.local_second) {
-                    (Some(_), _) => self.alarm_state.stop_timer(i),
-                    (None, Some(now)) => self.alarm_state.start_timer(i, &self.alarms, now),
-                    // Without the time there's nothing to count from.
-                    (None, None) => {}
+                // A timer counts uptime, not the clock (see `alarm`), so
+                // it runs before the phone has set the time too.
+                match self.alarm_state.timers[i] {
+                    Some(_) => self.alarm_state.stop_timer(i),
+                    None => self
+                        .alarm_state
+                        .start_timer(i, &self.alarms, now.as_secs() as i64),
                 }
             }
         }
     }
 
-    fn on_editor_input(&mut self, editing: Editing, event: InputEvent) {
+    fn on_editor_input(&mut self, editing: Editing, event: InputEvent, now: Instant) {
         let done = |app: &mut Self| app.editing = None;
         let InputEvent::Touch(touch) = event else {
             if let InputEvent::Button = event {
@@ -1418,7 +1418,7 @@ impl App {
             Gesture::SwipeDown => -1,
             Gesture::Tap if touch.y >= EDITOR_BUTTONS_Y => {
                 if touch.x < 40 {
-                    self.toggle(editing);
+                    self.toggle(editing, now);
                 } else if editing == Editing::SmartWeekday {
                     self.editing = Some(Editing::SmartWeekend);
                 } else {
@@ -1738,19 +1738,21 @@ impl App {
             Some(Change::Over(Over::Noon)) => defmt::info!("night: over (noon)"),
             None => {}
         }
-        let Some(second) = local_second else {
-            return;
-        };
         if let Some(ringing) = &self.ringing
             && now - ringing.since >= Duration::from_secs(alarm::RING_FOR as u64 * 60)
         {
             defmt::info!("alarm: rang out ({})", ringing.kind);
             self.stop_ringing();
         }
+        // Durations first, as `alarm::State::due` did before they moved
+        // to uptime: they don't need the time of day, which alarms at a
+        // time of day do.
         if self.ringing.is_none()
-            && let Some(kind) =
+            && let Some(kind) = self.alarm_state.elapsed(now.as_secs() as i64).or_else(|| {
+                let second = local_second?;
                 self.alarm_state
                     .due(&mut self.alarms, &mut self.phone_alarms, second, stirring)
+            })
         {
             defmt::info!("alarm: ringing ({})", kind);
             // A one-off phone alarm turned itself off. (Saving after a
@@ -1954,13 +1956,17 @@ impl App {
                 editing,
                 &self.alarms,
                 &self.alarm_state,
-                status.local_second,
+                status.uptime_secs as i64,
             );
             return;
         }
-        let next_alarm = status.local_second.and_then(|minute| {
-            self.alarm_state
-                .next(&self.alarms, &self.phone_alarms, minute)
+        let next_alarm = status.local_second.and_then(|second| {
+            self.alarm_state.next(
+                &self.alarms,
+                &self.phone_alarms,
+                second,
+                status.uptime_secs as i64,
+            )
         });
         match self.screen {
             Screen::Clock => {
@@ -2833,7 +2839,7 @@ fn render_alarms(
     }
     for t in 0..alarm::TIMERS {
         // While running: time left, ticking; otherwise the duration.
-        let left = status.local_second.and_then(|now| state.remaining(t, now));
+        let left = state.remaining(t, status.uptime_secs as i64);
         let (value, running) = match left {
             Some(left) => (countdown(left), ("RUNNING", Color::GOOD)),
             None => (duration(settings.timers[t]), ("", Color::TEXT_FAINT)),
@@ -2901,13 +2907,13 @@ fn render_editor(
     editing: Editing,
     settings: &alarm::Settings,
     state: &alarm::State,
-    now: Option<i64>,
+    uptime: i64,
 ) {
     canvas.clear(BACKGROUND);
     // A running timer shows what's left (as MM:SS under an hour); anything
     // else, the setting being edited (HH:MM).
     let left = match editing {
-        Editing::Timer(t) => now.and_then(|now| state.remaining(usize::from(t), now)),
+        Editing::Timer(t) => state.remaining(usize::from(t), uptime),
         _ => None,
     };
     let (title, value, on) = match editing {

@@ -23,6 +23,13 @@
 //! makes "the next 07:00" plain arithmetic; times of day are minutes after
 //! midnight.
 //!
+//! Durations (timers and the snooze) are different: ten minutes is ten
+//! minutes whatever the clock says, so they count in seconds of uptime,
+//! which only ever go forward. The phone setting the clock (or a new time
+//! zone) moves when 07:00 is, but not when the tea is ready. (Uptime
+//! starts again at a reset, but so does this module's state: nothing
+//! armed survives one.)
+//!
 //! Like [`crate::sleep`], this knows nothing of hardware or the clock, so it
 //! runs in host tests (`host-tests/alarm`).
 
@@ -336,9 +343,10 @@ impl Phone {
 /// are local seconds unless they say otherwise.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct State {
-    /// When each running timer rings.
+    /// When each running timer rings, in seconds of uptime (see the
+    /// module docs).
     pub timers: [Option<i64>; TIMERS],
-    /// When a snoozed alarm rings again.
+    /// When a snoozed alarm rings again, in seconds of uptime.
     pub snooze_at: Option<i64>,
     /// The smart alarm occurrence (its latest time, local minutes) that has
     /// already rung, so it rings once per morning. (Minutes fit in 32 bits
@@ -358,34 +366,46 @@ pub struct State {
 }
 
 impl State {
-    pub fn start_timer(&mut self, timer: usize, settings: &Settings, now: i64) {
-        self.timers[timer] = Some(now + i64::from(settings.timers[timer]) * 60);
+    /// Starts `timer` at `uptime` (seconds).
+    pub fn start_timer(&mut self, timer: usize, settings: &Settings, uptime: i64) {
+        self.timers[timer] = Some(uptime + i64::from(settings.timers[timer]) * 60);
     }
 
     pub fn stop_timer(&mut self, timer: usize) {
         self.timers[timer] = None;
     }
 
-    /// Seconds until `timer` rings, if it's running.
-    pub fn remaining(&self, timer: usize, now: i64) -> Option<i64> {
-        self.timers[timer].map(|at| (at - now).max(0))
+    /// Seconds until `timer` rings, if it's running, at `uptime` (seconds).
+    pub fn remaining(&self, timer: usize, uptime: i64) -> Option<i64> {
+        self.timers[timer].map(|at| (at - uptime).max(0))
     }
 
-    pub fn snooze(&mut self, now: i64) {
-        self.snooze_at = Some(now + SNOOZE);
+    /// Snoozes the alarm ringing at `uptime` (seconds).
+    pub fn snooze(&mut self, uptime: i64) {
+        self.snooze_at = Some(uptime + SNOOZE);
     }
 
-    /// The next thing to ring, and when (local seconds), for the clock face.
-    /// A smart alarm counts at its latest.
-    pub fn next(&self, settings: &Settings, phone: &Phone, now: i64) -> Option<(Kind, i64)> {
+    /// The next thing to ring, and when (local seconds), for the clock face,
+    /// at local second `now`, which is `uptime` (seconds). A smart alarm
+    /// counts at its latest.
+    pub fn next(
+        &self,
+        settings: &Settings,
+        phone: &Phone,
+        now: i64,
+        uptime: i64,
+    ) -> Option<(Kind, i64)> {
         let minute = now.div_euclid(60);
         let smart = settings
             .smart
             .then(|| (Kind::Smart, self.pending_smart(settings, minute) * 60));
         let alarms = at_a_time(settings, phone)
             .map(|(kind, time, days)| (kind, next_at(time, days, minute) * 60));
-        let timers = (0..TIMERS).filter_map(|i| self.timers[i].map(|t| (Kind::Timer(i as u8), t)));
-        let snooze = self.snooze_at.map(|t| (Kind::Snooze, t));
+        // Durations end in uptime: as local seconds, they're as far from now.
+        let local = |at: i64| now + (at - uptime);
+        let timers =
+            (0..TIMERS).filter_map(|i| self.timers[i].map(|t| (Kind::Timer(i as u8), local(t))));
+        let snooze = self.snooze_at.map(|t| (Kind::Snooze, local(t)));
         [smart, snooze]
             .into_iter()
             .flatten()
@@ -407,11 +427,29 @@ impl State {
         }
     }
 
-    /// Checks, every second or so, whether an alarm should start ringing
-    /// now (`now` in local seconds). `stirring` says the wearer just moved
-    /// after being still (see `crate::activity`), which is what a smart
-    /// alarm waits for in its window. Turns off what rings (a one-off alarm,
-    /// a timer), and remembers the smart one.
+    /// Checks, every second or so, whether a duration (the snooze, or a
+    /// timer) has run out at `uptime` (seconds), and if so, disarms it.
+    /// It doesn't need the time of day, so this goes first: [`State::due`]
+    /// may not be able to run.
+    pub fn elapsed(&mut self, uptime: i64) -> Option<Kind> {
+        if self.snooze_at.is_some_and(|t| uptime >= t) {
+            self.snooze_at = None;
+            return Some(Kind::Snooze);
+        }
+        for (i, timer) in self.timers.iter_mut().enumerate() {
+            if timer.is_some_and(|t| uptime >= t) {
+                *timer = None;
+                return Some(Kind::Timer(i as u8));
+            }
+        }
+        None
+    }
+
+    /// Checks, every second or so, whether an alarm at a time of day should
+    /// start ringing now (`now` in local seconds). `stirring` says the
+    /// wearer just moved after being still (see `crate::activity`), which
+    /// is what a smart alarm waits for in its window. Turns off what rings
+    /// (a one-off alarm), and remembers the smart one.
     pub fn due(
         &mut self,
         settings: &mut Settings,
@@ -419,16 +457,6 @@ impl State {
         now: i64,
         stirring: bool,
     ) -> Option<Kind> {
-        if self.snooze_at.is_some_and(|t| now >= t) {
-            self.snooze_at = None;
-            return Some(Kind::Snooze);
-        }
-        for (i, timer) in self.timers.iter_mut().enumerate() {
-            if timer.is_some_and(|t| now >= t) {
-                *timer = None;
-                return Some(Kind::Timer(i as u8));
-            }
-        }
         let minute = now.div_euclid(60);
         // The minutes not yet checked: normally just this one, or more
         // after a hold-up or the clock moving forward (see `CATCH_UP`).

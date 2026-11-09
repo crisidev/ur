@@ -487,6 +487,60 @@ fn an_alarm_rings_on_after_a_call() {
     assert_eq!(buzzes, ["alarm", "ring", "alarm", "stop"], "{log}");
 }
 
+/// The phone setting the clock back while a timer runs (host fuzzing's
+/// find, as it was found): the timer counted local seconds, so 8.7 days
+/// back left over 200 hours on a 3-minute timer, and opening it in the
+/// editor, with its two digits of hours, panicked. A timer counts uptime
+/// now: it opens, and rings on time.
+#[test]
+fn a_running_timer_survives_the_clock_set_back() {
+    let dir = out("timer-clock-back");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    std::fs::write(
+        &script,
+        "connect\n\
+         gb setTime(1793254721);E.setTimeZone(-5.0);(s=>s&&(s.timezone=-5.0,require('Storage').write('setting.json',s)))(require('Storage').readJSON('setting.json',1))\n\
+         wait 1s\n\
+         left 14,16\n\
+         # Timer 2 (3 minutes): a long press starts it.\n\
+         long 70,70\n\
+         gb setTime(1792501729);E.setTimeZone(-8.0);(s=>s&&(s.timezone=-8.0,require('Storage').write('setting.json',s)))(require('Storage').readJSON('setting.json',1))\n\
+         wait 1107ms\n\
+         # Its editor, counting down.\n\
+         tap 64,79\n\
+         shot editor.png\n\
+         wait 170s\n\
+         expect not buzzing\n\
+         wait 10s\n\
+         expect buzzing\n",
+    )
+    .expect("the target dir is writable");
+    let (ok, log) = run(
+        script.to_str().expect("UTF-8"),
+        &["--out", dir.to_str().expect("UTF-8")],
+    );
+    assert!(ok, "{log}");
+}
+
+/// A 10-minute timer takes 10 minutes, even across three time zones (it
+/// took 3 h 10 min when it counted local time).
+#[test]
+fn a_timer_ignores_a_new_time_zone() {
+    let dir = out("timer-time-zone");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    std::fs::write(
+        &script,
+        "time 2026-11-09 12:00 +01:00\ntimer 1 10\nleft\nlong 20,70\nwait 1m\n\
+         time 2026-11-09 09:01 -02:00\nwait 530s\nexpect not buzzing\n\
+         wait 20s\nexpect buzzing\n",
+    )
+    .expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+}
+
 /// "Find my watch" rings until found (a touch), and gives up after two
 /// minutes; under a ringing alarm it waits its turn, and neither it nor
 /// a call ending silences the alarm.
