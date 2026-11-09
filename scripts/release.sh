@@ -137,6 +137,16 @@ variant() {
   echo "== $name $UR_VERSION" >&2
   DEFMT_LOG=$log cargo build --release --locked --config "$remap" "$@"
   cp target/thumbv7em-none-eabihf/release/ur "$work/$name"
+  # The dev kit's injected input (`debug-input` in Cargo.toml) has no place
+  # on a sealed watch, which has no probe to write it. It's off by default,
+  # but a feature that came to imply it, or a cfg gone missing, would
+  # bring it back without a word: refuse the build instead. (awk, not
+  # `grep -q`, which would stop reading early and fail llvm-nm's write,
+  # and so the pipeline.)
+  if [[ -n $(llvm-nm "$work/$name" | awk '$3 == "UR_INPUT"') ]]; then
+    echo "$name has the dev kit's debug input (UR_INPUT); releases must not" >&2
+    exit 1
+  fi
   python3 scripts/package.py "$work/$name" --version "$cargo_version"
   local header=${cargo_version%%[-+]*}
   mv "$work/$name-dfu.zip" "$out/$name-$version-dfu.zip"

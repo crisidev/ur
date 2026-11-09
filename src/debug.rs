@@ -5,15 +5,26 @@
 //! looking at (or touching) the watch.
 //!
 //! Both work through exported statics at fixed symbol names, which the
-//! script finds in the ELF. They're inert without a probe; the cost is
-//! [`input_task`]'s poll, ten wake-ups of a few µs a second.
+//! script finds in the ELF. They're inert without a probe.
+//!
+//! Injected input is only built with the `debug-input` feature, which dev
+//! kits turn on (`cargo run --release --features debug-input`, or
+//! `compare`, which implies it): a sealed watch has no probe to write it,
+//! so releases would carry its ~2.3 KB of code and test strings, ~150 B
+//! of RAM, and [`input_task`]'s poll (ten wake-ups of a few µs a second),
+//! for nothing. Screenshots are always there: they cost a pointer.
 
-use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, Ordering};
+#[cfg(feature = "debug-input")]
+use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32};
 
+#[cfg(feature = "debug-input")]
 use embassy_time::Timer;
 
 use crate::canvas::Canvas;
+#[cfg(feature = "debug-input")]
 use crate::touch::{Gesture, Touch};
+#[cfg(feature = "debug-input")]
 use crate::{INPUT, InputEvent};
 
 /// Where the canvas is (it's in a `StaticCell`, whose layout isn't ours).
@@ -42,6 +53,7 @@ static UR_CANVAS: AtomicPtr<Canvas> = AtomicPtr::new(core::ptr::null_mut());
 /// too quick for two inputs over the probe; for the button grid)) and the
 /// next two the canvas x and y.
 /// Cleared once taken.
+#[cfg(feature = "debug-input")]
 #[unsafe(no_mangle)]
 static UR_INPUT: AtomicU32 = AtomicU32::new(0);
 
@@ -52,29 +64,38 @@ static UR_INPUT: AtomicU32 = AtomicU32::new(0);
 /// Through [`crate::gb::parse`] and on to the UI as `ble` passes it, to
 /// check on the watch that the image is left out and the UI says how to
 /// turn the setting off (`sim/gadgetbridge.txt` has the same line).
+#[cfg(feature = "debug-input")]
 const BITMAPS_LINE: &[u8] = br#"GB({"t":"notify","id":1762436802,"src":"Signal","title":"","subject":"","body":"Dinner on Sunday?","sender":atob("TWFtbWEgACUVgQAAAAAAAAAAAAAAAAAAAP//H//mABjAAygBRQApIBIkAkiBERAiQhCIQhIJBEEgkDAiBgSBgRAwJBIIgkEhCEQhCRAiIgRJAJEgElACigBTAAxgAZ//4//8AAAAAAAAAAAAAA=="),"tel":"","reply":true})"#;
 
 /// The battery voltage injected by input 13, in millivolts, or 0.
+#[cfg(feature = "debug-input")]
 static BATTERY_MV: AtomicU16 = AtomicU16::new(0);
 
 /// How many hours ago the next test notification arrived (input 9's `y`),
 /// to see how older ones show in the history; taken by
 /// [`take_backdate_minutes`].
+#[cfg(feature = "debug-input")]
 static BACKDATE_HOURS: AtomicU8 = AtomicU8::new(0);
 
 /// How many minutes before now a notification arriving now should count
 /// as having arrived: 0, bar a backdated test notification.
 pub fn take_backdate_minutes() -> i64 {
-    i64::from(BACKDATE_HOURS.swap(0, Ordering::Relaxed)) * 60
+    #[cfg(feature = "debug-input")]
+    return i64::from(BACKDATE_HOURS.swap(0, Ordering::Relaxed)) * 60;
+    #[cfg(not(feature = "debug-input"))]
+    0
 }
 
 /// The battery voltage to use instead of the measured one, if one was
 /// injected, as a raw SAADC sample (see [`crate::battery::Battery::update`]).
 pub fn battery_sample() -> Option<i16> {
-    match BATTERY_MV.load(Ordering::Relaxed) {
+    #[cfg(feature = "debug-input")]
+    return match BATTERY_MV.load(Ordering::Relaxed) {
         0 => None,
         mv => Some((u32::from(mv) * 4096 / (3600 * 2)) as i16),
-    }
+    };
+    #[cfg(not(feature = "debug-input"))]
+    None
 }
 
 pub fn register_canvas(canvas: &mut Canvas) {
@@ -90,6 +111,7 @@ pub fn register_canvas(canvas: &mut Canvas) {
 /// held, for one. Like the chip, this repeats the finger's position while
 /// it's down (each poll, rather than every ~10 ms), or the touch task
 /// would take the silence for a missed lift.
+#[cfg(feature = "debug-input")]
 #[embassy_executor::task]
 pub async fn input_task() {
     // The simulated finger, in panel pixels, while it's down.

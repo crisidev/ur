@@ -36,9 +36,10 @@
 //! - [`firmware`] / [`dfu`] / [`mcuboot`]: cooperating with the bootloader,
 //!   and receiving updates over Bluetooth, checked before they're installed.
 //! - [`field_log`]: logs kept in flash on watches without a debug probe.
-//! - [`debug`]: screenshots and injected input over the debug probe; and
-//!   with the `compare` feature, `compare`: what the UI does and renders
-//!   with, for checking the simulator against a dev kit.
+//! - [`debug`]: screenshots over the debug probe, and with the
+//!   `debug-input` feature, injected input; and with the `compare`
+//!   feature, `compare`: what the UI does and renders with, for checking
+//!   the simulator against a dev kit.
 //!
 //! Tasks talk to the UI loop only through [`INPUT`]; the UI loop owns the
 //! display and everything shown on it.
@@ -619,6 +620,7 @@ async fn main(spawner: Spawner) {
     static CANVAS: StaticCell<Canvas> = StaticCell::new();
     let canvas = CANVAS.init(Canvas::new());
     debug::register_canvas(canvas);
+    #[cfg(feature = "debug-input")]
     spawner.spawn(debug::input_task().expect("spawned once"));
     let (mut app, mut ui) = UiLoop::boot(Stored::load().await);
     let mut board = Hardware {

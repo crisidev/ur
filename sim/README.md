@@ -226,8 +226,8 @@ fails if one grows past 130 KB.
 ## Against a dev kit
 
 The simulator draws what the watch would, and this checks it, frame for
-frame. With a dev kit running a build with the `compare` feature, it
-follows the dev kit: it runs a script's inputs on it, replays what its UI
+frame. With a dev kit running a build with the `compare` feature (which
+implies `debug-input`, the input it injects), it follows the dev kit: it runs a script's inputs on it, replays what its UI
 got and when (every tick and input, at the instants it got them), and
 for each `compare NAME` draws the frame the dev kit last finished, with
 the readings it had (the time, the battery, the sensors, today's

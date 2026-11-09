@@ -72,7 +72,9 @@ Info screen. The variants:
 
 Each comes as `-dfu.zip` (to send over Bluetooth), `.img` (the raw MCUBoot
 image), `-slot.elf` (the image as an ELF, for flashing over SWD), and
-`.elf` (with symbols, for decoding logs).
+`.elf` (with symbols, for decoding logs). Neither has the dev kit's
+injected input (the `debug-input` feature; see [Iterating](#iterating)):
+`release.sh` refuses a build that does.
 
 The host tests run from each crate's directory, where its own
 `.cargo/config.toml` points cargo at the host instead of the watch:
@@ -309,17 +311,22 @@ the bootloader's swap and confirmation, so a broken build doesn't roll
 back: flash a working one.
 
 `scripts/screenshot.py` reads the screen out of RAM, and can inject input
-first, so UI changes can be checked without looking at the watch:
+first, so UI changes can be checked without looking at the watch. Input
+needs a build with the `debug-input` feature (`compare` implies it);
+releases leave it out, as a sealed watch has no probe to write it:
 
 ```sh
+cargo run --release --features debug-input
 python3 scripts/screenshot.py target/thumbv7em-none-eabihf/release/ur clock.png
 python3 scripts/screenshot.py target/thumbv7em-none-eabihf/release/ur alarms.png --input left
 python3 scripts/screenshot.py target/thumbv7em-none-eabihf/release/ur day.png --theme HANDHELD
 ```
 
-Inputs are taps, swipes, the button, a glance, and test notifications; see
-the script's documentation. They act as on the watch, so with the screen
-off, start with `button` to wake it. (The README's screenshots come
+Inputs are taps, swipes, the button, a glance, test notifications, and
+more (a battery voltage, steps, a panic or a hang, to test the crash
+reports); see the script's documentation. They act as on the watch, so
+with the screen off, start with `button` to wake it. Features combine:
+`--features field-log,debug-input` to drive a field-log build. (The README's screenshots come
 from the [simulator](#the-simulator), which matches these pixel for
 pixel.)
 
@@ -507,7 +514,8 @@ gh release download v0.9.0 --pattern sha256.sum --dir published
   scripts parse.
 - `test.yml`: the host tests (pinned and beta), the simulator's tests
   and screenshots (as the run's `screenshots` artifact), and a packaged
-  build of every PR and every commit on main, to try on a watch:
+  build (by `release.sh`, so without `debug-input`) of every PR and
+  every commit on main, to try on a watch:
   `0.9.0-pr.<number>+<commit>`, or `0.9.0-snap.<commits>+<commit>`. The
   run's artifacts include each variant's `-dfu.zip` on its own, unzipped,
   ready to send to a watch, and everything (with the ELFs that decode

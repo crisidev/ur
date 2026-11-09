@@ -66,8 +66,10 @@ const PANEL: i32 = 240;
 const LIFT_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// A simulated finger's reports, from [`crate::debug`] (for testing long
-/// presses without a finger): where it is, in panel pixels, or `None` once
-/// it's lifted. [`touch_task`] treats each like a report from the chip.
+/// presses without a finger; only with `debug-input`): where it is, in
+/// panel pixels, or `None` once it's lifted. [`touch_task`] treats each
+/// like a report from the chip.
+#[cfg(feature = "debug-input")]
 pub static SIMULATED: Signal<CriticalSectionRawMutex, Option<(u8, u8)>> = Signal::new();
 
 /// Whether a finger is down, for the button grid: a wait for a second
@@ -154,7 +156,12 @@ pub async fn touch_task(
                 }
             }
         };
-        let report = select(interrupt.wait_for_falling_edge(), SIMULATED.wait());
+        #[cfg(feature = "debug-input")]
+        let simulated = SIMULATED.wait();
+        // Without `debug-input`, no finger but a real one.
+        #[cfg(not(feature = "debug-input"))]
+        let simulated = core::future::pending::<Option<(u8, u8)>>();
+        let report = select(interrupt.wait_for_falling_edge(), simulated);
         let simulated = match select3(report, deadline, ASLEEP_CHANGED.wait()).await {
             Either3::First(Either::First(())) => None,
             Either3::First(Either::Second(finger)) => Some(finger),

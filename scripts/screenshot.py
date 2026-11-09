@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Screenshot the watch's screen over the debug probe, optionally after
-injecting inputs (see src/debug.rs).
+injecting inputs (see src/debug.rs), which needs a build with the
+`debug-input` feature (`cargo run --release --features debug-input`).
 
 Reads the canvas's front buffer (what the panel shows: 80×80 colour roles)
 and the current theme's palette from RAM with `esprobe fast-dump`, and
@@ -98,6 +99,8 @@ def symbol(elf: Path, name: str) -> int:
         parts = line.split()
         if len(parts) == 3 and parts[2] == name:
             return int(parts[0], 16)
+    if name == "UR_INPUT":
+        sys.exit(f"no input in {elf}: build it with `--features debug-input`")
     sys.exit(f"no symbol {name} in {elf}")
 
 

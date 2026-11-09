@@ -1155,6 +1155,7 @@ const UNKNOWN_DAY: i64 = i64::MIN;
 /// Counts `steps` as walked now, in today's total and this minute's
 /// history: for [`crate::debug`], to test what keeps them across resets and
 /// updates on a watch that can't walk.
+#[cfg(feature = "debug-input")]
 pub fn walk(steps: u32) {
     add_steps_today(steps);
     if let Some(utc_minute) = clock::now_utc_seconds().map(|s| s.div_euclid(60)) {

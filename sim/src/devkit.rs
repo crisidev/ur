@@ -111,7 +111,7 @@ impl DevKit {
                     format!(
                         "no {name} in {}{}",
                         elf.display(),
-                        if name == "UR_COMPARE" {
+                        if name == "UR_COMPARE" || name == "UR_INPUT" {
                             " (build it with `--features compare`)"
                         } else {
                             ""

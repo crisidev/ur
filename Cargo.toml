@@ -56,10 +56,17 @@ opt-level = 1
 # Keep the defmt log in the SPI flash, for watches without a debug probe; see
 # `src/field_log.rs`. Not for builds read through a probe.
 field-log = []
+# Take taps, buttons, test notifications, battery readings and the like
+# written into RAM over the debug probe (`scripts/screenshot.py --input`,
+# `ur-sim --devkit`); see `src/debug.rs`. Only for dev kits: a sealed watch
+# has no probe to write them, so releases leave it out (scripts/release.sh
+# checks), and it's off by default so that they can't take it in by
+# accident. Screenshots work without it.
+debug-input = []
 # Export what the UI loop does and renders with, for checking the simulator
-# against a dev kit (`ur-sim --devkit`); see `src/compare.rs`. Costs ~2.3 KB
-# of RAM, so not for releases.
-compare = []
+# against a dev kit (`ur-sim --devkit`, which drives it with `debug-input`);
+# see `src/compare.rs`. Costs ~2.3 KB of RAM, so not for releases.
+compare = ["debug-input"]
 # Save to flash back to back, for `scripts/flash-stress.py` to check that
 # erases and writes never overrun their radio timeslots; see
 # `src/flash_stress.rs`. Only for dev kits.
