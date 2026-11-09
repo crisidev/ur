@@ -107,7 +107,14 @@ def main() -> None:
     parsers = {}
     # What each advertisement should fire, for the pass below.
     expectations = []
-    dimmer = {"press": "dimmer_1", "double_press": "dimmer_2", "hold_press": "dimmer_3"}
+    # Which dimmer turns, which way, for each gesture: a long press turns
+    # the hold's the other way.
+    dimmer = {
+        "press": ("dimmer_1", "rotate_right"),
+        "double_press": ("dimmer_2", "rotate_right"),
+        "hold_press": ("dimmer_3", "rotate_right"),
+        "long_press": ("dimmer_3", "rotate_left"),
+    }
     for i, (layout, code, gesture, advert) in enumerate(adverts):
         if layout not in parsers:
             parsers[layout] = BTHomeBluetoothDeviceData(bindkey=bytes.fromhex(key))
@@ -129,7 +136,8 @@ def main() -> None:
             # The gesture, and the code on the gesture's dimmer.
             expected = {"button": (gesture, None)}
             if gesture in dimmer:
-                expected[dimmer[gesture]] = ("rotate_right", {"steps": code})
+                event_class, event_type = dimmer[gesture]
+                expected[event_class] = (event_type, {"steps": code})
             # The battery rides along (`main` sends 82%; a watch, its own).
             assert battery == [82] or (from_log and len(battery) == 1), battery
         assert events == expected, (events, expected)

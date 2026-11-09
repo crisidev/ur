@@ -211,7 +211,7 @@ automation:
 | tap                  | `press`                   | `dimmer_1` `rotate_right`   |
 | double tap           | `double_press`            | `dimmer_2` `rotate_right`   |
 | hold                 | `hold_press`              | `dimmer_3` `rotate_right`   |
-| hold, held to 1.5 s  | `long_press`              | none                        |
+| hold, held to 1.5 s  | `long_press`              | `dimmer_3` `rotate_left`    |
 | lifting after a hold | `hold_release`            | none                        |
 
 - **The button** is the gesture alone, whichever code it was: the device
@@ -219,10 +219,11 @@ automation:
   editor ("Press" button, "Hold release" button, …).
 - **The dimmer** for the gesture turns right by the code (`steps: 23` for
   2, then 3), so one event says both: what most automations want. A
-  long press and a release turn none: they follow their hold, which
-  said the code (there's no room for a fourth dimmer). For a code's
-  long press, trigger on its hold's dimmer, then wait for the "Long
-  press" button event.
+  long press turns the hold's dimmer, `dimmer_3`, the other way: left,
+  by the code (there's no room for a fourth dimmer). So match the
+  direction too (`event_type: rotate_right` or `rotate_left`), or a
+  hold's trigger fires again for its long press. A release turns none:
+  only one hold is down at a time, so its end needs no code.
 
 (See [bthome-design.md](bthome-design.md) for why.) The device also
 gets a battery sensor, which updates with each press.
@@ -236,6 +237,7 @@ triggers:
     event_data:
       address: "E5:12:34:56:78:9A"   # from BTHOME KEY
       event_class: dimmer_2          # double tap
+      event_type: rotate_right
       event_properties: { steps: 23 }
 actions:
   - action: light.toggle
@@ -255,7 +257,8 @@ triggers:
     event_type: bthome_ble_event
     event_data:
       address: "E5:12:34:56:78:9A"
-      event_class: dimmer_3          # hold
+      event_class: dimmer_3          # hold (rotate_left: long press)
+      event_type: rotate_right
       event_properties: { steps: 5 }
 actions:
   - repeat:

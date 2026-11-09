@@ -41,17 +41,20 @@
 //! | `3A ..`    | `button`                     | the gesture, as BTHome names it |
 //! | `3C ...`   | `dimmer_1`                   | a tap, turning right by the code |
 //! | `3C ...`   | `dimmer_2`                   | a double tap, by the code     |
-//! | `3C ...`   | `dimmer_3`                   | a hold, by the code           |
+//! | `3C ...`   | `dimmer_3`                   | a hold right, a long press left, by the code |
 //!
 //! The button is the gesture alone, as above. The dimmers carry which
 //! code it was: the one for the gesture turns right (`02`) by the code
 //! (`23` for 2 then 3), so a single event says both, and one trigger can
-//! match it. A release turns no dimmer: only one hold can be down at a
-//! time, so its end needs no code. Nor does a long press, for the same
-//! reason, and as there's no fourth dimmer to turn (no room), nor a
-//! fitting one: turning the hold's left would fire an automation that
-//! matches only the code, as FAQ B04's does, for the hold twice. The dimmers that don't turn carry
-//! `00 00`, which fires nothing. With the packet id, and the battery
+//! match it. A long press (the same hold, held on) turns the hold's
+//! dimmer the other way, left (`01`), by the code: there's no room for a
+//! fourth dimmer, and it's a hold's, so a hold's dimmer says both, by
+//! direction. An automation must then match the direction (Home
+//! Assistant's `event_type`, `rotate_right` or `rotate_left`) as well as
+//! the code, or a hold fires it twice; the docs' examples all do. A
+//! release turns no dimmer: only one hold can be down at a time, so its
+//! end needs no code. The dimmers that don't turn carry `00 00`, which
+//! fires nothing. With the packet id, and the battery
 //! (`01`, a battery sensor that updates with each press), that's 15
 //! bytes, all there's room for.
 //!
@@ -111,13 +114,15 @@ pub fn advert(
             4
         }
         Some(press) => {
-            // BTHome's button event, and which dimmer turns (none for a
-            // long press or a release: see the module docs).
-            let (event, slot) = match press.gesture {
-                Gesture::Tap => (0x01, Some(0)),
-                Gesture::DoubleTap => (0x02, Some(1)),
-                Gesture::Hold => (0x80, Some(2)),
-                Gesture::LongPress => (0x04, None),
+            // BTHome's button event, and which dimmer turns which way:
+            // right (`02`) for the gesture's own, left (`01`) for a long
+            // press on the hold's, none for a release (see the module
+            // docs).
+            let (event, dimmer) = match press.gesture {
+                Gesture::Tap => (0x01, Some((0, 0x02))),
+                Gesture::DoubleTap => (0x02, Some((1, 0x02))),
+                Gesture::Hold => (0x80, Some((2, 0x02))),
+                Gesture::LongPress => (0x04, Some((2, 0x01))),
                 Gesture::Release => (0x81, None),
             };
             match layout {
@@ -134,11 +139,10 @@ pub fn advert(
                 Layout::TwoLayers => {
                     objects[2..6].copy_from_slice(&[0x01, battery, 0x3A, event]);
                     for i in 0..3 {
-                        let (rotate, steps) = if slot == Some(i) {
-                            // Rotate right, by the code.
-                            (0x02, press.code)
-                        } else {
-                            (0x00, 0x00)
+                        let (rotate, steps) = match dimmer {
+                            // Turning, by the code.
+                            Some((slot, rotate)) if slot == i => (rotate, press.code),
+                            _ => (0x00, 0x00),
                         };
                         objects[6 + 3 * i..9 + 3 * i].copy_from_slice(&[0x3C, rotate, steps]);
                     }

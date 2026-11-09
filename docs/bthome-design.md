@@ -24,7 +24,8 @@ User documentation: [buttons.md](buttons.md). Code: `src/buttons.rs`
   `long_press` at 1.5 s held, and `hold_release` on the lift), and
   three **dimmer** objects, one per
   gesture (`dimmer_1` tap, `dimmer_2` double tap, `dimmer_3` hold), the
-  active one turning right by the code. 15 B of plaintext, 31 B
+  active one turning right by the code; a long press turns `dimmer_3`
+  left by the code. 15 B of plaintext, 31 B
   encrypted. Checked against `bthome-ble`'s parser
   (`host-tests/bthome/check.py`). The button came in a rework, below.
 - **Radio:** not a separate non-connectable burst. The watch's two
@@ -137,11 +138,19 @@ time. and hold_release triggers when the press ends." So a hold still
 down 1.5 s after it started (`buttons::LONG_HOLD`; the hold itself is
 recognised at 0.6 s) sends `long_press` (`04`) then, once, finger still
 down: the UI loop's timer runs while a finger is down only for that
-(`Grid::long_at`). No dimmer turns for it, as for a release: it
-follows its hold, which said the code, and there's no fourth dimmer
-(no room); turning `dimmer_3` left by the code would fire automations
-that match only `dimmer_3` and the steps (as FAQ B04's example does)
-for the hold a second time. The release's advertisement
+(`Grid::long_at`). With two layers it must say the code, as a
+sequence's long press is its own (the user: "a long press on the
+second button in the sequence should still work and send the code").
+There's no room for a fourth dimmer (`3C` and two bytes: the battery's
+two wouldn't be enough), and the command object (`3B`) shows its
+arguments as hex. So it turns the hold's dimmer, `dimmer_3`, the other
+way: **left (`01`) by the code**, beside the `long_press` button event
+(`00 pid 01 batt 3A 04 3C 00 00 3C 00 00 3C 01 code`). Right is the
+hold, left its long press: the same family, told apart by Home
+Assistant's `event_type` (`rotate_right`, `rotate_left`). A trigger
+matching only `dimmer_3` and the steps would fire for both, so every
+example (FAQ B04, buttons.md) matches the direction too. The release
+still turns none: one hold is down at a time. The release's advertisement
 mustn't cut the hold's short: `ble::burst` now gives a burst 0.8 s on
 the air before the next replaces it (which also fixed the first of two
 presses completed by one touch being lost).

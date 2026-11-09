@@ -48,6 +48,9 @@ fn main() {
         (5, Gesture::Hold),
         (5, Gesture::LongPress),
         (5, Gesture::Release),
+        (47, Gesture::Hold),
+        (47, Gesture::LongPress),
+        (47, Gesture::Release),
     ]
     .map(|(code, gesture)| (Layout::TwoLayers, code, gesture));
     // Every button, with every gesture.
@@ -138,18 +141,24 @@ mod tests {
         (plain, counter)
     }
 
+    /// Each gesture's button event, and its dimmer turning by the code:
+    /// right for its own, left on the hold's for a long press (a single's
+    /// and a sequence's alike), none for a release.
     #[test]
     fn each_gesture_is_a_button_event_and_turns_its_own_dimmer() {
         let identity = identity("E5:12:34:56:78:9A");
-        for (event, slot, gesture) in [
-            (0x01, Some(0), Gesture::Tap),
-            (0x02, Some(1), Gesture::DoubleTap),
-            (0x80, Some(2), Gesture::Hold),
-            (0x04, None, Gesture::LongPress),
-            (0x81, None, Gesture::Release),
-        ] {
+        for (code, (event, dimmer, gesture)) in [7, 47].into_iter().flat_map(|code| {
+            [
+                (0x01, Some((0, 0x02)), Gesture::Tap),
+                (0x02, Some((1, 0x02)), Gesture::DoubleTap),
+                (0x80, Some((2, 0x02)), Gesture::Hold),
+                (0x04, Some((2, 0x01)), Gesture::LongPress),
+                (0x81, None, Gesture::Release),
+            ]
+            .map(|gesture| (code, gesture))
+        }) {
             let (data, len) = bthome::advert(
-                Some(Press { code: 47, gesture }),
+                Some(Press { code, gesture }),
                 Layout::TwoLayers,
                 82,
                 0x1234,
@@ -162,10 +171,10 @@ mod tests {
             // button's event.
             assert_eq!(&plain[..6], [0x00, 0x34, 0x01, 82, 0x3A, event]);
             let mut dimmers = vec![[0x3C, 0, 0]; 3];
-            if let Some(slot) = slot {
-                dimmers[slot] = [0x3C, 0x02, 47];
+            if let Some((slot, rotate)) = dimmer {
+                dimmers[slot] = [0x3C, rotate, code];
             }
-            assert_eq!(plain[6..].to_vec(), dimmers.concat(), "{gesture:?}");
+            assert_eq!(plain[6..].to_vec(), dimmers.concat(), "{code} {gesture:?}");
         }
     }
 

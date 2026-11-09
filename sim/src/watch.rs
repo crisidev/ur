@@ -699,13 +699,14 @@ impl Board for Hardware<'_> {
             }
             (Some(press), Layout::TwoLayers) => {
                 let dimmer = match press.gesture {
-                    Gesture::Tap => Some(1),
-                    Gesture::DoubleTap => Some(2),
-                    Gesture::Hold => Some(3),
-                    Gesture::LongPress | Gesture::Release => None,
+                    Gesture::Tap => Some((1, "right")),
+                    Gesture::DoubleTap => Some((2, "right")),
+                    Gesture::Hold => Some((3, "right")),
+                    Gesture::LongPress => Some((3, "left")),
+                    Gesture::Release => None,
                 };
-                let dimmer = dimmer.map_or(String::new(), |slot| {
-                    format!(", dimmer_{slot} rotate_right steps {}", press.code)
+                let dimmer = dimmer.map_or(String::new(), |(slot, way)| {
+                    format!(", dimmer_{slot} rotate_{way} steps {}", press.code)
                 });
                 format!("button {}{dimmer}", press.gesture.name())
             }

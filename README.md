@@ -276,11 +276,13 @@ bytes of data: six buttons, not one per code. So each press fires two
 events instead: a `button` event for the gesture (`press`,
 `double_press`, `hold_press`, `long_press` if held on to 1.5 s, then
 `hold_release` on lifting after a hold), and a dimmer event, which can
-carry a number, turning right by the code: `dimmer_1` for a tap,
-`dimmer_2` for a double tap, `dimmer_3` for a hold (none for a long
-press or a release: they follow their hold). To act on one code, trigger on its dimmer, in
-YAML (a **Manual event** trigger in the automation editor). For 2,
-then 3, double-tapped:
+carry a number, turning by the code: `dimmer_1` right for a tap,
+`dimmer_2` right for a double tap, `dimmer_3` right for a hold, and
+`dimmer_3` **left** for a long press (none for a release). To act on
+one code, trigger on its dimmer and direction (`rotate_right` or
+`rotate_left`: without it, a hold's trigger fires for its long press
+too), in YAML (a **Manual event** trigger in the automation editor).
+For 2, then 3, double-tapped:
 
 ```yaml
 triggers:
@@ -289,6 +291,7 @@ triggers:
     event_data:
       address: "E5:12:34:56:78:9A"   # from BTHOME KEY
       event_class: dimmer_2          # double tap
+      event_type: rotate_right
       event_properties: { steps: 23 }
 ```
 
