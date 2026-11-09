@@ -831,8 +831,8 @@ impl App {
         };
         app.clear();
         who.clear();
-        app.push_str(title).expect("titles are short");
-        who.push_str(hint).expect("hints are short");
+        app.push_str(title).fits();
+        who.push_str(hint).fits();
     }
 
     pub fn on_input(&mut self, event: InputEvent, now: Instant) {
@@ -1848,8 +1848,7 @@ impl App {
                 Some(n) => {
                     let mut arrived = String::<{ arrival::MAX_LEN }>::new();
                     if let (Some(at), Some(second)) = (n.arrived, status.local_second) {
-                        arrival::write(&mut arrived, at.get().into(), second.div_euclid(60))
-                            .expect("fits in MAX_LEN");
+                        arrival::write(&mut arrived, at.get().into(), second.div_euclid(60)).fits();
                     }
                     n.app.write_to(&mut app);
                     n.who.write_to(&mut who);
@@ -1947,6 +1946,32 @@ fn render_hint(canvas: &mut Canvas, side: Side, index: usize, count: usize) {
     if index + 1 < count {
         edge_bar(canvas, side, Color::TEXT_DIM);
     }
+}
+
+// ==============================================================================
+// Text that fits
+// ==============================================================================
+
+/// For the result of writing into a fixed-size [`String`], which the sizes
+/// chosen rule out overflowing: panics if it did anyway.
+///
+/// One function for every such write, not an `expect` at each: each of
+/// those kept its own panic location and message, ~30 bytes of flash
+/// apiece. A panic here still records which write it was, in the
+/// breadcrumb's backtrace (see `field_log`).
+trait Fits {
+    fn fits(self);
+}
+
+impl<E> Fits for Result<(), E> {
+    fn fits(self) {
+        fits(self.is_ok());
+    }
+}
+
+#[inline(never)]
+fn fits(ok: bool) {
+    assert!(ok, "text fits its buffer");
 }
 
 // ==============================================================================
@@ -2088,7 +2113,7 @@ fn render_clock(
         let sign = if tenths < 0 { "-" } else { "" };
         // At most "-3276", an i16's tenths in whole degrees.
         let mut text = heapless::String::<5>::new();
-        write!(text, "{sign}{}", magnitude / 10).expect("fits");
+        write!(text, "{sign}{}", magnitude / 10).fits();
         let mut end = canvas.text(x, 3, &text, Color::TEXT);
         if status.temperature_from_sensor {
             // On the baseline, then a column's gap.
@@ -2134,10 +2159,8 @@ fn render_clock(
     const NOTE_Y: i32 = 39;
     let mut date = heapless::String::<10>::new();
     match &status.local_time {
-        Some(t) => {
-            write!(date, "{:04}-{:02}-{:02}", t.year, t.month, t.day).expect("exactly 10 chars")
-        }
-        None => date.push_str("----------").expect("exactly 10 chars"),
+        Some(t) => write!(date, "{:04}-{:02}-{:02}", t.year, t.month, t.day).fits(),
+        None => date.push_str("----------").fits(),
     }
     canvas.text(4, NOTE_Y, &date, Color::TEXT_DIM);
     for (digit, x) in [seconds / 10, seconds % 10].into_iter().zip([64, 70]) {
@@ -2151,8 +2174,8 @@ fn render_clock(
     const READING_Y: i32 = 57;
     let mut bpm = heapless::String::<3>::new();
     match status.heart_rate {
-        Some(rate) => write!(bpm, "{rate}").expect("a u8 is at most 3 digits"),
-        None => bpm.push_str("--").expect("2 chars fit in 3"),
+        Some(rate) => write!(bpm, "{rate}").fits(),
+        None => bpm.push_str("--").fits(),
     }
     canvas.sprite(
         4,
@@ -2183,14 +2206,14 @@ fn render_clock(
         let time = match kind {
             alarm::Kind::Timer(_) if (10 * 60..60 * 60).contains(&left) => {
                 let mut time = heapless::String::new();
-                write!(time, "{}M", (left + 59) / 60).expect("fits in 8");
+                write!(time, "{}M", (left + 59) / 60).fits();
                 time
             }
             alarm::Kind::Timer(_) => countdown(left),
             _ => {
                 let mut time = heapless::String::new();
                 time.push_str(&hhmm(at.div_euclid(60).rem_euclid(24 * 60)))
-                    .expect("fits");
+                    .fits();
                 time
             }
         };
@@ -2384,14 +2407,14 @@ fn countdown(seconds: i64) -> heapless::String<8> {
     } else {
         write!(text, "{}H{:02}", seconds / 3600, seconds / 60 % 60)
     };
-    result.expect("fits in 8 for timers up to 16 hours");
+    result.fits();
     text
 }
 
 /// `minutes` (after midnight, or a duration) as HH:MM.
 fn hhmm(minutes: i64) -> heapless::String<6> {
     let mut text = heapless::String::new();
-    write!(text, "{:02}:{:02}", minutes / 60, minutes % 60).expect("fits in 6");
+    write!(text, "{:02}:{:02}", minutes / 60, minutes % 60).fits();
     text
 }
 
@@ -2424,8 +2447,8 @@ fn render_today(canvas: &mut Canvas, day: Option<&Day>, steps: Option<u32>) {
     canvas.text(10, 12, "STEPS", Color::TEXT_DIM);
     let mut text = heapless::String::<10>::new();
     match steps {
-        Some(steps) => write!(text, "{steps}").expect("a u32 is at most 10 digits"),
-        None => text.push_str("--").expect("fits"),
+        Some(steps) => write!(text, "{steps}").fits(),
+        None => text.push_str("--").fits(),
     }
     canvas.text_right(75, 12, &text, Color::TEXT);
     let most = u32::from(day.most_steps()).max(500);
@@ -2460,8 +2483,8 @@ fn render_today(canvas: &mut Canvas, day: Option<&Day>, steps: Option<u32>) {
     canvas.text(13, 36, "RESTING", Color::TEXT_DIM);
     let mut text = heapless::String::<3>::new();
     match day.resting() {
-        Some(bpm) => write!(text, "{bpm}").expect("a u8 is at most 3 digits"),
-        None => text.push_str("--").expect("fits"),
+        Some(bpm) => write!(text, "{bpm}").fits(),
+        None => text.push_str("--").fits(),
     }
     canvas.text_right(75, 36, &text, Color::TEXT);
     if let Some((low, high)) = day.heart_range() {
@@ -2484,7 +2507,7 @@ fn render_today(canvas: &mut Canvas, day: Option<&Day>, steps: Option<u32>) {
     }
     for hour in [0, 6, 12, 18] {
         let mut label = heapless::String::<2>::new();
-        write!(label, "{hour}").expect("fits in 2");
+        write!(label, "{hour}").fits();
         canvas.text(column(hour), HEART_BASE + 4, &label, Color::TEXT_FAINT);
     }
 }
@@ -2540,7 +2563,7 @@ fn render_last_night(canvas: &mut Canvas, sleep: Option<crate::activity::Sleep>)
             local(sleep.start_utc_minute),
             local(sleep.end_utc_minute)
         )
-        .expect("fits in 16");
+        .fits();
         canvas.text_centered(40, 50, &window, Color::TEXT);
     }
 
@@ -2620,7 +2643,7 @@ fn render_alarms(
         hhmm(settings.smart_weekday.into()),
         hhmm(settings.smart_weekend.into())
     )
-    .expect("fits in 20");
+    .fits();
     canvas.text(4, SMART_TOP + 8, &times, Color::TEXT);
 
     // Hairlines between the bands, so the pairs read as pairs.
@@ -2709,7 +2732,7 @@ fn duration(minutes: u16) -> heapless::String<8> {
     } else {
         write!(text, "{}H{:02}", minutes / 60, minutes % 60)
     };
-    result.expect("fits in 8");
+    result.fits();
     text
 }
 
@@ -2854,7 +2877,7 @@ fn render_battery(canvas: &mut Canvas, battery: &Battery, uptime_secs: u64) {
     canvas.fill_rect(X + 1, Y + 1, fill.min(8), 3, color);
 
     let mut text = heapless::String::<8>::new();
-    write!(text, "{percent}%").expect("at most 4 chars fit in 8");
+    write!(text, "{percent}%").fits();
     let text_x = X - 2 - font::small_text_width(&text);
     canvas.text(text_x, Y, &text, color);
     if battery.charging {
@@ -2890,8 +2913,8 @@ fn render_info(canvas: &mut Canvas, status: &Status) {
         mv / 1000,
         (mv % 1000) / 10
     )
-    .expect("fits in 12");
-    write!(values[1], "{}", battery.status()).expect("fits in 12");
+    .fits();
+    write!(values[1], "{}", battery.status()).fits();
     write!(
         values[2],
         "{:02}:{:02}:{:02}",
@@ -2899,7 +2922,7 @@ fn render_info(canvas: &mut Canvas, status: &Status) {
         (secs / 60) % 60,
         secs % 60
     )
-    .expect("fits in 12 until uptime exceeds ~11 years");
+    .fits();
     // "PAIRED" rather than "CONNECTED": the phone only counts as here once
     // it has written over an authenticated link (see `ble`), which takes
     // its bond, so this says both that it's connected and that it's paired
@@ -3057,7 +3080,9 @@ fn render_ha_key(canvas: &mut Canvas, identity: Option<&Identity>) {
             text[at] = digit(byte, true);
             text[at + 1] = digit(byte, false);
         }
-        let text = core::str::from_utf8(&text).expect("ASCII");
+        // Hex digits and spaces, so never empty (and no `expect`, whose
+        // `Utf8Error` `Debug` would cost flash).
+        let text = core::str::from_utf8(&text).unwrap_or_default();
         // 2×: 8 px a character, so 72 px (bar the last one's gap).
         canvas.text_scaled(5, 13 + 13 * row as i32, text, Color::TEXT, 2);
     }
@@ -3202,7 +3227,7 @@ fn draw_key(canvas: &mut Canvas, x: i32, y: i32, key: Key, dark: bool) {
     }
     if let Key::Sent(press, _) = key {
         let mut code = heapless::String::<2>::new();
-        write!(code, "{}", press.code).expect("at most 2 digits");
+        write!(code, "{}", press.code).fits();
         let width = font::small_text_width(&code) * 2;
         canvas.text_scaled(x + 1 + (SIZE - width) / 2, top + 1, &code, BACKGROUND, 2);
         let how = match press.gesture {
@@ -3628,9 +3653,9 @@ fn render_air(canvas: &mut Canvas, sighting: &Sighting, now: Instant) {
     let age = sighting.age(now.as_millis());
     let mut text = heapless::String::<12>::new();
     match age {
-        0..60 => text.push_str("NOW").expect("fits"),
-        60..3600 => write!(text, "{} MIN", age / 60).expect("fits"),
-        _ => write!(text, "{} H", age / 3600).expect("fits"),
+        0..60 => text.push_str("NOW").fits(),
+        60..3600 => write!(text, "{} MIN", age / 60).fits(),
+        _ => write!(text, "{} H", age / 3600).fits(),
     }
     let stale = age >= aranet::STALE;
     canvas.text_right(76, 3, &text, Color::TEXT_DIM);
@@ -3646,9 +3671,9 @@ fn render_air(canvas: &mut Canvas, sighting: &Sighting, now: Instant) {
     match reading.tenths().map(|t| t.clamp(-999, 1999)) {
         Some(t) => {
             let sign = if t < 0 { "-" } else { "" };
-            write!(temperature, "{sign}{}.{}", t.abs() / 10, t.abs() % 10).expect("fits")
+            write!(temperature, "{sign}{}.{}", t.abs() / 10, t.abs() % 10).fits()
         }
-        None => temperature.push_str("--.-").expect("fits"),
+        None => temperature.push_str("--.-").fits(),
     }
 
     // The big number: CO₂ when the sensor measures it (dashes while an
@@ -3662,7 +3687,7 @@ fn render_air(canvas: &mut Canvas, sighting: &Sighting, now: Instant) {
     } else {
         match reading.co2 {
             Some(ppm) => {
-                write!(text, "{}", ppm.min(9999)).expect("fits");
+                write!(text, "{}", ppm.min(9999)).fits();
                 draw_big_number(canvas, BIG_Y, &text, value);
             }
             // A digit's width each.
@@ -3695,12 +3720,12 @@ fn render_air(canvas: &mut Canvas, sighting: &Sighting, now: Instant) {
             canvas.text(4, 57, "HUMIDITY", Color::TEXT_DIM);
         }
     } else {
-        temperature.push('°').expect("fits");
+        temperature.push('°').fits();
         canvas.text_scaled(4, 54, &temperature, value, 2);
     }
     if let Some(humidity) = reading.humidity {
         let mut text = heapless::String::<4>::new();
-        write!(text, "{}%", humidity.min(100)).expect("fits");
+        write!(text, "{}%", humidity.min(100)).fits();
         canvas.text_scaled(76 - 2 * font::small_text_width(&text), 54, &text, value, 2);
     }
 
@@ -3708,12 +3733,12 @@ fn render_air(canvas: &mut Canvas, sighting: &Sighting, now: Instant) {
     // each if the sensor sends it.
     let mut text = heapless::String::<10>::new();
     if let Some(pressure) = reading.pressure {
-        write!(text, "{} HPA", (pressure + 5) / 10).expect("fits");
+        write!(text, "{} HPA", (pressure + 5) / 10).fits();
     }
     canvas.text(4, 69, &text, Color::TEXT_DIM);
     if let Some(battery) = reading.battery {
         let mut text = heapless::String::<8>::new();
-        write!(text, "BAT {}%", battery.min(100)).expect("fits");
+        write!(text, "BAT {}%", battery.min(100)).fits();
         let color = if battery <= 15 {
             Color::BAD
         } else {
