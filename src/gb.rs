@@ -781,7 +781,8 @@ pub enum Outgoing {
 /// harmless.
 ///
 /// TODO: drop the empty list once Gadgetbridge broadcasts new data on the
-/// `actfetch` end itself (and the releases without that are old).
+/// `actfetch` end itself (and the releases without that are old):
+/// <https://codeberg.org/Freeyourgadget/Gadgetbridge/issues/7289>.
 ///
 /// [`handleActivityFetch`]: https://codeberg.org/Freeyourgadget/Gadgetbridge/src/tag/2026.11.1/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/banglejs/BangleJSDeviceSupport.java#L838-L857
 /// [`NewDataReceiver`]: https://codeberg.org/Freeyourgadget/Gadgetbridge/src/tag/2026.11.1/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/externalevents/NewDataReceiver.java#L80-L126
