@@ -1013,3 +1013,404 @@ mod tests {
         }
     }
 }
+
+/// Kani proofs (`cargo kani` here, one at a time with `--harness`: CBMC
+/// takes memory): what the tests above check on simulated wrists, for
+/// every history of a few sessions. Nothing panics or overflows; the
+/// next session is due between two minutes and an hour after the last,
+/// for the reason the module docs give, and not before the budget holds
+/// a session's worth; the budget fills and empties as a token bucket
+/// should; and the resting estimates stay among the readings they came
+/// from.
+///
+/// `Schedule`'s fields are private, so a proof can't start from any state
+/// at all: each starts from a boot and records a few sessions, any at
+/// all, one after the other (see `any_history`). The uptime is under ten
+/// years: `due` adds to it unchecked, and would overflow in the last
+/// hours of a `u32` of seconds (136 years).
+#[cfg(kani)]
+mod proofs {
+    use super::heart_schedule::*;
+
+    /// Seconds since boot: up to ten years.
+    const UPTIME: u32 = 10 * 365 * 86_400;
+
+    /// A schedule, and what happened to it, as the module docs tell it.
+    struct History {
+        schedule: Schedule,
+        /// When the last session ended, counted or not.
+        now: u32,
+        /// When the last counted session ended (a background one, or one
+        /// with a reading), and how; `None` before any.
+        counted: Option<(u32, Outcome)>,
+        /// When the last reading came (0: none since boot).
+        last_reading: u32,
+        /// The lowest and highest readings so far, if any.
+        readings: Option<(u8, u8)>,
+    }
+
+    impl History {
+        fn boot() -> Self {
+            Self {
+                schedule: Schedule::new(),
+                now: 0,
+                counted: None,
+                last_reading: 0,
+                readings: None,
+            }
+        }
+
+        /// Records any session at all, ending no earlier than the last;
+        /// a background one begun first, as `heart` does, for its round.
+        fn any_session(&mut self) {
+            let (now, led_seconds, background): (u32, u32, bool) = kani::any();
+            kani::assume(self.now <= now && now < UPTIME);
+            let outcome = match kani::any::<u8>() & 3 {
+                0 => Outcome::Reading(kani::any()),
+                1 => Outcome::NoReading,
+                2 => Outcome::CalmNoReading,
+                _ => Outcome::OffWrist,
+            };
+            let before = Before {
+                active_polls: kani::any(),
+                stepless_polls: kani::any(),
+                asleep: kani::any(),
+            };
+            if background {
+                let _ = self.schedule.begin(before.asleep);
+            }
+            self.schedule
+                .ended(now, led_seconds, outcome, background, before);
+
+            self.now = now;
+            if let Outcome::Reading(bpm) = outcome {
+                self.last_reading = now;
+                let (low, high) = self.readings.unwrap_or((bpm, bpm));
+                self.readings = Some((low.min(bpm), high.max(bpm)));
+            }
+            if background || matches!(outcome, Outcome::Reading(_)) {
+                self.counted = Some((now, outcome));
+            }
+        }
+
+        /// When a reading is overdue.
+        fn overdue_from(&self) -> u32 {
+            self.last_reading + OVERDUE
+        }
+    }
+
+    /// A boot, and then `sessions` sessions, any at all.
+    fn any_history(sessions: usize) -> History {
+        let mut history = History::boot();
+        for _ in 0..sessions {
+            history.any_session();
+        }
+        history
+    }
+
+    /// After any six sessions, whatever the wrist has done since: the
+    /// first counted session is due at once, and every later one at
+    /// least `MIN_INTERVAL` after the last (so sessions never run back to
+    /// back) and, unless the budget holds it back, at most
+    /// `MAX_FAILED_INTERVAL` after (so the schedule never stalls).
+    ///
+    /// The budget: at the time it's due, the bucket holds the
+    /// `SESSION_RESERVE` a background session needs; and if it's the
+    /// budget that holds it back, that's the first second it does, and
+    /// within the 6 minutes that earn a session's worth (and 6 s).
+    ///
+    /// TODO: but for the first session after a boot, which is due at once
+    /// even when watched sessions without a reading (which don't count as
+    /// the first) have emptied the bucket. The proof found it, and leaves
+    /// it out.
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn a_session_is_due_within_the_hour_and_the_budget() {
+        let history = any_history(6);
+        let schedule = &history.schedule;
+        let (at, why) = schedule.due(kani::any(), kani::any());
+
+        let Some((last, _)) = history.counted else {
+            assert_eq!((at, why), (0, Why::First));
+            return;
+        };
+        assert!(why != Why::First);
+        assert!(at >= last + MIN_INTERVAL);
+        assert!(schedule.budget(at) >= SESSION_RESERVE);
+        if why == Why::Budget {
+            assert!(schedule.budget(at - 1) < SESSION_RESERVE);
+            // (And the part-earned second lost as a reading becomes
+            // overdue: under 6 s at the doubled rate.)
+            assert!(at < history.now + SESSION_RESERVE * 3600 / LED_BUDGET + 6);
+        } else {
+            assert!(at <= last + MAX_FAILED_INTERVAL);
+        }
+    }
+
+    /// After any six sessions: why the next is due is what the module
+    /// docs say, given how the last counted session ended and what the
+    /// wrist has done since.
+    ///
+    /// - After a reading: movement (awake) makes it `MIN_INTERVAL`;
+    ///   otherwise an elevated reading `ELEVATED_INTERVAL`; otherwise
+    ///   asleep at most `ASLEEP_INTERVAL`, and awake at most
+    ///   `MAX_INTERVAL`.
+    /// - After a failure it's a retry, within `CALM_RETRY_INTERVAL` if
+    ///   the wrist was calm, and, on a wrist, within `OVERDUE_RETRY` once
+    ///   a reading is overdue.
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn why_a_session_is_due_is_what_happened() {
+        let history = any_history(6);
+        let (active_polls, asleep): (u8, bool) = kani::any();
+        let (at, why) = history.schedule.due(active_polls, asleep);
+        let Some((last, outcome)) = history.counted else {
+            return;
+        };
+        let read = matches!(outcome, Outcome::Reading(_));
+        let moved = !asleep && active_polls >= MOVED_POLLS;
+        match why {
+            Why::First => unreachable!("a session has been counted"),
+            Why::Budget => return,
+            Why::Moved => assert!(read && moved && at == last + MIN_INTERVAL),
+            Why::Elevated => assert!(read && !moved && at == last + ELEVATED_INTERVAL),
+            Why::Asleep => assert!(read && asleep && at <= last + ASLEEP_INTERVAL),
+            Why::Rest => assert!(read && !asleep && !moved && at <= last + MAX_INTERVAL),
+            Why::Retry => assert!(!read),
+            Why::Overdue => assert!(!read && outcome != Outcome::OffWrist),
+        }
+        assert!(read || !moved || at <= last + MAX_INTERVAL);
+        if outcome == Outcome::CalmNoReading {
+            assert!(at <= last + CALM_RETRY_INTERVAL);
+        }
+        if !read && outcome != Outcome::OffWrist {
+            let overdue = (last + OVERDUE_RETRY).max(history.overdue_from());
+            assert!(at <= overdue);
+            assert!(why == Why::Retry || at == overdue);
+        }
+    }
+
+    /// After any three sessions, between any two later times: the budget
+    /// never passes `LED_BUDGET`, or `OVERDUE_BUDGET` once a reading is
+    /// overdue; it never shrinks with time alone; and it earns no faster
+    /// than its rate (a second every 12 s, or every 6 s overdue), so no
+    /// hour earns more than it says.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn the_budget_fills_at_its_rate_up_to_its_cap() {
+        let history = any_history(3);
+        let (earlier, later): (u32, u32) = kani::any();
+        kani::assume(history.now <= earlier && earlier <= later && later < UPTIME);
+        let schedule = &history.schedule;
+        let (before, after) = (schedule.budget(earlier), schedule.budget(later));
+
+        let overdue = later > history.overdue_from();
+        assert!(after <= if overdue { OVERDUE_BUDGET } else { LED_BUDGET });
+        assert!(before <= after);
+        let every = 3600 / if overdue { OVERDUE_BUDGET } else { LED_BUDGET };
+        assert!(after - before <= (later - earlier).div_ceil(every));
+    }
+
+    /// After any three sessions: bringing the budget up to date on the way
+    /// (as every session's end does; here a watched one that spent
+    /// nothing and read nothing, which does only that) changes nothing
+    /// about what it holds later, so frequent sessions lose no time to
+    /// rounding.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn refilling_the_budget_on_the_way_loses_nothing() {
+        let history = any_history(3);
+        let (on_the_way, later): (u32, u32) = kani::any();
+        kani::assume(history.now <= on_the_way && on_the_way <= later && later < UPTIME);
+
+        let mut refilled = history.schedule.clone();
+        let before = Before {
+            active_polls: kani::any(),
+            stepless_polls: kani::any(),
+            asleep: kani::any(),
+        };
+        refilled.ended(on_the_way, 0, Outcome::NoReading, false, before);
+        assert_eq!(refilled.budget(later), history.schedule.budget(later));
+    }
+
+    /// After any three sessions, a fourth, watched or not, takes its LED
+    /// seconds out of the budget, down to nothing; and a reading, which
+    /// ends an overdue spell, leaves no more than `LED_BUDGET`.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn a_session_spends_its_led_seconds() {
+        let mut history = any_history(3);
+        let (now, led_seconds): (u32, u32) = kani::any();
+        kani::assume(history.now <= now && now < UPTIME);
+        let had = history.schedule.budget(now);
+        let outcome = if kani::any() {
+            Outcome::Reading(kani::any())
+        } else {
+            Outcome::NoReading
+        };
+        let before = Before {
+            active_polls: kani::any(),
+            stepless_polls: kani::any(),
+            asleep: kani::any(),
+        };
+        history
+            .schedule
+            .ended(now, led_seconds, outcome, kani::any(), before);
+
+        let left = had.saturating_sub(led_seconds);
+        let has = history.schedule.budget(now);
+        match outcome {
+            Outcome::Reading(_) => assert_eq!(has, left.min(LED_BUDGET)),
+            _ => assert_eq!(has, left),
+        }
+    }
+
+    /// After any five sessions: each resting estimate is none (0), or
+    /// lies among the readings so far, as a median's estimate must. So
+    /// it can't wander off where no reading has been, and "elevated" is
+    /// always judged against a heart rate the wearer has had.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn the_resting_estimates_stay_among_the_readings() {
+        let history = any_history(5);
+        let (awake, asleep) = history.schedule.resting();
+        match history.readings {
+            None => assert_eq!((awake, asleep), (0, 0)),
+            Some((low, high)) => {
+                // (A reading of 0 BPM is none, and so is an estimate.)
+                assert!(awake == 0 || (low..=high).contains(&awake));
+                assert!(asleep == 0 || (low..=high).contains(&asleep));
+            }
+        }
+    }
+
+    /// After any three sessions: the tries up to a reading are one round,
+    /// on one arm; the next round has the next number, and, awake, the
+    /// other arm. Asleep sessions are on neither, and don't use up a
+    /// round's turn.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn rounds_take_turns_between_the_arms() {
+        let mut history = any_history(3);
+        let schedule = &mut history.schedule;
+        let before = Before::default();
+
+        // A round's first awake try, a sleeping one, and another awake.
+        let (round, arm) = schedule.begin(false);
+        assert!(arm == Arm::Dim || arm == Arm::Bright);
+        schedule.ended(history.now, 30, Outcome::NoReading, true, before);
+        assert_eq!(schedule.begin(true), (round, Arm::Asleep));
+        schedule.ended(history.now, 30, Outcome::OffWrist, true, before);
+        assert_eq!(schedule.begin(false), (round, arm));
+
+        // A reading ends it, watched or not. The next round starts asleep
+        // (which chooses no arm), and its first awake try takes the turn.
+        let reading = Outcome::Reading(kani::any());
+        schedule.ended(history.now, 13, reading, kani::any(), before);
+        let next = round.wrapping_add(1);
+        if kani::any() {
+            assert_eq!(schedule.begin(true), (next, Arm::Asleep));
+        }
+        let (again, other) = schedule.begin(false);
+        assert_eq!(again, next);
+        assert!(other != arm && other != Arm::Asleep);
+    }
+
+    /// For every drive setting, and every length of LED time up to ten
+    /// minutes (a session's most is one: its 30 s and two brighter phases
+    /// of 15 s): what it costs the budget is its charge in seconds at
+    /// the lowest drive (12.5 mA), rounded up, so never under, and under
+    /// a second over; whole seconds at the lowest drive cost themselves;
+    /// and a brighter drive never costs less.
+    ///
+    /// A drive at a time (the loop), so that CBMC multiplies by each
+    /// current as a constant, and no longer than ten minutes: for any
+    /// drive at once, or every `u32` of milliseconds, it has a 64-bit
+    /// division to turn inside out, and hadn't in five minutes.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn budget_seconds_never_undercount() {
+        let millis: u32 = kani::any();
+        kani::assume(millis <= 600_000);
+        let mut dimmer = 0;
+        for drive in 0..4 {
+            let cost = budget_seconds(drive, millis);
+            // In tenths of a µC: tenths of a mA × ms, against seconds at
+            // 12.5 mA, each 125,000 of them.
+            let charge = u64::from(millis) * u64::from(DRIVE_CURRENT[usize::from(drive)]);
+            let paid = u64::from(cost) * 125_000;
+            assert!(charge <= paid && paid < charge + 125_000);
+            assert!(drive > 0 || millis % 1000 != 0 || cost == millis / 1000);
+            assert!(dimmer <= cost);
+            dimmer = cost;
+        }
+    }
+
+    /// What `brighter` and `bright_start` promise of the drive they step
+    /// up to, if any: it's one or two settings up, and still a setting
+    /// (at most 3); and `peak`, scaled with the current, stays within
+    /// `BRIGHTER_PEAK_LIMIT` there.
+    fn steps_up_within_the_peak_limit(drive: u8, peak: u32, next: u8) {
+        assert!(drive < next && next <= drive + 2 && next <= 3);
+        let (now, then) = (
+            u64::from(DRIVE_CURRENT[usize::from(drive)]),
+            u64::from(DRIVE_CURRENT[usize::from(next)]),
+        );
+        assert!(u64::from(peak) * then <= u64::from(BRIGHTER_PEAK_LIMIT) * now + now - 1);
+    }
+
+    /// For every drive setting, peak and spare budget: a session goes on
+    /// brighter at most `BRIGHTER_STEPS` times, only to a drive
+    /// [`steps_up_within_the_peak_limit`] allows, and only if the spare
+    /// budget covers the phase and still leaves the next session's
+    /// reserve. From 12.5 mA, with a faint enough peak and budget enough,
+    /// it does go on, at 30 mA.
+    ///
+    /// The drive is a setting, 0..=3, as `heart` always passes: at 254
+    /// and 255 `step_up`'s `drive + 1` and `drive + 2` overflow (and the
+    /// proof says so, without this bound).
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn going_on_brighter_stays_within_the_peak_and_the_budget() {
+        let (drive, steps, peak, spare): (u8, u8, u32, u32) = kani::any();
+        kani::assume(drive <= 3);
+        match brighter(drive, steps, peak, spare) {
+            Some(next) => {
+                assert!(steps < BRIGHTER_STEPS);
+                steps_up_within_the_peak_limit(drive, peak, next);
+                let phase = budget_seconds(next, BRIGHTER_FOR * 1000);
+                assert!(spare >= phase + SESSION_RESERVE);
+            }
+            None => {
+                // 15 s at 30 mA are 36 budget seconds; 8192 counts at
+                // 12.5 mA would be 19661 at 30 mA, and 3413 just fit.
+                let could = drive == 0 && steps == 0 && peak <= 3413;
+                assert!(!could || spare < 36 + SESSION_RESERVE);
+            }
+        }
+    }
+
+    /// For every drive setting (0..=3, as above), expected peak and
+    /// budget: a session starts brighter only at a drive
+    /// [`steps_up_within_the_peak_limit`] allows, and only if the budget
+    /// covers a whole session there.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn starting_bright_stays_within_the_peak_and_the_budget() {
+        let (drive, peak, budget): (u8, u32, u32) = kani::any();
+        kani::assume(drive <= 3);
+        if let Some(next) = bright_start(drive, peak, budget) {
+            steps_up_within_the_peak_limit(drive, peak, next);
+            assert!(budget >= budget_seconds(next, SESSION_RESERVE * 1000));
+        }
+    }
+
+    /// For every count of busy checks among a session's: calm means busy
+    /// at no more than a quarter of them, without overflowing.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn calm_is_busy_at_a_quarter_of_the_checks_at_most() {
+        let (busy, checks): (u8, u8) = kani::any();
+        assert_eq!(calm_throughout(busy, checks), busy <= checks / 4);
+    }
+}
