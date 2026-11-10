@@ -12,7 +12,7 @@
 //! cargo +nightly bolero test fuzz::any_record_stages_as_documented --engine libfuzzer -T 10min
 //! ```
 
-use super::sleep::Kind;
+use super::sleep::{self, Kind, Minute, RESUME, SAME_NIGHT_GAP};
 use super::stages::{self, DEEP_UNTIL, MIN_BOUT, REM_AFTER};
 
 /// A per-minute record of any minutes, from minute 0, as far as `newest`.
@@ -175,5 +175,89 @@ fn any_record_stages_as_documented() {
                     "{kind:?} at {t}: a bout of {first}..={last}"
                 );
             }
+        });
+}
+
+/// Any minutes at all, after any kind of minute, classified at once as
+/// `sleep::classify` does a window: it ends (its loop moves on at every
+/// minute, which it asserts), and each minute's class is one its evidence
+/// allows. A minute the watch didn't see is unknown, and only those are;
+/// one seen off the wrist is not worn, and only those are; and the rest
+/// are awake, light or restless, never a stage (those are `stages`' to
+/// give). Sleep starts only with a still minute, so never one with steps;
+/// and never within [`RESUME`] minutes of the window's end, where the
+/// stillness that makes it can't have been seen yet. (It goes on across
+/// minutes the watch didn't see, though: those say nothing either way.)
+#[test]
+fn any_minutes_classify_as_their_evidence_says() {
+    bolero::check!()
+        .with_type::<(u8, Vec<(u16, u8, u8)>, u8)>()
+        .for_each(|(before, minutes, times)| {
+            // Long stretches too, of mostly still minutes, so that sleep
+            // starts, stirs and ends.
+            let minutes: Vec<Minute> = minutes
+                .repeat(1 + usize::from(*times) % 16)
+                .iter()
+                .map(|&(movement, steps, flags)| Minute {
+                    seen: flags & 0x0F != 0,
+                    movement: if flags & 0x80 == 0 {
+                        movement % 150
+                    } else {
+                        movement
+                    },
+                    steps: if flags & 0x40 == 0 {
+                        0
+                    } else {
+                        u16::from(steps)
+                    },
+                    worn: match flags >> 4 & 3 {
+                        0 => Some(false),
+                        1 => None,
+                        _ => Some(true),
+                    },
+                })
+                .collect();
+            let before = Kind::from_bits(before % 8);
+            let mut kinds = vec![Kind::Unknown; minutes.len()];
+            sleep::classify(before, &minutes, &mut kinds);
+
+            let n = minutes.len();
+            for (t, (minute, &kind)) in minutes.iter().zip(&kinds).enumerate() {
+                let off = minute.worn == Some(false);
+                match kind {
+                    Kind::Unknown => assert!(!minute.seen, "minute {t} was seen"),
+                    Kind::NotWorn => assert!(minute.seen && off, "minute {t}: {minute:?}"),
+                    Kind::Awake | Kind::Light | Kind::Restless => {
+                        assert!(minute.seen && !off, "minute {t}: {kind:?} from {minute:?}")
+                    }
+                    Kind::Deep | Kind::Rem => panic!("minute {t} is staged: {kind:?}"),
+                }
+                // Asleep before this minute: minutes the watch didn't see
+                // say nothing either way.
+                let slept = kinds[..t]
+                    .iter()
+                    .rev()
+                    .find(|&&kind| kind != Kind::Unknown)
+                    .map_or(before.is_sleep(), |kind| kind.is_sleep());
+                if kind.is_sleep() && !slept {
+                    assert_eq!(minute.steps, 0, "sleep starts at minute {t}, with steps");
+                    assert!(t + RESUME <= n, "sleep starts at minute {t} of {n}");
+                }
+            }
+
+            // And what `last_sleep` makes of them is a sleep: it starts and
+            // ends asleep, with no sleep after it, and none within
+            // `SAME_NIGHT_GAP` minutes before it.
+            let Some((start, end, asleep)) = sleep::last_sleep(n, |i| kinds[i]) else {
+                assert!(kinds.iter().all(|kind| !kind.is_sleep()));
+                return;
+            };
+            assert!(start < end && end <= n);
+            assert!(kinds[start].is_sleep() && kinds[end - 1].is_sleep());
+            assert!(kinds[end..].iter().all(|kind| !kind.is_sleep()));
+            let gap = start.saturating_sub(SAME_NIGHT_GAP + 1)..start;
+            assert!(kinds[gap].iter().all(|kind| !kind.is_sleep()));
+            let stages = kinds[start..end].iter().filter(|kind| kind.is_stage());
+            assert_eq!(asleep, stages.count());
         });
 }

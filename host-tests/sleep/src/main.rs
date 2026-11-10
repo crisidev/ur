@@ -755,6 +755,48 @@ mod tests {
         }
     }
 
+    /// A sleep whose end is still in the classifier's window when another
+    /// sleep begins should keep its stages: four hours of deep sleep, up
+    /// for 50 minutes (more than `SAME_NIGHT_GAP`, so what follows is a
+    /// sleep of its own), then asleep again.
+    ///
+    /// TODO: it doesn't, so this is ignored (a repro, not a regression
+    /// test yet). Once the second sleep is recognised (20 still minutes
+    /// in), `activity::History::last_sleep` stages only that one, while
+    /// `classify_sleep` goes on rewriting the window's sleep as light
+    /// every minute, and the first sleep's last 18 minutes are still in
+    /// that window (minutes 222..240 of it here): they end up light for
+    /// good, where staging the finished night says deep. On a real night
+    /// it's the last REM or deep bout before a long wake that's cut
+    /// short, to less than `stages::MIN_BOUT` even. Staging every sleep
+    /// that reaches into the window, not only the last, would fix it.
+    #[test]
+    #[ignore = "a known bug: see the comment"]
+    fn a_sleep_keeps_its_stages_when_another_follows() {
+        let still = Minute {
+            seen: true,
+            movement: 30,
+            steps: 0,
+            worn: Some(true),
+        };
+        let up = Minute {
+            movement: 800,
+            steps: 20,
+            ..still
+        };
+        let minutes = [vec![still; 240], vec![up; 50], vec![still; 200]].concat();
+        let heart = vec![50u8; minutes.len()];
+        let (kinds, _) = firmware(&minutes, &heart);
+        let once = staged_at_once(&kinds, &minutes, &heart);
+        assert_eq!(
+            timeline(&kinds),
+            timeline(&once),
+            "\n{}\n{}",
+            timeline(&kinds),
+            timeline(&once)
+        );
+    }
+
     /// A hand-made sleep for the rules: `minutes` of still sleep with a
     /// heart rate reading every minute at 50 BPM, but 62 at `raised`, where
     /// the wrist also twitches every 10 minutes (from its third minute), as
@@ -982,6 +1024,49 @@ mod tests {
         for (t, (truth, kind)) in truth.iter().zip(&kinds).enumerate() {
             if *truth == Truth::Up {
                 assert_eq!(*kind, Kind::Awake, "minute {t}");
+            }
+        }
+    }
+
+    /// Walking in the night (at least `WAKE_STEPS` steps in a minute)
+    /// should end sleep at once, as `sleep`'s docs say, however short the
+    /// walk: asleep, a minute's walk with 40 steps, asleep again.
+    ///
+    /// TODO: it doesn't, so this is ignored (a repro, not a regression
+    /// test yet). `classify` only looks at the steps of the first minute
+    /// of a run of movement, and the three-minute smoothing makes that the
+    /// minute *before* the walk (still itself, but averaged with the
+    /// walk's movement). The run is then judged by its length alone: a
+    /// walk of one minute stays light sleep, two or three are restless,
+    /// and only four (six moving minutes, `WAKE_RUN`) are awake. So
+    /// `activity::asleep()` stays true for four or five minutes after
+    /// getting up (no glances, and the heart rate's schedule ignoring the
+    /// movement), and a short trip to the bathroom is slept through in the
+    /// night's summary. Looking for such a minute anywhere in the run
+    /// would fix it.
+    #[test]
+    #[ignore = "a known bug: see the comment"]
+    fn a_short_walk_in_the_night_wakes() {
+        let still = Minute {
+            seen: true,
+            movement: 30,
+            steps: 0,
+            worn: Some(true),
+        };
+        let walk = Minute {
+            movement: 1500,
+            steps: 40,
+            ..still
+        };
+        for walking in 1..=3 {
+            let minutes = [vec![still; 120], vec![walk; walking], vec![still; 120]].concat();
+            let (kinds, asleep) = firmware(&minutes, &[]);
+            for t in 120..120 + walking {
+                assert_eq!(kinds[t], Kind::Awake, "{}", timeline(&kinds));
+                assert!(
+                    !asleep[t],
+                    "asleep at minute {t} of a {walking}-minute walk"
+                );
             }
         }
     }
@@ -1260,3 +1345,150 @@ mod tests {
 
 #[cfg(test)]
 mod fuzz;
+
+/// Kani proofs (`cargo kani` here, one at a time with `--harness`: CBMC
+/// takes memory): what the tests and the fuzzing check for some minutes,
+/// for every one, within bounds.
+///
+/// `sleep::classify` isn't among them: its loops nest three deep
+/// through `&dyn Fn` (a minute's stillness looks ahead through runs of
+/// minutes, each smoothed over its neighbours), and CBMC ran out of 8 GB
+/// on any four minutes, and hadn't finished any three in 20 minutes (at
+/// 7 GB), which can't hold an onset anyway (`RESUME` is ten).
+/// `fuzz::any_minutes_classify_as_their_evidence_says` checks it on
+/// nights' worth instead. Nor is `stages::stage`: its windows reach an
+/// hour either side of each minute, which is a great many loop
+/// iterations to unwind for a record small enough to be symbolic, and
+/// `fuzz` covers that too.
+#[cfg(kani)]
+mod proofs {
+    use super::sleep::{self, Change, Kind, Minute, Night, Over};
+
+    fn any_kind() -> Kind {
+        Kind::from_bits(kani::any::<u8>() % 8)
+    }
+
+    fn any_minute() -> Minute {
+        Minute {
+            seen: kani::any(),
+            movement: kani::any(),
+            steps: kani::any(),
+            worn: kani::any(),
+        }
+    }
+
+    /// Any few of the newest minutes: the stillness that may yet become
+    /// sleep, if there is one, starts at a minute the watch saw on a
+    /// wrist (or couldn't tell), without steps, and never at the oldest,
+    /// which is only there as its neighbour; without a panic, for any
+    /// number of minutes (down to none, though `sleep_hold` always passes
+    /// `ONSET_SPAN`).
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn an_unsettled_onset_is_a_minute_worn_and_seen() {
+        const NEWEST: usize = 6;
+        let minutes: [Minute; NEWEST] = core::array::from_fn(|_| any_minute());
+        let n: usize = kani::any();
+        kani::assume(n <= NEWEST);
+        if let Some(from) = sleep::unsettled_onset(&minutes[..n]) {
+            assert!(1 <= from && from < n);
+            assert!(minutes[from].seen && minutes[from].worn != Some(false));
+            assert_eq!(minutes[from].steps, 0);
+        }
+    }
+
+    /// A day's kinds in three stretches (of any kinds and lengths, 60
+    /// minutes in all, so that a wake can be longer than `SAME_NIGHT_GAP`
+    /// or not): the last sleep is `None` only if there's no sleep; it
+    /// starts and ends asleep; no sleep comes after it; none comes within
+    /// `SAME_NIGHT_GAP` minutes before it (that would be part of it); no
+    /// wake within it is longer than that; and its minutes asleep are its
+    /// stages'.
+    #[kani::proof]
+    #[kani::unwind(62)]
+    fn the_last_sleep_is_the_last_and_whole() {
+        const DAY: usize = 60;
+        let (first, second): (usize, usize) = kani::any();
+        kani::assume(first <= second && second <= DAY);
+        let kinds = [any_kind(), any_kind(), any_kind()];
+        let kind = |i: usize| kinds[usize::from(i >= first) + usize::from(i >= second)];
+
+        let Some((start, end, asleep)) = sleep::last_sleep(DAY, kind) else {
+            for i in 0..DAY {
+                assert!(!kind(i).is_sleep());
+            }
+            return;
+        };
+        assert!(start < end && end <= DAY);
+        assert!(kind(start).is_sleep() && kind(end - 1).is_sleep());
+        // Wakes: after it there's no sleep, before it one longer than the
+        // gap (or the start of the day), and within it none that long.
+        let (mut awake, mut stages) = (0, 0);
+        for i in 0..DAY {
+            let asleep = kind(i).is_sleep();
+            awake = if asleep { 0 } else { awake + 1 };
+            if i >= end {
+                assert!(!asleep);
+            } else if i >= start {
+                assert!(awake <= sleep::SAME_NIGHT_GAP);
+                stages += usize::from(kind(i).is_stage());
+            } else if i + 1 == start {
+                assert!(awake == start || awake > sleep::SAME_NIGHT_GAP);
+            }
+        }
+        assert_eq!(asleep, stages);
+    }
+
+    /// From a boot, through any four updates at times that move on: a
+    /// quiet night starts only as the wearer falls asleep (asleep now,
+    /// and not at the update before), as a nap if in nap hours; it ends
+    /// only at noon, or with the wearer awake for longer than its limit
+    /// (a nap's, if it started as one), and then it does end; `end` ends
+    /// it at once, saying whether there was one; and after any end, it
+    /// stays over while the wearer stays asleep.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn a_night_is_quiet_from_falling_asleep_until_it_ends() {
+        let mut night = Night::default();
+        // What the night should be, kept alongside.
+        let (mut quiet, mut was_asleep, mut last_asleep, mut nap) = (false, false, 0u32, false);
+        let mut now = 0u32;
+        for _ in 0..4 {
+            if kani::any() {
+                assert_eq!(night.end(), quiet);
+                quiet = false;
+                assert!(!night.quiet());
+            }
+            let (later, asleep, noon, nap_hours): (u32, bool, bool, bool) = kani::any();
+            kani::assume(now <= later);
+            now = later;
+            let change = night.update(asleep, now, noon, nap_hours);
+            if asleep {
+                last_asleep = now;
+            }
+            let limit = if nap {
+                sleep::NAP_AWAKE
+            } else {
+                sleep::QUIET_AWAKE
+            } as u32
+                * 60;
+            let expected = if !quiet {
+                (asleep && !was_asleep).then_some(Change::Quiet { nap: nap_hours })
+            } else if noon {
+                Some(Change::Over(Over::Noon))
+            } else if now - last_asleep > limit {
+                Some(Change::Over(Over::Awake))
+            } else {
+                None
+            };
+            assert_eq!(change, expected);
+            match change {
+                Some(Change::Quiet { nap: as_nap }) => (quiet, nap) = (true, as_nap),
+                Some(Change::Over(_)) => quiet = false,
+                None => {}
+            }
+            was_asleep = asleep;
+            assert_eq!(night.quiet(), quiet);
+        }
+    }
+}
