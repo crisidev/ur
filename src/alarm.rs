@@ -163,6 +163,20 @@ pub enum Kind {
     Phone(u8),
 }
 
+/// What [`State::due`] found to ring.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Due {
+    pub kind: Kind,
+    /// Whether it turned off any of the phone's one-off alarms (to
+    /// [`Switch::Rang`]), which then need saving. Not the same as `kind`
+    /// being the phone's: every one-off ringing at that minute turns off,
+    /// whichever of them is the one said to ring (the watch's own come
+    /// first), and a repeating phone alarm changes nothing. (The watch's
+    /// own one-offs, in [`Settings`], are saved by comparing the settings
+    /// before and after, so they need no such flag.)
+    pub phone_rang: bool,
+}
+
 /// 0 = Monday … 6 = Sunday, of local day `day` (days since 1970-01-01,
 /// a Thursday).
 fn weekday(day: i64) -> i64 {
@@ -449,14 +463,15 @@ impl State {
     /// start ringing now (`now` in local seconds). `stirring` says the
     /// wearer just moved after being still (see `crate::activity`), which
     /// is what a smart alarm waits for in its window. Turns off what rings
-    /// (a one-off alarm), and remembers the smart one.
+    /// (a one-off alarm, saying so for the phone's: see [`Due`]), and
+    /// remembers the smart one.
     pub fn due(
         &mut self,
         settings: &mut Settings,
         phone: &mut Phone,
         now: i64,
         stirring: bool,
-    ) -> Option<Kind> {
+    ) -> Option<Due> {
         let minute = now.div_euclid(60);
         // The minutes not yet checked: normally just this one, or more
         // after a hold-up or the clock moving forward (see `CATCH_UP`).
@@ -487,12 +502,14 @@ impl State {
                     settings.at[i] = false;
                 }
             }
+            let mut phone_rang = false;
             for alarm in &mut phone.alarms[..usize::from(phone.count)] {
                 if alarm.on() && alarm.days == 0 && next_at(alarm.time, 0, after) == at {
                     alarm.switch = Switch::Rang;
+                    phone_rang = true;
                 }
             }
-            return Some(kind);
+            return Some(Due { kind, phone_rang });
         }
         // (Not back to `minute` while the clock repeats checked minutes.)
         self.checked = Some(after.max(minute) as i32);
@@ -501,7 +518,10 @@ impl State {
             let in_window = minute >= latest - SMART_WINDOW;
             if minute >= latest || (in_window && stirring) {
                 self.smart_rang = Some(latest as i32);
-                return Some(Kind::Smart);
+                return Some(Due {
+                    kind: Kind::Smart,
+                    phone_rang: false,
+                });
             }
         }
         None

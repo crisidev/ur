@@ -1750,17 +1750,21 @@ impl App {
         if self.ringing.is_none()
             && let Some(kind) = self.alarm_state.elapsed(now.as_secs() as i64).or_else(|| {
                 let second = local_second?;
-                self.alarm_state
-                    .due(&mut self.alarms, &mut self.phone_alarms, second, stirring)
+                let due = self.alarm_state.due(
+                    &mut self.alarms,
+                    &mut self.phone_alarms,
+                    second,
+                    stirring,
+                )?;
+                // A one-off phone alarm turned itself off, so it doesn't
+                // ring again after a reset: save them. Whichever alarm
+                // rang, not only one of the phone's: the watch's own, at
+                // the same minute, rings in their place.
+                self.phone_alarms_changed |= due.phone_rang;
+                Some(due.kind)
             })
         {
             defmt::info!("alarm: ringing ({})", kind);
-            // A one-off phone alarm turned itself off. (Saving after a
-            // repeating one too costs a flash write a day: not worth
-            // telling them apart for.)
-            if let alarm::Kind::Phone(_) = kind {
-                self.phone_alarms_changed = true;
-            }
             // The morning's first alarm (a snooze is still the morning)
             // ends the night, so it rings with the screen bright. Not a
             // timer: that rings in the dim look, and the night goes on.

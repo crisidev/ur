@@ -135,3 +135,47 @@ fn a_flash_file_of_the_wrong_size_is_refused() {
     assert!(!ok);
     assert!(log.contains("the storage region is 12288"), "{log}");
 }
+
+/// A one-off alarm from the phone ringing at the same minute as one of the
+/// watch's own (the host fuzzer's persistence check found this): both turn
+/// themselves off as they ring together, but only the watch's was saved,
+/// as the phone's were saved only when one of theirs was the alarm that
+/// rang (the watch's, listed first, is). Booted again before the phone
+/// next syncs, the watch had the phone's alarm on again, and it rang
+/// again the next morning.
+#[test]
+fn a_phone_alarm_rung_with_the_watchs_is_saved() {
+    let dir = dir("flash-phone-alarm-rang");
+    let script = "\
+time 2026-11-09 06:59:30 +01:00
+connect
+gb GB({\"t\":\"alarm\",\"d\":[{\"h\":7,\"m\":0,\"rep\":0,\"on\":true}]})
+alarm 1 07:00 on
+until 07:00
+expect buzzing
+wait 1s
+settings
+# Switched off (a flat battery) and on again (the charger): it boots from
+# flash, and the phone sets the time, but sends no alarms.
+battery 3300
+wait 5m
+expect off
+battery 3500 charging
+wait 5s
+expect not off
+until 07:00
+expect not buzzing
+";
+    let (ok, log) = run(&dir, "rang.txt", script, &[]);
+    assert!(ok, "{log}");
+    let saved = settings(&log);
+    assert!(
+        saved.iter().any(|s| s.starts_with("alarms: 07:00 off")),
+        "{log}"
+    );
+    assert!(
+        saved.contains(&"phone alarms: 07:00 Rang (days 0000000)"),
+        "{log}"
+    );
+    assert!(log.contains("booted"), "{log}");
+}

@@ -44,7 +44,7 @@ mod tests {
         (from..to).find_map(|now| {
             state
                 .due(settings, &mut phone, now * 60, stir(now))
-                .map(|k| (now, k))
+                .map(|due| (now, due.kind))
         })
     }
 
@@ -61,7 +61,7 @@ mod tests {
             .filter_map(|now| {
                 state
                     .due(settings, phone, now * 60, false)
-                    .map(|k| (now, k))
+                    .map(|due| (now, due.kind))
             })
             .collect()
     }
@@ -125,8 +125,8 @@ mod tests {
         let mut state = State::default();
         let mut rings = Vec::new();
         for now in at(MONDAY, 0, 0)..at(MONDAY + 2, 0, 0) {
-            if let Some(kind) = state.due(&mut s, &mut Phone::default(), now * 60, true) {
-                rings.push((now, kind));
+            if let Some(due) = state.due(&mut s, &mut Phone::default(), now * 60, true) {
+                rings.push((now, due.kind));
             }
         }
         // A stir every minute: each morning at the window's start.
@@ -200,7 +200,7 @@ mod tests {
             .filter_map(|now| {
                 state
                     .due(&mut s, &mut Phone::default(), now * 60, false)
-                    .map(|k| (now, k))
+                    .map(|due| (now, due.kind))
             })
             .collect();
         assert_eq!(
@@ -500,12 +500,102 @@ mod tests {
         assert!(p.alarms()[1].on());
     }
 
+    /// `due` says when it turned off a one-off phone alarm, for the UI to
+    /// save the phone's alarms: whichever alarm it says rings. Saved only
+    /// when the phone's was the one ringing, a one-off at the same minute
+    /// as the watch's own (which rings, being listed first) stayed on in
+    /// storage, and rang again the next day after a reset.
+    #[test]
+    fn due_says_when_a_phone_alarm_turned_off() {
+        // Checks a minute at a time from 06:59 to 07:01 on Monday; returns
+        // what rang at 07:00, the only minute anything is set for.
+        fn at_seven(s: &mut Settings, p: &mut Phone) -> Due {
+            let mut state = State::default();
+            let mut due = |minute| state.due(s, p, minute * 60, false);
+            assert_eq!(due(at(MONDAY, 6, 59)), None);
+            let rang = due(at(MONDAY, 7, 0)).expect("something rings at 07:00");
+            assert_eq!(due(at(MONDAY, 7, 1)), None);
+            rang
+        }
+        let watch = Settings {
+            at: [true, false],
+            at_time: [7 * 60, 0],
+            ..Settings::default()
+        };
+
+        // The phone's one-off with the watch's: the watch's rings, and
+        // both turn off.
+        let (mut s, mut p) = (watch, phone(&[(7, 0, 0, true)]));
+        assert_eq!(
+            at_seven(&mut s, &mut p),
+            Due {
+                kind: Kind::At(0),
+                phone_rang: true
+            }
+        );
+        assert!(!s.at[0]);
+        assert_eq!(p.alarms()[0].switch, Switch::Rang);
+
+        // The phone's repeating alarm with the watch's one-off: the
+        // phone's alarms are as they were.
+        let (mut s, mut p) = (watch, phone(&[(7, 0, WEEKDAYS, true)]));
+        assert_eq!(
+            at_seven(&mut s, &mut p),
+            Due {
+                kind: Kind::At(0),
+                phone_rang: false
+            }
+        );
+        assert!(!s.at[0]);
+        assert!(p.alarms()[0].on());
+
+        // The phone's repeating alarm, listed first, with its one-off: the
+        // repeating one rings, the one-off turns off.
+        let mut s = Settings::default();
+        let mut p = phone(&[(7, 0, WEEKDAYS, true), (7, 0, 0, true)]);
+        assert_eq!(
+            at_seven(&mut s, &mut p),
+            Due {
+                kind: Kind::Phone(0),
+                phone_rang: true
+            }
+        );
+        assert_eq!(p.alarms()[1].switch, Switch::Rang);
+
+        // A repeating phone alarm alone changes nothing: no flash write
+        // every morning.
+        let mut p = phone(&[(7, 0, WEEKDAYS, true)]);
+        assert_eq!(
+            at_seven(&mut Settings::default(), &mut p),
+            Due {
+                kind: Kind::Phone(0),
+                phone_rang: false
+            }
+        );
+
+        // Nor does the smart wake, with a one-off phone alarm later on.
+        let mut s = smart();
+        let mut p = phone(&[(7, 30, 0, true)]);
+        assert_eq!(
+            at_seven(&mut s, &mut p),
+            Due {
+                kind: Kind::Smart,
+                phone_rang: false
+            }
+        );
+        assert!(p.alarms()[0].on());
+    }
+
     #[test]
     fn alarms_held_up_by_another_ringing_still_ring() {
         let mut s = Settings::default();
         let mut p = phone(&[(7, 0, 0, true), (7, 2, 0, true)]);
         let mut state = State::default();
-        let mut due = |minute| state.due(&mut s, &mut p, minute * 60, false);
+        let mut due = |minute| {
+            state
+                .due(&mut s, &mut p, minute * 60, false)
+                .map(|due| due.kind)
+        };
         assert_eq!(due(at(MONDAY, 6, 59)), None);
         assert_eq!(due(at(MONDAY, 7, 0)), Some(Kind::Phone(0)));
         // Ringing for three minutes, during which nothing checks.
@@ -518,7 +608,11 @@ mod tests {
         let mut s = Settings::default();
         let mut p = phone(&[(7, 0, 0x7F, true), (9, 0, 0x7F, true)]);
         let mut state = State::default();
-        let mut due = |minute| state.due(&mut s, &mut p, minute * 60, false);
+        let mut due = |minute| {
+            state
+                .due(&mut s, &mut p, minute * 60, false)
+                .map(|due| due.kind)
+        };
         assert_eq!(due(at(MONDAY, 6, 0)), None);
         // The phone sets the clock three hours on (a new time zone): 07:00
         // went by unrung, and 09:00 is still to come.
@@ -579,8 +673,8 @@ mod tests {
             .chain(at(sunday, 2, 0)..at(sunday, 3, 30))
             .chain(at(MONDAY, 2, 0)..at(MONDAY, 3, 0));
         for minute in minutes {
-            if let Some(kind) = state.due(&mut s, &mut p, minute * 60, false) {
-                rang.push((minute, kind));
+            if let Some(due) = state.due(&mut s, &mut p, minute * 60, false) {
+                rang.push((minute, due.kind));
             }
         }
         // 02:30 rings in the first of the two hours only; 03:10 once, after
@@ -602,7 +696,11 @@ mod tests {
         let mut s = Settings::default();
         let mut p = phone(&[(7, 0, 0x7F, true), (7, 30, 0x7F, true)]);
         let mut state = State::default();
-        let mut due = |minute| state.due(&mut s, &mut p, minute * 60, false);
+        let mut due = |minute| {
+            state
+                .due(&mut s, &mut p, minute * 60, false)
+                .map(|due| due.kind)
+        };
         assert_eq!(due(at(MONDAY, 6, 59)), None);
         assert_eq!(due(at(MONDAY, 7, 0)), Some(Kind::Phone(0)));
         assert_eq!(due(at(MONDAY, 7, 5)), None);
