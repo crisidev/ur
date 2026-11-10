@@ -191,6 +191,10 @@ fn weekday(day: i64) -> i64 {
 /// The smart alarm's next time (local minutes), strictly after minute
 /// `now`.
 pub fn next_smart(settings: &Settings, now: i64) -> i64 {
+    // Times of day, as `Settings::from_bytes` and the editor keep them:
+    // a later one would make "today's" land on another day, and so ring
+    // on the wrong kind of day (a weekend's time on a Monday).
+    debug_assert!(settings.smart_weekday < DAY as u16 && settings.smart_weekend < DAY as u16);
     let today = now.div_euclid(DAY);
     (today..today + 3)
         .map(|day| {
@@ -209,6 +213,10 @@ pub fn next_smart(settings: &Settings, now: i64) -> i64 {
 /// minute `after`, on one of `days` (bit 0 Monday … bit 6 Sunday, as
 /// Gadgetbridge sends them), or on any day if `days` is 0.
 pub fn next_at(time: u16, days: u8, after: i64) -> i64 {
+    // A time of day, on Gadgetbridge's seven weekdays: what
+    // `Settings::from_bytes`, the editor and `Phone::push` let through.
+    // A later time would ring on the day after the one `days` names.
+    debug_assert!(time < DAY as u16 && days < 0x80);
     let today = after.div_euclid(DAY);
     (today..today + 8)
         .filter(|&day| days == 0 || days >> weekday(day) & 1 != 0)
@@ -388,6 +396,10 @@ pub struct State {
 impl State {
     /// Starts `timer` at `uptime` (seconds).
     pub fn start_timer(&mut self, timer: usize, settings: &Settings, uptime: i64) {
+        // What `Settings::from_bytes` and the editor keep a duration to;
+        // the editor's digits (and `ui`'s drawing of what remains) have
+        // no room for more (see F1 in the overnight findings).
+        debug_assert!((1..=MAX_TIMER).contains(&settings.timers[timer]));
         self.timers[timer] = Some(uptime + i64::from(settings.timers[timer]) * 60);
     }
 
@@ -463,7 +475,7 @@ impl State {
     /// up: it's then overdue, and rings at the next check.
     fn pending_smart(&self, settings: &Settings, after: i64) -> i64 {
         let next = next_smart(settings, after);
-        if self.smart_rang == Some(next as i32) {
+        if self.smart_rang == Some(kept(next)) {
             next_smart(settings, next)
         } else {
             next
@@ -532,11 +544,16 @@ impl State {
             .filter(|&(_, at)| at <= minute)
             .min_by_key(|&(_, at)| at);
         if let Some((kind, at)) = earliest {
-            self.checked = Some(at as i32);
+            // An occurrence not checked before, and not in the future:
+            // what makes each ring once. One at or before `after` would
+            // ring again at every check (once a second) until the clock
+            // moved on; `next_at` and `next_smart` promise "strictly after".
+            debug_assert!(after < at && at <= minute);
+            self.checked = Some(kept(at));
             // Checked, it won't ring again; remembered, it won't even
             // should the clock go back by more than `CATCH_UP`.
             if smart == Some(at) {
-                self.smart_rang = Some(at as i32);
+                self.smart_rang = Some(kept(at));
             }
             // One-off alarms turn themselves off, all of those ringing.
             for i in 0..ALARMS {
@@ -554,14 +571,14 @@ impl State {
             return Some(Due { kind, phone_rang });
         }
         // (Not back to `minute` while the clock repeats checked minutes.)
-        self.checked = Some(after.max(minute) as i32);
+        self.checked = Some(kept(after.max(minute)));
         // Nothing is overdue, but the smart alarm may ring early, at a
         // stir in its window.
         if let Some(latest) = smart
             && stirring
             && minute >= latest - SMART_WINDOW
         {
-            self.smart_rang = Some(latest as i32);
+            self.smart_rang = Some(kept(latest));
             return Some(Due {
                 kind: Kind::Smart,
                 phone_rang: false,
@@ -569,6 +586,16 @@ impl State {
         }
         None
     }
+}
+
+/// A local minute, as [`State`] keeps it: in 32 bits.
+fn kept(minute: i64) -> i32 {
+    // Minutes since 1970 fit until the year 6053, and the phone's time is
+    // only believed for this century (`gb`'s `SANE_UTC_SECONDS`). One
+    // that didn't fit would be kept as some other minute: an alarm
+    // ringing again, or not at all.
+    debug_assert!(i32::try_from(minute).is_ok());
+    minute as i32
 }
 
 /// The alarms at a time of day that are on, the watch's and the phone's,
