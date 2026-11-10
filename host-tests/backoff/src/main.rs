@@ -18,7 +18,9 @@ mod tests {
         let waits: Vec<u32> = (0..11).map(|_| backoff.failed().wait_ms).collect();
         assert_eq!(
             waits,
-            [100, 200, 500, 1_000, 2_000, 5_000, 10_000, 30_000, 60_000, 60_000, 60_000]
+            [
+                100, 200, 500, 1_000, 2_000, 5_000, 10_000, 30_000, 60_000, 60_000, 60_000
+            ]
         );
     }
 
@@ -98,5 +100,75 @@ mod tests {
         assert_eq!(logged, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]);
         assert!(worth_logging(u16::MAX / 2 + 1));
         assert!(!worth_logging(u16::MAX));
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::backoff::*;
+
+    /// A sensor after any number of failed attempts, from none to the
+    /// 65 535 the count stops at.
+    ///
+    /// `Backoff` only says how to get there one failure at a time, which
+    /// is 65 535 calls for CBMC to unwind; but it's one `u16` and nothing
+    /// else, so any `u16` is one of its states.
+    fn any_backoff() -> Backoff {
+        const _: () = assert!(size_of::<Backoff>() == size_of::<u16>());
+        // SAFETY: A struct of one `u16` (checked above to be all there is
+        // to it), every value of which `failed` can reach.
+        unsafe { core::mem::transmute::<u16, Backoff>(kani::any()) }
+    }
+
+    /// After any run of failures, two more: nothing panics (the count
+    /// doesn't overflow, the table isn't overrun), the count goes up by
+    /// one until it stops at its ceiling, and the wait is the table's
+    /// for that failure, never shorter than the one before, and never
+    /// longer than the table's last. So a sensor is retried for as long
+    /// as it fails, at least once a minute.
+    #[kani::proof]
+    fn the_wait_never_shrinks_nor_passes_a_minute() {
+        let mut backoff = any_backoff();
+        let first = backoff.failed();
+        let second = backoff.failed();
+
+        assert!(first.failures >= 1);
+        assert_eq!(second.failures, first.failures.saturating_add(1));
+        let (shortest, longest) = (WAITS_MS[0], WAITS_MS[WAITS_MS.len() - 1]);
+        assert!(shortest <= first.wait_ms && first.wait_ms <= second.wait_ms);
+        assert!(second.wait_ms <= longest && longest == 60_000);
+        // The table's own entry while it lasts, then its last for good.
+        let step = usize::from(first.failures - 1);
+        assert_eq!(first.wait_ms, WAITS_MS[step.min(WAITS_MS.len() - 1)]);
+    }
+
+    /// `loud` says beforehand what `failed` then decides, after any run of
+    /// failures: a driver's own transfer warnings stay in step with the
+    /// retry lines (the test tries the first 500).
+    #[kani::proof]
+    fn loud_says_what_failed_will() {
+        let mut backoff = any_backoff();
+        let loud = backoff.loud();
+        assert_eq!(backoff.failed().log, loud);
+    }
+
+    /// A failure is logged while the waits still grow, and then exactly
+    /// one in [`LOG_EVERY`]: of any two in a row past the table, at most
+    /// one is logged, so a dead sensor can't fill the field log.
+    ///
+    /// TODO: once the count stops at 65 535 (six weeks of failures), no
+    /// failure is logged again, as 65 535 isn't a multiple of
+    /// [`LOG_EVERY`]. The hourly "still failing" line stops there, though
+    /// the retries don't. (Which is why this holds there too.)
+    #[kani::proof]
+    fn logs_thin_out_to_one_in_sixty() {
+        let mut backoff = any_backoff();
+        let first = backoff.failed();
+        let grows = usize::from(first.failures) <= WAITS_MS.len();
+        assert_eq!(first.log, grows || first.failures % LOG_EVERY == 0);
+        let second = backoff.failed();
+        if !grows {
+            assert!(!(first.log && second.log));
+        }
     }
 }

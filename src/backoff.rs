@@ -25,6 +25,19 @@
 /// waiting half a minute after it's fine again.
 pub const WAITS_MS: [u32; 9] = [100, 200, 500, 1_000, 2_000, 5_000, 10_000, 30_000, 60_000];
 
+// What the drivers' retry loops count on, checked as the table is edited:
+// no wait is zero (a sensor that keeps failing would then be retried
+// without a pause, starving every other task and the battery), and none
+// is shorter than the one before (the retries only ever slow down).
+const _: () = {
+    assert!(WAITS_MS[0] > 0);
+    let mut i = 1;
+    while i < WAITS_MS.len() {
+        assert!(WAITS_MS[i - 1] <= WAITS_MS[i]);
+        i += 1;
+    }
+};
+
 /// Once the waits have stopped growing, one failure in this many is logged.
 pub const LOG_EVERY: u16 = 60;
 
