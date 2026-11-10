@@ -2,6 +2,7 @@
 //! arrived, as the history shows it. `cargo test` runs them.
 
 #[path = "../../../src/arrival.rs"]
+#[allow(dead_code)]
 mod arrival;
 
 fn main() {
@@ -72,3 +73,6 @@ mod tests {
         assert_eq!(label(y2k + 61, y2k + 2 * DAY), "SAT 01:01");
     }
 }
+
+#[cfg(test)]
+mod fuzz;
