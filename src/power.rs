@@ -92,6 +92,10 @@ pub enum Meter {
 
 const METERS: usize = 10;
 static ON_TIME: [OnTime; METERS] = [const { OnTime::new() }; METERS];
+// One counter for each meter, the last of which is `Scanning`: a meter
+// added after it without its counter would panic (an index out of bounds)
+// the first time its state turned on, perhaps days after boot.
+const _: () = assert!(Meter::Scanning as usize + 1 == METERS);
 
 /// `meter`'s state turned on. Match each with an [`off`]: overlapping ones
 /// (two clients connected) count once each.
@@ -125,6 +129,8 @@ pub enum Count {
 
 const COUNTS: usize = 8;
 static EVENTS: [AtomicU32; COUNTS] = [const { AtomicU32::new(0) }; COUNTS];
+// As for the meters: `Scans` is the last.
+const _: () = assert!(Count::Scans as usize + 1 == COUNTS);
 
 pub fn count(event: Count) {
     EVENTS[event as usize].fetch_add(1, Ordering::Relaxed);
