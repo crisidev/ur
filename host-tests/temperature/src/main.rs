@@ -338,3 +338,250 @@ mod tests {
         assert!(!pairing.offer(30 * MIN, q(31.0), q(35.25), worn));
     }
 }
+
+/// Kani proofs (`cargo kani` here, one at a time with `--harness`: CBMC
+/// takes memory): what the tests above check for chosen readings, for
+/// every reading the sources can give. Nothing panics or overflows; what's
+/// shown is as near the reading as [`shown`]'s docs say, and settles when
+/// a reading wobbles; the wrist's estimate stays within its range of the
+/// die, whatever the watch has learnt; a calibration survives the flash;
+/// and the watch counts as worn only since a pulse that came after the
+/// last sign of it being off.
+///
+/// The bounds are the sources' own: a room sensor's hundredths are an
+/// `i16` (see `aranet::Reading`), and the die sensor reads -40 to 85 °C.
+/// [`shown`] and [`pick`] take an `i32`, and would overflow near its ends,
+/// which nothing can pass them.
+#[cfg(kani)]
+mod proofs {
+    use super::temperature::*;
+
+    /// The die's temperature, in quarter degrees: -40 to 85 °C, the
+    /// sensor's range.
+    fn any_die() -> i32 {
+        let die: i32 = kani::any();
+        kani::assume((-40 * 4..=85 * 4).contains(&die));
+        die
+    }
+
+    fn any_source() -> Source {
+        match kani::any::<u8>() % 3 {
+            0 => Source::Sensor,
+            1 => Source::Wrist,
+            _ => Source::Watch,
+        }
+    }
+
+    /// A reading from `source`, in hundredths, as [`pick`] gives them: a
+    /// room sensor's `i16`, or quarter degrees within the wrist
+    /// estimate's range of the die (15 °C under it to 5 °C over).
+    fn any_reading(source: Source) -> i32 {
+        match source {
+            Source::Sensor => i32::from(kani::any::<i16>()),
+            Source::Wrist | Source::Watch => {
+                let quarters: i32 = kani::any();
+                kani::assume((-55 * 4..=90 * 4).contains(&quarters));
+                25 * quarters
+            }
+        }
+    }
+
+    /// How far a reading may be from what's shown for it, in hundredths:
+    /// a tenth from a room sensor, and otherwise three quarters of a
+    /// degree.
+    fn off_by(source: Source) -> i32 {
+        match source {
+            Source::Sensor => 10,
+            Source::Wrist | Source::Watch => 75,
+        }
+    }
+
+    /// For every reading, after anything shown before from its source (a
+    /// whole degree, unless it's a room sensor's): what's shown is never
+    /// further from the reading than the docs say (0.1 °C for a room
+    /// sensor, 0.75 °C otherwise), so it never clamps; it's a whole
+    /// degree unless from a room sensor; and with nothing shown before,
+    /// it's the nearest step, halves rounding up.
+    #[kani::proof]
+    fn what_is_shown_is_near_the_reading() {
+        let source = any_source();
+        let hundredths = any_reading(source);
+        let previous: Option<i16> = kani::any();
+        let whole = source != Source::Sensor;
+        kani::assume(!whole || previous.is_none_or(|p| p % 10 == 0));
+
+        let tenths = shown(previous, hundredths, source);
+        let off = hundredths - 10 * i32::from(tenths);
+        assert!(off.abs() <= off_by(source));
+        assert!(!whole || tenths % 10 == 0);
+        if previous.is_none() {
+            let half = if whole { 50 } else { 5 };
+            assert!((-half..half).contains(&off));
+        }
+        // And it stays, shown the same reading again.
+        assert_eq!(shown(Some(tenths), hundredths, source), tenths);
+    }
+
+    /// For every pair of readings a wobble apart (a tenth for a room
+    /// sensor, which wanders by a step or two between scans; half a
+    /// degree otherwise, the die's 31.25 and 31.75 °C), coming in turn,
+    /// after anything shown before: what's shown changes at most twice,
+    /// and then holds, rather than flipping with each reading.
+    #[kani::proof]
+    fn a_wobble_settles() {
+        let source = any_source();
+        let (one, other) = (any_reading(source), any_reading(source));
+        let wobble = if source == Source::Sensor { 10 } else { 50 };
+        kani::assume((one - other).abs() <= wobble);
+        let previous: Option<i16> = kani::any();
+        kani::assume(source == Source::Sensor || previous.is_none_or(|p| p % 10 == 0));
+
+        let first = shown(previous, one, source);
+        let second = shown(Some(first), other, source);
+        let third = shown(Some(second), one, source);
+        assert_eq!(shown(Some(third), other, source), third);
+        assert_eq!(shown(Some(third), one, source), third);
+    }
+
+    /// Any calibration a watch could have learnt: its sums are of pairs
+    /// (a die temperature the sensor can read, with a room's, 10–35 °C,
+    /// as [`Pairing`] lets through), each weighted by how long ago it
+    /// came, the weights adding up to at most 100 (what `FORGET` lets
+    /// them reach). So each sum is within its pairs' range times the
+    /// weight, and the die's sum squared is at most the weight times its
+    /// sum of squares (Cauchy–Schwarz, as `Calibration::line` counts on).
+    ///
+    /// Through its bytes, as the sums are private.
+    fn any_learnt() -> Calibration {
+        // The furthest a pair can be from the centres, in °C: the die at
+        // -40 °C (from 27.5), the air at 35 °C (from 21.5).
+        const DIE: f32 = 67.5;
+        const AIR: f32 = 13.5;
+        let (n, sx, sy, sxx, sxy): (f32, f32, f32, f32, f32) = kani::any();
+        kani::assume((0.0..=100.0).contains(&n));
+        kani::assume(sx.abs() <= DIE * n && sy.abs() <= AIR * n);
+        kani::assume((0.0..=DIE * DIE * n).contains(&sxx));
+        kani::assume(sx * sx <= n * sxx);
+        kani::assume(sxy.abs() <= DIE * AIR * n);
+
+        let mut bytes = Calibration::new().to_bytes();
+        for (i, sum) in [n, sx, sy, sxx, sxy].into_iter().enumerate() {
+            bytes[1 + 4 * i..5 + 4 * i].copy_from_slice(&sum.to_le_bytes());
+        }
+        let calibration = Calibration::from_bytes(bytes);
+        assert!(calibration.pairs() == n);
+        calibration
+    }
+
+    /// For every die temperature, every calibration a watch could have
+    /// learnt, and every room sensor's reading, if there is one: the
+    /// sensor wins, then the wrist's estimate, then the die's own. The
+    /// fit never divides by nothing or loses its numbers on the way (no
+    /// NaN, which Kani checks for), its slope stays physical (1 to 3),
+    /// and the estimate is never more than 15 °C under the die nor 5 °C
+    /// over.
+    ///
+    /// Not for any calibration the flash could hold, as this was first
+    /// written: `from_bytes` lets through any finite sums, and ones no
+    /// pairs could make (no pairs at all, yet a die's sum of 8 whose
+    /// squares sum to 4, and an air's sum of 12) have the fit divide 0
+    /// by 0. The estimate still stays in range then, as CBMC confirmed,
+    /// since `max` and `min` pick the bound over a NaN; but the NaN
+    /// itself fails Kani's check.
+    #[kani::proof]
+    #[kani::unwind(22)]
+    fn the_estimate_stays_within_its_range_of_the_die() {
+        let calibration = any_learnt();
+        let (slope, height) = calibration.line();
+        assert!((1.0..=3.0).contains(&slope) && height.is_finite());
+
+        let die = any_die();
+        let (sensor, worn): (Option<i16>, bool) = kani::any();
+        let (hundredths, source) = pick(sensor.map(i32::from), worn, die, &calibration);
+        match (sensor, worn) {
+            (Some(sensor), _) => assert_eq!((hundredths, source), (sensor.into(), Source::Sensor)),
+            (None, true) => {
+                assert_eq!(source, Source::Wrist);
+                assert_eq!(hundredths % 25, 0);
+                assert!((die - 15 * 4..=die + 5 * 4).contains(&(hundredths / 25)));
+            }
+            (None, false) => assert_eq!((hundredths, source), (25 * die, Source::Watch)),
+        }
+    }
+
+    /// For every calibration the flash could hold: it's what its bytes
+    /// say, or the prior alone, and saved again it reads back the same.
+    #[kani::proof]
+    #[kani::unwind(22)]
+    fn a_calibration_survives_the_flash() {
+        let bytes: [u8; CALIBRATION_BYTES] = kani::any();
+        let calibration = Calibration::from_bytes(bytes);
+        assert!(calibration.to_bytes() == bytes || calibration == Calibration::new());
+        assert!(calibration.pairs() >= 0.0);
+        assert!(Calibration::from_bytes(calibration.to_bytes()) == calibration);
+    }
+
+    /// For every calibration the flash could hold, and every pair of
+    /// temperatures the sensors can give (the die's range; a room
+    /// sensor's `i16` of hundredths is within ±328 °C): what it learns
+    /// from the pair is still a calibration the flash gives back, rather
+    /// than one that reads as nonsense after a restart, and the prior
+    /// takes its place.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn a_calibration_that_has_learnt_survives_the_flash() {
+        let mut calibration = Calibration::from_bytes(kani::any());
+        let air: i32 = kani::any();
+        kani::assume((-328 * 4..=328 * 4).contains(&air));
+        calibration.learn(any_die(), air);
+        assert!(calibration.pairs() >= 1.0);
+        assert!(Calibration::from_bytes(calibration.to_bytes()) == calibration);
+    }
+
+    /// From a boot at any time, through any four looks at the sensors
+    /// (time never going back, and no pulse from the future):
+    ///
+    /// - It starts off the wrist, and is on it only since a pulse: one
+    ///   later than the last sign of it being off (no skin, or lying
+    ///   still for a quarter of an hour).
+    /// - Either sign takes it off at once.
+    /// - With neither, a newer pulse puts it on, since that pulse, and
+    ///   once on it stays on, since the same pulse.
+    ///
+    /// So `worn_for` never says longer than since the last sign of being
+    /// off, which is what [`Pairing`] counts on to tell a settled wrist.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn worn_is_since_a_pulse_after_the_last_sign_of_being_off() {
+        const LYING: u64 = 15 * 60 * 1000;
+        let boot: u64 = kani::any();
+        let mut wear = Wear::new(boot);
+        assert!(!wear.worn() && wear.worn_for(boot).is_none());
+
+        // The last look, the last sign of being off, and since when every
+        // look has found the watch still.
+        let (mut last, mut off, mut still_since) = (boot, boot, None);
+        for _ in 0..4 {
+            let (now, no_skin, still, pulse): (u64, bool, bool, Option<u64>) = kani::any();
+            kani::assume(last <= now && pulse.is_none_or(|at| at <= now));
+            let was = wear.worn_for(now);
+            wear.update(now, no_skin, still, pulse);
+
+            still_since = still.then_some(still_since.unwrap_or(now));
+            let lying = still_since.is_some_and(|since| now - since >= LYING);
+            let worn_for = wear.worn_for(now);
+            assert_eq!(wear.worn(), worn_for.is_some());
+            if no_skin || lying {
+                off = now;
+                assert_eq!(worn_for, None);
+            } else if was.is_some() {
+                assert_eq!(worn_for, was);
+            } else {
+                let newer = pulse.filter(|&at| at > off);
+                assert_eq!(worn_for, newer.map(|at| now - at));
+            }
+            assert!(worn_for.is_none_or(|worn| worn < now - off));
+            last = now;
+        }
+    }
+}
