@@ -522,3 +522,155 @@ mod tests {
         assert_no_drop(&trace, 1);
     }
 }
+
+/// Kani proofs (`cargo kani` here, one at a time with `--harness`: CBMC
+/// takes memory): what the tests above check along chosen traces, for
+/// every voltage, sample, charger state and uptime. Nothing panics or
+/// overflows, the percentage is one (0–100), it moves the way the module
+/// says it does, and the watch isn't switched off within a minute of the
+/// voltage first reading low.
+///
+/// `Battery`'s fields are private, so a proof can't start from any state
+/// at all. They start from any that [`Battery::measured`] makes (any
+/// voltage and percentage, on the charger or off), or from a boot, and
+/// make any two or three updates from there: one update at any uptime
+/// sets the step's clock and the window's best, so two reach every state
+/// but for the smoothing's eighths.
+#[cfg(kani)]
+mod proofs {
+    use super::battery::*;
+
+    /// The SAADC's 12 bits, which noise can take a little below zero.
+    fn any_sample() -> i16 {
+        let raw: i16 = kani::any();
+        kani::assume((-4096..4096).contains(&raw));
+        raw
+    }
+
+    /// What a sample reads as, in mV, by the reference, the gain and the
+    /// board's divider (see `Battery::update`).
+    fn millivolts(raw: i16) -> u32 {
+        u32::try_from(raw.max(0)).expect("at least 0") * 7200 / 4096
+    }
+
+    /// Any battery with a percentage to show, as the simulator makes them
+    /// from a dev kit's readings: under 8.192 V, as its eighths of a
+    /// millivolt are a `u16` (`measured` overflows past that; the SAADC
+    /// reads at most 7.2 V).
+    fn any_measured() -> Battery {
+        let (mv, percent): (u32, u8) = kani::any();
+        kani::assume(mv < 8192 && percent <= 100);
+        Battery::measured(mv, percent, kani::any(), kani::any())
+    }
+
+    /// For every voltage a `u32` holds: the curve reads 0–100, 0 at
+    /// `CRITICAL_MV` and under and 100 from 4.15 V, and a millivolt more
+    /// never reads less, nor over a point more (so, by induction, it
+    /// rises with the voltage throughout, without a jump where two of its
+    /// lines meet).
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn the_curve_rises_from_0_to_100_without_a_jump() {
+        let mv: u32 = kani::any();
+        let percent = charge_percent(mv);
+        assert!(percent <= 100);
+        assert!(mv > CRITICAL_MV || percent == 0);
+        assert!(mv < 4150 || percent == 100);
+        if let Some(more) = mv.checked_add(1) {
+            let next = charge_percent(more);
+            assert!(percent <= next && next <= percent + 1);
+        }
+    }
+
+    /// From a boot, through any three samples: the smoothed voltage stays
+    /// between the lowest and the highest of them (it's an average), so
+    /// it never passes the SAADC's 7.2 V, and its eighths fit their
+    /// `u16`.
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn the_smoothed_voltage_stays_among_its_samples() {
+        let mut battery = Battery::new();
+        let (mut lowest, mut highest) = (u32::MAX, 0);
+        for _ in 0..3 {
+            let raw = any_sample();
+            lowest = lowest.min(millivolts(raw));
+            highest = highest.max(millivolts(raw));
+            battery.update(raw, kani::any(), kani::any(), kani::any());
+            assert!((lowest..=highest).contains(&battery.millivolts()));
+            assert!(battery.millivolts() < 7200);
+        }
+    }
+
+    /// From a boot, through any four updates (any `i16` for a sample,
+    /// even ones the SAADC can't give): nothing panics or overflows, and
+    /// the percentage stays within 0–100. A boot charging starts under
+    /// 100, which is for when the charger says it's done.
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn the_percentage_after_a_boot_is_one() {
+        let mut battery = Battery::new();
+        assert!(battery.percent() <= 100);
+        for update in 0..4 {
+            let charging: bool = kani::any();
+            battery.update(kani::any(), charging, kani::any(), kani::any());
+            assert!(battery.percent() <= 100);
+            assert!(update > 0 || !charging || battery.percent() < 100);
+        }
+    }
+
+    /// From any measured battery, through any three updates: the
+    /// percentage stays within 0–100, and moves by at most a point an
+    /// update. On the charger it never falls; charging, it rises only as
+    /// far as the curve at the voltage less the charging current's 100 mV
+    /// (or, at the charger's own voltage, to 99), and reaches 100 only
+    /// once the charger says it's done. On battery it never rises, and
+    /// falls only when the curve reads lower.
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn the_percentage_moves_a_point_at_a_time_the_right_way() {
+        let mut battery = any_measured();
+        for _ in 0..3 {
+            let before = battery.percent();
+            let (charging, power_present): (bool, bool) = kani::any();
+            battery.update(kani::any(), charging, power_present, kani::any());
+            let (after, mv) = (battery.percent(), battery.millivolts());
+            assert!(after <= 100);
+            if charging || power_present {
+                assert!(before <= after && after <= before + 1);
+                if charging && after > before {
+                    assert!(after < 100);
+                    let resting = u32::from(charge_percent(mv.saturating_sub(100)));
+                    assert!(mv >= 4150 || after <= resting);
+                }
+            } else {
+                assert!(after <= before && before <= after + 1);
+                assert!(after == before || u32::from(charge_percent(mv)) < before);
+            }
+        }
+    }
+
+    /// From any measured battery, or a boot, through any update: a first
+    /// look never finds it critical, whatever the uptime, and a second
+    /// only a whole `CRITICAL_FOR_SECS` after the first; never on the
+    /// charger, and never at a voltage that isn't low (or isn't a
+    /// battery's at all).
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn critical_takes_a_minute_of_low_voltage_off_the_charger() {
+        let mut battery = if kani::any() {
+            any_measured()
+        } else {
+            Battery::new()
+        };
+        let (first, second): (u32, u32) = kani::any();
+        battery.update(any_sample(), kani::any(), kani::any(), first);
+        assert!(!battery.critical(first));
+
+        battery.update(any_sample(), kani::any(), kani::any(), second);
+        if battery.critical(second) {
+            assert!(second >= first && second - first >= CRITICAL_FOR_SECS);
+            assert!(!battery.power_present);
+            assert!((2500..CRITICAL_MV).contains(&battery.millivolts()));
+        }
+    }
+}
