@@ -337,12 +337,11 @@ impl Hrs3300 {
 /// through the bus `system_off` holds, whatever the heart-rate task was
 /// doing: the sensor keeps its state while the nRF52 is off, so a session
 /// cut short would otherwise leave the LED lit until the battery is flat.
+/// Each write is tried a few times, with the bus recovered between tries
+/// (see [`crate::i2c::write_held`]).
 pub async fn switch_off(twim: &mut embassy_nrf::twim::Twim<'static>) {
     for write in [[REG_ENABLE, ENABLE_HWT_12_5_MS], [REG_PDRIVER, 0]] {
-        if !matches!(
-            with_timeout(I2C_TIMEOUT, twim.write(ADDRESS, &write)).await,
-            Ok(Ok(()))
-        ) {
+        if !crate::i2c::write_held(twim, ADDRESS, &write, I2C_TIMEOUT).await {
             warn!("heart: switching the sensor off failed");
         }
     }

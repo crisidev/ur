@@ -83,10 +83,18 @@ pub fn outcome<T, E>(result: Result<Result<T, E>, TimeoutError>) -> Result<T, Fa
 /// retry.
 pub async fn reset_controller() {
     let bus = BUS.get().await;
-    let Ok(_exclusive) = with_timeout(Duration::from_secs(1), bus.lock()).await else {
+    let Ok(mut held) = with_timeout(Duration::from_secs(1), bus.lock()).await else {
         warn!("i2c: bus busy for 1 s; not reset");
         return;
     };
+    reset_held(&mut held).await;
+}
+
+/// [`reset_controller`], for a caller that already holds the bus lock
+/// (`twim` is the proof): [`crate::system_off`], which keeps it for good
+/// once it starts putting the sensors to sleep. Taking the lock again
+/// there would wait for itself, then give up without resetting anything.
+pub async fn reset_held(_twim: &mut Twim<'static>) {
     let r = embassy_nrf::pac::TWIM1;
     r.tasks_stop().write_value(1);
     // A stop completes within a byte time (~40 µs at 250 kHz) unless the
@@ -108,6 +116,38 @@ pub async fn reset_controller() {
     // accelerometer's routine reset after its soft reset): this adds
     // nothing to a field log.
     debug!("i2c: reset the controller");
+}
+
+/// How many times [`write_held`] tries.
+const HELD_TRIES: u8 = 3;
+
+/// Writes `bytes` to the device at `address`, on a bus the caller holds
+/// (see [`reset_held`]), trying up to [`HELD_TRIES`] times, each within
+/// `timeout`; whether it worked. Every failed try is followed by a
+/// controller reset, the last one too, so whatever the caller writes next
+/// starts on a working controller.
+///
+/// For [`crate::system_off`]'s last writes, which put the sensors to
+/// sleep: a failed one can't wait for a later retry, as there's none
+/// before the watch is off, and the sensor left awake drains the battery
+/// meanwhile (the accelerometer ~50 µA, a lit heart-rate LED 12.5 mA or
+/// more). A timed-out transfer leaves the controller wedged, so without
+/// the reset every write after the first failure would fail too. A few
+/// tries cost at most a few hundred ms, and the caller has the watchdog's
+/// seconds to spare.
+pub async fn write_held(
+    twim: &mut Twim<'static>,
+    address: u8,
+    bytes: &[u8],
+    timeout: Duration,
+) -> bool {
+    for _ in 0..HELD_TRIES {
+        if let Ok(Ok(())) = with_timeout(timeout, twim.write(address, bytes)).await {
+            return true;
+        }
+        reset_held(twim).await;
+    }
+    false
 }
 
 /// Frees the bus if a sensor is stuck mid-transfer, before the controller

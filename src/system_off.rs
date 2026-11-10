@@ -389,7 +389,10 @@ pub async fn shut_down(
 
     // The sensors keep their state while the nRF52 is off, so each is put
     // in its lowest-power state. The bus stays locked from here on, so no
-    // other task can start them again in the moments left.
+    // other task can start them again in the moments left; so each write
+    // recovers the bus itself if it fails, and tries again (see
+    // `i2c::write_held`), as `i2c::reset_controller` would wait for this
+    // lock.
     {
         let mut twim = i2c::BUS.get().await.lock().await;
         heart::switch_off(&mut twim).await;

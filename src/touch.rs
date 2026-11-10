@@ -147,11 +147,10 @@ pub async fn deep_sleep(twim: &mut embassy_nrf::twim::Twim<'static>) {
     Timer::after_millis(5).await;
     p0.outset().write(|w| w.set_pin(10, true));
     Timer::after_millis(50).await;
-    let sleep = twim.write(ADDRESS, &[REG_POWER, DEEP_SLEEP]);
-    if !matches!(
-        with_timeout(Duration::from_millis(50), sleep).await,
-        Ok(Ok(()))
-    ) {
+    // Tried a few times, with the bus recovered between tries (see
+    // `i2c::write_held`): all within the ~0.4 s the chip listens after
+    // its reset.
+    if !crate::i2c::write_held(twim, ADDRESS, &[REG_POWER, DEEP_SLEEP], I2C_TIMEOUT).await {
         warn!("touch: deep sleep failed");
     }
 }

@@ -468,14 +468,13 @@ impl Bma421 {
 /// Stops the accelerometer for System OFF (see [`crate::system_off`]),
 /// through the bus `system_off` holds: no sampling, no step counting, in
 /// its lowest-power state. (Running, it draws ~50 µA, the most of anything
-/// left powered.) Setup at the next boot starts it afresh.
+/// left powered.) Setup at the next boot starts it afresh. Each write is
+/// tried a few times, with the bus recovered between tries (see
+/// [`crate::i2c::write_held`]).
 pub async fn suspend(twim: &mut embassy_nrf::twim::Twim<'static>) {
     // Accelerometer off, then advanced power save on.
     for write in [[REG_POWER_CTRL, 0x00], [REG_POWER_CONF, 0x03]] {
-        if !matches!(
-            with_timeout(I2C_TIMEOUT, twim.write(ADDRESS, &write)).await,
-            Ok(Ok(()))
-        ) {
+        if !crate::i2c::write_held(twim, ADDRESS, &write, I2C_TIMEOUT).await {
             warn!("activity: suspending the accelerometer failed");
         }
     }
