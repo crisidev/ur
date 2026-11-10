@@ -285,6 +285,9 @@ mod devkit;
 mod diff;
 #[cfg(not(target_arch = "wasm32"))]
 mod fuzz;
+/// For the coverage-guided fuzzer in `fuzz/`.
+#[cfg(not(target_arch = "wasm32"))]
+pub use fuzz::{host_one, host_script};
 #[cfg(all(feature = "window", not(target_arch = "wasm32")))]
 mod window;
 

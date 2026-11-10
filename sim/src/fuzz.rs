@@ -47,6 +47,11 @@ pub struct Fuzz {
     pub seed: u64,
     pub runs: u64,
     pub steps: usize,
+    /// Coverage-guided: see [`Recipe`].
+    pub guided: bool,
+    /// The inputs of the coverage-guided fuzzer on the simulator alone
+    /// (`fuzz/`) to run, rather than seeds: see [`corpus`].
+    pub corpus: Option<std::path::PathBuf>,
     pub dry: bool,
 }
 
@@ -81,21 +86,84 @@ pub fn run(elf: &Path, out: &Path, setup: &Setup, fuzz: &Fuzz) -> Result<(), Str
     // computer: the phone that's paired with the dev kit would otherwise
     // connect when it pleased, and send what it pleased (its media, say).
     let base = only_this_computer(&original, &out.join("scratch"))?;
+    let bases = Bases {
+        phone: base.clone(),
+        lone: without_bonds(&original, &out.join("scratch"))?,
+    };
+    if fuzz.guided && fuzz.corpus.is_some() {
+        // A guided run extends a run by its seeds; an input has none.
+        return Err("--guided extends seeded runs; --corpus runs inputs: one or the other".into());
+    }
+    // Coverage-guided: which functions have run, and the runs to extend.
+    let mut guide = if fuzz.guided {
+        let names = bench
+            .functions(elf, &out.join("scratch"))?
+            .ok_or("--guided needs a coverage build (sim/coverage-build.sh)")?;
+        eprintln!("fuzz: guided by {} functions' coverage", names.len());
+        Some(Guide {
+            seen: vec![false; names.len()],
+            names,
+            corpus: Vec::new(),
+        })
+    } else {
+        None
+    };
     let mut found = 0;
     let began = std::time::Instant::now();
     let mut shrinking = std::time::Duration::ZERO;
+    let inputs = match &fuzz.corpus {
+        Some(dir) => corpus(dir)?,
+        None => Vec::new(),
+    };
+    let runs = if fuzz.corpus.is_some() {
+        fuzz.runs.min(inputs.len() as u64)
+    } else {
+        fuzz.runs
+    };
     let result = (|| {
-        for n in 0..fuzz.runs {
+        for n in 0..runs {
             let seed = fuzz.seed.wrapping_add(n);
-            let mut rng = Rng::new(seed);
-            let storage = random_storage(&base, &mut rng, &out.join("scratch"))?;
-            let steps = generate(&mut rng, fuzz.steps, setup.peer.is_some());
+            let (recipe, input) = match (&guide, inputs.get(n as usize)) {
+                (_, Some(input)) => (Recipe::fresh(seed), Some(input)),
+                (Some(guide), None) => (guide.next(seed), None),
+                (None, None) => (Recipe::fresh(seed), None),
+            };
+            let (storage, steps) = match input {
+                // As the simulator alone ran it, over the dev kit's
+                // storage (its bonds) rather than erased flash.
+                Some(input) => {
+                    let bytes = std::fs::read(input)
+                        .map_err(|e| format!("reading {}: {e}", input.display()))?;
+                    let mut rng = Rng::from_bytes(&bytes);
+                    let storage = random_storage(&base, &mut rng, &out.join("scratch"))?;
+                    (storage, generate(&mut rng, HOST_STEPS, true))
+                }
+                None => recipe.make(
+                    &bases,
+                    fuzz.steps,
+                    setup.peer.is_some(),
+                    &out.join("scratch"),
+                )?,
+            };
             let dir = out.join(format!("run-{seed}"));
             save_repro(&dir, seed, &steps, &storage, &[])?;
-            eprintln!("fuzz: run {} of {} (seed {seed})", n + 1, fuzz.runs);
+            eprintln!(
+                "fuzz: run {} of {runs} (seed {seed}{}{})",
+                n + 1,
+                recipe.describe(),
+                input.map_or(String::new(), |input| format!(
+                    ": {}, {} steps",
+                    input.display(),
+                    steps.len()
+                ))
+            );
             let (started, spent) = (std::time::Instant::now(), bench.spent());
-            let outcome = trial(&mut bench, &storage, &steps, &dir);
+            let seen = guide.as_mut().map(|guide| &mut guide.seen);
+            let outcome = trial(&mut bench, &storage, &steps, &dir, seen);
             report_time(&format!("seed {seed}"), started, spent, bench.spent());
+            if let Some(guide) = &mut guide {
+                guide.learn(seed, &recipe, &outcome, out)?;
+            }
             let Some((at, kind)) = outcome.first() else {
                 continue;
             };
@@ -157,14 +225,199 @@ pub fn run(elf: &Path, out: &Path, setup: &Setup, fuzz: &Fuzz) -> Result<(), Str
     result?;
     restored?;
     if found == 0 {
-        eprintln!("fuzz: {} runs, no differences", fuzz.runs);
+        eprintln!("fuzz: {runs} runs, no differences");
         Ok(())
     } else {
         Err(format!(
-            "{found} of {} runs found differences (see {})",
-            fuzz.runs,
+            "{found} of {runs} runs found differences (see {})",
             out.display()
         ))
+    }
+}
+
+// ==============================================================================
+// Coverage-guided runs
+// ==============================================================================
+
+/// How a run is made: its storage and first steps from `seeds[0]`, then,
+/// from step `from[i]` on, its steps from `seeds[i + 1]`. A fresh run is
+/// one seed; a guided one extends a run that reached functions no run had
+/// before (see [`Guide`]): its seeds up to the step that did, then a new
+/// one. As the generator's choices come from the seeds alone, the same
+/// seeds make the same steps, so the run before the new seed takes over
+/// replays the one it extends.
+#[derive(Clone)]
+struct Recipe {
+    seeds: Vec<u64>,
+    from: Vec<usize>,
+    /// A lone run: from storage with no bonds at all, and no Bluetooth
+    /// steps, so the dev kit advertises throughout, for nobody. A state of
+    /// its own (a flash write's radio timeslots fall between adverts, not
+    /// connection events: F5 of the overnight findings needed it), that
+    /// runs with this computer as the phone never reach.
+    lone: bool,
+}
+
+impl Recipe {
+    /// A run of its own: a lone one about a quarter of the time (by the
+    /// seed, so the same seed makes the same run).
+    fn fresh(seed: u64) -> Self {
+        Self {
+            seeds: vec![seed],
+            from: Vec::new(),
+            lone: Rng::new(seed ^ 0x6c6f_6e65).chance(0.25), // "lone"
+        }
+    }
+
+    /// The storage and steps: `steps` more after the last seed takes over.
+    fn make(
+        &self,
+        bases: &Bases,
+        steps: usize,
+        phone: bool,
+        scratch: &Path,
+    ) -> Result<(Vec<u8>, Vec<Step>), String> {
+        let (base, phone) = if self.lone {
+            (&bases.lone, false)
+        } else {
+            (&bases.phone, phone)
+        };
+        let mut first = Rng::new(self.seeds[0]);
+        let storage = random_storage(base, &mut first, scratch)?;
+        let mut then: Vec<(usize, Rng)> = (self.from.iter().copied())
+            .zip(self.seeds[1..].iter().map(|&seed| Rng::new(seed)))
+            .collect();
+        let count = self.from.last().copied().unwrap_or(0) + steps;
+        Ok((
+            storage,
+            generate_spliced(&mut first, &mut then, count, phone),
+        ))
+    }
+
+    fn describe(&self) -> String {
+        let lone = if self.lone { ", lone" } else { "" };
+        if self.from.is_empty() {
+            return lone.to_owned();
+        }
+        let parts: Vec<String> = (self.seeds.iter().zip(std::iter::once(&0).chain(&self.from)))
+            .map(|(seed, from)| format!("{seed} from step {from}"))
+            .collect();
+        format!("{lone}: {}", parts.join(", "))
+    }
+}
+
+/// The storage runs start from: with this computer's bond (for runs with
+/// it as the phone), and with none (for lone ones).
+struct Bases {
+    phone: Vec<u8>,
+    lone: Vec<u8>,
+}
+
+/// What a coverage-guided campaign knows: which of the coverage build's
+/// functions have run (on any run), and the runs that reached ones none
+/// had before, to extend.
+struct Guide {
+    seen: Vec<bool>,
+    /// Each flag's function, by name and source line.
+    names: Vec<String>,
+    corpus: Vec<Entry>,
+}
+
+/// A run that reached functions none had before: its first `keep` steps.
+struct Entry {
+    recipe: Recipe,
+    keep: usize,
+    /// How many new functions those steps reached.
+    found: usize,
+}
+
+impl Guide {
+    /// The next run: now and then a fresh one, mostly one that extends an
+    /// entry (the newest, more often than not, as what they reached is
+    /// where the unexplored is), with `seed` from where it found something.
+    fn next(&self, seed: u64) -> Recipe {
+        let mut rng = Rng::new(seed ^ 0x6775_6964_6564); // "guided"
+        if self.corpus.is_empty() || rng.chance(0.2) {
+            return Recipe::fresh(seed);
+        }
+        let len = self.corpus.len() as u64;
+        let index = if rng.chance(0.5) {
+            len - 1 - rng.below(len.min(4))
+        } else {
+            rng.below(len)
+        };
+        let entry = &self.corpus[index as usize];
+        // Its seeds up to `keep`, then `seed`.
+        let mut recipe = entry.recipe.clone();
+        let segments = 1 + recipe
+            .from
+            .iter()
+            .filter(|&&from| from < entry.keep)
+            .count();
+        recipe.seeds.truncate(segments);
+        recipe.from.truncate(segments - 1);
+        recipe.seeds.push(seed);
+        recipe.from.push(entry.keep);
+        recipe
+    }
+
+    /// Takes in a run's new coverage: an entry for each step that reached
+    /// something new, and `out/coverage.txt` and `out/corpus.txt` brought
+    /// up to date.
+    fn learn(
+        &mut self,
+        seed: u64,
+        recipe: &Recipe,
+        outcome: &Outcome,
+        out: &Path,
+    ) -> Result<(), String> {
+        for (at, new) in &outcome.new {
+            let some: Vec<&str> = new
+                .iter()
+                .take(4)
+                .map(|&i| self.names[i].as_str())
+                .collect();
+            eprintln!(
+                "fuzz: seed {seed}: step {at}: {} new functions ({}{})",
+                new.len(),
+                some.join("; "),
+                if new.len() > some.len() { "; …" } else { "" }
+            );
+            self.corpus.push(Entry {
+                recipe: recipe.clone(),
+                keep: at + 1,
+                found: new.len(),
+            });
+        }
+        let run = self.seen.iter().filter(|&&seen| seen).count();
+        eprintln!(
+            "fuzz: {run} of {} functions run so far; {} runs to extend",
+            self.seen.len(),
+            self.corpus.len()
+        );
+        let mut report = format!(
+            "{run} of {} functions have run.\n\nNot yet:\n",
+            self.seen.len()
+        );
+        let mut never: Vec<&str> = (0..self.seen.len())
+            .filter(|&i| !self.seen[i])
+            .map(|i| self.names[i].as_str())
+            .collect();
+        never.sort_unstable();
+        for name in never {
+            report.push_str(name);
+            report.push('\n');
+        }
+        write(&out.join("coverage.txt"), report.as_bytes())?;
+        let corpus: String = (self.corpus.iter())
+            .map(|entry| {
+                format!(
+                    "{} steps of (seeds {:?}, from {:?}): {} new\n",
+                    entry.keep, entry.recipe.seeds, entry.recipe.from, entry.found
+                )
+            })
+            .collect();
+        write(&out.join("corpus.txt"), corpus.as_bytes())
     }
 }
 
@@ -185,6 +438,9 @@ struct Outcome {
     /// After which steps a `reset` rebooted the dev kit, and with what
     /// storage.
     reboots: Vec<(usize, Vec<u8>)>,
+    /// After which steps a coverage build had run functions no earlier run
+    /// had, and which (see `trial`).
+    new: Vec<(usize, Vec<usize>)>,
 }
 
 impl Outcome {
@@ -234,7 +490,7 @@ fn kind(name: &str) -> String {
         }
     }
     match name {
-        "reset" | "storage" => name.to_owned(),
+        "reset" | "storage" | "stack" => name.to_owned(),
         _ => "frame".to_owned(),
     }
 }
@@ -257,8 +513,17 @@ fn report_time(
     );
 }
 
-/// One run of `steps`, from `storage`; stops at the first error.
-fn trial(bench: &mut devkit::Bench, storage: &[u8], steps: &[Step], dir: &Path) -> Outcome {
+/// One run of `steps`, from `storage`; stops at the first error. With
+/// `seen` (a coverage build's functions run so far, over every run), it
+/// reads the dev kit's coverage after each step, and notes in the outcome
+/// the steps that ran functions none had before (and marks them seen).
+fn trial(
+    bench: &mut devkit::Bench,
+    storage: &[u8],
+    steps: &[Step],
+    dir: &Path,
+    mut seen: Option<&mut Vec<bool>>,
+) -> Outcome {
     let mut outcome = Outcome::default();
     let mut follower = match bench.follow(storage, dir) {
         Ok(follower) => follower,
@@ -274,6 +539,13 @@ fn trial(bench: &mut devkit::Bench, storage: &[u8], steps: &[Step], dir: &Path) 
                     .findings
                     .extend(findings.into_iter().map(|f| (at, f))),
                 Err(e) => {
+                    // A restart the script didn't ask for: a panic, a
+                    // fault, or the watchdog. Its boot log says which.
+                    if e.contains("restarted") {
+                        let log = follower.boot_log();
+                        eprintln!("fuzz: the dev kit's log after it restarted:\n{log}");
+                        let _ = write(&dir.join("restart-log.txt"), log.as_bytes());
+                    }
                     outcome.error = Some((at, format!("{line}\n{e}")));
                     return outcome;
                 }
@@ -282,12 +554,44 @@ fn trial(bench: &mut devkit::Bench, storage: &[u8], steps: &[Step], dir: &Path) 
         if let Some(storage) = follower.take_rebooted() {
             outcome.reboots.push((at, storage));
         }
+        // The stack's room: a step that leaves little is a finding, as the
+        // next path a little deeper restarts the watch (see
+        // `DevKit::stack_left`). (A probe that fails here costs only this.)
+        if let Ok(Some(left)) = follower.stack_left()
+            && left < STACK_WARN
+        {
+            outcome.findings.push((
+                at,
+                Finding {
+                    name: "stack".into(),
+                    what: format!("only {left} bytes of stack were left at the deepest"),
+                },
+            ));
+            break;
+        }
+        if let Some(seen) = seen.as_deref_mut() {
+            // (A probe that fails here only costs the step's coverage.)
+            if let Ok(Some(now)) = follower.coverage() {
+                seen.resize(now.len(), false);
+                let new: Vec<usize> = (0..now.len()).filter(|&i| now[i] && !seen[i]).collect();
+                for &i in &new {
+                    seen[i] = true;
+                }
+                if !new.is_empty() {
+                    outcome.new.push((at, new));
+                }
+            }
+        }
         if !outcome.findings.is_empty() {
             break;
         }
     }
     outcome
 }
+
+/// A step that leaves less stack than this unused (of ~11 KB) is a
+/// finding: see `trial`.
+const STACK_WARN: u32 = 512;
 
 /// At most this many runs to shrink one finding, and for at most this
 /// long: each is a reset and a storage write, and the steps in real time.
@@ -313,7 +617,7 @@ fn shrink(
             tries.get(),
             candidate.len()
         );
-        trial(bench, storage, candidate, &dir.join("shrinking"))
+        trial(bench, storage, candidate, &dir.join("shrinking"), None)
     };
     let (last, mut rest) = steps
         .split_last()
@@ -388,9 +692,21 @@ fn save_repro(
     storage: &[u8],
     report: &[String],
 ) -> Result<(), String> {
+    save_script(dir, &format!("seed {seed}"), steps, storage, report)
+}
+
+/// [`save_repro`], for steps that came from `origin` (a seed, or a fuzzer's
+/// input).
+fn save_script(
+    dir: &Path,
+    origin: &str,
+    steps: &[Step],
+    storage: &[u8],
+    report: &[String],
+) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
     let mut script = format!(
-        "# ur-sim --fuzz, seed {seed}: run with\n\
+        "# ur-sim --fuzz, {origin}: run with\n\
          #   ur-sim --devkit ELF --storage {0}/storage.bin [--peer ADDRESS] {0}/script.txt\n",
         dir.display()
     );
@@ -442,6 +758,117 @@ fn dry(out: &Path, setup: &Setup, fuzz: &Fuzz) -> Result<(), String> {
         fuzz.runs
     );
     Ok(())
+}
+
+// ==============================================================================
+// Coverage-guided, on the simulator alone
+// ==============================================================================
+
+/// Most steps one input makes: libFuzzer's inputs can be long, and a
+/// script that long takes the simulator a while.
+const HOST_STEPS: usize = 200;
+
+/// One input of a coverage-guided fuzzer (`fuzz/` here): its bytes choose
+/// the storage and the steps, as a seed does for `--fuzz`, and the steps
+/// run on the simulator alone. Panics if the simulator (the firmware's UI,
+/// mostly) does, or a step fails; a step that never ends (the UI spinning)
+/// is the fuzzer's timeout.
+///
+/// Storage goes through a file in `scratch` (the firmware's own saving,
+/// as `--fuzz` does): one directory per process.
+pub fn host_one(bytes: &[u8], scratch: &Path) {
+    let mut rng = Rng::from_bytes(bytes);
+    let storage = random_storage(Flash::erased().bytes(), &mut rng, scratch)
+        .expect("the scratch directory is writable");
+    let steps = generate(&mut rng, HOST_STEPS, true);
+    // In a file, so what the firmware saves can be read back below.
+    let path = scratch.join("watch-storage.bin");
+    write(&path, &storage).expect("the scratch directory is writable");
+    let flash = Flash::open(&path).expect("it was just written");
+    let mut watch = crate::watch::Watch::boot(flash);
+    let output = crate::script::Output {
+        dir: scratch.to_owned(),
+        zoom: 1,
+    };
+    let text: String = steps
+        .iter()
+        .flatten()
+        .map(|line| alone(line) + "\n")
+        .collect();
+    if let Err(e) = crate::script::run(&mut watch, "fuzz", &text, &output) {
+        panic!("{e}\n--- the script:\n{text}");
+    }
+    // What `check-storage` checks on a dev kit: after a moment to save,
+    // the settings the UI has are the ones it would boot with.
+    watch.advance(embassy_time::Duration::from_secs(2));
+    let expected = devkit::Persisted::of(&watch.app);
+    let image = std::fs::read(&path).expect("the storage file is there");
+    let booted = devkit::booted_from(image).expect("a region's worth");
+    if let Some(finding) =
+        devkit::Persisted::differ("storage", &devkit::Persisted::of(&booted), &expected)
+    {
+        panic!(
+            "{}: {}\n--- the script:\n{text}",
+            finding.name, finding.what
+        );
+    }
+}
+
+/// A coverage-guided fuzzer's corpus (`fuzz/`; best distilled first, with
+/// libFuzzer's `-merge=1`), to run on a dev kit: the simulator alone
+/// explored the firmware's branches with these, and each is a path the
+/// dev kit should follow the same way. Smallest first, as those are the
+/// shortest scripts: the most paths in a night.
+fn corpus(dir: &Path) -> Result<Vec<std::path::PathBuf>, String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("reading {}: {e}", dir.display()))?;
+    let mut inputs: Vec<(u64, std::path::PathBuf)> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| Some((entry.metadata().ok()?.len(), entry.path())))
+        .collect();
+    inputs.sort();
+    Ok(inputs.into_iter().map(|(_, path)| path).collect())
+}
+
+/// What `host_one` runs for the input in `input`, as a repro in `out`
+/// (`script.txt`, `storage.bin`): its storage's settings over `base` (a
+/// dev kit's, say, to keep its bonds), or over erased flash. On the
+/// simulator alone, `ur-sim --flash storage.bin script.txt`; on a dev kit,
+/// as any finding's (`--devkit --storage`).
+pub fn host_repro(input: &Path, base: Option<&Path>, out: &Path) -> Result<(), String> {
+    let bytes = std::fs::read(input).map_err(|e| format!("reading {}: {e}", input.display()))?;
+    let base = match base {
+        Some(base) => {
+            std::fs::read(base).map_err(|e| format!("reading {}: {e}", base.display()))?
+        }
+        None => Flash::erased().bytes().to_vec(),
+    };
+    let mut rng = Rng::from_bytes(&bytes);
+    let storage = random_storage(&base, &mut rng, &out.join("scratch"))?;
+    let steps = generate(&mut rng, HOST_STEPS, true);
+    save_script(
+        out,
+        &format!("input {}", input.display()),
+        &steps,
+        &storage,
+        &[],
+    )?;
+    eprintln!(
+        "fuzz: {} steps: {}",
+        steps.len(),
+        out.join("script.txt").display()
+    );
+    Ok(())
+}
+
+/// The script `host_one` runs for `bytes`, to look at a finding.
+pub fn host_script(bytes: &[u8], scratch: &Path) -> String {
+    let mut rng = Rng::from_bytes(bytes);
+    let _ = random_storage(Flash::erased().bytes(), &mut rng, scratch);
+    generate(&mut rng, HOST_STEPS, true)
+        .iter()
+        .flatten()
+        .map(|line| line.clone() + "\n")
+        .collect()
 }
 
 /// A line of a dev kit script as the simulator alone takes it: what only
@@ -516,6 +943,20 @@ fn only_this_computer(original: &[u8], scratch: &Path) -> Result<Vec<u8>, String
     if computer.is_none() {
         eprintln!("fuzz: this computer's Bluetooth address is unknown; forgetting every bond");
     }
+    keep_bond(original, computer, scratch)
+}
+
+/// `original`, with no bonds at all: for a lone run (see [`Recipe`]).
+fn without_bonds(original: &[u8], scratch: &Path) -> Result<Vec<u8>, String> {
+    keep_bond(original, None, scratch)
+}
+
+/// `original`, less every bond but `computer`'s.
+fn keep_bond(
+    original: &[u8],
+    computer: Option<[u8; 6]>,
+    scratch: &Path,
+) -> Result<Vec<u8>, String> {
     std::fs::create_dir_all(scratch).map_err(|e| format!("creating {}: {e}", scratch.display()))?;
     let path = scratch.join("base-storage.bin");
     write(&path, original)?;
@@ -534,11 +975,13 @@ fn only_this_computer(original: &[u8], scratch: &Path) -> Result<Vec<u8>, String
                 if Some(address) == computer {
                     continue;
                 }
-                let shown: Vec<String> = address.iter().map(|b| format!("{b:02X}")).collect();
-                eprintln!(
-                    "fuzz: the runs forget the dev kit's bond with {}",
-                    shown.join(":")
-                );
+                if computer.is_some() {
+                    let shown: Vec<String> = address.iter().map(|b| format!("{b:02X}")).collect();
+                    eprintln!(
+                        "fuzz: the runs forget the dev kit's bond with {}",
+                        shown.join(":")
+                    );
+                }
                 if !storage::remove(slot).await {
                     eprintln!("fuzz: couldn't forget the bond in slot {slot}");
                 }
@@ -638,6 +1081,20 @@ struct Context {
 /// `count` random steps; with `phone`, this computer is the dev kit's
 /// phone, so they include Bluetooth.
 fn generate(rng: &mut Rng, count: usize, phone: bool) -> Vec<Step> {
+    generate_spliced(rng, &mut [], count, phone)
+}
+
+/// [`generate`], its choices from `first` until the first of `then`'s
+/// steps, then from that one's `Rng`, and so on: the same steps as
+/// `generate` with `first` up to there, then others, from the state
+/// (connected, a call ringing, the time) they left.
+fn generate_spliced(
+    first: &mut Rng,
+    then: &mut [(usize, Rng)],
+    count: usize,
+    phone: bool,
+) -> Vec<Step> {
+    let rng = first;
     let mut context = Context {
         phone,
         connected: false,
@@ -656,8 +1113,15 @@ fn generate(rng: &mut Rng, count: usize, phone: bool) -> Vec<Step> {
         step.push("compare s000".into());
         steps.push(step);
     }
-    while steps.len() < count {
+    loop {
         let n = steps.len();
+        let rng: &mut Rng = match then.iter().rposition(|(from, _)| *from <= n) {
+            Some(i) => &mut then[i].1,
+            None => &mut *rng,
+        };
+        if n >= count || rng.exhausted() {
+            break;
+        }
         let mut step = action(rng, &mut context);
         // Mostly long enough for a transition to end; now and then not,
         // to catch the frames between.
@@ -1062,24 +1526,72 @@ fn text(rng: &mut Rng, typical: u64) -> String {
 
 /// A small, seeded pseudo-random generator (SplitMix64): the same seed, the
 /// same script, here and on any machine.
-struct Rng(u64);
+/// Where the generator's choices come from: a seed (splitmix64), or, for
+/// a coverage-guided fuzzer (`fuzz/` here), its input's bytes. Each choice
+/// takes as few bytes as it needs, so that the fuzzer's small edits to the
+/// bytes are small edits to the script: a byte changed is one choice
+/// changed, and the choices after it stay where they were.
+enum Rng {
+    Seed(u64),
+    Bytes { bytes: Vec<u8>, at: usize },
+}
 
 impl Rng {
     fn new(seed: u64) -> Self {
-        Self(seed)
+        Self::Seed(seed)
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Self {
+        Self::Bytes {
+            bytes: bytes.to_vec(),
+            at: 0,
+        }
+    }
+
+    /// Whether a byte source has run out: the script ends there. (Choices
+    /// past the end are zeros, so a script's last step is whole.)
+    fn exhausted(&self) -> bool {
+        matches!(self, Self::Bytes { bytes, at } if *at >= bytes.len())
+    }
+
+    /// The next `count` bytes (at most 8), little-endian.
+    fn take(&mut self, count: usize) -> u64 {
+        match self {
+            Self::Seed(_) => self.next() & (u64::MAX >> (64 - 8 * count)),
+            Self::Bytes { bytes, at } => {
+                let mut value = 0;
+                for i in 0..count {
+                    value |= u64::from(bytes.get(*at + i).copied().unwrap_or(0)) << (8 * i);
+                }
+                *at += count;
+                value
+            }
+        }
     }
 
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
+        match self {
+            Self::Seed(state) => {
+                *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+                let mut z = *state;
+                z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                z ^ (z >> 31)
+            }
+            Self::Bytes { .. } => self.take(8),
+        }
     }
 
     /// In `0..n` (n > 0).
     fn below(&mut self, n: u64) -> u64 {
-        self.next() % n
+        match self {
+            Self::Seed(_) => self.next() % n,
+            Self::Bytes { .. } => {
+                // As many bytes as `n` needs.
+                let bytes = (64 - (n - 1).leading_zeros()).div_ceil(8).max(1);
+                self.take(bytes as usize) % n
+            }
+        }
     }
 
     /// In `low..=high`.
@@ -1088,7 +1600,10 @@ impl Rng {
     }
 
     fn chance(&mut self, p: f64) -> bool {
-        (self.next() >> 11) as f64 / (1u64 << 53) as f64 <= p
+        match self {
+            Self::Seed(_) => (self.next() >> 11) as f64 / (1u64 << 53) as f64 <= p,
+            Self::Bytes { .. } => (self.take(1) + 1) as f64 / 256.0 <= p,
+        }
     }
 
     fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
@@ -1107,5 +1622,37 @@ mod tests {
         let script = |seed| generate(&mut Rng::new(seed), 40, true);
         assert_eq!(script(7), script(7));
         assert_ne!(script(7), script(8));
+    }
+
+    /// A guided run that extends another replays it up to where the new
+    /// seed takes over (with the same storage), and differs after.
+    #[test]
+    fn an_extended_recipe_replays_its_parent() {
+        let _storage = crate::flash::STORAGE_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // (Unit tests get no `CARGO_TARGET_TMPDIR`.)
+        let scratch = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/tmp/recipe");
+        let bases = Bases {
+            phone: Flash::erased().bytes().to_vec(),
+            lone: Flash::erased().bytes().to_vec(),
+        };
+        let make = |recipe: &Recipe| {
+            recipe
+                .make(&bases, 30, true, &scratch)
+                .expect("the scratch directory is writable")
+        };
+        let parent = Recipe::fresh(11);
+        let child = Recipe {
+            seeds: vec![11, 12],
+            from: vec![9],
+            lone: parent.lone,
+        };
+        let (parent_storage, parent_steps) = make(&parent);
+        let (child_storage, child_steps) = make(&child);
+        assert_eq!(parent_storage, child_storage);
+        assert_eq!(parent_steps[..9], child_steps[..9]);
+        assert_ne!(parent_steps[9..], child_steps[9..]);
+        assert_eq!(child_steps.len(), 9 + 30);
     }
 }

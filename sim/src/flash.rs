@@ -203,6 +203,11 @@ impl NorFlash for Flash {
 
 impl MultiwriteNorFlash for Flash {}
 
+/// Taken by each test that uses `storage`, whose map is a global: tests
+/// run in parallel, and two `storage::init`s at once collide.
+#[cfg(test)]
+pub(crate) static STORAGE_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,10 +269,12 @@ mod tests {
 
     /// The firmware's own storage, over this, through enough saves to fill
     /// the three pages several times over: sequential-storage then erases
-    /// pages to make room, keeping only the latest of each key. (The only
-    /// test here using `storage`, whose map is a global.)
+    /// pages to make room, keeping only the latest of each key.
     #[test]
     fn the_firmware_storage_runs_on_it() {
+        let _storage = STORAGE_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         storage::init(Flash::erased());
         run(
             async {

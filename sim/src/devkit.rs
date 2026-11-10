@@ -114,6 +114,14 @@ struct DevKit {
     palette: std::cell::RefCell<Option<(u32, Palette)>>,
     /// What the storage writes and resets have taken so far.
     spent: std::cell::Cell<Spent>,
+    /// With a coverage build (`coverage-build.sh`): where its functions'
+    /// flags are, and how many.
+    flags: Option<(u32, usize)>,
+    /// The ELF, and its RTT control block, for [`Self::boot_log`].
+    elf: std::path::PathBuf,
+    rtt: Option<u32>,
+    /// The stack's lowest address (`_stack_end`), for [`Self::stack_left`].
+    stack_end: Option<u32>,
 }
 
 /// Wall time the dev kit spent other than on a script's steps: writing
@@ -161,7 +169,115 @@ impl DevKit {
             export: find("UR_COMPARE")?,
             palette: std::cell::RefCell::new(None),
             spent: std::cell::Cell::default(),
+            elf: elf.to_owned(),
+            rtt: find("_SEGGER_RTT").ok(),
+            stack_end: find("_stack_end").ok(),
+            flags: match (find("__sancov_bools_start"), find("__sancov_bools_end")) {
+                (Ok(start), Ok(end)) => Some((start, (end - start) as usize)),
+                _ => None,
+            },
         })
+    }
+
+    /// What the dev kit has logged since it booted, as far as it's
+    /// explained a restart: why it reset, and what the previous run's
+    /// breadcrumb says (a panic's message, or where the watchdog found it
+    /// stuck; see `field_log::report_boot`). The firmware logs those first,
+    /// over RTT, and with no host reading, defmt keeps what's there and
+    /// drops what doesn't fit, so they're still there to drain a while
+    /// after. (Draining is all it costs: nothing else here reads RTT.)
+    fn boot_log(&self) -> String {
+        let Some(rtt) = self.rtt else {
+            return "(no _SEGGER_RTT in the ELF)".into();
+        };
+        // After a restart, the bootloader takes ~10 s (its logo, then the
+        // image's hash) before the app sets up RTT: wait for the control
+        // block's "SEGGER RTT", as scripts/run-esprobe.sh does.
+        let started = StdInstant::now();
+        while started.elapsed() < StdDuration::from_secs(30) {
+            if self
+                .read_words(rtt, 1)
+                .is_ok_and(|words| words[0] == 0x4747_4553)
+            {
+                break;
+            }
+            std::thread::sleep(StdDuration::from_secs(1));
+        }
+        let pipeline = format!(
+            "timeout 10 esprobe {} rtt --control-block {rtt:#x} --idle-ms 1500 \
+             | defmt-print -e '{}'",
+            TARGET.join(" "),
+            self.elf.display()
+        );
+        let output = Command::new("sh").args(["-c", &pipeline]).output();
+        let Ok(output) = output else {
+            return "(couldn't run esprobe rtt)".into();
+        };
+        let text = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|line| {
+                [
+                    "reset reason",
+                    "previous run",
+                    "panic",
+                    "watchdog",
+                    "fault",
+                    "backtrace",
+                    "0x0",
+                ]
+                .iter()
+                .any(|word| line.contains(word))
+            })
+            .collect();
+        if lines.is_empty() {
+            format!(
+                "(nothing about a restart in its log: {} lines)",
+                text.lines().count()
+            )
+        } else {
+            lines.join("\n")
+        }
+    }
+
+    /// How close the stack has come to its end since boot (or since the
+    /// firmware last repainted it; see `power::stack_peak`): the bytes
+    /// between its guard and the deepest word it has scrubbed of
+    /// cortex-m-rt's paint. Only the bottom [`STACK_LOOK`] bytes are read
+    /// (`fast-dump`, without halting the core), so more than that reads as
+    /// that; `None` without `_stack_end` in the ELF.
+    ///
+    /// An overflow runs into `field_log::guard_stack`'s 32 bytes, which
+    /// fault, and the watch restarts: a step that leaves little room is
+    /// worth knowing of before one goes a little deeper (as main's compare
+    /// build did on Settings, THEME, at 9c65743).
+    fn stack_left(&self) -> Result<Option<u32>, String> {
+        let Some(end) = self.stack_end else {
+            return Ok(None);
+        };
+        // Above the guard, which faults on any access.
+        let bottom = end + 32;
+        let words = self.read_words(bottom, STACK_LOOK as usize / 4)?;
+        let untouched = words
+            .iter()
+            .position(|&word| word != STACK_PAINT)
+            .unwrap_or(words.len());
+        Ok(Some(untouched as u32 * 4))
+    }
+
+    /// Which of a coverage build's functions have run since it booted
+    /// (`None` without one): a flag is 1 once its function has run, and
+    /// the stack's paint (0xCC) until then (see `src/coverage.rs`).
+    fn coverage(&self) -> Result<Option<Vec<bool>>, String> {
+        let Some((start, count)) = self.flags else {
+            return Ok(None);
+        };
+        Ok(Some(
+            self.read_bytes(start, count)?
+                .into_iter()
+                .map(|flag| flag == 1)
+                .collect(),
+        ))
     }
 
     /// Runs an esprobe command, a few times over if the probe's bridge
@@ -554,6 +670,12 @@ struct Sent {
     due: StdInstant,
 }
 
+/// cortex-m-rt's stack paint (`paint-stack`), which the firmware keeps.
+const STACK_PAINT: u32 = 0xCCCC_CCCC;
+
+/// How much of the stack's bottom [`DevKit::stack_left`] reads.
+const STACK_LOOK: u32 = 2048;
+
 /// How long the dev kit may take to log what the phone sent, or to send
 /// the phone what its UI asked: past this, it never will.
 const PHONE_GRACE: StdDuration = StdDuration::from_secs(3);
@@ -587,6 +709,9 @@ pub struct Follower<'a> {
     ha_presses: VecDeque<(Press, StdInstant)>,
     /// Where the two differed, since the last check.
     ha_differences: Vec<String>,
+    /// The grid button the dev kit's UI last sent a hold for, until its
+    /// release: see [`Self::check_held`].
+    held: Option<u8>,
     /// The storage a `reset` rebooted the dev kit with, since the last
     /// look.
     rebooted: Option<Vec<u8>>,
@@ -622,6 +747,7 @@ impl<'a> Follower<'a> {
             outbox: Vec::new(),
             ha_presses: VecDeque::new(),
             ha_differences: Vec::new(),
+            held: None,
             rebooted: None,
         };
         follower.follow(&boot)?;
@@ -816,6 +942,8 @@ impl<'a> Follower<'a> {
                 // What it boots with: a start as good as the run's own
                 // (see `take_rebooted`).
                 self.rebooted = Some(self.devkit.read_storage()?);
+                // A hold this reset cut short has no release to come.
+                self.held = None;
                 let boot = self.devkit.reset()?.boot;
                 let booted = Persisted::of(&boot_app(&boot));
                 self.follow(&boot)?;
@@ -1034,10 +1162,71 @@ impl<'a> Follower<'a> {
         self.catch_up(None)
     }
 
+    /// The stack's room left at its deepest so far: see
+    /// [`DevKit::stack_left`].
+    pub fn stack_left(&self) -> Result<Option<u32>, String> {
+        self.devkit.stack_left()
+    }
+
+    /// Why the dev kit restarted, if it has: see [`DevKit::boot_log`].
+    pub fn boot_log(&self) -> String {
+        self.devkit.boot_log()
+    }
+
+    /// Checks the dev kit's own grid presses against what Home Assistant
+    /// is promised (see `buttons`): a hold always ends in its release,
+    /// before any other press. The simulator can't tell: it replays the
+    /// gestures the dev kit's touch task made, so a release that task
+    /// never made is missing from both (as when a lift beats the long
+    /// press timer, or the quiet night puts the touch controller to sleep
+    /// mid-hold).
+    fn check_held(&mut self, press: Press) {
+        use crate::buttons::Gesture;
+        match (self.held, press.gesture) {
+            (None, Gesture::Release) => self.ha_differences.push(format!(
+                "the dev kit's UI released {} with no hold before it",
+                press.code
+            )),
+            (Some(held), Gesture::Release) if held != press.code => self.ha_differences.push(
+                format!("the dev kit's UI held {held} but released {}", press.code),
+            ),
+            (Some(held), Gesture::Hold | Gesture::Tap | Gesture::DoubleTap) => {
+                self.ha_differences.push(format!(
+                    "the dev kit's UI held {held}, and then pressed {} {:?} with no \
+                     release between",
+                    press.code, press.gesture
+                ));
+            }
+            _ => {}
+        }
+        self.held = match press.gesture {
+            Gesture::Hold => Some(press.code),
+            Gesture::Release => None,
+            _ => self.held,
+        };
+    }
+
+    /// Which of a coverage build's functions have run since the dev kit
+    /// booted (`None` without one).
+    pub fn coverage(&self) -> Result<Option<Vec<bool>>, String> {
+        self.devkit.coverage()
+    }
+
     /// Replays the dev kit's events since the last time, up to (not
     /// including) `before`, if given.
     fn catch_up(&mut self, before: Option<u64>) -> Result<(), String> {
-        let written = self.devkit.head()?.written;
+        let head = self.devkit.head()?;
+        // Not yet (or no longer) the app's export: the dev kit restarted,
+        // and is in its bootloader, or booting. (Its counter there is
+        // whatever the bootloader left in RAM.)
+        if head.magic != compare::MAGIC {
+            return Err(
+                "the dev kit restarted: its export is gone (in its bootloader, or booting); \
+                        see its log"
+                    .into(),
+            );
+        }
+        let written = head.written;
         let behind = written.wrapping_sub(self.replayed) as usize;
         if behind > compare::EVENTS {
             return Err(format!(
@@ -1120,6 +1309,7 @@ impl<'a> Follower<'a> {
                         .ok_or("the dev kit logged an unknown grid gesture")?,
                 };
                 let sent = event.flags != 0;
+                self.check_held(press);
                 eprintln!(
                     "  dev kit: a grid press for Home Assistant, {} {:?}{} at {:.3} s",
                     press.code,
@@ -1571,7 +1761,7 @@ fn boot_app(boot: &compare::Boot) -> App {
 
 /// The UI a watch with this storage would boot with, through the
 /// firmware's own loading (`ui_loop::Stored`).
-fn booted_from(image: Vec<u8>) -> Result<App, String> {
+pub(crate) fn booted_from(image: Vec<u8>) -> Result<App, String> {
     let flash = Flash::from_bytes(image).ok_or("the storage read short")?;
     storage::init(flash);
     Ok(UiLoop::boot(crate::watch::run(Stored::load(), &mut None)).0)
@@ -1579,7 +1769,7 @@ fn booted_from(image: Vec<u8>) -> Result<App, String> {
 
 /// The settings the watch keeps in flash, as bytes, to compare.
 #[derive(PartialEq, Debug)]
-struct Persisted {
+pub(crate) struct Persisted {
     light_theme: u8,
     dark_theme: u8,
     brightness: u8,
@@ -1590,7 +1780,7 @@ struct Persisted {
 }
 
 impl Persisted {
-    fn of(app: &App) -> Self {
+    pub(crate) fn of(app: &App) -> Self {
         Self {
             light_theme: app.themes.light,
             dark_theme: app.themes.dark,
@@ -1604,7 +1794,7 @@ impl Persisted {
 
     /// What differs between the dev kit's (`got`) and what the simulator's
     /// UI says it should be.
-    fn differ(name: &str, got: &Self, expected: &Self) -> Option<Finding> {
+    pub(crate) fn differ(name: &str, got: &Self, expected: &Self) -> Option<Finding> {
         let mut what = Vec::new();
         let mut field = |field: &str, got: &dyn std::fmt::Debug, expected: &dyn std::fmt::Debug| {
             let (got, expected) = (format!("{got:?}"), format!("{expected:?}"));
@@ -1650,6 +1840,60 @@ impl Bench {
     }
 
     /// A run: the dev kit reset onto `storage`, and followed.
+    /// Each of a coverage build's flags' functions, by name and source
+    /// line, in the flags' order: through the ELF's PC table (which
+    /// `coverage.x` keeps out of flash) and `llvm-addr2line`. `None` without
+    /// a coverage build.
+    pub fn functions(&self, elf: &Path, scratch: &Path) -> Result<Option<Vec<String>>, String> {
+        if self.devkit.flags.is_none() {
+            return Ok(None);
+        }
+        std::fs::create_dir_all(scratch)
+            .map_err(|e| format!("creating {}: {e}", scratch.display()))?;
+        let table = scratch.join("sancov-pcs.bin");
+        let dumped = Command::new("llvm-objcopy")
+            .arg(format!("--dump-section=.sancov_pcs={}", table.display()))
+            .arg(elf)
+            .arg(scratch.join("sancov-objcopy.elf"))
+            .status()
+            .map_err(|e| format!("running llvm-objcopy: {e}"))?;
+        if !dumped.success() {
+            return Err("llvm-objcopy couldn't dump the ELF's .sancov_pcs".into());
+        }
+        let table = std::fs::read(&table).map_err(|e| format!("reading the PC table: {e}"))?;
+        // Each flag's entry: its function's address (Thumb: odd), and
+        // flags (1: a function's entry, which they all are here).
+        let pcs: Vec<String> = table
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|entry| {
+                let pc = u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]);
+                format!("{:#x}", pc & !1)
+            })
+            .collect();
+        let output = Command::new("llvm-addr2line")
+            .args(["-f", "-C", "-e"])
+            .arg(elf)
+            .args(&pcs)
+            .output()
+            .map_err(|e| format!("running llvm-addr2line: {e}"))?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = text.lines().collect();
+        // Two lines each: the function, then file:line.
+        Ok(Some(
+            lines
+                .chunks(2)
+                .map(|pair| {
+                    let file = pair
+                        .get(1)
+                        .map_or("?", |f| f.rsplit_once("/src/").map_or(f, |(_, rest)| rest));
+                    format!("{} ({file})", pair[0])
+                })
+                .collect(),
+        ))
+    }
+
     pub fn follow(&mut self, storage: &[u8], scratch: &Path) -> Result<Follower<'_>, String> {
         Follower::start(&self.devkit, &mut self.rig, Some(storage), scratch)
     }

@@ -1,0 +1,33 @@
+[package]
+name = "ur-sim-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Coverage-guided fuzzing of the simulator (the firmware's UI, mostly) with
+# libFuzzer: `cargo +nightly fuzz run -s none steps` from `sim/` (see its
+# README.md). Its own workspace, as `sim/` is: built only when fuzzing, with
+# cargo-fuzz's coverage instrumentation.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[[bin]]
+name = "steps"
+path = "fuzz_targets/steps.rs"
+test = false
+doc = false
+bench = false
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+ur-sim = { path = "..", default-features = false }
+
+[profile.release]
+# The firmware's own checks, which a release build of the simulator leaves
+# out: an overflow or a `debug_assert!` is a finding too.
+debug-assertions = true
+overflow-checks = true
+debug = 1

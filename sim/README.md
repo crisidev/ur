@@ -301,6 +301,55 @@ The dev kit's storage is read first (`original-storage.bin`) and written
 back at the end. `--dry` runs the scripts on the simulator alone, to check
 the generator (`tests/fuzz.rs` does).
 
+Besides a difference from the simulator, a run stops at:
+
+- a restart the script didn't ask for: a panic, a fault, or the watchdog.
+  Its boot log (drained over RTT once it's back) is in the run's
+  `restart-log.txt`, with the previous run's breadcrumb.
+- a step after which less than 512 bytes of the stack were left unused
+  at its deepest, read from the stack's paint without halting the core:
+  a little deeper, and the watch restarts.
+- a grid hold with no release before the next press. The simulator can't
+  see that one: it replays the gestures the dev kit's touch task made.
+
+About a quarter of the runs are lone: from storage with no bonds at all,
+and no Bluetooth steps, so the dev kit advertises throughout, for nobody.
+Two ways to aim the runs:
+
+- `--corpus DIR` runs the inputs of the simulator's own fuzzer (below)
+  instead of seeds, smallest first: paths it found by branch coverage,
+  checked against the hardware.
+- `--guided`, with a build from `coverage-build.sh` (a `compare` build
+  that marks each function it runs), reads which functions have run after
+  every step, and extends the runs that reached new ones rather than
+  starting afresh. It covers everything on the watch, Bluetooth and the
+  hardware included; `--out`'s `coverage.txt` lists what hasn't run.
+
+### Fuzzing the simulator alone
+
+`fuzz/` fuzzes the simulator with libFuzzer, guided by branch coverage,
+with no dev kit: each input's bytes are a storage image's settings and a
+script of steps, as `--fuzz` makes from a seed (the same generator, with
+the bytes as its choices). It fails on a panic (overflow checks and
+`debug_assert!`s on), on a step that never ends (the UI spinning: the
+timeout), and when the settings the UI has, two seconds on, aren't the
+ones it would boot with from its storage:
+
+```sh
+cargo +nightly fuzz run -s none steps -- -fork=16 -timeout=20
+```
+
+`--fuzz-input FILE --out DIR` writes the script and storage an input makes
+(`--storage BASE` lays its settings over a dev kit's storage, to keep its
+bonds), to run here (`--flash DIR/storage.bin`) or on a dev kit
+(`--devkit ELF --storage DIR/storage.bin`). Before `--corpus`, distil the
+corpus to one input per branch:
+
+```sh
+fuzz/target/x86_64-unknown-linux-gnu/release/steps -merge=1 -use_counters=0 \
+    -use_cmp=0 ../tmp/distilled fuzz/corpus/steps
+```
+
 Each `compare` also says how long the dev kit took to push its frame
 to the panel (if that pass pushed anything), and how long the
 simulator's panel says that takes (see below), as a check on the
