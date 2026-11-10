@@ -222,6 +222,67 @@ const NO_CONTACT: u32 = FULL_SCALE / 64;
 /// Samples per signal-level check: about a second.
 const LEVEL_CHECK_SAMPLES: u32 = 27;
 
+// ==============================================================================
+// What the numbers above promise each other
+// ==============================================================================
+//
+// Checked when compiling, so they cost the watch nothing. This task's logic
+// is tangled up with the sensor and the clock, where no host test or proof
+// reaches it and a release build has no debug assertions, so what can be
+// said of its constants is said here. (What it computes is checked in
+// `heart_schedule` and `ppg`, which the host tests run.)
+
+// `LEVELS` is weakest first, a step at a time: each raises either the gain
+// by one setting (twice the signal) or the drive by one (at most twice the
+// current, see `WEAK`), and both stay settings: two bits each in the
+// registers `Hrs3300::on` packs them into, and `DRIVE_CURRENT`'s index.
+const _: () = {
+    let mut i = 0;
+    while i < LEVELS.len() {
+        let level = LEVELS[i];
+        assert!(level.drive <= 3 && level.gain <= 3);
+        if i > 0 {
+            let weaker = LEVELS[i - 1];
+            let gain_up = level.drive == weaker.drive && level.gain == weaker.gain + 1;
+            let drive_up = level.gain == weaker.gain && level.drive == weaker.drive + 1;
+            assert!(gain_up || drive_up);
+            let current = heart_schedule::DRIVE_CURRENT;
+            assert!(current[level.drive as usize] <= 2 * current[weaker.drive as usize]);
+        }
+        i += 1;
+    }
+    // Sessions start at the second level, and the lowest drive is where
+    // "no skin" is told from skin.
+    assert!(LEVELS.len() > 1 && LEVELS[0].drive == 0 && LEVELS[1].drive == 0);
+};
+// Stepping up from a weak signal can't land in saturation, nor the other
+// way round, or the level would bounce between two for the whole session.
+const _: () = assert!(NO_CONTACT < NO_SKIN && NO_SKIN < WEAK && 2 * WEAK < SATURATED);
+// A brighter phase's predicted peak stays clear of where the level check
+// steps back down.
+const _: () = assert!(heart_schedule::BRIGHTER_PEAK_LIMIT < SATURATED);
+// The budget's reserve is a whole session (see `SESSION_RESERVE`), and a
+// brighter phase is shorter than one.
+const _: () = assert!(SESSION_LIMIT.as_secs() == heart_schedule::SESSION_RESERVE as u64);
+const _: () = assert!(heart_schedule::BRIGHTER_FOR as u64 <= SESSION_LIMIT.as_secs());
+// A level check is a second of samples at the sensor's nominal rate, with
+// room in `measure`'s `second` for the few more a late poll completes; and
+// a second's sum of 18-bit samples fits its `u32`.
+const _: () = assert!(LEVEL_CHECK_SAMPLES == 1_000_000u32.div_ceil(crate::ppg::NOMINAL_PERIOD_US));
+const _: () = assert!(LEVEL_CHECK_SAMPLES as usize + 8 <= SECOND_SAMPLES);
+// The movement kept, a reading a second, spans one analysis window.
+const _: () = assert!(
+    MOTION_HISTORY as u64
+        == (crate::ppg::WINDOW as u64 * crate::ppg::NOMINAL_PERIOD_US as u64).div_ceil(1_000_000)
+);
+// The sensor is polled several times a conversion (see `Conversions`).
+const _: () = assert!(POLL.as_micros() * 3 <= crate::ppg::NOMINAL_PERIOD_US as u64);
+// The calm a session waits for is stricter than what vetoes a window.
+const _: () = assert!(CALM < MOTION_LIMIT);
+
+/// Room for a second's samples, for the field log (see `measure`).
+const SECOND_SAMPLES: usize = 40;
+
 struct Hrs3300 {
     i2c: Device,
     /// Whether to keep transfer failures out of the log: while setup is
@@ -719,7 +780,7 @@ async fn measure(
     // real wrists through `ppg` (host-tests/ppg) is how its limits get
     // tuned. About 60 bytes a second while measuring. (Room for a few more
     // than `LEVEL_CHECK_SAMPLES`, as one poll can complete several.)
-    let mut second = heapless::Vec::<u16, 40>::new();
+    let mut second = heapless::Vec::<u16, SECOND_SAMPLES>::new();
 
     let mut ticker = Ticker::every(POLL);
     loop {

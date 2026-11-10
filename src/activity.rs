@@ -170,6 +170,21 @@ const NO_MOTION: Motion = Motion {
     samples: 150,
 };
 
+// The feature window's layout, checked when compiling (so it costs the
+// watch nothing): the settings lie within the window, the motion features
+// before the step counter's parameters and clear of each other, and each
+// motion setting fits its bits (11 of threshold, 13 of duration), as a
+// duration any longer would switch axes on or off.
+const _: () = assert!(SETTINGS_LEN <= FEATURES_LEN);
+const _: () = assert!(STEP_COUNTER_PARAMS.end <= STEP_COUNTER_ENABLE.0);
+const _: () = assert!(STEP_COUNTER_ENABLE.0 < SETTINGS_LEN);
+const _: () = assert!(ANY_MOTION_OFFSET + 4 <= NO_MOTION_OFFSET);
+const _: () = assert!(NO_MOTION_OFFSET + 4 <= STEP_COUNTER_PARAMS.start);
+const _: () = assert!(ANY_MOTION.threshold < 1 << 11 && ANY_MOTION.samples < 1 << 13);
+const _: () = assert!(NO_MOTION.threshold < 1 << 11 && NO_MOTION.samples < 1 << 13);
+// No-motion's threshold is under any-motion's, so the two don't take turns.
+const _: () = assert!(NO_MOTION.threshold < ANY_MOTION.threshold);
+
 /// Writes `motion` into the feature window at `offset`, all axes enabled.
 fn set_motion(window: &mut [u8], offset: usize, motion: &Motion) {
     window[offset..offset + 2].copy_from_slice(&motion.threshold.to_le_bytes());
@@ -181,6 +196,10 @@ fn set_motion(window: &mut [u8], offset: usize, motion: &Motion) {
 /// preceded by its position (in 16-bit words). Even, and small enough to
 /// stage in RAM (the TWIM can't send from flash).
 const CHUNK: usize = 32;
+// Even, and the config a whole number of them, each at a word address
+// that fits the two address registers (4 bits and 8).
+const _: () = assert!(CHUNK.is_multiple_of(2) && CONFIG.len().is_multiple_of(CHUNK));
+const _: () = assert!(CONFIG.len() / 2 <= 1 << 12);
 
 /// One FIFO read's samples (see [`Bma421::drain_fifo`]).
 type Frames = heapless::Vec<[i16; 3], 36>;
@@ -565,6 +584,11 @@ impl Sample {
 }
 
 const _: () = assert!(size_of::<Sample>() == 6, "flags must fit in the padding");
+// The classifier's span is part of a day's history (with the minute before
+// it, for its context), as is what a Gadgetbridge fetch may hold back:
+// otherwise either would read the newest minutes' slots as old ones.
+const _: () = assert!(sleep::WINDOW + sleep::CONTEXT < HISTORY_MINUTES);
+const _: () = assert!(sleep_hold::CAP < HISTORY_MINUTES as i64);
 
 /// A ring of per-minute samples, indexed by UTC minute. Minutes the watch
 /// didn't see (off, or before the phone set the clock) stay zero.
