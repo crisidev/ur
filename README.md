@@ -118,7 +118,8 @@ In Gadgetbridge, add the watch "Bangle.js ur", choose Pair, and type the
 passkey the watch shows when Android asks. Gadgetbridge then sets the
 time and forwards notifications on its own, and shows the battery. It
 fetches activity (steps, heart rate, sleep) only when you pull down on
-its device list (or tap Synchronize), or, with Settings → Automations →
+its device list, or tap Synchronize (the circular arrow) on the
+watch's card, or, with Settings → Automations →
 "Auto fetch activity data" on, when you unlock the phone (that needs a
 screen lock; "Minimum time between fetches" spaces them out). It passes
 steps, heart rate and sleep on to [Health Connect] if you like (its
