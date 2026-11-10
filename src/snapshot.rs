@@ -17,11 +17,23 @@
 //! | 16 | 4 | today's steps |
 //! | 20 | 4 | checksum (FNV-1a over the samples, then bytes 4..20) |
 //! | 24 | 4 | consumed: erased while fresh, 0 once restored and synced |
-//! | 28 | 4 | reserved (erased) |
+//! | 28 | 4 | synced: `sync` if the phone's copy ends just before the first minute, else erased |
 //!
 //! The header is written last, so a save cut short leaves no valid record.
 //! The consumed word is cleared in place (NOR flash can always clear bits),
 //! so retiring a record costs no erase.
+//!
+//! The synced word says the watch knew where the phone's copy of the
+//! history ended, from a fetch it answered (see
+//! `system_off::synced_through`), so the next fetch can start at the
+//! record's first minute. Without it, the phone may already have some of
+//! the record's minutes, and the next fetch starts after what the phone
+//! asks for (see [`crate::gb_buckets::start`]). It came after the rest,
+//! which is why it's outside the checksum: older builds restore a record
+//! with it, and a record from one, which leaves it erased, reads as not
+//! knowing (as it didn't: those builds sent a sample a minute, which
+//! Gadgetbridge may hold). Only the exact word counts, so a stray change
+//! to it only ever forgets.
 
 /// The header's size, before the samples.
 pub const HEADER_BYTES: usize = 32;
@@ -37,6 +49,11 @@ const MAGIC: u32 = u32::from_le_bytes(*b"urH1");
 pub const CONSUMED_OFFSET: u32 = 24;
 /// What the consumed word becomes once the record has done its job.
 pub const CONSUMED: u32 = 0;
+/// Where the synced word is, from the record's start.
+const SYNCED_OFFSET: usize = 28;
+/// The synced word, when the phone's copy ends just before the first
+/// minute.
+const SYNCED: u32 = u32::from_le_bytes(*b"sync");
 /// An erased word: a fresh record's consumed word.
 const ERASED: u32 = u32::MAX;
 
@@ -66,6 +83,9 @@ pub struct Header {
     pub day: i32,
     pub steps: u32,
     pub checksum: u32,
+    /// Whether the phone's copy of the history ends just before
+    /// `first_minute`, as far as the watch knew (see the module docs).
+    pub synced: bool,
 }
 
 impl Header {
@@ -84,6 +104,9 @@ impl Header {
         bytes[12..16].copy_from_slice(&self.day.to_le_bytes());
         bytes[16..20].copy_from_slice(&self.steps.to_le_bytes());
         bytes[20..24].copy_from_slice(&self.checksum.to_le_bytes());
+        if self.synced {
+            bytes[SYNCED_OFFSET..][..4].copy_from_slice(&SYNCED.to_le_bytes());
+        }
         bytes
     }
 
@@ -101,24 +124,27 @@ impl Header {
             day: word(12) as i32,
             steps: word(16),
             checksum: word(20),
+            synced: word(SYNCED_OFFSET) == SYNCED,
         };
         (usize::from(header.minutes) <= MAX_MINUTES).then_some(header)
     }
 }
 
 /// The first minute worth saving, given the newest minute in the history,
-/// and the newest the phone has fetched since boot (if it has).
+/// and the newest the phone has fetched (if the watch knows; see
+/// `system_off::synced_through`), and whether it knows: the record's
+/// first minute and its synced word.
 ///
-/// The phone's next fetch starts `resend` minutes before what it last got
-/// (the window in which sleep and its stages are still being revised), so the record
-/// starts there too: those minutes may have changed since. Without a fetch
-/// this boot, all of the history is (as far as we know) unsynced; so it
-/// is after a fetch that went past the newest minute, as the clock has
-/// gone back since (see [`crate::minute_ring`]), and what the phone got
-/// then says nothing of the minutes the history holds now.
-pub fn unsynced_from(newest: i64, synced_through: Option<i64>, resend: i64) -> i64 {
+/// The phone's next fetch starts just after what it last got (see
+/// [`crate::gb_buckets::start`]), so the record starts there too. Without
+/// a fetch the watch knows of, all of the history is (as far as it knows)
+/// unsynced; so it is after a fetch that went past the newest minute, as
+/// the clock has gone back since (see [`crate::minute_ring`]), and what
+/// the phone got then says nothing of the minutes the history holds now.
+pub fn unsynced_from(newest: i64, synced_through: Option<i64>) -> (i64, bool) {
     let oldest = newest - MAX_MINUTES as i64 + 1;
-    synced_through
-        .filter(|&synced| synced <= newest)
-        .map_or(oldest, |synced| (synced - resend).max(oldest))
+    match synced_through.filter(|&synced| synced <= newest) {
+        Some(synced) => ((synced + 1).max(oldest), true),
+        None => (oldest, false),
+    }
 }

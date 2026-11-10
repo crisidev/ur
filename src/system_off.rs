@@ -71,7 +71,7 @@ use crate::canvas::Canvas;
 use crate::display::Display;
 use crate::snapshot::{self, HEADER_BYTES, Header, SAMPLE_BYTES};
 use crate::spi_flash::{self, FLASH};
-use crate::{Backlight, activity, clock, field_log, gb_buckets, heart, i2c, spi, stages, touch};
+use crate::{Backlight, activity, clock, field_log, gb_buckets, heart, i2c, spi, touch};
 
 /// Why the watch is switching off.
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -114,10 +114,10 @@ const RESTORED: u8 = 1;
 const RETIRING: u8 = 2;
 
 /// The newest minute (UTC minutes since 1970) the phone has fetched since
-/// boot (or, until it has, the minute before the restored record), or 0
-/// if it hasn't: where the next save can start (see
-/// [`snapshot::unsynced_from`]), and the next fetch at the latest (see
-/// [`synced_through`]).
+/// boot (or, until it has, the minute before a restored record that knew
+/// where the phone's copy ended), or 0 if the watch doesn't know: where
+/// the next save can start (see [`snapshot::unsynced_from`]), and the next
+/// fetch at the latest (see [`synced_through`]).
 static SYNCED: AtomicU32 = AtomicU32::new(0);
 
 // ==============================================================================
@@ -128,15 +128,13 @@ static SYNCED: AtomicU32 = AtomicU32::new(0);
 /// next fetch would start. Failures are logged; there's nothing else to do
 /// about them with the battery running out.
 async fn save() {
-    let synced = synced_through();
     // From a bucket's start, so that the history restored from it holds
     // whole buckets: one cut short would go to the phone as less than it
-    // has (see `gb_buckets`).
-    let (first, minutes) = activity::newest_minute()
-        .map(|newest| snapshot::unsynced_from(newest, synced, stages::REVISED as i64))
-        .map(gb_buckets::start_of)
-        .and_then(activity::span_from)
-        .unwrap_or((0, 0));
+    // has (see `gb_buckets`). (Where the phone's copy ends is one already.)
+    let (from, synced) = activity::newest_minute()
+        .map(|newest| snapshot::unsynced_from(newest, synced_through()))
+        .unwrap_or((0, false));
+    let (first, minutes) = activity::span_from(gb_buckets::start_of(from)).unwrap_or((0, 0));
     // Every local that lives across an await is static RAM, in the
     // activity task's future, so they're kept few and small.
     let (first, minutes) = (first as u32, minutes as u16);
@@ -168,6 +166,7 @@ async fn save() {
                 day: day.map_or(snapshot::UNKNOWN_DAY, |day| day as i32),
                 steps,
                 checksum: 0,
+                synced,
             };
             header.checksum = header.expected_checksum(hash);
             info!(
@@ -225,15 +224,21 @@ pub async fn restore() {
             let day = (header.day != snapshot::UNKNOWN_DAY).then_some(i64::from(header.day));
             activity::restore_steps(day, header.steps);
             RECORD_STATE.store(RESTORED, Ordering::Relaxed);
-            // The phone may lack all of it: the record started where the
-            // phone's copy ended, less what may have been revised, and a
-            // fetch held back since then (see `sleep_hold`) may have left
-            // the phone asking from much later than that. So, to the
-            // watch, the phone has what's before it, and nothing since.
-            SYNCED.store(
-                (first - 1).clamp(0, i64::from(u32::MAX)) as u32,
-                Ordering::Relaxed,
-            );
+            // The phone may lack all of it: the record starts where the
+            // phone's copy ended, and a fetch held back since then (see
+            // `sleep_hold`) may have left the phone asking from much later
+            // than that. So, to the watch, the phone has what's before it,
+            // and nothing since: if the watch knew that much when it saved
+            // it. Otherwise (a record saved before any fetch, or by an
+            // older build) the phone may hold some of it already, and the
+            // next fetch starts after what the phone asks for (see
+            // `gb_buckets::start`).
+            if header.synced {
+                SYNCED.store(
+                    (first - 1).clamp(0, i64::from(u32::MAX)) as u32,
+                    Ordering::Relaxed,
+                );
+            }
             info!(
                 "snapshot: restored {} minutes of activity from minute {}, and {} steps",
                 header.minutes, first, header.steps
@@ -259,10 +264,10 @@ pub fn on_synced(through_minute: i64) {
 
 /// Where the phone's copy of the history ends, as far as the watch knows:
 /// the newest minute of the last fetch it completed since boot, or the
-/// minute before the restored record; `None` if neither. A fetch sends
-/// from there at the latest, so that what an earlier one held back (see
-/// `sleep_hold`) goes out even though the phone asks from when it last
-/// fetched.
+/// minute before a restored record that knew; `None` if neither. A fetch
+/// sends from there (see `gb_buckets::start`), so that what an earlier one
+/// held back (see `sleep_hold`) goes out even though the phone asks from
+/// when it last fetched.
 pub fn synced_through() -> Option<i64> {
     match SYNCED.load(Ordering::Relaxed) {
         0 => None,

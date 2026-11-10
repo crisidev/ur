@@ -75,7 +75,7 @@
 //! This module knows nothing about the hardware or the clock, so it can be
 //! tested on a computer (see `host-tests/sleep`).
 
-use crate::sleep::{self, Kind};
+use crate::sleep::Kind;
 
 // ==============================================================================
 // Thresholds
@@ -88,7 +88,7 @@ pub const LEVEL: i64 = 3;
 /// baseline (their 10th percentile).
 pub const LOCAL: i64 = 60;
 /// Movement (averaged over three minutes) from which a minute is a stir.
-/// Lower than [`sleep::STILL_LIMIT`]: this counts the small movements that
+/// Lower than [`crate::sleep::STILL_LIMIT`]: this counts the small movements that
 /// stay sleep, too.
 pub const STIR_LIMIT: u16 = 80;
 /// Minutes either side of a minute in which its stirs are counted.
@@ -123,14 +123,6 @@ pub const MIN_BOUT: i64 = 8;
 /// Light gaps shorter than this many minutes between two bouts of the same
 /// stage are filled.
 pub const FILL: i64 = 6;
-
-/// How many recent minutes' stages may still change, so that the phone's
-/// next sync starts this far before what it last got: the classifier's
-/// [`sleep::WINDOW`], plus the baseline's reach back from it, plus a
-/// bout's worth for the clean-up. (A chain of short bouts, each just
-/// filled into the next, could reach further back; rare, and costing a few
-/// stale minutes in Gadgetbridge at worst.)
-pub const REVISED: usize = sleep::WINDOW + LOCAL as usize + (MIN_BOUT + FILL) as usize;
 
 // ==============================================================================
 // The record

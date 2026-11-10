@@ -13,9 +13,6 @@ fn main() {
 mod tests {
     use super::snapshot::*;
 
-    /// The sleep classifier's window, as `system_off` passes it.
-    const RESEND: i64 = 90;
-
     fn header() -> Header {
         Header {
             first_minute: 29_500_000,
@@ -23,6 +20,7 @@ mod tests {
             day: 20_400,
             steps: 8_123,
             checksum: 0,
+            synced: true,
         }
     }
 
@@ -123,28 +121,43 @@ mod tests {
         assert_eq!(Header::from_bytes(&header.to_bytes()), None);
     }
 
+    /// Whether the phone's copy ends just before the record is its own
+    /// word, outside the checksum: a record from an older build, which
+    /// leaves it erased, reads as not knowing.
+    #[test]
+    fn the_synced_word_reads_back() {
+        let bytes = record(&samples(10));
+        assert_eq!(&bytes[28..32], b"sync");
+        assert!(read(&bytes).expect("a valid record").0.synced);
+        let mut older = bytes.clone();
+        older[28..32].fill(0xFF);
+        assert!(!read(&older).expect("still valid").0.synced);
+        // Anything but the word is not knowing.
+        older[28..32].copy_from_slice(b"synd");
+        assert!(!read(&older).expect("still valid").0.synced);
+    }
+
     #[test]
     fn without_a_sync_the_whole_day_is_saved() {
         let newest = 29_500_000;
         assert_eq!(
-            unsynced_from(newest, None, RESEND),
-            newest - MAX_MINUTES as i64 + 1
+            unsynced_from(newest, None),
+            (newest - MAX_MINUTES as i64 + 1, false)
         );
     }
 
     #[test]
     fn after_a_sync_from_where_the_next_fetch_starts() {
         let newest = 29_500_000;
-        // Synced an hour ago: the next fetch sends from the window before
-        // that.
+        // Synced an hour ago: the next fetch sends from just after that.
         assert_eq!(
-            unsynced_from(newest, Some(newest - 60), RESEND),
-            newest - 60 - RESEND
+            unsynced_from(newest, Some(newest - 60)),
+            (newest - 59, true)
         );
         // Synced long ago: never more than the history holds.
         assert_eq!(
-            unsynced_from(newest, Some(newest - 5000), RESEND),
-            newest - MAX_MINUTES as i64 + 1
+            unsynced_from(newest, Some(newest - 5000)),
+            (newest - MAX_MINUTES as i64 + 1, true)
         );
     }
 
@@ -155,8 +168,8 @@ mod tests {
         // and holds new ones the phone hasn't had.
         let newest = 29_500_000;
         assert_eq!(
-            unsynced_from(newest, Some(newest + 600), RESEND),
-            newest - MAX_MINUTES as i64 + 1
+            unsynced_from(newest, Some(newest + 600)),
+            (newest - MAX_MINUTES as i64 + 1, false)
         );
     }
 

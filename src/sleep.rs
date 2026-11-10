@@ -27,7 +27,7 @@
 //! a trailing window ([`WINDOW`] minutes, plus [`CONTEXT`] before it) every
 //! minute, revising its recent past. Minutes older than the window are
 //! final, as far as sleep and waking go (their stage can still change for a
-//! while: see [`crate::stages::REVISED`]).
+//! while: see [`crate::sleep_hold`]).
 //!
 //! The thresholds are first guesses in our movement units (Bangle.js'
 //! 8192-per-g; ~25 lying on a desk, hundreds when handled), to be tuned from
