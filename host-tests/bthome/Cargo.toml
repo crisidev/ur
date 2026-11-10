@@ -13,3 +13,17 @@ publish = false
 [dependencies]
 aes = "0.8.4"
 embassy-time = "0.5.1"
+
+# CI runs the host tests with `--release`; keep the arithmetic checks, and
+# the module's own `debug_assert!`s, which a release build drops.
+[profile.release]
+overflow-checks = true
+debug-assertions = true
+
+# `cargo kani` builds with `--cfg kani`, for the proofs in `src/main.rs`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+# The proofs stub AES out (`kani::stub`), which Kani still calls unstable.
+[package.metadata.kani.unstable]
+stubbing = true

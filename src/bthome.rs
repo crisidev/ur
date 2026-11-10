@@ -125,6 +125,18 @@ pub fn advert(
                 Gesture::LongPress => (0x04, Some((2, 0x01))),
                 Gesture::Release => (0x81, None),
             };
+            // The codes each layout's grid makes (see `Press`). Any other
+            // would go out as a press of nothing (six buttons: no object
+            // says it was pressed), or as a code no automation matches,
+            // and Home Assistant would silently do nothing.
+            debug_assert!(
+                match layout {
+                    Layout::Six => (1..=6).contains(&press.code),
+                    Layout::TwoLayers =>
+                        (1..=99).contains(&press.code) && (press.code < 10 || press.code % 10 != 0),
+                },
+                "a code the layout has"
+            );
             match layout {
                 // A button each, the pressed one's with the event: "none"
                 // (`00`) for the rest.
@@ -198,6 +210,9 @@ const HYSTERESIS: u8 = 2;
 /// last sent in (85–89, say), by [`HYSTERESIS`], either way, so charging
 /// shows too.
 pub fn battery_due(sent: Option<u8>, percent: u8) -> bool {
+    // Percentages (as `battery::Battery::percent` gives them): the sums
+    // below fit a byte for those, and would wrap round from 250 up.
+    debug_assert!(percent <= 100 && sent.is_none_or(|sent| sent <= 100));
     let Some(sent) = sent else {
         return true;
     };
