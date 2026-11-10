@@ -46,7 +46,7 @@ own, from its main menu.
 | Do Not Disturb | Settings → Notifications | Off | On: notifications don't reach the watch while the phone is on Do Not Disturb. The watch's quiet nights silence them while you sleep either way. |
 | Cache while out of range | Settings → Notifications | Off | On: notifications that came while the watch was away arrive once it's back. |
 | Notify for missed call | Watch settings → Notifications | Off | On: a notification for each missed call. |
-| Enable Health Connect Export, Select devices, Sync after device sync | Settings → External Integrations → Health Connect | Off, none, off | On, the watch, and on, to pass sleep, steps and heart rate on to Health Connect. Gadgetbridge 2026.11.1 doesn't count a Bangle.js fetch as a device sync ([#7289](https://codeberg.org/Freeyourgadget/Gadgetbridge/issues/7289)), so the watch ends a fetch as if it had GPS tracks to make it one: the first after the watch starts, then at most every 2 hours. Each of those shows a short "End : Fetching sports details" message. |
+| Enable Health Connect Export, Select devices, Sync after device sync | Settings → External Integrations → Health Connect | Off, none, off | On, the watch, and on, to pass sleep, steps and heart rate on to Health Connect. Gadgetbridge 2026.11.1 doesn't count a Bangle.js fetch as a device sync ([#7289](https://codeberg.org/Freeyourgadget/Gadgetbridge/issues/7289)), so the watch ends a fetch as if it had GPS tracks to make it one: the first after the watch starts, the first that brings a night (see [What Gadgetbridge gets](#what-gadgetbridge-gets)), and otherwise at most every 2 hours. Each of those shows a short "End : Fetching sports details" message. |
 
 ## What Gadgetbridge gets
 
@@ -68,10 +68,26 @@ in Health Connect in those minutes (they used to land a minute early), and
 the 5 minutes under way wait for the next fetch.
 
 Gadgetbridge keeps the first sleep stage (or awake) it gets for each
-sample, but the watch revises the last couple of hours' as the night goes
-on (sleep is only recognised after the fact, and stages need the hour
-after). So a fetch during the night, or within an hour or so of waking,
-fixes what it got in Gadgetbridge as it was then.
+sample, but the watch revises a night's stages until a while after you
+wake (sleep is only recognised after the fact, and stages need the hour
+after). So the watch holds a sleep back until its stages are settled:
+
+- **During the night, and for 2¼ hours after you last slept**, a fetch
+  gets everything up to when you fell asleep, and nothing after it, steps
+  included. Waking in the night and falling asleep again keeps the whole
+  night waiting.
+- **The first fetch after that** gets the whole night at once, and has
+  Gadgetbridge pass it on to Health Connect straight away.
+- **A nap** is held back the same way.
+- **Sitting still** holds back the last 20-odd minutes (stepless anyway),
+  in case you're falling asleep: once you have, the watch dates the sleep
+  from when you went still.
+- **Nothing is held back for more than 18 hours**, should the watch think
+  you never woke (lying still off the wrist before it notices).
+
+So a night reaches Gadgetbridge about 2¼ hours after you get up, at the
+first fetch after that. The watch keeps what it holds back across being
+switched off and updated, but a crash in the night loses it.
 
 [C01]: ../README.md#c01-the-watch-says-not-paired
 [C03]: ../README.md#c03-the-watch-never-gets-a-location-from-the-phone
