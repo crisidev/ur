@@ -23,7 +23,8 @@
 //!   and [`crate::heart_reading::set_live`]), continuously too, for as long
 //!   as it asks.
 //!
-//! Between sessions the sensor is fully off: no LED, no oscillator.
+//! Between sessions the sensor is fully off: no LED, no oscillator. (Should
+//! switching it off fail, that's tried again every second until it works.)
 //!
 //! The signal processing lives in [`crate::ppg`], which knows nothing about
 //! the hardware; this module drives the sensor, keeps its signal in range
@@ -309,6 +310,24 @@ impl Hrs3300 {
         self.write(REG_PDRIVER, 0).await
     }
 
+    /// [`Hrs3300::off`], tried up to `tries` times; whether it worked.
+    /// Every failed transfer resets the bus controller (see
+    /// [`Hrs3300::write`]), so the next try may well work. Only the first
+    /// try logs its failure.
+    async fn off_tries(&mut self, tries: u8) -> bool {
+        let quiet = self.quiet;
+        let mut off = false;
+        for _ in 0..tries {
+            off = self.off().await.is_ok();
+            if off {
+                break;
+            }
+            self.quiet = true;
+        }
+        self.quiet = quiet;
+        off
+    }
+
     /// The latest conversion: (HRS, ALS) channel values.
     ///
     /// One burst read across all eight result registers, since the bits of
@@ -391,6 +410,14 @@ pub async fn heart_task(i2c: Device) {
     // so the clock face has a number soon after boot.
     let mut schedule = Schedule::new();
     let mut conversions = Conversions::new();
+    // Whether the sensor may still be on, its LED lit (12.5–40 mA):
+    // switching it off after the last session failed, likeliest after one
+    // that lost the sensor mid-session. Left so, it would stay lit until
+    // the next session, up to an hour away when sessions keep failing, or
+    // for as long as someone watched. So it's tried again every second
+    // until it works (see `retry_off`): a failed try is cheap, at most a
+    // timed-out transfer and a controller reset.
+    let mut maybe_lit = false;
 
     loop {
         // Wait until a background session is due and the wrist is still,
@@ -407,6 +434,9 @@ pub async fn heart_task(i2c: Device) {
         let mut due_since = None;
         let due = loop {
             WAKE.reset();
+            if maybe_lit {
+                maybe_lit = !retry_off(&mut hrs).await;
+            }
             if watching() {
                 break None;
             }
@@ -433,6 +463,9 @@ pub async fn heart_task(i2c: Device) {
                     }
                 }
             };
+            // Back within a second while the sensor may be on, to try
+            // switching it off again.
+            let wait = if maybe_lit { 1 } else { wait };
             select(Timer::after_secs(u64::from(wait)), WAKE.wait()).await;
         };
         let background = due.is_some();
@@ -491,9 +524,15 @@ pub async fn heart_task(i2c: Device) {
         if !matches!(outcome, Ok(Ended::NoContact | Ended::TooBright) | Err(())) && peak > 0 {
             skin_peak = peak;
         }
-        if hrs.off().await.is_err() {
-            // TODO: retry, or the LED stays lit until the next session.
-            warn!("heart: couldn't turn the sensor off");
+        // A few tries at once, then every second (see `maybe_lit`). Only
+        // the first try's failed transfer is logged, then this line, and
+        // one more when it works, however many tries that takes.
+        //
+        // The power meter counts the LED off from here regardless (see
+        // `LedMeter`): it's a fault's cost, not a session's.
+        maybe_lit = !hrs.off_tries(3).await;
+        if maybe_lit {
+            warn!("heart: couldn't turn the sensor off; retrying every second");
         }
         // Rounded up: the budget should err on the side of caution.
         let led_seconds = started.elapsed().as_millis().div_ceil(1000) as u32;
@@ -534,8 +573,24 @@ pub async fn heart_task(i2c: Device) {
         // what's wanted, and reopening the chart tries again.
         while watching() {
             Timer::after_secs(1).await;
+            if maybe_lit {
+                maybe_lit = !retry_off(&mut hrs).await;
+            }
         }
     }
+}
+
+/// One more, quiet, try at switching off a sensor that may still be on
+/// (see `maybe_lit` in [`heart_task`]); whether it worked, which is
+/// logged.
+async fn retry_off(hrs: &mut Hrs3300) -> bool {
+    hrs.quiet = true;
+    let off = hrs.off().await.is_ok();
+    hrs.quiet = false;
+    if off {
+        info!("heart: sensor off at last");
+    }
+    off
 }
 
 /// Seconds since boot, the schedule's clock.
