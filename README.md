@@ -194,7 +194,9 @@ itself off once it has rung, without Gadgetbridge hearing of it, so
 switch it off and on there to set it again. Alarms follow the phone's
 time zone and summer time, from when Gadgetbridge sends the change (at
 once, if connected); the night summer time starts or ends, each rings
-once, one in the skipped hour as the clock jumps.
+once, one in the skipped hour as the clock jumps. An alarm that comes
+round while another rings (smart wake too) rings as soon as that one is
+done.
 
 Gadgetbridge forwards directions from Google Maps and OsmAnd by default;
 turn CoMaps on in its settings, under "Navigation apps".

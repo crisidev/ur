@@ -524,6 +524,36 @@ fn an_alarm_rings_on_after_a_call() {
     assert_eq!(buzzes, ["alarm", "ring", "alarm", "stop"], "{log}");
 }
 
+/// An alarm left to ring out over the smart alarm's latest time: the
+/// smart alarm rings as soon as it's done, rather than not that morning
+/// at all, as it did when it rang only if a check fell in its very
+/// minute (and none do while another alarm rings).
+#[test]
+fn a_smart_alarm_rings_after_another_rings_out_over_its_time() {
+    let dir = out("smart-held-up");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    std::fs::write(
+        &script,
+        "# A Monday.\n\
+         time 2026-11-09 06:50 +01:00\nsmart on 07:00 09:00\nalarm 1 06:58 on\n\
+         until 06:58\nexpect buzzing\nuntil 07:01\nwait 5s\nexpect buzzing\n\
+         button\nexpect not buzzing\nuntil 08:30\nexpect not buzzing\n",
+    )
+    .expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+    // 06:58 rings out at 07:01, and the smart alarm takes over in the
+    // same second: no "stop" between them.
+    let buzzes: Vec<&str> = log
+        .lines()
+        .filter_map(|line| line.split_once("] buzz: "))
+        .map(|(at, buzz)| (&at[at.len() - 8..], buzz))
+        .map(|(at, buzz)| if buzz == "alarm" { at } else { buzz })
+        .collect();
+    assert_eq!(buzzes, ["06:58:00", "07:01:00", "stop"], "{log}");
+}
+
 /// The phone setting the clock back while a timer runs (host fuzzing's
 /// find, as it was found): the timer counted local seconds, so 8.7 days
 /// back left over 200 hours on a 3-minute timer, and opening it in the

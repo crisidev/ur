@@ -711,6 +711,303 @@ mod tests {
         assert_eq!(due(at(MONDAY, 7, 30)), Some(Kind::Phone(1)));
     }
 
+    // ==========================================================================
+    // Missed minutes: what rings when no check fell in an alarm's minute
+    // ==========================================================================
+
+    /// How the wearer answers a ringing alarm, in [`as_the_ui_checks`].
+    #[derive(Clone, Copy)]
+    enum Answer {
+        /// Nobody does: it rings out after `RING_FOR`.
+        Never,
+        /// Dismissed, this many seconds in.
+        Dismiss(i64),
+        /// Snoozed, this many seconds in.
+        Snooze(i64),
+    }
+
+    /// Everything that rings from local minute `from` to `to`, checked
+    /// every second as `App::check_alarms` checks: durations first, then
+    /// the time of day, and neither while an alarm rings. Returns the
+    /// minute each started ringing in, and what.
+    fn as_the_ui_checks(
+        settings: &mut Settings,
+        phone: &mut Phone,
+        state: &mut State,
+        (from, to): (i64, i64),
+        answer: Answer,
+    ) -> Vec<(i64, Kind)> {
+        let mut rang = Vec::new();
+        let mut second = from * 60;
+        while second < to * 60 {
+            let uptime = BOOTED + second - from * 60;
+            let due = state.elapsed(uptime).or_else(|| {
+                state
+                    .due(settings, phone, second, false)
+                    .map(|due| due.kind)
+            });
+            if let Some(kind) = due {
+                rang.push((second.div_euclid(60), kind));
+                second += match answer {
+                    Answer::Never => RING_FOR * 60,
+                    Answer::Dismiss(after) => after,
+                    Answer::Snooze(after) => {
+                        state.snooze(uptime + after);
+                        after
+                    }
+                };
+            }
+            second += 1;
+        }
+        rang
+    }
+
+    /// T2: the smart alarm's latest time passed while another alarm rang
+    /// out over it, so no check fell in that minute. It rang only if one
+    /// did, so it didn't ring that morning at all, for a wearer who, not
+    /// having answered the first alarm, is still asleep.
+    #[test]
+    fn a_smart_alarm_rings_after_another_rings_out_over_its_time() {
+        let mut s = Settings {
+            at: [true, false],
+            at_time: [6 * 60 + 58, 0],
+            ..smart()
+        };
+        let mut state = State::default();
+        let rang = as_the_ui_checks(
+            &mut s,
+            &mut Phone::default(),
+            &mut state,
+            (at(MONDAY, 6, 50), at(MONDAY, 12, 0)),
+            Answer::Never,
+        );
+        // 06:58 rings until 07:01, then the smart alarm at once: three
+        // minutes late, rather than not at all.
+        assert_eq!(
+            rang,
+            vec![
+                (at(MONDAY, 6, 58), Kind::At(0)),
+                (at(MONDAY, 7, 1), Kind::Smart)
+            ]
+        );
+    }
+
+    /// Alarms whose times fall while another rings queue, each ringing
+    /// once the one before is done, in the order of their times; the
+    /// smart alarm among them.
+    #[test]
+    fn alarms_overlapping_in_their_ring_windows_queue() {
+        let mut s = Settings {
+            at: [true, false],
+            at_time: [7 * 60 + 1, 0],
+            ..smart()
+        };
+        let mut p = phone(&[(6, 58, WEEKDAYS, true), (7, 2, 0, true)]);
+        let mut state = State::default();
+        let rang = as_the_ui_checks(
+            &mut s,
+            &mut p,
+            &mut state,
+            (at(MONDAY, 6, 50), at(MONDAY, 12, 0)),
+            Answer::Never,
+        );
+        assert_eq!(
+            rang,
+            vec![
+                (at(MONDAY, 6, 58), Kind::Phone(0)),
+                (at(MONDAY, 7, 1), Kind::Smart),
+                (at(MONDAY, 7, 4), Kind::At(0)),
+                (at(MONDAY, 7, 7), Kind::Phone(1)),
+            ]
+        );
+        // The one-offs that rang late turned off all the same.
+        assert!(!s.at[0]);
+        assert_eq!(p.alarms()[1].switch, Switch::Rang);
+        // A snooze, too, rings when the alarm ringing over it is done.
+        let mut s = smart();
+        let mut state = State::default();
+        let rang = as_the_ui_checks(
+            &mut s,
+            &mut phone(&[(6, 49, WEEKDAYS, true)]),
+            &mut state,
+            (at(MONDAY, 6, 40), at(MONDAY, 7, 30)),
+            Answer::Snooze(10),
+        );
+        assert_eq!(
+            rang,
+            vec![
+                (at(MONDAY, 6, 49), Kind::Phone(0)),
+                // Snoozed until 06:58:20; the smart alarm at 07:00, snoozed
+                // in turn until 07:09:20 (one snooze at a time: a later
+                // snooze replaces the one before).
+                (at(MONDAY, 6, 58), Kind::Snooze),
+                (at(MONDAY, 7, 0), Kind::Smart),
+                (at(MONDAY, 7, 9), Kind::Snooze),
+                (at(MONDAY, 7, 18), Kind::Snooze),
+                (at(MONDAY, 7, 27), Kind::Snooze),
+            ]
+        );
+    }
+
+    /// T2's other half: summer time skips the smart alarm's latest time.
+    /// It rings as the clock reaches 03:00, as alarms at a time of day do
+    /// (`summer_time_rings_what_it_skipped`).
+    #[test]
+    fn summer_time_rings_a_smart_alarm_it_skipped() {
+        let mut s = Settings {
+            smart_weekday: 2 * 60 + 30,
+            smart_weekend: 2 * 60 + 30,
+            ..smart()
+        };
+        let (mut p, mut state) = (Phone::default(), State::default());
+        let sunday = MONDAY - 1;
+        let mut rang = rings(
+            &mut s,
+            &mut p,
+            &mut state,
+            at(sunday, 1, 0),
+            at(sunday, 2, 0),
+        );
+        rang.extend(rings(
+            &mut s,
+            &mut p,
+            &mut state,
+            at(sunday, 3, 0),
+            at(sunday, 12, 0),
+        ));
+        assert_eq!(rang, vec![(at(sunday, 3, 0), Kind::Smart)]);
+    }
+
+    /// Catching up has its bound: what passed more than `CATCH_UP`
+    /// minutes before the next check doesn't ring, rather than hours late.
+    #[test]
+    fn a_smart_alarm_missed_by_more_than_catch_up_does_not_ring_late() {
+        let mut s = smart();
+        let mut p = Phone::default();
+        // Checked at 06:59, then not until an hour after 07:00: it rings.
+        let mut state = State::default();
+        assert_eq!(
+            state.due(&mut s, &mut p, at(MONDAY, 6, 59) * 60, false),
+            None
+        );
+        let late = state.due(&mut s, &mut p, (at(MONDAY, 7, 0) + CATCH_UP) * 60, false);
+        assert_eq!(late.map(|due| due.kind), Some(Kind::Smart));
+        // A minute later than that, it doesn't, nor later on.
+        let mut state = State::default();
+        assert_eq!(
+            state.due(&mut s, &mut p, at(MONDAY, 6, 59) * 60, false),
+            None
+        );
+        let rang = rings(
+            &mut s,
+            &mut p,
+            &mut state,
+            at(MONDAY, 7, 0) + CATCH_UP + 1,
+            at(MONDAY, 23, 0),
+        );
+        assert_eq!(rang, vec![]);
+        // Nor after a reset, which starts checking afresh.
+        let mut state = State::default();
+        assert_eq!(
+            state.due(&mut s, &mut p, at(MONDAY, 7, 5) * 60, false),
+            None
+        );
+    }
+
+    /// T4: an alarm at the smart alarm's own minute is the same wake-up.
+    /// It was rung as the other alarm, and the smart alarm, not
+    /// remembered as rung, rang again as soon as that was dismissed (or,
+    /// worse, snoozed).
+    #[test]
+    fn a_smart_alarm_and_another_at_its_minute_ring_once() {
+        for answer in [Answer::Dismiss(10), Answer::Snooze(10)] {
+            let mut s = Settings {
+                at: [true, false],
+                at_time: [7 * 60, 0],
+                ..smart()
+            };
+            let mut p = phone(&[(7, 0, 0, true)]);
+            let mut state = State::default();
+            let rang = as_the_ui_checks(
+                &mut s,
+                &mut p,
+                &mut state,
+                (at(MONDAY, 6, 59), at(MONDAY, 7, 5)),
+                answer,
+            );
+            // Under the smart alarm's name, as `next` showed it.
+            assert_eq!(rang, vec![(at(MONDAY, 7, 0), Kind::Smart)]);
+            // Every one-off at that minute turned off, and the phone's
+            // saved as such (see `due_says_when_a_phone_alarm_turned_off`).
+            assert!(!s.at[0]);
+            assert_eq!(p.alarms()[0].switch, Switch::Rang);
+        }
+        let mut s = smart();
+        let mut p = phone(&[(7, 0, 0, true)]);
+        let mut state = State::default();
+        assert_eq!(
+            state.due(&mut s, &mut p, at(MONDAY, 6, 59) * 60, false),
+            None
+        );
+        assert_eq!(
+            state.due(&mut s, &mut p, at(MONDAY, 7, 0) * 60, false),
+            Some(Due {
+                kind: Kind::Smart,
+                phone_rang: true
+            })
+        );
+    }
+
+    /// `next` names what `due` rings: at a shared minute, and after winter
+    /// time, which repeats an hour whose alarms rang the first time round.
+    #[test]
+    fn next_names_what_due_rings() {
+        let mut s = Settings {
+            at: [true, false],
+            at_time: [7 * 60, 0],
+            ..smart()
+        };
+        let mut p = Phone::default();
+        let mut state = State::default();
+        let now = at(MONDAY, 6, 0) * 60;
+        assert_eq!(state.due(&mut s, &mut p, now, false), None);
+        let (kind, when) = state.next(&s, &p, now, BOOTED).expect("two alarms are on");
+        let due = state
+            .due(&mut s, &mut p, when, false)
+            .expect("next said it rings then");
+        assert_eq!((kind, when), (due.kind, at(MONDAY, 7, 0) * 60));
+
+        // An alarm every day at 02:30. At 03:00, winter time moves the
+        // clock back to 02:00.
+        let mut s = Settings::default();
+        let mut p = phone(&[(2, 30, 0x7F, true)]);
+        let mut state = State::default();
+        let sunday = MONDAY - 1;
+        let first = rings(
+            &mut s,
+            &mut p,
+            &mut state,
+            at(sunday, 2, 0),
+            at(sunday, 3, 1),
+        );
+        assert_eq!(first, vec![(at(sunday, 2, 30), Kind::Phone(0))]);
+        // In the hour repeated, 02:30 doesn't ring again, and isn't shown
+        // as about to: the next is Monday's.
+        let now = at(sunday, 2, 0) * 60;
+        assert_eq!(
+            state.next(&s, &p, now, BOOTED),
+            Some((Kind::Phone(0), at(MONDAY, 2, 30) * 60))
+        );
+        let again = rings(
+            &mut s,
+            &mut p,
+            &mut state,
+            at(sunday, 2, 0),
+            at(sunday, 3, 0),
+        );
+        assert_eq!(again, vec![]);
+    }
+
     #[test]
     fn next_includes_phone_alarms() {
         let s = Settings::default();

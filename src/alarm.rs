@@ -8,7 +8,8 @@
 //!   holiday). In the [`SMART_WINDOW`] before the time it rings at the first
 //!   sign of light sleep: a stir. Being woken mid-stir rather than from
 //!   deep stillness is the whole point. At the time itself it rings
-//!   regardless.
+//!   regardless, or as soon as the watch can if it couldn't check then
+//!   (see [`CATCH_UP`]).
 //! - **Alarms**: two, each at a time of day, the next time it comes round.
 //!   Each turns itself off after ringing.
 //! - **Phone alarms**: up to [`PHONE_ALARMS`], set in Gadgetbridge and
@@ -49,22 +50,26 @@ pub const ALARMS: usize = 2;
 /// can't declare fewer.
 pub const PHONE_ALARMS: usize = 10;
 /// How far the local time may move, in minutes, with alarms at a time of
-/// day still ringing once each, as if it hadn't: an hour, what summer
-/// time moves the clock by (Gadgetbridge sends the new offset seconds
-/// after the change, while connected).
+/// day (and the smart alarm's latest time) still ringing once each, as if
+/// it hadn't: an hour, what summer time moves the clock by (Gadgetbridge
+/// sends the new offset seconds after the change, while connected).
 ///
 /// - Forward: the hour that summer time skips, or checks held up by
-///   another alarm ringing for up to [`RING_FOR`]. What the clock moved
-///   over rings at once: an alarm at 02:30 rings at 03:00 the night summer
-///   time starts, as a phone's does, rather than not at all.
+///   another alarm ringing for up to [`RING_FOR`] (alarms queue: the next
+///   rings once the one before is done). What the clock moved over rings
+///   at once: an alarm at 02:30 rings at 03:00 the night summer time
+///   starts, as a phone's does, rather than not at all.
 /// - Back: the hour that winter time repeats. What already rang in the
 ///   minutes repeated doesn't ring again: an alarm at 02:30 rings once
 ///   that night, not twice.
 ///
 /// A clock that moves further (set by the phone, or a new time zone)
 /// skips what it jumped over rather than ringing for it, and rings again
-/// for what comes round again.
-const CATCH_UP: i64 = 60;
+/// for what comes round again. So an alarm never rings more than an hour
+/// late. (A watch that was off, or without the time until the phone
+/// connected, starts checking afresh: what came round meanwhile doesn't
+/// ring at all.)
+pub const CATCH_UP: i64 = 60;
 
 const DAY: i64 = 24 * 60;
 
@@ -367,7 +372,8 @@ pub struct State {
     /// for millennia, and RAM is tight.)
     smart_rang: Option<i32>,
     /// The last minute (local) checked for alarms at a time of day (the
-    /// watch's and the phone's): the next check rings those whose time
+    /// watch's, the phone's, and the smart alarm's latest time): the next
+    /// check rings those whose time
     /// fell in the minutes since. Ahead of the clock for up to
     /// [`CATCH_UP`] after it moved back (winter time). Not stored: after a
     /// reset, checking starts afresh from the current minute.
@@ -409,12 +415,16 @@ impl State {
         now: i64,
         uptime: i64,
     ) -> Option<(Kind, i64)> {
-        let minute = now.div_euclid(60);
+        // After the minutes `due` has checked, as it will see them: what
+        // it will ring next, and not what it won't (an alarm in the hour
+        // winter time repeats, which rang the first time round). One held
+        // up by another ringing shows its time, just past.
+        let after = self.after(now.div_euclid(60));
         let smart = settings
             .smart
-            .then(|| (Kind::Smart, self.pending_smart(settings, minute) * 60));
+            .then(|| (Kind::Smart, self.pending_smart(settings, after) * 60));
         let alarms = at_a_time(settings, phone)
-            .map(|(kind, time, days)| (kind, next_at(time, days, minute) * 60));
+            .map(|(kind, time, days)| (kind, next_at(time, days, after) * 60));
         // Durations end in uptime: as local seconds, they're as far from now.
         let local = |at: i64| now + (at - uptime);
         let timers =
@@ -428,12 +438,31 @@ impl State {
             .min_by_key(|&(_, t)| t)
     }
 
-    /// The smart alarm occurrence (local minutes) still to ring: the current
-    /// one if we're in its window and it hasn't rung, else the next.
-    fn pending_smart(&self, settings: &Settings, minute: i64) -> i64 {
-        // An occurrence whose time has just passed (by up to a minute) is
-        // still due, in case a check was late.
-        let next = next_smart(settings, minute - 1);
+    /// The last minute (local) checked, as the check at `minute` sees it:
+    /// it looks at the minutes after this, up to `minute`. Normally the
+    /// minute before; further back after a hold-up or the clock moving
+    /// forward, and ahead of `minute` after it moved back (by up to
+    /// [`CATCH_UP`] either way).
+    fn after(&self, minute: i64) -> i64 {
+        // Forward, it's the minute before plus up to `CATCH_UP` skipped:
+        // summer time's jump from 02:00 to 03:00 can come between checks
+        // at 01:59 and 03:00, when the watch's clock is a second or two
+        // behind the phone's.
+        match self.checked.map(i64::from) {
+            Some(checked) if (minute - 1 - CATCH_UP..=minute + CATCH_UP).contains(&checked) => {
+                checked
+            }
+            _ => minute - 1,
+        }
+    }
+
+    /// The smart alarm occurrence (its latest time, local minutes) still
+    /// to ring, the minutes up to `after` having been checked: the first
+    /// after them, unless it rang early (at a stir in its window), then
+    /// the next. Its latest time may have passed while checks were held
+    /// up: it's then overdue, and rings at the next check.
+    fn pending_smart(&self, settings: &Settings, after: i64) -> i64 {
+        let next = next_smart(settings, after);
         if self.smart_rang == Some(next as i32) {
             next_smart(settings, next)
         } else {
@@ -482,20 +511,33 @@ impl State {
         // TODO: an alarm switched on in those minutes, for a time in them
         // (between 02:00 and 03:00 the night winter time starts), waits
         // for the next day.
-        let after = match self.checked.map(i64::from) {
-            Some(checked) if (minute - CATCH_UP..=minute + CATCH_UP).contains(&checked) => checked,
-            _ => minute - 1,
-        };
+        let after = self.after(minute);
+        // The smart alarm's latest time is an alarm's time like the others,
+        // so it catches up as theirs do, rather than ringing only if a
+        // check falls in its very minute: another alarm ringing out over
+        // it, or summer time, can leave none there.
+        let smart = settings.smart.then(|| self.pending_smart(settings, after));
         // The earliest alarm in those minutes rings. Others at the very
         // same minute ring as one with it (two alarms at 07:00 are one
-        // wake-up), and ones later in the minutes left get their turn once
-        // it's done.
-        let earliest = at_a_time(settings, phone)
-            .map(|(kind, time, days)| (kind, next_at(time, days, after)))
+        // wake-up, under the smart alarm's name if it's one of them, as
+        // `next` showed it), and ones later in the minutes left get their
+        // turn once it's done.
+        let earliest = smart
+            .map(|latest| (Kind::Smart, latest))
+            .into_iter()
+            .chain(
+                at_a_time(settings, phone)
+                    .map(|(kind, time, days)| (kind, next_at(time, days, after))),
+            )
             .filter(|&(_, at)| at <= minute)
             .min_by_key(|&(_, at)| at);
         if let Some((kind, at)) = earliest {
             self.checked = Some(at as i32);
+            // Checked, it won't ring again; remembered, it won't even
+            // should the clock go back by more than `CATCH_UP`.
+            if smart == Some(at) {
+                self.smart_rang = Some(at as i32);
+            }
             // One-off alarms turn themselves off, all of those ringing.
             for i in 0..ALARMS {
                 if settings.at[i] && next_at(settings.at_time[i], 0, after) == at {
@@ -513,16 +555,17 @@ impl State {
         }
         // (Not back to `minute` while the clock repeats checked minutes.)
         self.checked = Some(after.max(minute) as i32);
-        if settings.smart {
-            let latest = self.pending_smart(settings, minute);
-            let in_window = minute >= latest - SMART_WINDOW;
-            if minute >= latest || (in_window && stirring) {
-                self.smart_rang = Some(latest as i32);
-                return Some(Due {
-                    kind: Kind::Smart,
-                    phone_rang: false,
-                });
-            }
+        // Nothing is overdue, but the smart alarm may ring early, at a
+        // stir in its window.
+        if let Some(latest) = smart
+            && stirring
+            && minute >= latest - SMART_WINDOW
+        {
+            self.smart_rang = Some(latest as i32);
+            return Some(Due {
+                kind: Kind::Smart,
+                phone_rang: false,
+            });
         }
         None
     }
