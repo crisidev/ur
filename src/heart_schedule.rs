@@ -13,11 +13,12 @@
 //! - **Movement resets it** to [`MIN_INTERVAL`]: steps, or vigorous
 //!   movement, in at least [`MOVED_POLLS`] of the accelerometer's 2-second
 //!   polls since the last session, may mean activity is starting. (The
-//!   session itself still waits for the wrist to be still, which `heart`
-//!   checks: a moving wrist gives no reading. So in practice this means
-//!   "at the first calm moment after the movement, but no sooner than
-//!   [`MIN_INTERVAL`] after the last session".) Asleep, movement is
-//!   turning over, not activity, and doesn't count.
+//!   session itself waits a while for the wrist to be still, which `heart`
+//!   checks: a moving wrist rarely gives a reading. So in practice this
+//!   means "at the first calm moment after the movement, but no sooner
+//!   than [`MIN_INTERVAL`] after the last session, and no later than
+//!   [`CALM_WAIT`] after that".) Asleep, movement is turning over, not
+//!   activity, and doesn't count.
 //! - **Asleep, it stays at [`ASLEEP_INTERVAL`]** (5 minutes): sleep
 //!   staging reads REM from the heart rate rising a few beats over the
 //!   night's baseline, and deep from it staying flat, which a reading every
@@ -48,12 +49,14 @@
 //! looking, so `heart` measures right away), but their readings count as
 //! measurements, and their LED time comes out of the budget.
 //!
-//! Two rules about the sessions themselves live here too, being as
-//! hardware-free: a background session only starts once the wrist has
-//! been calm for a few seconds ([`START_CALM_POLLS`]), and, if it runs out
-//! of time on a calm wrist with a faint pulse, may go on brighter
-//! ([`brighter`]). Once started, it runs its full length however the
-//! wrist moves (see below), unless it reads first or finds no skin.
+//! A few rules about the sessions themselves live here too, being as
+//! hardware-free: a due background session waits up to two minutes for the
+//! wrist to be calm for a few seconds ([`START_CALM_POLLS`],
+//! [`CALM_WAIT`]), or not at all once a reading is overdue
+//! ([`Schedule::start`]), and, if it runs out of time on a calm wrist with
+//! a faint pulse, may go on brighter ([`brighter`]). Once started, it runs
+//! its full length however the wrist moves (see below), unless it reads
+//! first or finds no skin.
 //!
 //! # Trying through movement
 //!
@@ -109,6 +112,26 @@
 //! the replayed sessions that's ~20% more LED. Each failure now costs a
 //! whole session (30 s of LED, 72 budget seconds at 30 mA) where a stop
 //! cost 3-19 s, which is why [`LED_BUDGET`] grew.
+//!
+//! Starting is the other half. Up to 0.10.0-rc.4 a due session waited for
+//! a calm wrist however long it took, and the same afternoon on the sealed
+//! watch, one waited 18 minutes through busy desk work. So a due session
+//! now waits for calm for at most [`CALM_WAIT`] (two minutes), and once a
+//! reading is overdue, not at all (see [`Schedule::start`]). At a desk,
+//! calm comes within the two minutes 71% of the time, so most sessions
+//! still start calm; walking, 31%. A session started busy can
+//! still go on [`brighter`] at its end only if the wrist then calmed down
+//! for most of it ([`calm_throughout`]), and [`bright_start`] is as before.
+//!
+//! What it costs: the schedule makes the same tries, just without the
+//! wait. At its worst, a day on a wrist never calm long enough (walking,
+//! or busy hands) and never reading, which until now started no session
+//! at all, makes the overdue desk's six 30 s tries an hour: 180 s of LED at
+//! 12.5 mA, or 432 budget seconds if its round is on the bright arm,
+//! ~0.14-0.34 mAh an hour, ~2.2-5.4 mAh over 16 waking hours. Against how
+//! long calm took in the field logs, a day at a desk or walking once overdue
+//! makes ~1 or ~2.3 more tries an hour than it did, ~0.35-0.8 and
+//! ~0.9-2.1 mAh more over 16 hours (dim to bright). (See docs/power-plan.md.)
 //!
 //! Time is whole seconds since boot, as `u32` (136 years). Like
 //! [`crate::sleep`], this knows nothing of hardware or the clock, so it
@@ -214,7 +237,40 @@ pub const MOVED_POLLS: u8 = 6;
 /// wrist averaged 245-1906 through them (the calm limit is 150). Three
 /// polls, ~6 s, would have held those eleven back, and cost a still wrist
 /// nothing: asleep, or at rest, nearly every poll is calm.
+///
+/// Preferred, not required: a due session waits for it for at most
+/// [`CALM_WAIT`], and not at all once a reading is overdue (see
+/// [`Schedule::start`]).
 pub const START_CALM_POLLS: u8 = 3;
+
+/// How long a due background session waits for [`START_CALM_POLLS`] before
+/// it starts anyway, on a busy wrist (see [`Schedule::start`]).
+///
+/// Until 0.10.0-rc.4 it waited however long it took, and on the sealed
+/// watch (2026-11-10) a session due at 15:25 didn't start until 15:43:
+/// from 15:27, 2% of polls were calm, at desk work and a few steps. A calm
+/// start is worth waiting for a little (above; and in the rc.3 log, desk
+/// sessions calm throughout read 21 times in 24, busy ones never, if cut
+/// short then), but only a little. Taking every awake poll of the sealed
+/// watch's logs of 2026-11-09 and 10 (42,514, ~24 h) as a moment a session
+/// might fall due, the wait for three calm polls in a row was:
+///
+/// | | median | within 30 s | 1 min | 2 min | 5 min | 10 min |
+/// |---|---:|---:|---:|---:|---:|---:|
+/// | at a desk (under 20 steps in 5 minutes) | 40 s | 46% | 58% | 71% | 87% | 95% |
+/// | pottering (20-149) | 103 s | 27% | 38% | 55% | 83% | 96% |
+/// | walking (150 or more) | 333 s | 11% | 18% | 31% | 48% | 69% |
+///
+/// Calm comes soon or not for a while: at a desk, a quarter of polls
+/// already end three calm ones, and after the first minute the chance of
+/// three in the next two minutes stays at 35-50% however long the wait has
+/// been (walking, ~20%). Two minutes takes most of the quick ones (71% of
+/// desk starts calm, against 100% waiting for ever, and 31% walking), and
+/// halves the desk's mean delay (from 123 s to 55 s). It's also
+/// [`MIN_INTERVAL`] again, so a session after movement still comes within
+/// a few minutes of it. Asleep, 94% of polls already end a calm run and
+/// 99.8% have one within two minutes, so the night is as before.
+pub const CALM_WAIT: u32 = 2 * 60;
 
 /// Polls (2 s each) without steps after which a reading counts as resting
 /// (see [`Schedule::ended`]): three minutes, by when the heart rate has
@@ -358,6 +414,18 @@ pub enum Why {
     Budget,
 }
 
+/// Whether a due background session starts (see [`Schedule::start`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Start {
+    /// Not yet: waiting for a calm wrist.
+    Wait,
+    /// On a wrist that has been calm for [`START_CALM_POLLS`].
+    Calm,
+    /// On a busy wrist: it has waited [`CALM_WAIT`] for calm, or a reading
+    /// is overdue.
+    Busy,
+}
+
 /// How a session ended.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Outcome {
@@ -488,6 +556,35 @@ impl Schedule {
             return (affordable, Why::Budget);
         }
         (at, why)
+    }
+
+    /// Whether a background session that has been due since `since` starts
+    /// at `now`, the wrist having been calm for `calm_polls` polls in a row
+    /// (see `activity::calm_polls`).
+    ///
+    /// It waits for [`START_CALM_POLLS`] for up to [`CALM_WAIT`], and then
+    /// starts anyway: a busy wrist reads far less often than a calm one, but
+    /// a session never started never reads (on the sealed watch, 2026-11-10,
+    /// one on a wrist busy at 983 on average read 75 BPM, though that's yet
+    /// to be checked against a Garmin), and
+    /// "we should be trying through movement" (the user). Once a reading is
+    /// overdue (see [`OVERDUE`]) it doesn't wait at all: the gap is what
+    /// matters by then, and the overdue tries are already ten minutes apart
+    /// and inside their budget.
+    ///
+    /// `since` is when the heart task first found the session due, not
+    /// [`Self::due`]'s time: movement can bring that forward while a session
+    /// waits, to long before (the end of the last session and
+    /// [`MIN_INTERVAL`]), and the session it makes due deserves its chance
+    /// at a calm start too.
+    pub fn start(&self, now: u32, since: u32, calm_polls: u8) -> Start {
+        if calm_polls >= START_CALM_POLLS {
+            Start::Calm
+        } else if now >= self.overdue_from() || now.saturating_sub(since) >= CALM_WAIT {
+            Start::Busy
+        } else {
+            Start::Wait
+        }
     }
 
     /// [`Self::due`], as if the budget were unlimited.

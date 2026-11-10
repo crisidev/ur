@@ -7,11 +7,13 @@
 //! - in the background, when [`crate::heart_schedule`] says one is due
 //!   (every 2–20 minutes, depending on movement and recent readings), once
 //!   the wrist has been still for a few seconds after that (see [`CALM`]),
-//!   for up to [`SESSION_LIMIT`] or until it has a reading (typically
-//!   ~11 s), carrying on through movement (see `heart_schedule`'s "Trying
-//!   through movement"); if it runs out on a calm wrist with a pulse too
-//!   faint to read, it may go on for another 15 s with a brighter LED,
-//!   once or twice ([`heart_schedule::brighter`]); awake, every other
+//!   or two minutes on if it isn't, or at once if a reading is overdue
+//!   ([`heart_schedule::Schedule::start`]), for up to [`SESSION_LIMIT`] or
+//!   until it has a reading (typically ~11 s), carrying on through
+//!   movement (see `heart_schedule`'s "Trying through movement"); if it
+//!   runs out on a calm wrist with a pulse too faint to read, it may go on
+//!   for another 15 s with a brighter LED, once or twice
+//!   ([`heart_schedule::brighter`]); awake, every other
 //!   round of tries (a scheduled session and its retries) starts with a
 //!   brighter LED (see [`Arm`]); both are an experiment, and
 //! - while the clock face is showing (see
@@ -40,7 +42,7 @@ use crate::activity;
 // hardware, so the simulator runs it too.
 use crate::heart_reading::{WAKE, publish, watching};
 pub use crate::heart_reading::{wake, worn};
-use crate::heart_schedule::{self, Arm, Before, Outcome, Schedule};
+use crate::heart_schedule::{self, Arm, Before, Outcome, Schedule, Start};
 use crate::i2c::Device;
 use crate::ppg::{Consensus, Conversions, Ppg, Rejection};
 
@@ -85,9 +87,9 @@ pub const MOTION_LIMIT: u16 = 1500;
 /// Wrist movement (see [`activity::movement`]) at or below which a
 /// background session may start, once it has held for
 /// [`heart_schedule::START_CALM_POLLS`] polls. A due session waits for
-/// that, however long it takes: measuring a busy wrist only spends LED
-/// time. Above it, the wrist counts as busy for
-/// [`heart_schedule::calm_throughout`].
+/// that for a while, as a busy wrist rarely reads, but not indefinitely
+/// (see [`heart_schedule::CALM_WAIT`]). Above it, the wrist counts as busy
+/// for [`heart_schedule::calm_throughout`].
 ///
 /// On the wrist the pulse is tiny (±5 counts on ~3000), and sitting at a
 /// desk, a hand's small movements make bursts ten times that every few
@@ -400,7 +402,10 @@ pub async fn heart_task(i2c: Device) {
         // moving); once due, every 3 s, as movement is only updated with
         // each read of the accelerometer, and at once when it sees the
         // wrist go still. (A wake left over from during the last session is
-        // stale: everything is looked at afresh.)
+        // stale: everything is looked at afresh.) A due session waits for
+        // calm only so long, though (see `heart_schedule::Schedule::start`),
+        // counted from when it was first found due.
+        let mut due_since = None;
         let due = loop {
             WAKE.reset();
             if watching() {
@@ -409,17 +414,25 @@ pub async fn heart_task(i2c: Device) {
             let (at, why) = schedule.due(activity::active_polls(), activity::asleep());
             let now = uptime();
             let wait = if now < at {
+                due_since = None;
                 if activity::still() {
                     at - now
                 } else {
                     (at - now).min(RECHECK_SECS)
                 }
-            } else if activity::calm_polls() < heart_schedule::START_CALM_POLLS {
-                // Measuring a busy wrist only spends LED time, and a
-                // moment's calm at a desk rarely lasts long enough.
-                3
             } else {
-                break Some(why);
+                let since = *due_since.get_or_insert(now);
+                match schedule.start(now, since, activity::calm_polls()) {
+                    // A calm start reads far more often, and a moment's
+                    // calm at a desk rarely lasts long enough.
+                    Start::Wait => 3,
+                    Start::Calm => break Some(why),
+                    Start::Busy => {
+                        // So a field log can tell these sessions apart.
+                        info!("heart: busy start ({=u8} s)", (now - since).min(255) as u8);
+                        break Some(why);
+                    }
+                }
             };
             select(Timer::after_secs(u64::from(wait)), WAKE.wait()).await;
         };
