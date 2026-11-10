@@ -259,7 +259,10 @@ With `--peer ADDRESS` (the dev kit's Bluetooth address), this computer is
 the dev kit's phone, through `scripts/gb-peer.py` (which needs `uv`, and
 the computer paired with the dev kit; see `scripts/dfu.py`). Then a
 script can `connect` and `disconnect`, and send `gb` lines over the air,
-as Gadgetbridge would: the simulator expects what each line makes the UI
+as Gadgetbridge would. `connect` sends this computer's time first, as
+Gadgetbridge does on every connection: the watch takes a central for its
+phone only once it writes. (`connect silent` doesn't, for a central that
+never writes.) The simulator expects what each line makes the UI
 do, and checks, at each `compare`, that the dev kit's UI got it, and that
 what the dev kit sent the phone (calls answered, media commands, the
 button grid's intents) is what the simulator's UI asked for. A phone of

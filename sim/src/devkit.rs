@@ -914,6 +914,17 @@ impl<'a> Follower<'a> {
             "connect" => {
                 self.rig.connect()?;
                 self.catch_up(None)?;
+                // As Gadgetbridge does on every connection: the time first.
+                // The watch takes a central for its phone only once it
+                // writes (`ble::become_phone`), so without this a script's
+                // phone isn't one (media gestures, calls) until its first
+                // `gb` line. `connect silent` leaves it out, for a central
+                // that never writes.
+                match arg(0) {
+                    None => self.gadgetbridge(&real_time_line()?.0)?,
+                    Some("silent") => {}
+                    Some(other) => return Err(format!("connect {other}? (or `connect silent`)")),
+                }
             }
             "disconnect" => {
                 self.rig.peer()?.request("disconnect")?;
@@ -1916,21 +1927,7 @@ impl Bench {
     }
 
     fn real_time(&mut self) -> Result<(), String> {
-        let utc = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
-            .as_secs();
-        // This computer's offset, `+0100` or the like, as hours.
-        let output = Command::new("date")
-            .arg("+%z")
-            .output()
-            .map_err(|e| format!("running date: {e}"))?;
-        let zone = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        let minutes = |digits: &str| digits.parse::<i64>().map_err(|e| format!("{zone}: {e}"));
-        let (sign, digits) = zone.split_at_checked(1).ok_or("date +%z said nothing")?;
-        let (hours, rest) = digits.split_at_checked(2).ok_or("date +%z's hours")?;
-        let offset = (minutes(hours)? * 60 + minutes(rest)?) * if sign == "-" { -1 } else { 1 };
-        let line = set_time_line(utc as i64, offset as f64 / 60.0);
+        let (line, utc, zone) = real_time_line()?;
         let hex: String = (script::gb_wire(&line)?.iter())
             .map(|b| format!("{b:02x}"))
             .collect();
@@ -1941,6 +1938,26 @@ impl Bench {
         eprintln!("fuzz: the dev kit's clock is at the real time again ({utc}, UTC{zone})");
         Ok(())
     }
+}
+
+/// Gadgetbridge's line setting the clock to this computer's: the line, the
+/// time (UTC seconds), and the offset (`+0100` or the like).
+fn real_time_line() -> Result<(String, u64, String), String> {
+    let utc = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    let output = Command::new("date")
+        .arg("+%z")
+        .output()
+        .map_err(|e| format!("running date: {e}"))?;
+    let zone = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let minutes = |digits: &str| digits.parse::<i64>().map_err(|e| format!("{zone}: {e}"));
+    let (sign, digits) = zone.split_at_checked(1).ok_or("date +%z said nothing")?;
+    let (hours, rest) = digits.split_at_checked(2).ok_or("date +%z's hours")?;
+    let offset = (minutes(hours)? * 60 + minutes(rest)?) * if sign == "-" { -1 } else { 1 };
+    let line = set_time_line(utc as i64, offset as f64 / 60.0);
+    Ok((line, utc, zone))
 }
 
 /// Gadgetbridge's line setting the clock to `utc` (seconds), in a time

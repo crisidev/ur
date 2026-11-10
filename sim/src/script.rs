@@ -39,7 +39,9 @@ The phone:
                              gb GB({\"t\":\"notify\",\"src\":\"Signal\",\"title\":\"Kari\"})
                              (the rest of the line as is: no quotes needed,
                              and no # comment)
-  connect | disconnect
+  connect [silent] | disconnect
+                             (with a dev kit, `connect` sends the time, as
+                             Gadgetbridge does; `silent`, nothing)
   time YYYY-MM-DD HH:MM[:SS] [+HH:MM] | time now     the phone sets the time
   location LAT LON                                   a GPS fix
   notify APP WHO [AGO]       a notification (AGO: arrived e.g. 3h ago)
@@ -202,6 +204,14 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
         // ======================================================================
         "gb" => return Err("gb: needs a line, as Gadgetbridge sends it".into()),
         "connect" | "disconnect" => {
+            // (`connect silent` is for a dev kit, where a phone counts as
+            // one once it writes, and `connect` sends the time as
+            // Gadgetbridge does. Here, a connected phone is one.)
+            if !matches!(arg(0), None | Some("silent"))
+                || (command == "disconnect" && arg(0).is_some())
+            {
+                return Err(format!("{command} {}?", arg(0).unwrap_or_default()));
+            }
             watch.connected = command == "connect";
             watch.log(format!("{command}ed"));
             watch.refresh();
