@@ -2,6 +2,7 @@
 //! clock face. `cargo test` runs them.
 
 #[path = "../../../src/nav.rs"]
+#[allow(dead_code)]
 mod nav;
 
 fn main() {
@@ -135,3 +136,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod fuzz;
