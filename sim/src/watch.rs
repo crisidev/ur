@@ -392,6 +392,13 @@ impl Watch {
         &self.ui.battery
     }
 
+    /// Forgets the battery's history, as a reboot would: the percentage
+    /// lags the voltage on purpose (see `battery`), and a script's
+    /// `battery` means the level it names, now.
+    pub fn restart_battery(&mut self) {
+        self.ui.battery = crate::battery::Battery::new();
+    }
+
     pub fn buzzing(&self) -> bool {
         self.motor.is_some_and(|(pattern, since)| {
             let length: u64 = pattern.steps().iter().map(|&ms| u64::from(ms)).sum();

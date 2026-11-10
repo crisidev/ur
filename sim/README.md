@@ -108,7 +108,8 @@ tap                               # snooze
   `notify`, `call`, `music`, `find`, `phone-alarms`, `nav`, `unpaired`,
   `passkey`, `update`, `slots full` (both Bluetooth connections in use,
   so the button grid's presses can't go to Home Assistant).
-- **The wearer and the watch:** `battery` (and charging), `steps`,
+- **The wearer and the watch:** `battery` (and charging; the percentage
+  starts over from it, as after a reboot), `steps`,
   `heart`, `temperature`, `asleep`, `movement`, `last-night`,
   `demo-day` (a day of steps and heart rates so far), `alarm`, `smart`,
   `timer`, `theme`.

@@ -131,7 +131,10 @@ blocks of 1,000 (×1K) towards 10,000, then of 10,000 (×10K); Today has
 the exact count, since midnight in the phone's time zone (after a flight
 across midnight, the new zone's). A bar along the top means unseen notifications; a note
 in the top left, that music is playing; a faded Bluetooth rune struck
-through in red there, that the phone isn't connected.
+through in red there, that the phone isn't connected. The battery's
+percentage climbs on the charger no faster than the cell fills, and
+reads 100% only once charging is done, so it doesn't drop when the
+watch comes off; 0% is where it switches itself off.
 
 **Notifications** show the app and who it's from (the sender, or the
 title without one), never what it says, and without emoji. One that

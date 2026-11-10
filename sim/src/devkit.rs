@@ -1565,8 +1565,12 @@ impl<'a> Follower<'a> {
             clock::set(pass.local_second - i64::from(offset) * 60, offset);
         }
         activity::show_devkit_day(pass.day());
-        let battery =
-            Battery::measured(pass.battery_mv, pass.charging != 0, pass.power_present != 0);
+        let battery = Battery::measured(
+            pass.battery_mv,
+            pass.battery_percent,
+            pass.charging != 0,
+            pass.power_present != 0,
+        );
         let status = Status {
             uptime_secs: pass.uptime_secs,
             local_time: (pass.has_time != 0).then_some(DateTime {

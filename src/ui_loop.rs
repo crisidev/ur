@@ -392,7 +392,8 @@ impl UiLoop {
         board.sample_battery(&mut samples).await;
         let sample = debug::battery_sample().unwrap_or(samples[0]);
         let (charging, power_present) = board.charger();
-        self.battery.update(sample, charging, power_present);
+        self.battery
+            .update(sample, charging, power_present, now.as_secs() as u32);
         let battery = &self.battery;
         let report = ble::BatteryReport {
             percent: battery.percent() as u8,

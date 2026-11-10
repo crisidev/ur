@@ -59,6 +59,7 @@ The phone:
                              can't go to Home Assistant
 The wearer and the watch:
   battery MV [charging|charged|unplugged]
+                             (the percentage starts over from it)
   steps N | heart BPM|off    a heart rate measured now (shown for 30 min)
   temperature C              the watch's own, its die (shown, or the
                              wrist's estimate from it, from the next
@@ -373,6 +374,7 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
                 Some("unplugged") => (watch.charging, watch.power_present) = (false, false),
                 Some(other) => return Err(format!("battery: {other}?")),
             }
+            watch.restart_battery();
             watch.refresh();
         }
         "steps" => {

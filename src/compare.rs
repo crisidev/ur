@@ -258,6 +258,9 @@ pub struct Pass {
     pub sleep_rem_minutes: u16,
     pub charging: u8,
     pub power_present: u8,
+    /// `Battery::percent`: it has a history, so the voltage alone doesn't
+    /// give it.
+    pub battery_percent: u8,
     pub connected: u8,
     /// 0 none, 1 not paired, 2 pairing lost.
     pub unpaired: u8,
@@ -524,6 +527,7 @@ const PASS: Pass = Pass {
     sleep_rem_minutes: 0,
     charging: 0,
     power_present: 0,
+    battery_percent: 0,
     connected: 0,
     unpaired: 0,
     update_progress: 0,
@@ -824,6 +828,7 @@ pub fn rendering(now: Instant, status: &Status, daytime: bool, today: Option<Day
             sleep_rem_minutes: sleep.map_or(0, |s| s.rem_minutes),
             charging: u8::from(status.battery.charging),
             power_present: u8::from(status.battery.power_present),
+            battery_percent: status.battery.percent() as u8,
             connected: u8::from(status.connected),
             unpaired: match status.unpaired {
                 None => 0,
