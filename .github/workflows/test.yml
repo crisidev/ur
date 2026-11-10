@@ -136,7 +136,7 @@ jobs:
           key: web
       - name: cargo clippy
         working-directory: sim
-        run: cargo clippy --locked --lib --no-default-features --target wasm32-unknown-unknown -- -D warnings
+        run: cargo clippy --locked --lib --no-default-features --features themes-all --target wasm32-unknown-unknown -- -D warnings
       # Node comes with the runner image.
       - name: web/check.sh
         working-directory: sim

@@ -15,17 +15,22 @@
 //! them (`shots.txt`, into `shots/`). See CONTRIBUTING.md for adding a
 //! theme or a scheme.
 //!
-//! The UI holds a scheme as a [`Scheme`], an enum with a variant a
-//! built-in theme, and calls the theme through a `match` on it, rather
-//! than a `dyn Theme`: with one theme built in (as now) that's a direct
-//! call, which inlines into the UI's rendering as if there were no themes
-//! at all.
+//! Each theme is a Cargo feature, `theme-<name>` (`theme-retro` the
+//! default; `themes-all`, every one), so a build has only the themes it
+//! names: the rest aren't compiled, which keeps the image small. The UI
+//! holds a scheme as a [`Scheme`], an enum with a variant a built-in
+//! theme, and calls the theme through a `match` on it, rather than a
+//! `dyn Theme`: with one theme built in (the default, and every theme's
+//! own package) that's a direct call, which inlines into the UI's
+//! rendering as if there were no themes at all.
 //!
 //! A scheme is for darkness or for daylight: each theme lists its
 //! schemes by side ([`BuiltIn`]), and may have either side, or both, and
 //! several a side. The UI uses the night schemes from sunset, the day
 //! ones from sunrise, and Settings' THEME row steps through the side in
-//! use: every built-in theme's schemes for it, in [`THEMES`]' order.
+//! use: every built-in theme's schemes for it, in [`THEMES`]' order. A
+//! build with no scheme for a side (only night themes, say) uses the
+//! other side's then.
 //!
 //! Every theme draws the dim look too (a glance, a notification on a dark
 //! screen, the quiet night), in its scheme's [`Theme::dim`] palette,
@@ -48,6 +53,7 @@ use crate::route;
 use crate::system_off::Reason;
 use crate::ui::{Editing, Fits, Row, Status};
 
+#[cfg(feature = "theme-retro")]
 pub mod retro;
 
 // ==============================================================================
@@ -423,23 +429,54 @@ pub fn duration(minutes: u16) -> heapless::String<8> {
 // The built-in themes and their schemes
 // ==============================================================================
 
-/// A colour scheme of a built-in theme: a variant a theme, holding the
-/// scheme (a static of the theme's type). It's a [`Theme`] itself, by a
-/// `match` on the variant (see the module docs), so the UI needn't know
-/// which theme it is.
-#[derive(Clone, Copy)]
-pub enum Scheme {
-    Retro(&'static retro::Retro),
+/// The built-in themes, a line each: its module (`pub mod` above, under
+/// its feature), its type, and its feature. From the one list, under each
+/// line's feature, come [`Scheme`]'s variants, `with_theme!`'s arms, and
+/// [`THEMES`], so none can miss a theme the others have; and the build
+/// scripts check every `src/themes/<name>/` has its line here and its
+/// features in both manifests (see `manifests.rs`).
+///
+/// `$d` is a `$`, passed in, for the `with_theme!` it writes.
+macro_rules! themes {
+    ($d:tt $($module:ident: $Type:ident if $feature:literal;)+) => {
+        /// A colour scheme of a built-in theme: a variant a theme, holding
+        /// the scheme (a static of the theme's type). It's a [`Theme`]
+        /// itself, by a `match` on the variant (see the module docs), so
+        /// the UI needn't know which theme it is.
+        #[derive(Clone, Copy)]
+        pub enum Scheme {
+            $(
+                #[cfg(feature = $feature)]
+                $Type(&'static $module::$Type),
+            )+
+        }
+
+        /// Calls `$call` with `$theme` bound to the scheme in `$scheme`,
+        /// whatever its theme.
+        macro_rules! with_theme {
+            ($d scheme:expr, $d theme:ident => $d call:expr) => {
+                match $d scheme {
+                    $(
+                        #[cfg(feature = $feature)]
+                        Scheme::$Type($d theme) => $d call,
+                    )+
+                }
+            };
+        }
+
+        /// The themes built in, in the order their schemes come in
+        /// THEME's cycle.
+        pub const THEMES: &[BuiltIn] = &[
+            $(
+                #[cfg(feature = $feature)]
+                $module::BUILT_IN,
+            )+
+        ];
+    };
 }
 
-/// Calls `$call` with `$theme` bound to the scheme in `$scheme`, whatever
-/// its theme: a line a built-in theme, as in [`Scheme`].
-macro_rules! with_theme {
-    ($scheme:expr, $theme:ident => $call:expr) => {
-        match $scheme {
-            Scheme::Retro($theme) => $call,
-        }
-    };
+themes! {$
+    retro: Retro if "theme-retro";
 }
 
 impl Theme for Scheme {
@@ -581,10 +618,6 @@ impl BuiltIn {
     }
 }
 
-/// The themes built in, in the order their schemes come in THEME's
-/// cycle.
-pub const THEMES: &[BuiltIn] = &[retro::BUILT_IN];
-
 // What follows is worked out at compile time, from `THEMES`: every
 // built-in theme's schemes for a side, one after the other, as a static
 // each, so that a lookup at runtime is an index into it.
@@ -594,8 +627,22 @@ const fn of(theme: &BuiltIn, day: bool) -> &'static [Scheme] {
     if day { theme.day } else { theme.night }
 }
 
-/// How many schemes there are for a side.
+/// Whether this build has a scheme of its own for daylight (`day`) or
+/// darkness. Without, that side uses the other's (see [`schemes`]).
+pub const fn has(day: bool) -> bool {
+    let mut i = 0;
+    while i < THEMES.len() {
+        if !of(&THEMES[i], day).is_empty() {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// How many schemes there are for a side, the other's if it has none.
 const fn len(day: bool) -> usize {
+    let day = if has(day) { day } else { !day };
     let mut n = 0;
     let mut i = 0;
     while i < THEMES.len() {
@@ -605,11 +652,17 @@ const fn len(day: bool) -> usize {
     n
 }
 
-/// Every built-in theme's schemes for a side, one after the other.
+/// Every built-in theme's schemes for a side (the other's, if it has
+/// none), one after the other.
 const fn flatten<const N: usize>(day: bool) -> [Scheme; N] {
+    let day = if has(day) { day } else { !day };
     // Something to fill the array with first: any scheme will do, as
-    // every place is filled below.
-    let first = match (THEMES[0].night.first(), THEMES[0].day.first()) {
+    // every place is filled below. (And the build's one check that it
+    // has a theme.)
+    let Some(theme) = THEMES.first() else {
+        panic!("no theme: build with one (`--features theme-retro`, the default), or `themes-all`")
+    };
+    let first = match (theme.night.first(), theme.day.first()) {
         (Some(&scheme), _) | (None, Some(&scheme)) => scheme,
         (None, None) => panic!("a theme with no schemes"),
     };
@@ -630,7 +683,9 @@ const fn flatten<const N: usize>(day: bool) -> [Scheme; N] {
 static NIGHT: [Scheme; len(false)] = flatten(false);
 static DAY: [Scheme; len(true)] = flatten(true);
 
-/// The schemes for daylight (`day`) or darkness, in THEME's order.
+/// The schemes for daylight (`day`) or darkness, in THEME's order. A
+/// build with none for a side (only night themes, say) has the other
+/// side's then.
 pub fn schemes(day: bool) -> &'static [Scheme] {
     if day { &DAY } else { &NIGHT }
 }

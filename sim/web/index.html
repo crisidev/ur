@@ -389,7 +389,18 @@ function print(kind, text) {
     record.classList.toggle("on", recording);
     record.setAttribute("aria-pressed", recording);
   } else if (kind === THEMES) {
-    for (const name of text.split("\n")) themes.add(new Option(name, name));
+    // A group a theme, of its schemes (`ur_themes`: "Retro\tARCADE").
+    const groups = new Map();
+    for (const line of text.split("\n")) {
+      const [theme, scheme] = line.split("\t");
+      if (!groups.has(theme)) {
+        const group = document.createElement("optgroup");
+        group.label = theme;
+        themes.add(group);
+        groups.set(theme, group);
+      }
+      groups.get(theme).append(new Option(scheme, scheme));
+    }
   } else if (kind === ERROR) {
     show(text, "error");
   } else {
@@ -486,7 +497,7 @@ typed.addEventListener("keydown", (event) => {
     event.preventDefault();
   }
 });
-themes.addEventListener("change", () => guard(() => ur.command(`theme ${themes.value}`)));
+themes.addEventListener("change", () => guard(() => ur.command(`theme "${themes.value}"`)));
 document.getElementById("script").addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;

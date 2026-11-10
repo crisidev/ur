@@ -25,6 +25,13 @@ default = ["window"]
 # The interactive window; without it (e.g. in CI), scripts still run and
 # write screenshots.
 window = ["dep:minifb"]
+# The firmware's themes (see its Cargo.toml and src/themes/), for drawing
+# them here. With none of these, the simulator has the firmware's default
+# theme (build.rs turns it on), so `--no-default-features` (no window) is
+# still a build of the default firmware: the tests, and their approved
+# screenshots, are of that. `themes-all` is the web page's.
+theme-retro = []
+themes-all = ["theme-retro"]
 
 [lints.rust]
 # The firmware's own features, which the modules included from it check

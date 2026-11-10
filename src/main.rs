@@ -49,6 +49,21 @@
 
 #![no_std]
 #![no_main]
+// What every theme may draw with (the canvas and fonts, each screen's
+// view, the helpers in `themes`, and what they read of the rest) is
+// offered whole: a theme draws with what it likes, and needn't use, nor
+// can it delete, the rest. Retro uses all of it, so in a build with
+// Retro (the default, `themes-all`, and every one CI lints), anything
+// unused is dead and warned about as ever. Without it (another theme's
+// package), what that theme leaves unused isn't: only the theme's own
+// code is held to it (its `mod.rs` warns again; see Retro's).
+#![cfg_attr(
+    not(feature = "theme-retro"),
+    allow(
+        dead_code,
+        reason = "a theme alone needn't use every part of what themes draw with"
+    )
+)]
 
 mod activity;
 mod alarm;

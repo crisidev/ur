@@ -16,6 +16,7 @@ Usage: ur-sim [--window] [--flash FILE] [--out DIR] [--speed N] [--zoom N]
               [--guided | --corpus DIR [--gadgetbridge]] [--dry] [--out DIR]
        ur-sim --fuzz-input FILE [--storage BASE] [--out DIR]
        ur-sim --diff BEFORE AFTER [--out DIR]
+       ur-sim --list-themes
 
 Runs the ur firmware's UI on this computer. With scripts, runs them (each
 line a command; `-` reads commands from stdin) and exits; without, or with
@@ -65,6 +66,12 @@ after running any scripts, and takes commands typed into the terminal.
                compare the screenshots (every PNG) under two directories,
                pixel for pixel; write the differences under --out (as
                changed/, added/ and removed/), and fail if there are any
+  --list-themes
+               the themes built in (see the firmware's Cargo.toml), a line
+               each, tab-separated: its directory's name (its feature's,
+               theme-NAME), how many colour schemes it has for night and
+               for day, and its name as people read it (scripts/release.sh
+               builds a package of each theme with both)
   --help       this, and the commands
 ";
 
@@ -83,6 +90,7 @@ pub struct Options {
     pub fuzzing: crate::fuzz::Fuzz,
     /// `--diff BEFORE AFTER`.
     pub diff: Option<(PathBuf, PathBuf)>,
+    pub list_themes: bool,
     pub flash: Option<PathBuf>,
 }
 
@@ -98,6 +106,13 @@ pub fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if options.list_themes {
+        for theme in crate::themes::THEMES {
+            let (night, day) = (theme.night.len(), theme.day.len());
+            println!("{}\t{night}\t{day}\t{}", theme.name, theme.display_name());
+        }
+        return ExitCode::SUCCESS;
+    }
     if let Some((before, after)) = &options.diff {
         return match crate::diff::run(before, after, &options.output.dir) {
             Ok(true) => ExitCode::SUCCESS,
@@ -244,6 +259,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
             dry: false,
         },
         diff: None,
+        list_themes: false,
         flash: None,
     };
     while let Some(arg) = args.next() {
@@ -289,6 +305,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
                 let after = args.next().ok_or("--diff needs BEFORE and AFTER")?;
                 options.diff = Some((before.into(), after.into()));
             }
+            "--list-themes" => options.list_themes = true,
             "--out" => options.output.dir = args.next().ok_or("--out needs a DIR")?.into(),
             "--speed" => {
                 let speed = args.next().ok_or("--speed needs N")?;
@@ -312,7 +329,9 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
     {
         return Err("--diff compares screenshots; it runs no scripts".into());
     }
-    options.window |=
-        options.scripts.is_empty() && options.fuzz.is_none() && options.fuzz_input.is_none();
+    options.window |= options.scripts.is_empty()
+        && options.fuzz.is_none()
+        && options.fuzz_input.is_none()
+        && !options.list_themes;
     Ok(Some(options))
 }

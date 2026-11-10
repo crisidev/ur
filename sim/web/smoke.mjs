@@ -127,11 +127,13 @@ async function watch({ start, files }) {
   }
 
   ur.themes();
-  const themes = printed[THEMES].at(-1).split("\n");
+  // A line a scheme: its theme's name, a tab, its own.
+  const themes = printed[THEMES].at(-1).split("\n").map((line) => line.split("\t")[1]);
   if (themes.length < 2) fail(`themes: ${JSON.stringify(themes)}`);
   printed[ERROR].length = 0;
-  ur.command(`theme ${themes[1]}`);
-  if (printed[ERROR].length) fail(`theme ${themes[1]}`, printed[ERROR]);
+  // Quoted, as a scheme's name may have a space.
+  ur.command(`theme "${themes[1]}"`);
+  if (printed[ERROR].length) fail(`theme "${themes[1]}"`, printed[ERROR]);
 
   // A frame is the whole watch, and the panel's lit: some of its pixels
   // are neither the desk, the case, nor the glass (all greys).
@@ -155,7 +157,7 @@ async function watch({ start, files }) {
   if (sent.every((value, i) => value === real[i])) fail("ur.mimic changed nothing");
   ur.mimic(true);
   if (!ur.frame().every((value, i) => value === real[i])) fail("ur.mimic(true) drew another frame");
-  console.log(`smoke: the page's watch works (${ur.width}×${ur.height}, ${themes.length} themes)`);
+  console.log(`smoke: the page's watch works (${ur.width}×${ur.height}, ${themes.length} colour schemes)`);
 }
 
 // ==============================================================================

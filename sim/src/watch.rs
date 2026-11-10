@@ -577,7 +577,9 @@ impl Watch {
     pub fn choose_theme(&mut self, name: &str) -> Result<(), String> {
         let theme = find_theme(name)?;
         let find = |day: bool| themes::schemes(day).iter().position(|t| same(t, theme));
-        if let Some(i) = find(true) {
+        // By the side it's a scheme of: in a build with schemes of only
+        // one side, the other side shows them too (see `themes::schemes`).
+        if let Some(i) = find(true).filter(|_| themes::has(true)) {
             self.daytime = Some(true);
             self.change_settings(|app| app.themes.light = i as u8);
         } else if let Some(i) = find(false) {

@@ -8,6 +8,11 @@
 //! The screens are drawn in the files beside this one, a file a group of
 //! screens; [`Retro`]'s [`Theme`] says which draws which.
 
+// Its own code is held to dead code in every build, even one where the
+// shared code a theme draws with isn't (see `main.rs`), so that a copy
+// of it, built alone, still says what it no longer uses.
+#![warn(dead_code)]
+
 use embassy_time::{Duration, Instant};
 
 use crate::alarm;

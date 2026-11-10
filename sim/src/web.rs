@@ -77,7 +77,7 @@ pub enum Text {
     Error = 1,
     /// The status line (as the window's title).
     Status = 2,
-    /// The themes' names, one a line.
+    /// The colour schemes, one a line: its theme's name, a tab, its own.
     Themes = 3,
 }
 
@@ -579,13 +579,16 @@ pub extern "C" fn ur_status() {
     print(Text::Status, &line);
 }
 
-/// Prints the themes' names, for the page's picker (`theme NAME`).
+/// Prints the colour schemes, for the page's picker (`theme NAME`): a
+/// line each, its theme's name, a tab, and its own.
 #[unsafe(no_mangle)]
 pub extern "C" fn ur_themes() {
     // Each built-in theme's own, so a one-sided build lists each once.
-    let names: Vec<&str> = (themes::THEMES.iter())
-        .flat_map(|theme| theme.night.iter().chain(theme.day))
-        .map(|scheme| scheme.palette().name)
+    let lines: Vec<String> = (themes::THEMES.iter())
+        .flat_map(|theme| {
+            let schemes = theme.night.iter().chain(theme.day);
+            schemes.map(|scheme| format!("{}\t{}", theme.display_name(), scheme.palette().name))
+        })
         .collect();
-    print(Text::Themes, &names.join("\n"));
+    print(Text::Themes, &lines.join("\n"));
 }

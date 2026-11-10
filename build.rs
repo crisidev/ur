@@ -9,10 +9,27 @@
 //! `0.9.0-dev`. The firmware shows it on the Info screen and logs it at boot.
 //! The bootloader's image header only holds the numbers (see
 //! `scripts/package.py`).
+//!
+//! And checks every theme is listed everywhere it has to be (see
+//! `src/themes/manifests.rs`), failing the build with what to add where.
 
-use std::{env, fs, path::PathBuf};
+use std::{env, fs, path::Path, path::PathBuf};
+
+#[path = "src/themes/manifests.rs"]
+mod manifests;
 
 fn main() {
+    println!("cargo:rerun-if-changed=src/themes");
+    println!("cargo:rerun-if-changed=Cargo.toml");
+    println!("cargo:rerun-if-changed=sim/Cargo.toml");
+    let problems = manifests::check(Path::new("."));
+    for problem in &problems {
+        println!("cargo::error={problem}");
+    }
+    if !problems.is_empty() {
+        return;
+    }
+
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("cargo always sets OUT_DIR"));
     fs::copy("memory.x", out.join("memory.x")).expect("memory.x exists in the crate root");
     println!("cargo:rustc-link-search={}", out.display());
