@@ -54,7 +54,8 @@ on top:
   hold, to skip, whether the screen is off, on a glance, or on the clock
   face. A buzz says it took.
 - **Screens in four directions** around the clock: the past to one side,
-  alarms and settings to the other, notifications above, music below.
+  alarms and settings to the other, notifications above, and the button
+  grid, music, and the room's air below.
 - **A button grid** for Home Assistant or Tasker: six buttons, each
   tapped, double-tapped, or held (and released, for hold-to-dim), or
   two layers of nine for codes 1–99 (2, then 3, is 23). Sent over
