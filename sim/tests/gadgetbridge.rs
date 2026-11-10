@@ -23,5 +23,23 @@ fn sessions_with_gadgetbridge() {
         let len = 16 + (next() % 600) as usize;
         let bytes: Vec<u8> = (0..len).map(|_| next() as u8).collect();
         ur_sim::gadgetbridge::host_one(&bytes, &scratch);
+        // The same session as a dev kit runs it (`--fuzz --corpus DIR
+        // --gadgetbridge`): it still passes, and its script is one a dev
+        // kit can be made to run, in a sensible time.
+        let script = ur_sim::gadgetbridge::devkit_script(&bytes, &scratch)
+            .unwrap_or_else(|e| panic!("as a dev kit would run it: {e}"));
+        assert!(script.contains("compare g000"), "{script}");
+        for line in script.lines() {
+            let mut words = line.split_whitespace();
+            match words.next() {
+                Some("steps" | "heart") => panic!("only the simulator takes {line:?}"),
+                Some("wait") => {
+                    let ms: u64 = (words.next().and_then(|w| w.strip_suffix("ms")))
+                        .map_or(0, |ms| ms.parse().expect("a whole number of ms"));
+                    assert!(ms <= 20_000, "a dev kit waits in real time: {line}");
+                }
+                _ => {}
+            }
+        }
     }
 }
