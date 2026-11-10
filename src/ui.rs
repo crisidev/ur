@@ -4064,7 +4064,9 @@ fn render_air(canvas: &mut Canvas, sighting: &Sighting, now: Instant) {
     // each if the sensor sends it.
     let mut text = heapless::String::<10>::new();
     if let Some(pressure) = reading.pressure {
-        write!(text, "{} HPA", (pressure + 5) / 10).fits();
+        // Widened: a BTHome sensor's pressure is clamped to `u16::MAX`
+        // tenths (see `bthome_sensor`), and adding 5 to that overflowed.
+        write!(text, "{} HPA", (u32::from(pressure) + 5) / 10).fits();
     }
     canvas.text(4, 69, &text, Color::TEXT_DIM);
     if let Some(battery) = reading.battery {
