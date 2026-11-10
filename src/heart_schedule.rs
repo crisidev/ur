@@ -39,8 +39,8 @@
 //!   goes.
 //! - **An LED budget** ([`LED_BUDGET`] seconds an hour, as a token bucket)
 //!   caps what all of the above can spend, however the day goes.
-//! - **An overdue reading spends more** ([`OVERDUE`]): an hour without
-//!   one, and the budget doubles and failures retry every
+//! - **An overdue reading spends more** ([`OVERDUE`]): half an hour
+//!   without one, and the budget doubles and failures retry every
 //!   [`OVERDUE_RETRY`], until the next reading. A gap in the data is worth
 //!   more than the battery it takes to avoid.
 //!
@@ -233,19 +233,28 @@ const _: () = assert!(SESSION_RESERVE <= LED_BUDGET);
 /// [`bright_start`]), have a go, until a reading comes and it all returns
 /// to normal.
 ///
-/// An hour: awake, readings come every 2-20 minutes when they come at all,
-/// so an hour is three or more tries in a row that failed, and a gap the
-/// day's chart shows. Asleep, they come every 5 minutes, so an hour is a
-/// dozen missed; a shorter limit by night would cut into sleep staging's
-/// data less, but nights read 88% of the time, and a night without
-/// readings is more often a watch on the nightstand (which this leaves
-/// alone; see [`Outcome::OffWrist`]) than a faint pulse. Longer by night
-/// would only save LED on nights that aren't reading anyway.
+/// Half an hour. Awake, readings come every 2-20 minutes when they come at
+/// all, and failures back off 5, 10, 20 minutes, so half an hour is two or
+/// three tries in a row that failed. It was an hour until 0.10.0-rc.3, and
+/// a desk morning on the sealed watch (2026-11-10) went 51 minutes and
+/// nine failed sessions without a reading, short of it, so the faster
+/// retries never came; the user chose to retry more often. At a desk
+/// that won't read, that's a try every 10 minutes from half an hour in,
+/// rather than at 40 and then every 10 from an hour.
+///
+/// The same by night, for one rule: asleep, sessions come every 5
+/// minutes, so half an hour is six missed in a row, which a night that
+/// reads (95% of sessions on 2026-11-10) rarely sees, and the night costs
+/// nothing more until it does. A night without readings is more often a
+/// watch on the nightstand, which this leaves alone (see
+/// [`Outcome::OffWrist`]), than a faint pulse.
 ///
 /// At its worst (a whole day overdue, every session failing), it doubles
 /// the LED's hourly cap: from ~0.14 mA to ~0.28 mA on average, ~3.3 mAh a
-/// day more (see docs/power-plan.md).
-pub const OVERDUE: u32 = 60 * 60;
+/// day more (see docs/power-plan.md). Overdue half an hour sooner moves
+/// each failing spell's doubling earlier, not that cap: at most 90 budget
+/// seconds more a spell, ~0.07 mAh.
+pub const OVERDUE: u32 = 30 * 60;
 
 /// The LED budget, and its refill rate, while a reading is overdue (see
 /// [`OVERDUE`]).
@@ -256,8 +265,8 @@ pub const OVERDUE_BUDGET: u32 = 2 * LED_BUDGET;
 /// (see [`CALM_RETRY_INTERVAL`]), and with no limit on how many, as the
 /// doubled budget bounds them. At a desk, failures (a busy wrist, or a
 /// third interruption) otherwise back off to 20 minutes, or an hour with
-/// no movement in between; with this, a desk day that hasn't read for an
-/// hour tries six times an hour at its still moments.
+/// no movement in between; with this, a desk day that hasn't read for half
+/// an hour tries six times an hour at its still moments.
 pub const OVERDUE_RETRY: u32 = CALM_RETRY_INTERVAL;
 
 /// Consecutive failures counted (beyond this the wait is capped anyway).
@@ -288,8 +297,8 @@ pub enum Why {
     Elevated,
     /// The last session(s) had no reading.
     Retry,
-    /// The last session(s) had no reading, and neither has any for an hour
-    /// (see [`OVERDUE`]): sooner than [`Why::Retry`] would be.
+    /// The last session(s) had no reading, and neither has any for half an
+    /// hour (see [`OVERDUE`]): sooner than [`Why::Retry`] would be.
     Overdue,
     /// Due already by one of the above, but the LED budget is spent until
     /// then.

@@ -564,13 +564,14 @@ mod tests {
     }
 
     /// Giving up counts as a session without a reading: the failure
-    /// back-off applies, from when it gave up.
+    /// back-off applies, from when it gave up, until half an hour after
+    /// the last reading.
     #[test]
     fn giving_up_backs_off_like_any_failure() {
         let mut schedule = Schedule::new();
         schedule.ended(100, 13, Outcome::Reading(60), true, awake(0));
         let mut t = 400;
-        for retry in [5, 10, 20] {
+        for retry in [5, 10] {
             schedule.ended(
                 t + GIVE_UP_AFTER,
                 GIVE_UP_AFTER,
@@ -582,6 +583,12 @@ mod tests {
             assert_eq!((due, why), (t + GIVE_UP_AFTER + retry * MINUTE, Why::Retry));
             t = due;
         }
+        // 20 minutes would pass the half hour: the overdue retry's 10.
+        schedule.ended(t + GIVE_UP_AFTER, 12, Outcome::NoReading, true, awake(0));
+        assert_eq!(
+            schedule.due(0, false),
+            (t + GIVE_UP_AFTER + OVERDUE_RETRY, Why::Overdue)
+        );
     }
 
     #[test]
@@ -598,18 +605,20 @@ mod tests {
             ..resting(t)
         });
         let waits = gaps(&sessions);
-        // At least five minutes between tries, doubling, and movement keeps
-        // it to no more than the resting interval; an hour without a
-        // reading, every ten minutes (see `OVERDUE`).
+        // At least five minutes between tries, doubling; half an hour
+        // without a reading, every ten minutes (see `OVERDUE`).
         assert!(waits.iter().all(|&w| w >= FAILED_INTERVAL), "{waits:?}");
-        for (session, wait) in sessions[1..].iter().zip(&waits) {
-            if session.start < OVERDUE {
-                assert!(session.why == Why::Retry, "{sessions:?}");
-            } else {
-                assert!(about(*wait, OVERDUE_RETRY), "{waits:?}");
-            }
-        }
-        assert!(waits[2..4].iter().all(|&w| w + 60 >= MAX_INTERVAL));
+        let overdue = sessions
+            .iter()
+            .position(|s| s.start >= OVERDUE)
+            .expect("overdue");
+        assert!(sessions[1..overdue].iter().all(|s| s.why == Why::Retry));
+        assert!(sessions[overdue].start < OVERDUE + MINUTE, "{sessions:?}");
+        assert!(sessions[overdue..].iter().all(|s| s.why == Why::Overdue));
+        assert!(
+            waits[overdue..].iter().all(|&w| w < OVERDUE_RETRY + MINUTE),
+            "{waits:?}"
+        );
 
         // Off the wrist and still (a nightstand), up to an hour: there's no
         // reading to be had, overdue or not.
@@ -625,7 +634,8 @@ mod tests {
         }
 
         // On something skin-like, or a wrist that won't read, the back-off
-        // gives way to every ten minutes an hour in.
+        // gives way to every ten minutes half an hour in, before it gets to
+        // 20 minutes.
         let mut schedule = Schedule::new();
         let sessions = simulate(&mut schedule, 0, 12 * HOUR, |t| Moment {
             outcome: Outcome::NoReading,
@@ -633,11 +643,39 @@ mod tests {
             ..resting(t)
         });
         let waits = gaps(&sessions);
-        for (wait, expected) in waits.iter().zip([5, 10, 20]) {
+        for (wait, expected) in waits.iter().zip([5, 10]) {
             assert!(about(*wait, expected * MINUTE), "{waits:?}");
         }
-        assert!(about(sessions[4].start, OVERDUE), "{sessions:?}");
-        assert!(waits[4..].iter().all(|&w| about(w, OVERDUE_RETRY)));
+        assert!(about(sessions[3].start, OVERDUE), "{sessions:?}");
+        assert!(waits[3..].iter().all(|&w| about(w, OVERDUE_RETRY)));
+    }
+
+    /// Asleep, a reading is overdue after the same half hour: a night's
+    /// failures (a restless spell, a faint pulse) back off 5 and 10
+    /// minutes, then retry every 10 rather than waiting 20.
+    #[test]
+    fn a_night_without_readings_is_overdue_after_half_an_hour_too() {
+        let mut schedule = Schedule::new();
+        schedule.ended(100, 10, Outcome::Reading(52), true, sleeping());
+        assert_eq!(schedule.due(0, true), (100 + ASLEEP_INTERVAL, Why::Asleep));
+        let mut t = 100 + ASLEEP_INTERVAL;
+        let mut due = Vec::new();
+        for _ in 0..4 {
+            schedule.ended(t + 30, 30, Outcome::NoReading, true, sleeping());
+            let next = schedule.due(0, true);
+            due.push(next);
+            t = next.0;
+        }
+        assert_eq!(
+            due,
+            [
+                (430 + 5 * MINUTE, Why::Retry),
+                (760 + 10 * MINUTE, Why::Retry),
+                (1390 + 10 * MINUTE, Why::Overdue),
+                (2020 + 10 * MINUTE, Why::Overdue),
+            ]
+        );
+        assert!(due[2].0 >= 100 + OVERDUE);
     }
 
     /// Lying still awake for an hour without a reading (a field log,
@@ -671,10 +709,11 @@ mod tests {
             schedule.ended(t, 12, Outcome::NoReading, true, awake(0));
         }
         assert_eq!(schedule.due(0, false), (700 + 10 * MINUTE, Why::Retry));
+        // (Its 20 minutes give way to the overdue retry at half an hour.)
         schedule.ended(1300, 30, Outcome::NoReading, true, awake(0));
-        assert_eq!(schedule.due(0, false), (1300 + 20 * MINUTE, Why::Retry));
-        schedule.ended(2500, 30, Outcome::CalmNoReading, true, awake(0));
-        assert_eq!(schedule.due(0, false), (2500 + 10 * MINUTE, Why::Retry));
+        assert_eq!(schedule.due(0, false), (100 + OVERDUE, Why::Overdue));
+        schedule.ended(1900, 30, Outcome::CalmNoReading, true, awake(0));
+        assert_eq!(schedule.due(0, false), (1900 + 10 * MINUTE, Why::Retry));
         // And a reading ends it.
         schedule.ended(3100, 13, Outcome::Reading(60), true, awake(0));
         schedule.ended(3400, 30, Outcome::CalmNoReading, true, awake(0));
@@ -732,10 +771,10 @@ mod tests {
     #[test]
     fn a_reading_ends_the_failure_back_off() {
         let mut schedule = Schedule::new();
-        for t in [0, 300, 900] {
+        for t in [0, 300] {
             schedule.ended(t + 30, 30, Outcome::NoReading, true, awake(0));
         }
-        assert_eq!(schedule.due(0, false), (930 + 20 * MINUTE, Why::Retry));
+        assert_eq!(schedule.due(0, false), (330 + 10 * MINUTE, Why::Retry));
         schedule.ended(2200, 13, Outcome::Reading(60), true, awake(0));
         // The resting back-off carries on from the minimum.
         assert_eq!(schedule.due(0, false), (2200 + 2 * MIN_INTERVAL, Why::Rest));
@@ -760,16 +799,15 @@ mod tests {
             (t + FAILED_INTERVAL, Why::Retry)
         );
         // A wrist that gave no reading, though, is only held to the
-        // resting interval (with a reading under an hour ago, so not
+        // resting interval (with a reading under half an hour ago, so not
         // overdue).
         schedule.ended(t + 100, 13, Outcome::Reading(60), true, awake(0));
-        schedule.ended(t + 300, 30, Outcome::NoReading, true, awake(0));
-        schedule.ended(t + 600, 30, Outcome::NoReading, true, awake(0));
-        schedule.ended(t + 900, 30, Outcome::NoReading, true, awake(0));
-        schedule.ended(t + 1200, 30, Outcome::NoReading, true, awake(0));
+        for after in [150, 300, 450, 600] {
+            schedule.ended(t + after, 30, Outcome::NoReading, true, awake(0));
+        }
         assert_eq!(
             schedule.due(MOVED_POLLS, false),
-            (t + 1200 + MAX_INTERVAL, Why::Retry)
+            (t + 600 + MAX_INTERVAL, Why::Retry)
         );
     }
 
@@ -803,9 +841,10 @@ mod tests {
                 "hour {hour}: {spent} s"
             );
         }
-        // And a calm hour later, it's full again.
+        // And an hour later it's full again (and then some: without a
+        // reading meanwhile, one is overdue by then).
         let t = sessions.last().expect("measured").end;
-        assert_eq!(schedule.budget(t + HOUR), LED_BUDGET);
+        assert!(schedule.budget(t + HOUR) >= LED_BUDGET);
     }
 
     #[test]
@@ -936,13 +975,13 @@ mod tests {
         let overdue = 100 + OVERDUE;
         // Until then, at the usual rate, and no more than the usual cap.
         assert_eq!(schedule.budget(400 + 600), 30);
-        assert_eq!(schedule.budget(overdue - 100), 160);
+        assert_eq!(schedule.budget(overdue - 100), 70);
         let mut schedule = Schedule::new();
         schedule.ended(100, 13, Outcome::Reading(60), true, awake(0));
-        schedule.ended(1600, 300, Outcome::NoReading, false, awake(0));
-        assert_eq!(schedule.budget(overdue), 105);
+        schedule.ended(overdue - 300, 300, Outcome::NoReading, false, awake(0));
+        assert_eq!(schedule.budget(overdue), 15);
         // Then twice as fast, up to twice as much.
-        assert_eq!(schedule.budget(overdue + 900), 195);
+        assert_eq!(schedule.budget(overdue + 900), 105);
         assert_eq!(schedule.budget(overdue + HOUR), OVERDUE_BUDGET);
         assert_eq!(schedule.budget(overdue + 10 * HOUR), OVERDUE_BUDGET);
         // Spending some, and earning it back, keeps the part-earned second.
@@ -971,15 +1010,13 @@ mod tests {
         let mut schedule = Schedule::new();
         schedule.ended(100, 13, Outcome::Reading(60), true, awake(0));
         let overdue = 100 + OVERDUE;
-        // A reading that empties it puts off being overdue: the usual rate.
+        // A reading that empties it puts off being overdue: the usual rate,
+        // past when it would have been.
         schedule.ended(overdue - 400, 600, Outcome::Reading(60), false, awake(0));
-        assert_eq!(
-            schedule.due(0, false),
-            (overdue - 400 + SESSION_RESERVE * 20, Why::Budget)
-        );
+        assert_eq!(schedule.budget(overdue + 200), 600 / 20);
         let mut schedule = Schedule::new();
         schedule.ended(100, 13, Outcome::Reading(60), true, awake(0));
-        schedule.ended(overdue - 400, 600, Outcome::NoReading, false, awake(0));
+        schedule.ended(overdue - 420, 600, Outcome::NoReading, false, awake(0));
         schedule.ended(overdue - 300, 30, Outcome::NoReading, true, awake(0));
         // 0 left at `overdue - 300`: 15 earned by `overdue`, 15 more in
         // 150 s.

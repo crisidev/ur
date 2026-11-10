@@ -31,7 +31,7 @@ day hour is awake, with the phone connected, the sun up, and AUTO.
 
 | Item | Night hour µA | Day hour µA | Basis |
 |---|---:|---:|---|
-| Heart-rate LED | ~110 | ~50 | L: 77–116 s/h, all at 12.5 mA, on the old 10-minute schedule. Asleep it is now every 5 min, ~144 s/h (`heart_schedule.rs:72`). By day it's ~40–100 s/h, capped at 180 s/h (`LED_BUDGET`), or 360 s/h an hour after the last reading (`OVERDUE`; see [below](#the-led-budget-overdue-and-brighter)). × 2.8 mA (E, never measured) |
+| Heart-rate LED | ~110 | ~50 | L: 77–116 s/h, all at 12.5 mA, on the old 10-minute schedule. Asleep it is now every 5 min, ~144 s/h (`heart_schedule.rs:72`). By day it's ~40–100 s/h, capped at 180 s/h (`LED_BUDGET`), or 360 s/h half an hour after the last reading (`OVERDUE`; see [below](#the-led-budget-overdue-and-brighter)). × 2.8 mA (E, never measured) |
 | Screen | ~20 | ~310 | L: panel 5–51 s/h at night, and 58–107 s/h by day at the old 15 s timeout. By day, now: ~40 s/h of full wakes at AUTO's 19.6 mA backlight plus ~4.5 mA panel, and ~25 s/h of glances at low (1.83 mA) in idle mode. At night: dim, at low |
 | BMA421, 100 Hz, 4× averaging | 50 | 50 | M (aykevl) |
 | Rest of the floor | ~32 | ~40 | nRF 3, ST7789 asleep 10, touch 8 by day and ~0 in the quiet night, flash 1, divider 2, regulator and leakage 15, button polls ~1 (D/E) |
@@ -257,11 +257,11 @@ on-time counters let a single dev-kit measurement settle it.
 and ~0.07 mA, per real second, which is at most one per budget second).
 So the cap is ~0.14 mA on average, ~3.3 mAh a day.
 
-An hour without a reading (`OVERDUE`), the cap and its refill double
-until the next reading, and failures retry every 10 minutes. At worst
-(every hour of the day overdue, every session failing and spending all
-it may), that's 360 s an hour: ~0.28 mA, **~3.3 mAh a day more** than
-the usual cap, about 2% of the battery. A host test
+Half an hour without a reading (`OVERDUE`; an hour until 0.10.0-rc.3),
+the cap and its refill double until the next reading, and failures retry
+every 10 minutes. At worst (every hour of the day overdue, every session
+failing and spending all it may), that's 360 s an hour: ~0.28 mA, **~3.3
+mAh a day more** than the usual cap, about 2% of the battery. A host test
 (`the_doubled_budget_caps_an_overdue_day`) pins the cap. Off the wrist
 (the nightstand) is exempt from the faster retries, and sessions there
 end in a second or two, so it costs nothing there; what can reach the
