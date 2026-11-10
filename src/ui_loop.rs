@@ -442,6 +442,9 @@ impl UiLoop {
                 .is_some_and(|s| now_ms.saturating_sub(s.heard) < aranet::RECENT)
         });
         app.set_air(air);
+        // Whatever the last wake did, and the phone or a sensor going
+        // just now, the UI is in a state it can draw (and time out of).
+        app.check();
         #[cfg(feature = "compare")]
         crate::compare::state(now, connected, air);
         // Apply screen power changes. Waking renders before the backlight
@@ -753,6 +756,9 @@ impl UiLoop {
                 }
             }
         }
+        // Each wake leaves the UI's state whole (see `App::check`): here,
+        // right after the wake that broke it, if one did.
+        app.check();
         let battery = self.battery.percent() as u8;
         // Six buttons' presses leave the battery out (see `bthome`), so
         // Home Assistant hears it on its own: once the reading has had a

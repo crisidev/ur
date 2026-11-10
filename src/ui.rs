@@ -642,6 +642,104 @@ impl App {
         }
     }
 
+    /// Checks what must hold of the UI's state whenever the loop isn't in
+    /// the middle of changing it: after each wake is handled, and before
+    /// each frame (see `ui_loop`). Only in builds with debug assertions
+    /// (the simulator, and its fuzzer); the watch's does nothing here.
+    ///
+    /// Each of these is something the code elsewhere relies on without
+    /// looking, so that breaking one shows up here, at the step that broke
+    /// it, rather than as a screen that's stuck on or shows the wrong
+    /// thing some steps later.
+    pub fn check(&self) {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+        // A glance is the clock face, lit, with the screen otherwise off:
+        // it only starts from the screen off (which is on the clock), and
+        // whatever wakes the screen properly, or takes it over, ends it
+        // first. `on_tick` relies on it: while glancing it does nothing
+        // but end the glance, so a call or an alarm ringing under one
+        // would never time out, and a banner never go.
+        if self.glancing() {
+            debug_assert!(self.awake, "a glance with the screen off");
+            debug_assert!(self.screen == Screen::Clock, "a glance off the clock");
+            debug_assert!(!self.brief_wake, "a glance in a notification's wake");
+            debug_assert!(!self.ringing_any(), "a glance while ringing");
+        }
+        // A notification's own wake lasts as long as its banner, on the
+        // clock it woke to: `on_tick` holds the screen on for it every
+        // second, and only the banner going (or input) ends it. Without a
+        // banner, the screen would stay on until the battery's empty.
+        if self.brief_wake {
+            debug_assert!(self.awake, "a brief wake with the screen off");
+            debug_assert!(self.banner.is_some(), "a brief wake with no banner");
+            debug_assert!(self.screen == Screen::Clock, "a brief wake elsewhere");
+        }
+        // What rings has the screen, lit, until it's dealt with: each
+        // turns the screen on as it starts, and holds it on from then
+        // (`on_tick`). And an alarm closes the editor as it starts to ring
+        // (it couldn't be opened under one: the ringing takes the touch).
+        debug_assert!(!self.ringing_any() || self.awake, "ringing in the dark");
+        debug_assert!(self.ringing.is_none() || self.editing.is_none());
+        // TODO: the editor should imply the screen on, on Alarms (it's
+        // only opened there): `self.editing.is_none() || (self.awake &&
+        // self.screen == Screen::Alarms)`. It doesn't hold yet: the
+        // screen timing out leaves the editor open, so the next wake
+        // shows it over the clock the wake went to (with
+        // `showing_clock` true, so the heart rate is measured for a clock
+        // face nobody sees), and a banner waiting to be seen under it
+        // never starts its time, which can hold the screen on for good
+        // (a brief wake whose banner the quiet night made wait). Assert
+        // it once the screen going off closes the editor.
+
+        // The screen showing is one that's there: on the clock, or in a
+        // line (`place` takes anything else for the clock, and `render`
+        // falls back to the clock face for a page with nothing to show).
+        // Screens come and go (music with the phone, the air with its
+        // sensor, the phone's alarms, the grid with its setting), and
+        // each must take the wearer off its screen as it goes.
+        debug_assert!(
+            self.screen == Screen::Clock || self.place() != Place::Clock,
+            "on a screen that isn't there"
+        );
+        // The key's screens are only reached from its row, which is only
+        // there while presses go over BTHome, and nothing changes that
+        // setting from them.
+        debug_assert!(
+            !matches!(self.screen, Screen::HaQr | Screen::HaKey) || self.buttons.bthome()
+        );
+        // Only a tap on the prompt confirms storage mode.
+        debug_assert!(!self.storage_mode || self.screen == Screen::Storage);
+        // A hint that's showing has ticks left (`on_tick` drops it rather
+        // than count to zero).
+        debug_assert!(
+            self.media_hint
+                .is_none_or(|(_, ticks)| (1..=MEDIA_HINT_TICKS).contains(&ticks))
+        );
+        // The history never shrinks, so once there's a notification to
+        // have a banner (or not to have been seen), there always is.
+        let none = self.notifications.list.is_empty();
+        debug_assert!(!(none && self.banner_newest()), "a banner for nothing");
+        debug_assert!(!(none && self.notifications.unseen));
+        debug_assert!(self.call.as_ref().is_none_or(|c| c.since <= c.until));
+        // The alarms' settings are times of day and the timers' lengths
+        // within what the editor allows, as storage loads them
+        // (`alarm::Settings::from_bytes`) and the editor keeps them: the
+        // screens' "HH:MM" and the editor's two digits a side rely on it.
+        let alarms = &self.alarms;
+        let times = [alarms.smart_weekday, alarms.smart_weekend]
+            .into_iter()
+            .chain(alarms.at_time);
+        debug_assert!(times.into_iter().all(|time| time < 24 * 60));
+        debug_assert!(
+            alarms
+                .timers
+                .iter()
+                .all(|timer| (1..=alarm::MAX_TIMER).contains(timer))
+        );
+    }
+
     /// Whether it's the quiet night (see the module docs).
     pub fn quiet_night(&self) -> bool {
         self.night.quiet()
@@ -1385,7 +1483,14 @@ impl App {
             });
         }
         if self.buttons.bthome() {
-            let _ = self.ha_presses.push(press);
+            let queued = self.ha_presses.push(press);
+            // There's room: one wake completes two presses at most (a
+            // touch: see `buttons::Grid::touch`; a lift or a timer, one),
+            // and the loop sends them all before the next wake (see
+            // `ui_loop::UiLoop::handle`). A press dropped here would be
+            // lost without a word, and if it's a hold's release, whatever
+            // the hold started would run on.
+            debug_assert!(queued.is_ok(), "no room for a grid press");
         }
         // A hold's end: the screen keeps showing the hold, which already
         // buzzed.
@@ -2118,6 +2223,11 @@ impl App {
                 Some(n) => {
                     let mut arrived = String::<{ arrival::MAX_LEN }>::new();
                     if let (Some(at), Some(second)) = (n.arrived, status.local_second) {
+                        // A minute that fits in 32 bits, as the arrival
+                        // does: the phone only sets times from 2020 to
+                        // 2100 (`gb::parse_set_time`). `arrival::MAX_LEN`
+                        // is the longest label between two of those.
+                        debug_assert!(u32::try_from(second.div_euclid(60)).is_ok());
                         arrival::write(&mut arrived, at.get().into(), second.div_euclid(60)).fits();
                     }
                     n.app.write_to(&mut app);
@@ -2313,7 +2423,7 @@ fn render_clock(
     dim: bool,
 ) {
     canvas.clear(BACKGROUND);
-    render_battery(canvas, status.battery, status.uptime_secs);
+    let battery_left = render_battery(canvas, status.battery, status.uptime_secs);
 
     // Status bar, left: the media icon while a phone is connected (media
     // comes from the phone); without one, a faded Bluetooth rune struck
@@ -2360,7 +2470,9 @@ fn render_clock(
             // 2 px rather than the usual 3, so "NO TIME" (27 px) ends at
             // x = 38, clear of the battery's widest (charging at 100%: the
             // bolt starts at x = 43).
-            canvas.text(x + 2, 3, "NO TIME", Color::TEXT_FAINT);
+            let end = canvas.text(x + 2, 3, "NO TIME", Color::TEXT_FAINT);
+            // Clear of the battery, as worked out above.
+            debug_assert!(end <= battery_left, "NO TIME runs into the battery");
             None
         } else {
             Some(x + 3)
@@ -2409,7 +2521,12 @@ fn render_clock(
             let digit = char::from(b'0' + (magnitude % 10) as u8);
             end = canvas.text(end + 2, 3, digit.encode_utf8(&mut [0; 4]), Color::TEXT);
         }
-        canvas.text(end, 3, "°", Color::TEXT);
+        let end = canvas.text(end, 3, "°", Color::TEXT);
+        // Clear of the battery, as worked out above, whatever a sensor
+        // sends. And the watch's own reading is in whole degrees, which
+        // is why it's drawn without its tenth.
+        debug_assert!(end <= battery_left, "the temperature runs into the battery");
+        debug_assert!(status.temperature_from_sensor || tenths % 10 == 0);
     }
 
     let (hours, minutes, seconds) = match &status.local_time {
@@ -2481,7 +2598,7 @@ fn render_clock(
         1,
         Color::HEART_SHINE,
     );
-    canvas.text(4 + font::HEART_W as i32 + 2, READING_Y, &bpm, Color::TEXT);
+    let bpm_end = canvas.text(4 + font::HEART_W as i32 + 2, READING_Y, &bpm, Color::TEXT);
 
     if let (Some((kind, at)), Some(now)) = (next_alarm, status.local_second)
         && at - now <= 24 * 60 * 60
@@ -2512,6 +2629,10 @@ fn render_clock(
             _ => (&font::BELL, font::BELL_W),
         };
         let icon_x = x - width as i32 - 2;
+        // The two readings share the row: the widest of each (a heart
+        // rate of three digits; a time or a countdown of five characters)
+        // leave a gap between them.
+        debug_assert!(icon_x > bpm_end, "the next alarm runs into the heart rate");
         canvas.sprite(icon_x, READING_Y - 1, width, icon, 1, Color::ACCENT);
     }
 
@@ -2702,6 +2823,11 @@ fn countdown(seconds: i64) -> heapless::String<8> {
 
 /// `minutes` (after midnight, or a duration) as HH:MM.
 fn hhmm(minutes: i64) -> heapless::String<6> {
+    // Two digits of hours, and never negative: a time of day, or a
+    // night's sleep. Every caller lays the text out as five characters
+    // wide; more would still fit the buffer (to "999:59"), and so pass
+    // unnoticed, shifted or cut on the screen.
+    debug_assert!((0..100 * 60).contains(&minutes), "not a time: {minutes}");
     let mut text = heapless::String::new();
     write!(text, "{:02}:{:02}", minutes / 60, minutes % 60).fits();
     text
@@ -2859,6 +2985,14 @@ fn render_last_night(canvas: &mut Canvas, sleep: Option<crate::activity::Sleep>)
     // The stages (see `crate::stages`): their shares of the time asleep as
     // one bar, and each one's time below its name, in that stage's colour
     // (roles of their own: the general ones collide in some themes).
+    // The stages are parts of the time asleep (`stages::Stages::asleep`
+    // is their sum), so the first two's shares of the bar leave the third
+    // its own; were they more, the bar would run off the screen.
+    debug_assert!(
+        u32::from(sleep.deep_minutes) + u32::from(sleep.rem_minutes)
+            <= u32::from(sleep.asleep_minutes),
+        "more deep and REM sleep than sleep"
+    );
     let light = sleep
         .asleep_minutes
         .saturating_sub(sleep.deep_minutes + sleep.rem_minutes);
@@ -3168,6 +3302,10 @@ fn draw_digit(canvas: &mut Canvas, x: i32, y: i32, digit: u64, scale: i32, color
 /// upstream) draws as 9 rather than indexing out of range: a wrong digit
 /// on the screen beats a panic and a reset.
 fn digit_glyph(digit: u64) -> &'static [u8; 7] {
+    // Where debug assertions are on (the simulator and its fuzzer), that
+    // bug is caught here instead: a 9 that isn't one reads as a fine
+    // screen. (As was the timer editor's hours, past 99: F1.)
+    debug_assert!(digit <= 9, "not a digit: {digit}");
     &font::DIGITS[digit.min(9) as usize]
 }
 
@@ -3176,7 +3314,10 @@ fn digit_glyph(digit: u64) -> &'static [u8; 7] {
 /// pixel a second from the charge to full (an old handheld's charging
 /// animation), since the "good" colour alone barely differs from text in
 /// some themes.
-fn render_battery(canvas: &mut Canvas, battery: &Battery, uptime_secs: u64) {
+///
+/// Returns its left edge, for the clock face to check that what it draws
+/// from the left stops short of it.
+fn render_battery(canvas: &mut Canvas, battery: &Battery, uptime_secs: u64) -> i32 {
     let percent = battery.percent();
     let color = if battery.charging {
         Color::GOOD
@@ -3207,7 +3348,9 @@ fn render_battery(canvas: &mut Canvas, battery: &Battery, uptime_secs: u64) {
     if battery.charging {
         let x = text_x - 2 - font::BOLT_W as i32;
         canvas.sprite(x, Y, font::BOLT_W, &font::BOLT, 1, Color::HEART);
+        return x;
     }
+    text_x
 }
 
 // ==============================================================================
