@@ -167,3 +167,6 @@ mod tests {
         assert!(read(&bytes).is_some());
     }
 }
+
+#[cfg(test)]
+mod fuzz;
