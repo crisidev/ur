@@ -137,7 +137,9 @@ impl SpiFlash {
     /// sector erases), single 4 KiB sectors at the edges.
     pub async fn erase(&mut self, range: core::ops::Range<u32>) -> Result<(), Error> {
         assert!(
-            range.start.is_multiple_of(SECTOR) && range.end.is_multiple_of(SECTOR),
+            range.start.is_multiple_of(SECTOR)
+                && range.end.is_multiple_of(SECTOR)
+                && range.end <= SIZE,
             "erase ranges are sector-aligned"
         );
         self.ensure_awake().await;
@@ -165,7 +167,7 @@ impl SpiFlash {
     /// page (the chip wraps around within the page otherwise), and be erased.
     pub async fn program(&mut self, address: u32, data: &[u8]) -> Result<(), Error> {
         assert!(
-            !data.is_empty() && address % PAGE + data.len() as u32 <= PAGE,
+            !data.is_empty() && address % PAGE + data.len() as u32 <= PAGE && address < SIZE,
             "a program stays within one page"
         );
         self.ensure_awake().await;
