@@ -349,9 +349,17 @@ async fn configure(i2c: &mut Device) -> bool {
             // Not "never": a stuck contact (water, say) should still end,
             // as the chip's reset does. If this fails, holds end at the
             // chip's default instead, as they did, with their release.
+            // With a timeout and a reset like every transfer here: one
+            // that never ended would hold the shared bus for good.
             let limit = HOLD_LIMIT.as_secs() as u8;
-            if let Err(e) = i2c.write(ADDRESS, &[REG_LONG_PRESS_TIME, limit]).await {
+            let write = with_timeout(
+                I2C_TIMEOUT,
+                i2c.write(ADDRESS, &[REG_LONG_PRESS_TIME, limit]),
+            )
+            .await;
+            if let Err(e) = crate::i2c::outcome(write) {
                 warn!("touch: setting the long press time failed: {}", e);
+                crate::i2c::reset_controller().await;
             }
             // While the chip still listens, as it only does now.
             #[cfg(feature = "touch-probe")]
