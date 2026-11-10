@@ -69,6 +69,7 @@ mod day;
 mod debug;
 mod decimal;
 mod dfu;
+mod dfu_slot;
 mod display;
 mod field_log;
 mod firmware;

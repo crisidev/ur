@@ -44,7 +44,6 @@
 //! One connection at a time may update; another's Start is refused.
 
 use core::cell::Cell;
-use core::ops::Range;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use defmt::{info, warn};
@@ -53,6 +52,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::{Duration, Instant};
 use heapless::Vec;
 
+use crate::dfu_slot::{self, BOOT_MAGIC, CAPACITY, Crc16, MAGIC_ADDRESS, SLOT_START, in_slot};
 use crate::mcuboot::{self, Problem};
 use crate::phone::PhoneEvent;
 use crate::spi_flash::{self, FLASH};
@@ -60,28 +60,12 @@ use crate::spi_flash::{self, FLASH};
 // ==============================================================================
 // The secondary slot
 // ==============================================================================
+//
+// Where it is, and every address we erase or program in it, is
+// `dfu_slot`'s to say: arithmetic apart from the flash, so that host tests
+// and proofs can check it never reaches outside the slot.
 
-/// Where the bootloader looks for updates in the SPI flash, and how big the
-/// slot is (the same size as the primary; see `memory.x`).
-const SLOT_START: u32 = 0x40000;
-const SLOT_SIZE: u32 = 0x74000;
-/// The end of the slot holds MCUBoot's swap-state trailer.
-const TRAILER_SIZE: u32 = 0x1B0;
-/// The most image the slot takes.
-const CAPACITY: u32 = SLOT_SIZE - TRAILER_SIZE;
-/// MCUBoot's trailer magic (`boot_img_magic` in MCUBoot 1.5), as bytes:
-/// written to the last 16 bytes of the secondary slot, it asks for a swap.
-/// Its "image OK" flag stays unset, so the swap is a test: the new image
-/// must confirm itself or the next reset swaps back.
-const BOOT_MAGIC: [u32; 4] = [0xf395c277, 0x7fefd260, 0x0f505235, 0x8079b62c];
-
-/// Whether `range` lies within the secondary slot. Every erase and program
-/// here checks it first: below the slot are the bootloader's boot logo and
-/// recovery firmware, above it our saved activity and field log, and no
-/// slip in the arithmetic should reach them.
-fn in_slot(range: Range<u32>) -> bool {
-    SLOT_START <= range.start && range.start <= range.end && range.end <= SLOT_START + SLOT_SIZE
-}
+const _: () = assert!(dfu_slot::PAGE == spi_flash::PAGE && dfu_slot::SECTOR == spi_flash::SECTOR);
 
 /// How far an update has got (percent), while one is in progress; the UI
 /// shows it.
@@ -372,14 +356,7 @@ impl Session {
             self.fail();
             return response(opcode::INIT, status::OPERATION_FAILED);
         }
-        // The image's sectors, and the trailer's (which may hold state from a
-        // past update; MCUBoot must see it erased until we activate).
-        let image_end = (SLOT_START + self.image_size).next_multiple_of(spi_flash::SECTOR);
-        let trailer = SLOT_START + SLOT_SIZE - spi_flash::SECTOR;
-        let (image, trailer) = (
-            SLOT_START..image_end.min(trailer),
-            trailer..trailer + spi_flash::SECTOR,
-        );
+        let (image, trailer) = dfu_slot::erase_ranges(self.image_size);
         if !in_slot(image.clone()) || !in_slot(trailer.clone()) {
             warn!("dfu: an erase outside the slot; refused");
             self.fail();
@@ -431,7 +408,7 @@ impl Session {
                 return Some(response(opcode::RECEIVE, status::OPERATION_FAILED));
             }
         }
-        PROGRESS.lock(|p| p.set(Some((self.received * 100 / self.image_size) as u8)));
+        PROGRESS.lock(|p| p.set(Some(dfu_slot::percent(self.received, self.image_size))));
 
         if self.received == self.image_size {
             info!("dfu: received the whole image");
@@ -451,7 +428,7 @@ impl Session {
     }
 
     async fn program_page(&mut self) -> Result<(), spi_flash::Error> {
-        let address = SLOT_START + self.received - self.page.len() as u32;
+        let address = dfu_slot::page_address(self.received, self.page.len() as u32);
         let result = if in_slot(address..address + self.page.len() as u32) {
             let mut flash = FLASH.lock().await;
             flash
@@ -526,7 +503,7 @@ impl Session {
                 .as_flattened()
                 .try_into()
                 .expect("16 bytes");
-            if let Err(e) = flash.program(SLOT_START + SLOT_SIZE - 16, &magic).await {
+            if let Err(e) = flash.program(MAGIC_ADDRESS, &magic).await {
                 warn!("dfu: writing the swap request failed: {}", e);
                 self.fail();
                 return;
@@ -558,31 +535,4 @@ async fn reset(why: &'static str) -> ! {
     crate::field_log::flush().await;
     embassy_time::Timer::after_millis(500).await;
     cortex_m::peripheral::SCB::sys_reset()
-}
-
-/// CRC-16/CCITT-FALSE (polynomial 0x1021, initial 0xFFFF), as Nordic's
-/// `crc16_compute` and `scripts/package.py` compute it.
-struct Crc16(u16);
-
-impl Crc16 {
-    fn new() -> Self {
-        Self(0xFFFF)
-    }
-
-    fn update(&mut self, data: &[u8]) {
-        for &byte in data {
-            self.0 ^= u16::from(byte) << 8;
-            for _ in 0..8 {
-                self.0 = if self.0 & 0x8000 != 0 {
-                    (self.0 << 1) ^ 0x1021
-                } else {
-                    self.0 << 1
-                };
-            }
-        }
-    }
-
-    fn finish(self) -> u16 {
-        self.0
-    }
 }
