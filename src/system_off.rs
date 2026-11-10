@@ -71,7 +71,7 @@ use crate::canvas::Canvas;
 use crate::display::Display;
 use crate::snapshot::{self, HEADER_BYTES, Header, SAMPLE_BYTES};
 use crate::spi_flash::{self, FLASH};
-use crate::{Backlight, activity, clock, field_log, heart, i2c, spi, stages, touch};
+use crate::{Backlight, activity, clock, field_log, gb_buckets, heart, i2c, spi, stages, touch};
 
 /// Why the watch is switching off.
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -130,8 +130,12 @@ async fn save() {
         0 => None,
         minute => Some(i64::from(minute)),
     };
+    // From a bucket's start, so that the history restored from it holds
+    // whole buckets: one cut short would go to the phone as less than it
+    // has (see `gb_buckets`).
     let (first, minutes) = activity::newest_minute()
         .map(|newest| snapshot::unsynced_from(newest, synced, stages::REVISED as i64))
+        .map(gb_buckets::start_of)
         .and_then(activity::span_from)
         .unwrap_or((0, 0));
     // Every local that lives across an await is static RAM, in the

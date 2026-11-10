@@ -74,6 +74,7 @@ mod firmware;
 mod flash_stress;
 mod font;
 mod gb;
+mod gb_buckets;
 mod geo;
 mod gesture;
 mod glance;

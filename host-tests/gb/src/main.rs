@@ -1397,23 +1397,23 @@ mod tests {
             ),
             (
                 Outgoing::Activity {
-                    utc_minute: 29_902_500,
-                    steps: 42,
+                    timestamp_ms: 1_794_150_179_000,
+                    steps: 142,
                     movement: 310,
                     heart_rate: 71,
                     kind: None,
                 },
-                r#"{"t":"act","ts":1794150000000,"stp":42,"mov":310,"hrm":71}"#,
+                r#"{"t":"act","ts":1794150179000,"stp":142,"mov":310,"hrm":71}"#,
             ),
             (
                 Outgoing::Activity {
-                    utc_minute: 29_902_500,
+                    timestamp_ms: 1_794_150_179_000,
                     steps: 0,
                     movement: 3,
                     heart_rate: 0,
                     kind: Some("LIGHT_SLEEP"),
                 },
-                r#"{"t":"act","ts":1794150000000,"stp":0,"mov":3,"hrm":0,"act":"LIGHT_SLEEP"}"#,
+                r#"{"t":"act","ts":1794150179000,"stp":0,"mov":3,"hrm":0,"act":"LIGHT_SLEEP"}"#,
             ),
             // A live report: `rt`, and no `ts` (Gadgetbridge dates it).
             (
@@ -1700,18 +1700,11 @@ mod fuzz {
     /// line (`to_line` panics otherwise), is one line of JSON, with the
     /// values it was given, by a JSON parser that isn't ours; and by
     /// ours, wrapped as the phone would send it, has the `t` it should.
-    ///
-    /// The minute of an activity sample is taken within what its
-    /// milliseconds can say as an `i64`, 292 million years either side of
-    /// 1970: beyond, `to_line` overflows multiplying it out, which the
-    /// history's minutes (the clock's, and so within the times
-    /// `parse_set_time` believes) come nowhere near.
     #[test]
     fn any_message_is_a_line_of_json() {
         type Numbers = (u8, i64, u16, u16, u8, u32, bool);
         bolero::check!().with_type::<Numbers>().for_each(
-            |&(which, minute, steps, movement, heart_rate, millivolts, flag)| {
-                let utc_minute = minute % (i64::MAX / 60_000);
+            |&(which, timestamp_ms, steps, movement, heart_rate, millivolts, flag)| {
                 let kind = [
                     None,
                     Some("LIGHT_SLEEP"),
@@ -1740,9 +1733,10 @@ mod fuzz {
                     3 => (Outgoing::ActivityFetch { done: flag }, "actfetch"),
                     4 => (Outgoing::NoTracks, "actTrksList"),
                     5 => (
+                        // A bucket's steps: more than a minute's.
                         Outgoing::Activity {
-                            utc_minute,
-                            steps,
+                            timestamp_ms,
+                            steps: millivolts,
                             movement,
                             heart_rate,
                             kind,
@@ -1795,8 +1789,8 @@ mod fuzz {
                         assert_eq!(value["state"], if done { "end" } else { "start" });
                     }
                     Outgoing::Activity { .. } => {
-                        assert_eq!(value["ts"], utc_minute * 60_000);
-                        assert_eq!(value["stp"], steps);
+                        assert_eq!(value["ts"], timestamp_ms);
+                        assert_eq!(value["stp"], millivolts);
                         assert_eq!(value["mov"], movement);
                         assert_eq!(value["hrm"], heart_rate);
                         assert_eq!(value.get("act").and_then(|kind| kind.as_str()), kind);
@@ -1822,7 +1816,15 @@ mod fuzz {
                     Outgoing::ActivityFetch { .. } => {
                         assert_eq!(read, Incoming::ActivityFetch { since_ms: 0 });
                     }
-                    Outgoing::Activity { .. } | Outgoing::Live { .. } => assert_eq!(
+                    Outgoing::Activity { steps, .. } => assert_eq!(
+                        read,
+                        Incoming::Live {
+                            heart_rate: heart_rate != 0,
+                            steps: steps != 0,
+                            interval: None
+                        }
+                    ),
+                    Outgoing::Live { .. } => assert_eq!(
                         read,
                         Incoming::Live {
                             heart_rate: heart_rate != 0,

@@ -1,0 +1,20 @@
+[package]
+name = "gb-buckets-test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Host-side tests for `src/gb_buckets.rs` (included via `#[path]`), against
+# a model of Gadgetbridge's Bangle.js sample store. Not part of the firmware
+# workspace: run `cargo test` from this directory.
+[workspace]
+
+[dependencies]
+
+# CI runs the host tests with `--release`; keep the arithmetic checks, so
+# that a sum that would wrap fails a test here.
+[profile.release]
+overflow-checks = true
+
+[dev-dependencies]
+quickcheck = { version = "1.1.0", default-features = false }

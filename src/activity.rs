@@ -465,7 +465,7 @@ pub async fn suspend(twim: &mut embassy_nrf::twim::Twim<'static>) {
 // ==============================================================================
 
 /// Per-minute samples for the last 24 hours.
-const HISTORY_MINUTES: usize = 24 * 60;
+pub const HISTORY_MINUTES: usize = 24 * 60;
 
 #[derive(Clone, Copy, Default)]
 pub struct Sample {

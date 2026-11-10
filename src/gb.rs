@@ -731,10 +731,12 @@ pub enum Outgoing {
     /// `actTrksList` with an empty list: "no recorded tracks". Sent only
     /// as part of [`FETCH_END`], for what Gadgetbridge does on hearing it.
     NoTracks,
-    /// One minute of activity.
+    /// A few minutes of activity (see [`crate::gb_buckets`]).
     Activity {
-        utc_minute: i64,
-        steps: u16,
+        /// UTC milliseconds: when the minutes end (see
+        /// [`crate::gb_buckets::Bucket::timestamp_ms`]).
+        timestamp_ms: i64,
+        steps: u32,
         movement: u16,
         /// 0 if not measured, which is also what Gadgetbridge assumes when
         /// `hrm` is missing.
@@ -850,7 +852,7 @@ impl Outgoing {
             ),
             Self::NoTracks => write!(line, r#"{{"t":"actTrksList","list":[]}}"#),
             Self::Activity {
-                utc_minute,
+                timestamp_ms,
                 steps,
                 movement,
                 heart_rate,
@@ -858,10 +860,7 @@ impl Outgoing {
             } => write!(
                 line,
                 r#"{{"t":"act","ts":{},"stp":{},"mov":{},"hrm":{}"#,
-                utc_minute * 60_000,
-                steps,
-                movement,
-                heart_rate
+                timestamp_ms, steps, movement, heart_rate
             )
             .and_then(|()| match kind {
                 Some(kind) => write!(line, r#","act":"{}"}}"#, kind),

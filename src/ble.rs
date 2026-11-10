@@ -56,7 +56,7 @@ use crate::geo::{self, GpsPolicy, Location};
 use crate::link::{self, Link, Verdict};
 use crate::packet_pool::Pool;
 use crate::phone::{PhoneEvent, Unpaired};
-use crate::{activity, clock, dfu, storage};
+use crate::{activity, clock, dfu, gb_buckets, storage};
 
 /// The advertised and GAP device name. Gadgetbridge's Bangle.js support
 /// recognises `Bangle.js.*` (among a few other Espruino names).
@@ -1399,46 +1399,65 @@ const HEALTH_CONNECT_EVERY: Duration = Duration::from_secs(2 * 60 * 60);
 /// same phone's export either way.
 static LAST_NO_TRACKS: AtomicU32 = AtomicU32::new(0);
 
-/// Sends the per-minute activity samples Gadgetbridge asked for.
+/// Sends the activity Gadgetbridge asked for, in buckets of a few minutes
+/// (see [`gb_buckets`]: a sample a minute, Gadgetbridge would merge).
 async fn send_activity(server: &Server<'_>, conn: &GattConnection<'_, '_, Pool>, since_ms: i64) {
-    let from = gb::fetch_from(since_ms, clock::now_utc_seconds());
+    let now = clock::now_utc_seconds();
+    let from = gb::fetch_from(since_ms, now);
     if from != since_ms {
         info!("ble: fetch from the phone's future; sending all");
     }
-    let since_ms = from;
     send(server, conn, Outgoing::ActivityFetch { done: false }).await;
-    // Copy out in small batches: the history can't be borrowed across the
-    // awaits while sending. Small, because the batch lives in the host
-    // task's static storage (twice: once per connection slot); a few
-    // samples per lock is plenty.
-    //
     // Start early: the recent past's sleep classes and stages may have been
     // revised since the last sync (sleep is only recognised after the fact,
     // and stages need the hour after), and Gadgetbridge overwrites samples
-    // it already has.
-    let mut next = since_ms.div_euclid(60_000) - crate::stages::REVISED as i64;
+    // it already has. (Their steps, heart rate and movement, that is: it
+    // keeps the kind it first got. TODO: revised sleep reaches Gadgetbridge
+    // only once its `upsertSample` replaces a sample sent again whole.)
+    //
+    // Without the time there's nothing to send, as the history is filed by
+    // it; the phone sets it before fetching.
+    //
+    // The history's oldest minutes drop out as new ones come in, which may
+    // happen while the fetch goes on: so it's as if a few more had already.
+    let since = from.div_euclid(60_000) - crate::stages::REVISED as i64;
+    let mut fetch = now.map(|now| {
+        let oldest = activity::newest_minute().map_or(i64::MIN / 2, |newest| {
+            newest - activity::HISTORY_MINUTES as i64 + 1 + gb_buckets::MINUTES
+        });
+        gb_buckets::Fetch::new(since, oldest, now.div_euclid(60))
+    });
     let mut sent = 0;
     // Whether every sample went out (as far as we can tell: notifications
     // aren't acknowledged).
-    let mut complete = true;
-    loop {
-        let batch: Vec<(i64, activity::Sample), 4> =
-            activity::HISTORY.lock(|history| history.borrow().since(next).take(4).collect());
-        let Some(&(last, _)) = batch.last() else {
-            break;
+    let mut complete = fetch.is_some();
+    // A bucket at a time: the history can't be borrowed across the awaits
+    // while sending.
+    while let Some(bucket) = fetch.as_mut().and_then(|fetch| {
+        activity::HISTORY.lock(|history| {
+            let history = history.borrow();
+            let minutes = history.since(fetch.from()).map(|(utc_minute, sample)| {
+                let minute = gb_buckets::Minute {
+                    steps: sample.steps,
+                    movement: sample.movement,
+                    heart_rate: sample.heart_rate,
+                    seen: sample.seen(),
+                    kind: sample.sleep().gadgetbridge_name(),
+                };
+                (utc_minute, minute)
+            });
+            fetch.next(minutes)
+        })
+    }) {
+        let message = Outgoing::Activity {
+            timestamp_ms: bucket.timestamp_ms(),
+            steps: bucket.steps,
+            movement: bucket.movement,
+            heart_rate: bucket.heart_rate,
+            kind: bucket.kind,
         };
-        for (utc_minute, sample) in batch {
-            let message = Outgoing::Activity {
-                utc_minute,
-                steps: sample.steps,
-                movement: sample.movement,
-                heart_rate: sample.heart_rate,
-                kind: sample.sleep().gadgetbridge_name(),
-            };
-            complete &= send(server, conn, message).await;
-            sent += 1;
-        }
-        next = last + 1;
+        complete &= send(server, conn, message).await;
+        sent += 1;
     }
     // The end, and the empty track list that gets Gadgetbridge to pass
     // the samples on to Health Connect (see `gb::FETCH_END`), at most
@@ -1447,17 +1466,16 @@ async fn send_activity(server: &Server<'_>, conn: &GattConnection<'_, '_, Pool>,
     let [end, no_tracks] = gb::FETCH_END;
     complete &= send(server, conn, end).await;
     // Uptime in seconds, plus one so that 0 means "not since boot".
-    let now = Instant::now().as_secs() as u32 + 1;
+    let uptime = Instant::now().as_secs() as u32 + 1;
     let last = LAST_NO_TRACKS.load(Ordering::Relaxed);
-    if last == 0 || now - last >= HEALTH_CONNECT_EVERY.as_secs() as u32 {
+    if last == 0 || uptime - last >= HEALTH_CONNECT_EVERY.as_secs() as u32 {
         send(server, conn, no_tracks).await;
-        LAST_NO_TRACKS.store(now, Ordering::Relaxed);
+        LAST_NO_TRACKS.store(uptime, Ordering::Relaxed);
     }
-    info!("ble: sent {} minutes of activity", sent);
-    if complete {
-        // The phone now has everything up to the newest minute sent, if any
-        // was, and up to what it asked from otherwise.
-        crate::system_off::on_synced((next - 1).max(since_ms.div_euclid(60_000)));
+    info!("ble: sent {} buckets of activity", sent);
+    if let Some(fetch) = fetch.filter(|_| complete) {
+        // The phone now has everything before the bucket under way.
+        crate::system_off::on_synced(fetch.sent_until() - 1);
     }
 }
 
