@@ -673,12 +673,19 @@ fn gadgetbridge(watch: &mut Watch, line: &str) -> Result<(), String> {
 }
 
 /// As `ble::send_activity` does: the history since what Gadgetbridge asked
-/// for, less what's revised since, in buckets (see `gb_buckets`), the
-/// bucket under way left for later. Straight to the log rather than
-/// through `ble::OUTBOX`, which holds a handful: a fetch is hundreds of
-/// lines. The simulator's history has steps and heart rates, but no
-/// movement or sleep, nor `ble`'s 24-hour limit.
+/// for, less what's revised since, or since where the last fetch stopped
+/// if that's earlier, in buckets (see `gb_buckets`), the bucket under way
+/// left for later, and the last sleep held back until its stages settle
+/// (see `sleep_hold`). Straight to the log rather than through
+/// `ble::OUTBOX`, which holds a handful: a fetch is hundreds of lines.
+/// The simulator's history has steps and heart rates, and the minutes of
+/// the last night (`last-night`) are light sleep; but it has no movement
+/// (so a stillness holds nothing back), no stages, nor `ble`'s 24-hour
+/// limit.
 fn activity_fetch(watch: &mut Watch, since_ms: i64) {
+    /// Where the last fetch stopped (`system_off::synced_through`).
+    static SYNCED: std::sync::Mutex<Option<i64>> = std::sync::Mutex::new(None);
+
     let send = |message: Outgoing| {
         let line = message.to_line();
         watch.log(format!("to the phone: {}", line.trim_end()));
@@ -686,16 +693,41 @@ fn activity_fetch(watch: &mut Watch, since_ms: i64) {
     send(Outgoing::ActivityFetch { done: false });
     let now = clock::now_utc_seconds();
     let since = gb::fetch_from(since_ms, now).div_euclid(60_000) - crate::stages::REVISED as i64;
+    let mut synced = SYNCED.lock().expect("nothing panics while holding it");
+    let since = synced.map_or(since, |synced| since.min(synced + 1));
     if let Some(now) = now {
+        let night = activity::last_sleep()
+            .map(|sleep| sleep.start_utc_minute..sleep.end_utc_minute)
+            .unwrap_or_default();
+        let kind = |minute: i64| {
+            if night.contains(&minute) {
+                crate::sleep::Kind::Light
+            } else {
+                crate::sleep::Kind::Awake
+            }
+        };
+        let hold = crate::sleep_hold::hold(now.div_euclid(60), kind, |_| {
+            crate::sleep::Minute::default()
+        });
         let mut fetch = crate::gb_buckets::Fetch::new(since, i64::MIN / 2, now.div_euclid(60));
-        while let Some(bucket) = fetch.next(activity::history_since(fetch.from()).into_iter().map(
-            |(minute, (steps, heart_rate))| {
+        if let Some(hold) = hold {
+            fetch.hold(hold.from);
+            watch.log(format!("holding back from UTC minute {}", hold.from));
+        }
+        // The history's minutes, and the night's (worn, if stepless).
+        let mut minutes: std::collections::BTreeMap<i64, (u16, u8)> =
+            activity::history_since(fetch.from()).into_iter().collect();
+        for minute in night.clone().filter(|&minute| minute >= fetch.from()) {
+            minutes.entry(minute).or_default();
+        }
+        while let Some(bucket) = fetch.next(minutes.range(fetch.from()..).map(
+            |(&minute, &(steps, heart_rate))| {
                 let sample = crate::gb_buckets::Minute {
                     steps,
                     movement: 0,
                     heart_rate,
                     seen: true,
-                    kind: None,
+                    kind: kind(minute).gadgetbridge_name(),
                 };
                 (minute, sample)
             },
@@ -708,6 +740,7 @@ fn activity_fetch(watch: &mut Watch, since_ms: i64) {
                 kind: bucket.kind,
             });
         }
+        *synced = Some(fetch.sent_until() - 1);
     }
     // The empty track list too: the simulator doesn't keep `ble`'s pace
     // for it.

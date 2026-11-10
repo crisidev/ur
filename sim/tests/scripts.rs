@@ -780,6 +780,74 @@ fn activity_fetch_in_buckets() {
     );
 }
 
+/// A night held back (`sleep_hold`): a fetch at 07:00, half an hour after
+/// waking, sends nothing from the night's start on; one at 09:00, past
+/// 06:30 plus the 135 minutes its stages may still change in, sends the
+/// whole night, from its start (though Gadgetbridge asks from 07:00, less
+/// what's revised), as light sleep, and the morning's steps after it.
+#[test]
+fn activity_fetch_holds_back_the_night() {
+    let dir = out("activity-fetch-night");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    // 2026-11-11 07:00 local, 06:00 UTC.
+    let t0: i64 = 1_794_204_000;
+    let text = format!(
+        "gb setTime({t0});E.setTimeZone(1.0)\n\
+         last-night 23:00 06:30\n\
+         steps 50\nwait 1m\n\
+         echo morning fetch\n\
+         gb GB({{\"t\":\"actfetch\",\"ts\":{evening}}})\n\
+         wait 2h\n\
+         echo later fetch\n\
+         gb GB({{\"t\":\"actfetch\",\"ts\":{morning}}})\n",
+        // 22:00 the evening before.
+        evening = (t0 - 9 * 60 * 60) * 1000,
+        // As Gadgetbridge saves it: a minute before its last fetch.
+        morning = t0 * 1000,
+    );
+    std::fs::write(&script, text).expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+    let samples = |part: &str| {
+        part.lines()
+            .filter_map(|line| line.split_once("to the phone: "))
+            .map(|(_, json)| json.to_owned())
+            .filter(|json| json.starts_with(r#"{"t":"act","#))
+            .collect::<Vec<_>>()
+    };
+    let (first, second) = log.split_once("later fetch").expect("both fetch");
+    // 23:00 local, 22:00 UTC.
+    let night = (t0 - 8 * 60 * 60) / 60;
+    assert!(
+        first.contains(&format!("holding back from UTC minute {night}")),
+        "{log}"
+    );
+    assert_eq!(samples(first), Vec::<String>::new(), "{log}");
+    let second = samples(second);
+    // 23:00 to 06:30 in 3-minute buckets, then the one with the steps.
+    assert_eq!(second.len(), 151, "{log}");
+    assert_eq!(
+        second[0],
+        format!(
+            r#"{{"t":"act","ts":{},"stp":0,"mov":0,"hrm":0,"act":"LIGHT_SLEEP"}}"#,
+            (night * 60 + 179) * 1000
+        )
+    );
+    assert!(
+        second[..150]
+            .iter()
+            .all(|s| s.ends_with(r#""act":"LIGHT_SLEEP"}"#))
+    );
+    assert_eq!(
+        second[150],
+        format!(
+            r#"{{"t":"act","ts":{},"stp":50,"mov":0,"hrm":0}}"#,
+            (t0 + 179) * 1000
+        )
+    );
+}
+
 /// Summer time's changes, as Gadgetbridge sends them (the new offset a
 /// few seconds after the change): an alarm every day at 02:30 rings once
 /// the night the clock goes back, rather than in both 02:00s, and the

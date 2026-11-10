@@ -106,6 +106,9 @@ mod route;
 #[path = "../../src/sleep.rs"]
 #[allow(dead_code)]
 mod sleep;
+#[path = "../../src/sleep_hold.rs"]
+#[allow(dead_code)]
+mod sleep_hold;
 #[path = "../../src/stages.rs"]
 #[allow(dead_code)]
 mod stages;
