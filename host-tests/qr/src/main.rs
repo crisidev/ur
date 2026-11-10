@@ -130,3 +130,6 @@ mod tests {
         assert!(qr::encode(&[b'A'; qr::MAX_TEXT + 1]).is_none());
     }
 }
+
+#[cfg(test)]
+mod fuzz;
