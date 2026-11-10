@@ -144,6 +144,10 @@ pub fn hold(
     let still = sleep::unsettled_onset(&minutes).map(|i| first + i as i64);
 
     let from = asleep.into_iter().chain(still).min()?;
+    // Both were found among the minutes up to the newest: a hold from a
+    // later minute would hold nothing back, while saying a night is
+    // still to come.
+    debug_assert!(from <= newest, "held from {from}, after {newest}");
     Some(Hold {
         from: from.max(newest - CAP + 1),
         sleep: asleep.is_some(),

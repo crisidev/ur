@@ -227,6 +227,11 @@ pub fn classify(before: Kind, minutes: &[Minute], out: &mut [Kind]) {
         let moving = run(t, &|u| {
             minutes[u].seen && minutes[u].worn != Some(false) && !still(u)
         });
+        // This minute is seen, worn and not still (each was just checked),
+        // so the run takes it in, and the loop moves on. A rule added
+        // above that let another kind of minute through would otherwise
+        // spin here for ever, with the history locked (a critical section).
+        debug_assert!(moving >= 1, "minute {t} isn't in its own run");
         let ends_window = t + moving == n;
         let kind = if moving >= WAKE_RUN {
             asleep = false;
@@ -351,6 +356,12 @@ pub fn last_sleep(minutes: usize, kind: impl Fn(usize) -> Kind) -> Option<(usize
         }
     }
     let asleep = (start..end).filter(|&i| kind(i).is_stage()).count();
+    // A sleep starts and ends asleep (so trimming it can't shorten it),
+    // and holds no more sleep than minutes: what `activity`'s summary and
+    // the staging of `start..end` take for granted.
+    debug_assert!(start < end && end <= minutes);
+    debug_assert!(kind(start).is_sleep() && kind(end - 1).is_sleep());
+    debug_assert!(asleep <= end - start);
     Some((start, end, asleep))
 }
 
@@ -481,6 +492,13 @@ impl Night {
         noon: bool,
         nap_hours: bool,
     ) -> Option<Change> {
+        // Monotonic time: a clock that went back (the wall clock, passed
+        // by mistake) would read as hours awake below, and end the night.
+        debug_assert!(
+            !self.quiet || self.last_asleep <= now,
+            "now {now}, but asleep at {}",
+            self.last_asleep
+        );
         let fell_asleep = asleep && !self.asleep;
         self.asleep = asleep;
         if asleep {

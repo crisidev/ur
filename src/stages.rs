@@ -275,6 +275,25 @@ pub fn stage<R: Record>(record: &mut R, onset: i64, end: i64) {
         };
         bouts.push(record, t, stage);
     }
+    // The windows slid as far as the last minute: counted afresh there,
+    // they hold the same. (As for the baseline's readings: a record that
+    // changed under the pass would fail this.)
+    debug_assert!(
+        end <= onset
+            || stirs
+                == (end - 1 - STIR_SPAN..end + STIR_SPAN)
+                    .filter(|&m| stir(record, m))
+                    .count(),
+        "the stirs' window lost count"
+    );
+    debug_assert!(
+        end <= onset
+            || baseline.len
+                == (end - 1 - LOCAL..end + LOCAL)
+                    .filter(|&m| reading(record, m).is_some())
+                    .count(),
+        "the baseline's window lost count"
+    );
     bouts.finish(record);
 }
 
@@ -332,7 +351,14 @@ impl Readings {
     }
 
     fn remove(&mut self, bpm: u8) {
-        if let Some(at) = self.sorted[..self.len].iter().position(|&b| b == bpm) {
+        let found = self.sorted[..self.len].iter().position(|&b| b == bpm);
+        // What leaves the window entered it: a minute's reading is the
+        // same when the window passes it as when it took it in, as staging
+        // changes only which stage a minute of sleep is. A record whose
+        // readings changed under the pass would leave readings behind
+        // here, and skew every baseline after.
+        debug_assert!(found.is_some(), "{bpm} BPM leaves a window it isn't in");
+        if let Some(at) = found {
             self.sorted.copy_within(at + 1..self.len, at);
             self.len -= 1;
         }
@@ -424,6 +450,8 @@ impl Bouts {
 /// Writes a settled run out: too short a deep or REM bout is light.
 /// Restless minutes in it stay restless.
 fn write<R: Record>(record: &mut R, run: Run) {
+    // Runs are collected a minute at a time, so none is empty.
+    debug_assert!(run.len >= 1);
     let kind = match run.kind {
         Kind::Unknown => return,
         Kind::Deep | Kind::Rem if run.len < MIN_BOUT => Kind::Light,
