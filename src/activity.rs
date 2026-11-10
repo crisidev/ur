@@ -48,6 +48,7 @@ use embassy_time::{Duration, Timer, with_timeout};
 use embedded_hal_async::i2c::I2c;
 
 use crate::i2c::Device;
+use crate::step_counter::{Read, StepCounter};
 use crate::{clock, minute_ring, sleep, sleep_hold, stages};
 
 // ==============================================================================
@@ -1199,7 +1200,10 @@ pub async fn activity_task(i2c: Device) {
     info!("activity: accelerometer running");
     READY.store(true, Ordering::Relaxed);
 
-    let mut last_count = 0u32;
+    // Which reads of the step counter to believe (see `step_counter`),
+    // from 0 now, as setup leaves it. Its clock: seconds since boot.
+    let uptime = || embassy_time::Instant::now().as_secs() as u32;
+    let mut counter = StepCounter::new(uptime());
     // The previous sample, to measure movement against.
     let mut previous: Option<[i16; 3]> = None;
     // Movement accumulated within the current minute.
@@ -1233,25 +1237,25 @@ pub async fn activity_task(i2c: Device) {
             warn!("activity: reading the accelerometer failed");
             continue;
         };
-        // The counter only counts up (it's reset only by our own setup at
-        // boot), but right after a broken FIFO batch it has read as 0 for
-        // one poll, then the true count again: 7 times in one night. Taken
-        // at face value, that's billions of steps (saturating that minute's
-        // history at 65 535, which the sleep classifier reads as getting up),
-        // then the real count again as new steps. So a lower count is a bad
-        // read: skip it, and keep counting from the last good one. (Were
-        // the chip itself to reset, it would lose the step counter's
-        // configuration too, so there'd be nothing to resume from anyway.)
-        let new_steps = if count < last_count {
-            warn!(
-                "activity: step counter read {} after {}; ignored",
-                count, last_count
-            );
-            0
-        } else {
-            let new = count - last_count;
-            last_count = count;
-            new
+        // The counter only counts up, but a read can be garbage: lower
+        // (0, after a broken FIFO batch) or far higher (the chip's
+        // filler). Either, taken as it is, is billions of steps. So only a
+        // count a wrist could have reached is counted (see
+        // `step_counter`), and the count can't get stuck on a bad one.
+        let last = counter.last();
+        let new_steps = match counter.read(count, uptime()) {
+            Read::Counted(steps) => steps,
+            Read::Ignored => {
+                warn!(
+                    "activity: step counter read {} after {}; ignored",
+                    count, last
+                );
+                0
+            }
+            Read::Moved(steps) => {
+                warn!("activity: step counter carries on from {}", count);
+                steps
+            }
         };
         // The last sample too: which way up the watch is (1024 per g, in
         // the sensor's own axes), for orientation questions such as how

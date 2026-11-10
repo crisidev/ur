@@ -23,7 +23,8 @@ needs nothing special; LFS stores it.
   `snapshot`, `nav`, `day`, `route`, `arrival`, `decimal`, `gesture`,
   `wake`, `gb`, `phone`, `gb_buckets` and `sleep_hold` (the activity as
   Gadgetbridge fetches it), `live`, `link`, `buttons`, `qr`, `font`,
-  `mcuboot`, `backoff` (retrying sensor setup),
+  `mcuboot`, `backoff` (retrying sensor setup), `step_counter` (which
+  of the accelerometer's step counts to believe),
   `on_time` (`power`'s hourly split),
   `minute_ring` (`activity`'s history as the clock moves), `dfu_slot`
   (where `dfu` erases and writes an update), `rtt_ring` (which bytes
@@ -300,7 +301,7 @@ Some host test crates (`host-tests/alarm`, `buttons`, `gesture`, `day`,
 `decimal`, `battery`, `heart_schedule`, `temperature`, `brightness`,
 `wake`, `on_time`, `minute_ring`, `link`, `theme`, `live`, `nav`, `route`,
 `glance`, `dfu`, `rtt_ring`, `mcuboot`, `snapshot`, `bthome`, `aranet`,
-`gb_buckets`) have [Kani] proofs at the end of their `src/main.rs`: what the tests check for some
+`gb_buckets`, `step_counter`) have [Kani] proofs at the end of their `src/main.rs`: what the tests check for some
 inputs, for every input, within bounds. `cargo kani` in the crate runs
 them; `--harness NAME` one (and one at a time). They need tight
 `kani::unwind` and `kani::assume` bounds: CBMC's memory grows fast with
