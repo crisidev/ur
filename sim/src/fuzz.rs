@@ -40,7 +40,7 @@ use std::path::Path;
 use crate::devkit::{self, Finding, Setup};
 use crate::flash::Flash;
 use crate::storage::{self, key};
-use crate::{alarm, theme};
+use crate::{alarm, gadgetbridge, theme};
 
 /// What `--fuzz` was asked for.
 pub struct Fuzz {
@@ -52,13 +52,26 @@ pub struct Fuzz {
     /// The inputs of the coverage-guided fuzzer on the simulator alone
     /// (`fuzz/`) to run, rather than seeds: see [`corpus`].
     pub corpus: Option<std::path::PathBuf>,
+    /// The corpus is the `gadgetbridge` target's (`fuzz/`), not `steps`':
+    /// its inputs are sessions with a model of Gadgetbridge (see
+    /// [`gadgetbridge_runs`]).
+    pub gadgetbridge: bool,
     pub dry: bool,
 }
 
 pub fn run(elf: &Path, out: &Path, setup: &Setup, fuzz: &Fuzz) -> Result<(), String> {
     std::fs::create_dir_all(out).map_err(|e| format!("creating {}: {e}", out.display()))?;
+    if fuzz.gadgetbridge && (fuzz.corpus.is_none() || fuzz.guided) {
+        return Err("--gadgetbridge runs a corpus (--corpus DIR), unguided".into());
+    }
+    if fuzz.dry && fuzz.gadgetbridge {
+        return gadgetbridge_dry(out, fuzz);
+    }
     if fuzz.dry {
         return dry(out, setup, fuzz);
+    }
+    if fuzz.gadgetbridge && setup.peer.is_none() {
+        return Err("--gadgetbridge needs this computer as the dev kit's phone (--peer)".into());
     }
     let mut bench = devkit::Bench::open(elf, setup.peer.clone())?;
     // The dev kit's own storage, to start from and put back. Kept if it's
@@ -121,6 +134,18 @@ pub fn run(elf: &Path, out: &Path, setup: &Setup, fuzz: &Fuzz) -> Result<(), Str
         fuzz.runs
     };
     let result = (|| {
+        if fuzz.gadgetbridge {
+            let storage = like_erased(&base, &out.join("scratch"))?;
+            return gadgetbridge_runs(
+                &mut bench,
+                &storage,
+                &inputs[..runs as usize],
+                out,
+                fuzz.seed,
+                &mut found,
+                &mut shrinking,
+            );
+        }
         for n in 0..runs {
             let seed = fuzz.seed.wrapping_add(n);
             let (recipe, input) = match (&guide, inputs.get(n as usize)) {
@@ -883,6 +908,258 @@ fn alone(line: &str) -> String {
 }
 
 // ==============================================================================
+// The Gadgetbridge mock's sessions, on a dev kit
+// ==============================================================================
+
+/// The `gadgetbridge` target's inputs (`--corpus DIR --gadgetbridge`), on
+/// the dev kit, from `storage`: each a session with the mock as the phone
+/// (`gadgetbridge::drive`), through this computer's link, the simulator
+/// following the dev kit as for any script. A step is the mock's action
+/// and the lines it and the dev kit then trade, or what the wearer does,
+/// and its frame compared; the mock hears every line the dev kit sends.
+/// So a run finds what a `steps` run does (a frame, the phone's
+/// messages, the storage), and also a line real Gadgetbridge would
+/// refuse.
+///
+/// A run's script is what was run: the mock answers what the dev kit
+/// says, so it's not the script the same input makes on the simulator
+/// (`gadgetbridge::host_one`) once their answers differ (an activity
+/// fetch's, say: the dev kit's history is its own). A difference is
+/// shrunk as a `steps` run's is, over that script, the mock left out
+/// (the lines it sent are the script's); what the mock refused isn't
+/// (without it, nothing would see it), and stays as it ran.
+fn gadgetbridge_runs(
+    bench: &mut devkit::Bench,
+    storage: &[u8],
+    inputs: &[std::path::PathBuf],
+    out: &Path,
+    first_seed: u64,
+    found: &mut u64,
+    shrinking: &mut std::time::Duration,
+) -> Result<(), String> {
+    let runs = inputs.len();
+    for (n, input) in inputs.iter().enumerate() {
+        // A seed only to name the run, as `steps`' corpus runs are.
+        let seed = first_seed.wrapping_add(n as u64);
+        let bytes =
+            std::fs::read(input).map_err(|e| format!("reading {}: {e}", input.display()))?;
+        let dir = out.join(format!("run-{seed}"));
+        eprintln!(
+            "fuzz: run {} of {runs} (seed {seed}: {}, a Gadgetbridge session)",
+            n + 1,
+            input.display()
+        );
+        let (started, spent) = (std::time::Instant::now(), bench.spent());
+        let (steps, outcome, refused) = gadgetbridge_trial(bench, storage, &bytes, &dir);
+        let origin = format!("input {}", input.display());
+        save_script(&dir, &origin, &steps, storage, &outcome.report())?;
+        report_time(&format!("seed {seed}"), started, spent, bench.spent());
+        let Some((at, kind)) = outcome.first() else {
+            continue;
+        };
+        *found += 1;
+        for line in outcome.report() {
+            eprintln!("fuzz: seed {seed}: {line}");
+        }
+        let repro = out.join(format!("finding-{seed}"));
+        if refused || at >= steps.len() {
+            eprintln!("fuzz: seed {seed}: step {at}: {kind}; kept as it ran");
+            save_script(&repro, &origin, &steps, storage, &outcome.report())?;
+            continue;
+        }
+        eprintln!("fuzz: seed {seed}: step {at}: {kind}; shrinking");
+        let (started, spent) = (std::time::Instant::now(), bench.spent());
+        let (minimal, shrunk) = shrink(bench, storage, &steps[..=at], &kind, &dir);
+        report_time(
+            &format!("seed {seed}'s shrinking"),
+            started,
+            spent,
+            bench.spent(),
+        );
+        *shrinking += started.elapsed();
+        save_script(&repro, &origin, &minimal, storage, &shrunk.report())?;
+        eprintln!(
+            "fuzz: seed {seed}: {} steps of {} still show it: {}",
+            minimal.len(),
+            steps.len(),
+            repro.display()
+        );
+    }
+    Ok(())
+}
+
+/// One session (`bytes`) on the dev kit, from `storage`: the steps it
+/// ran, what it found, and whether that was the mock refusing what the
+/// dev kit sent (rather than the dev kit and the simulator differing).
+fn gadgetbridge_trial(
+    bench: &mut devkit::Bench,
+    storage: &[u8],
+    bytes: &[u8],
+    dir: &Path,
+) -> (Vec<Step>, Outcome, bool) {
+    let mut outcome = Outcome::default();
+    let mut follower = match bench.follow(storage, dir) {
+        Ok(follower) => follower,
+        Err(e) => {
+            outcome.error = Some((0, e));
+            return (Vec::new(), outcome, false);
+        }
+    };
+    let mut runner = DevKitRunner {
+        follower: &mut follower,
+        dir,
+        findings: Vec::new(),
+        at: 0,
+        sent: false,
+    };
+    let mut run = gadgetbridge::drive(bytes, &mut runner);
+    // Then what it would boot with, as a `steps` run ends.
+    if run.failure.is_none() && runner.findings.is_empty() {
+        let line = "check-storage".to_owned();
+        runner.at = run.steps.len().saturating_sub(1);
+        if let Err(e) = gadgetbridge::Runner::run(&mut runner, &line) {
+            run.failure = Some((runner.at, e));
+        }
+        if let Some(last) = run.steps.last_mut() {
+            last.push(line);
+        }
+    }
+    outcome.findings = std::mem::take(&mut runner.findings);
+    // What stopped it: a line that failed (`LINE\nWHY`, as `trial` has
+    // them), or the mock, which refused what the dev kit sent (no line).
+    let refused = (run.failure.as_ref()).is_some_and(|(_, why)| !why.contains('\n'));
+    outcome.error = run.failure;
+    (run.steps, outcome, refused)
+}
+
+/// A dev kit, followed, as where a Gadgetbridge session runs (see
+/// `gadgetbridge::Runner`).
+struct DevKitRunner<'f, 'a> {
+    follower: &'f mut devkit::Follower<'a>,
+    dir: &'f Path,
+    /// What its `compare`s (and the stack's room) found, by step.
+    findings: Vec<(usize, Finding)>,
+    /// The step under way.
+    at: usize,
+    /// A `gb` line went out since the dev kit's lines were last taken.
+    sent: bool,
+}
+
+/// How long the dev kit gets to answer what was sent before its lines are
+/// taken: an answer is a connection event or two away. One that takes
+/// longer goes to the mock with the next step's.
+const ANSWER_TIME: std::time::Duration = std::time::Duration::from_millis(300);
+
+impl gadgetbridge::Runner for DevKitRunner<'_, '_> {
+    fn alone(&self) -> bool {
+        false
+    }
+
+    fn wait_ms(&self, ms: i64) -> i64 {
+        ms.min(gadgetbridge::DEVKIT_WAIT_MS)
+    }
+
+    fn run(&mut self, line: &str) -> Result<(), String> {
+        self.sent |= line.starts_with("gb ");
+        match self.follower.execute(line, self.dir) {
+            Ok(findings) => {
+                let at = self.at;
+                self.findings.extend(findings.into_iter().map(|f| (at, f)));
+            }
+            Err(e) => {
+                // As `trial`: a restart the script didn't ask for.
+                if e.contains("restarted") {
+                    let log = self.follower.boot_log();
+                    eprintln!("fuzz: the dev kit's log after it restarted:\n{log}");
+                    let _ = write(&self.dir.join("restart-log.txt"), log.as_bytes());
+                }
+                return Err(format!("{line}\n{e}"));
+            }
+        }
+        // As `trial`: the stack's room, after each step's frame.
+        if line.starts_with("compare ")
+            && let Ok(Some(left)) = self.follower.stack_left()
+            && left < STACK_WARN
+        {
+            self.findings.push((
+                self.at,
+                Finding {
+                    name: "stack".into(),
+                    what: format!("only {left} bytes of stack were left at the deepest"),
+                },
+            ));
+        }
+        Ok(())
+    }
+
+    fn to_phone(&mut self) -> Result<Vec<Vec<u8>>, String> {
+        let settle = if std::mem::take(&mut self.sent) {
+            ANSWER_TIME
+        } else {
+            std::time::Duration::ZERO
+        };
+        self.follower.take_heard(settle)
+    }
+
+    fn step_end(&mut self, n: usize) -> Vec<String> {
+        self.at = n;
+        vec![gadgetbridge::compare_line(n)]
+    }
+
+    fn found(&self) -> bool {
+        !self.findings.is_empty()
+    }
+}
+
+/// The `gadgetbridge` target's inputs on the simulator alone, as their
+/// sessions would run on a dev kit (`--dry --gadgetbridge`): waits cut
+/// short, and no steps or heart rates. Each run's script is saved under
+/// `out`, and anything that fails (the mock refusing what the simulator
+/// sent, say) is reported.
+fn gadgetbridge_dry(out: &Path, fuzz: &Fuzz) -> Result<(), String> {
+    let dir = fuzz
+        .corpus
+        .as_ref()
+        .ok_or("--gadgetbridge needs --corpus DIR")?;
+    let inputs = corpus(dir)?;
+    let runs = inputs
+        .len()
+        .min(usize::try_from(fuzz.runs).unwrap_or(usize::MAX));
+    let (mut failed, mut steps) = (0, 0);
+    for (n, input) in inputs.iter().take(runs).enumerate() {
+        let seed = fuzz.seed.wrapping_add(n as u64);
+        let bytes =
+            std::fs::read(input).map_err(|e| format!("reading {}: {e}", input.display()))?;
+        let dir = out.join(format!("run-{seed}"));
+        let mut simulator = gadgetbridge::Simulator::boot(&dir.join("scratch"), true);
+        let run = gadgetbridge::drive(&bytes, &mut simulator);
+        steps += run.steps.len();
+        let report: Vec<String> = (run.failure.iter())
+            .map(|(at, why)| format!("step {at}: stopped: {}", why.replace('\n', ": ")))
+            .collect();
+        let origin = format!("input {}", input.display());
+        save_script(&dir, &origin, &run.steps, Flash::erased().bytes(), &report)?;
+        if let Some(line) = report.first() {
+            failed += 1;
+            eprintln!("fuzz: {}: {line}", input.display());
+        }
+    }
+    crate::watch::capture_to_phone(false);
+    eprintln!(
+        "fuzz: {runs} Gadgetbridge sessions ({steps} steps) ran on the simulator alone, \
+         {failed} failed"
+    );
+    if failed == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "{failed} of {runs} sessions failed (see {})",
+            out.display()
+        ))
+    }
+}
+
+// ==============================================================================
 // Random storage
 // ==============================================================================
 
@@ -949,6 +1226,37 @@ fn only_this_computer(original: &[u8], scratch: &Path) -> Result<Vec<u8>, String
 /// `original`, with no bonds at all: for a lone run (see [`Recipe`]).
 fn without_bonds(original: &[u8], scratch: &Path) -> Result<Vec<u8>, String> {
     keep_bond(original, None, scratch)
+}
+
+/// `original` with its settings as erased flash has them (none saved),
+/// its bonds and BTHome key kept: as `gadgetbridge::host_one` starts,
+/// but for the link with this computer.
+fn like_erased(original: &[u8], scratch: &Path) -> Result<Vec<u8>, String> {
+    std::fs::create_dir_all(scratch).map_err(|e| format!("creating {}: {e}", scratch.display()))?;
+    let path = scratch.join("erased-settings.bin");
+    write(&path, original)?;
+    storage::init(Flash::open(&path)?);
+    crate::watch::run(
+        async {
+            for key in [
+                key::THEME_LIGHT,
+                key::THEME_DARK,
+                key::LOCATION,
+                key::ALARMS,
+                key::PHONE_ALARMS,
+                key::BRIGHTNESS,
+                key::BUTTONS,
+                key::CALIBRATION,
+                key::GRID,
+            ] {
+                if storage::load::<1>(key).await.is_some() && !storage::remove(key).await {
+                    eprintln!("fuzz: couldn't drop key {key} from the storage");
+                }
+            }
+        },
+        &mut None,
+    );
+    std::fs::read(&path).map_err(|e| format!("reading {}: {e}", path.display()))
 }
 
 /// `original`, less every bond but `computer`'s.

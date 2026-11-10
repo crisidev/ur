@@ -288,7 +288,10 @@ stack, or a grid hold without its release, is shrunk to a repro. See
 
 - `--corpus DIR` runs the simulator fuzzer's inputs instead: what it
   found, by branch coverage, checked against the hardware. Distil the
-  corpus first, to one input per branch (see sim/README.md).
+  corpus first, to one input per branch (see sim/README.md). With
+  `--gadgetbridge`, the corpus is the `gadgetbridge` target's: sessions
+  with the model of Gadgetbridge (below) as the dev kit's phone, which
+  hears every line the dev kit sends.
 - `--guided`, with a build from `sim/coverage-build.sh`, extends the runs
   that reached functions no run had before. It's function coverage, not
   branches (those don't fit in flash), but of everything on the watch,
@@ -349,6 +352,10 @@ it:
   ```sh
   cd sim && cargo +nightly fuzz run -s none gadgetbridge -- -fork=8 -timeout=20
   ```
+
+  Its corpus also runs on a dev kit, the mock hearing what the dev kit
+  sends over the air (`ur-sim --fuzz ELF --peer ADDRESS --corpus DIR
+  --gadgetbridge`; see "Fuzzing a dev kit").
 
 ### cargo-careful and Miri
 

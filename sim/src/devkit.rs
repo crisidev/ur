@@ -768,6 +768,7 @@ impl<'a> Follower<'a> {
         if let Some(peer) = &mut self.rig.peer {
             peer.poll();
             peer.received.clear();
+            peer.heard.clear();
         }
         eprintln!(
             "following the dev kit from its boot at {} s of uptime",
@@ -902,11 +903,7 @@ impl<'a> Follower<'a> {
             }
             "wait" => {
                 let wait = script::duration(arg(0).ok_or("wait: needs a duration")?)?;
-                let until = StdInstant::now() + StdDuration::from_micros(wait.as_micros());
-                while let Some(left) = until.checked_duration_since(StdInstant::now()) {
-                    std::thread::sleep(left.min(POLL));
-                    self.catch_up(None)?;
-                }
+                self.idle(StdDuration::from_micros(wait.as_micros()))?;
             }
             "compare" => {
                 let name = arg(0).ok_or("compare: needs a NAME")?;
@@ -1014,6 +1011,31 @@ impl<'a> Follower<'a> {
             }
         }
         Ok(Vec::new())
+    }
+
+    /// Follows the dev kit for `wait`, doing nothing else.
+    fn idle(&mut self, wait: StdDuration) -> Result<(), String> {
+        let until = StdInstant::now() + wait;
+        while let Some(left) = until.checked_duration_since(StdInstant::now()) {
+            std::thread::sleep(left.min(POLL));
+            self.catch_up(None)?;
+        }
+        Ok(())
+    }
+
+    /// The lines the dev kit sent this computer since the last call (or
+    /// since it booted), as it sent them, for a model of Gadgetbridge to
+    /// hear (`gadgetbridge.rs`). Gives the dev kit `settle` first, for the
+    /// answers to what was just sent to come over the air. These are
+    /// every line, not only the UI's that `compare` checks: the time, the
+    /// battery, an activity fetch's.
+    pub fn take_heard(&mut self, settle: StdDuration) -> Result<Vec<Vec<u8>>, String> {
+        self.idle(settle)?;
+        let Some(peer) = &mut self.rig.peer else {
+            return Ok(Vec::new());
+        };
+        peer.poll();
+        Ok(std::mem::take(&mut peer.heard))
     }
 
     /// `gb LINE`: sends the line, as Gadgetbridge would, from this
@@ -2034,13 +2056,20 @@ impl Rig {
     /// notification twice, which reads as the dev kit sending everything
     /// twice.
     fn connect(&mut self) -> Result<(), String> {
+        let mut heard = Vec::new();
         if let Some(peer) = &mut self.peer {
             peer.poll();
             if peer.dropped {
+                // What it heard before the link went down is still to be
+                // taken (see `Follower::take_heard`).
+                heard = std::mem::take(&mut peer.heard);
                 self.peer = None;
             }
         }
-        self.peer()?.request("connect").map(drop)
+        let peer = self.peer()?;
+        heard.append(&mut peer.heard);
+        peer.heard = heard;
+        peer.request("connect").map(drop)
     }
 
     /// Back as a run starts: no thermometer, no phone connected.
@@ -2063,6 +2092,11 @@ struct Peer {
     partial: Vec<u8>,
     /// The lines the watch sent, since they were last taken.
     received: Vec<String>,
+    /// The same lines, as the watch sent them (its bytes, line feed and
+    /// all), for a model of Gadgetbridge to hear (see
+    /// [`Follower::take_heard`]): apart, as `received` is taken at every
+    /// `compare`, and lossily (as UTF-8).
+    heard: Vec<Vec<u8>>,
     /// The link went down since the process started (see
     /// `scripts/gb-peer.py`'s `dropped`).
     dropped: bool,
@@ -2098,6 +2132,7 @@ impl Peer {
             lines,
             partial: Vec::new(),
             received: Vec::new(),
+            heard: Vec::new(),
             dropped: false,
             asked: None,
         })
@@ -2163,10 +2198,11 @@ impl Peer {
                 .filter_map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok());
             self.partial.extend(bytes);
             while let Some(end) = self.partial.iter().position(|&b| b == b'\n') {
-                let line: Vec<u8> = self.partial.drain(..=end).collect();
-                let line = String::from_utf8_lossy(&line).trim_end().to_owned();
+                let bytes: Vec<u8> = self.partial.drain(..=end).collect();
+                let line = String::from_utf8_lossy(&bytes).trim_end().to_owned();
                 eprintln!("  phone: got {line}");
                 self.received.push(line);
+                self.heard.push(bytes);
             }
         } else if line == "dropped" {
             eprintln!("  phone: the dev kit disconnected");

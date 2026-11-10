@@ -13,7 +13,7 @@ Usage: ur-sim [--window] [--flash FILE] [--out DIR] [--speed N] [--zoom N]
               [--sent-colours] [SCRIPT ...]
        ur-sim --devkit ELF [--peer ADDRESS] [--storage FILE] [--out DIR] SCRIPT ...
        ur-sim --fuzz ELF [--peer ADDRESS] [--seed N] [--runs N] [--steps N]
-              [--guided | --corpus DIR] [--dry] [--out DIR]
+              [--guided | --corpus DIR [--gadgetbridge]] [--dry] [--out DIR]
        ur-sim --fuzz-input FILE [--storage BASE] [--out DIR]
        ur-sim --diff BEFORE AFTER [--out DIR]
 
@@ -54,7 +54,9 @@ after running any scripts, and takes commands typed into the terminal.
                functions rather than starting afresh each time; --dry runs
                the scripts on the simulator alone; --corpus DIR runs
                the simulator fuzzer's inputs (fuzz/) instead of seeds,
-               smallest first
+               smallest first; --gadgetbridge, those of its `gadgetbridge`
+               target: sessions with a model of Gadgetbridge as the phone
+               (needs --peer), which also hears what the dev kit sends
   --fuzz-input FILE
                the script and storage a coverage-guided fuzzer's input (in
                fuzz/) makes, written under --out as a repro to run (its
@@ -238,6 +240,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
             steps: 150,
             guided: false,
             corpus: None,
+            gadgetbridge: false,
             dry: false,
         },
         diff: None,
@@ -268,6 +271,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
             }
             "--dry" => options.fuzzing.dry = true,
             "--guided" => options.fuzzing.guided = true,
+            "--gadgetbridge" => options.fuzzing.gadgetbridge = true,
             "--corpus" => {
                 options.fuzzing.corpus = Some(args.next().ok_or("--corpus needs a DIR")?.into());
             }

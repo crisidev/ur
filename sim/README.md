@@ -322,7 +322,18 @@ Two ways to aim the runs:
 
 - `--corpus DIR` runs the inputs of the simulator's own fuzzer (below)
   instead of seeds, smallest first: paths it found by branch coverage,
-  checked against the hardware.
+  checked against the hardware. With `--gadgetbridge`, `DIR` is the
+  `gadgetbridge` target's, and each input is a session with the model of
+  Gadgetbridge (`gbmock`) as the phone, through this computer's link
+  (`src/gadgetbridge.rs`): a frame compared every step, as for any run,
+  and every line the dev kit sends to the model, which mustn't refuse
+  it. The model answers what the dev kit says, so a session can go
+  differently from the simulator's own (an activity fetch's answer is
+  the dev kit's history); `--out`'s scripts are what ran. Waits are cut
+  to 20 seconds of real time (the model's clock moves the whole wait),
+  and steps and heart rates, which only the simulator can be told, are
+  comments. `--dry --gadgetbridge` runs the sessions so on the simulator
+  alone.
 - `--guided`, with a build from `coverage-build.sh` (a `compare` build
   that marks each function it runs), reads which functions have run after
   every step, and extends the runs that reached new ones rather than
@@ -355,6 +366,9 @@ corpus to one input per branch:
 fuzz/target/x86_64-unknown-linux-gnu/release/steps -merge=1 -use_counters=0 \
     -use_cmp=0 ../tmp/distilled fuzz/corpus/steps
 ```
+
+(The same for the `gadgetbridge` target's, for `--corpus DIR
+--gadgetbridge`.)
 
 Each `compare` also says how long the dev kit took to push its frame
 to the panel (if that pass pushed anything), and how long the
