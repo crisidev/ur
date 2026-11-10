@@ -334,10 +334,10 @@ def layout() -> list[tuple[str, bool, str]]:
     retained_end = retained + m["LENGTH_RETAINED"]
     storage = const_range("storage.rs", "RANGE")
     in_flash = rust("field_log.rs", r"let in_flash = \|address: usize\| \((\w+)\.\.(\w+)\)")
-    dfu_slot = const("dfu.rs", "SLOT_START")
+    dfu_slot = const("dfu_slot.rs", "SLOT_START")
     spi_regions = sorted(
         [
-            ("dfu.rs secondary slot", dfu_slot, dfu_slot + const("dfu.rs", "SLOT_SIZE")),
+            ("dfu_slot.rs secondary slot", dfu_slot, dfu_slot + const("dfu_slot.rs", "SLOT_SIZE")),
             ("system_off.rs RECORD", *const_range("system_off.rs", "RECORD")),
             ("field_log.rs REGION", *const_range("field_log.rs", "REGION")),
         ],
@@ -366,8 +366,8 @@ def layout() -> list[tuple[str, bool, str]]:
         same("field_log.rs in_flash end = slot end", slot_end, in_flash[1]),
         # The update slot in SPI flash: the same size as the primary, and
         # clear of the other things kept there.
-        same("dfu.rs SLOT_SIZE = package.py", package.SLOT_SIZE, const("dfu.rs", "SLOT_SIZE")),
-        same("dfu.rs TRAILER_SIZE = package.py", package.TRAILER_SIZE, const("dfu.rs", "TRAILER_SIZE")),
+        same("dfu_slot.rs SLOT_SIZE = package.py", package.SLOT_SIZE, const("dfu_slot.rs", "SLOT_SIZE")),
+        same("dfu_slot.rs TRAILER_SIZE = package.py", package.TRAILER_SIZE, const("dfu_slot.rs", "TRAILER_SIZE")),
         before(f"{spi_regions[-1][0]} ends within the SPI flash", spi_regions[-1][2], SPI_FLASH_END),
         # RAM: statics, then the retained block (where the bootloader
         # doesn't reach), then the stack, up to the top.
