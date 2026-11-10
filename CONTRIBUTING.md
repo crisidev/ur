@@ -437,7 +437,7 @@ from a stuck bus by themselves, as they must when a reset (a probe's, a
 watchdog's, an update's) leaves one holding it: for its first 5 s, it
 keeps switching the I2C controller off, so every transfer hangs (see
 `wedge_task` in `src/i2c.rs`). Each driver's setup times out and retries,
-slower each time; within ~10 s of boot, the log should show
+slower each time; within ~12 s of boot, the log should show
 `activity: accelerometer running` and `heart: sensor ready`, and a tap
 should still register:
 
