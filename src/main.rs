@@ -99,6 +99,8 @@ mod power;
 mod ppg;
 mod qr;
 mod route;
+#[cfg(feature = "field-log")]
+mod rtt_ring;
 mod sleep;
 mod sleep_hold;
 mod snapshot;

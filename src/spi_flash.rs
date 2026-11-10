@@ -49,6 +49,9 @@ const WRITE_IN_PROGRESS: u8 = 0x01;
 pub const PAGE: u32 = 256;
 pub const SECTOR: u32 = 4096;
 pub const BLOCK: u32 = 64 * 1024;
+/// The chip's size: 32 Mbit (which [`SpiFlash::wake`] checks it is). It
+/// decodes 22 bits of address, so one past this lands back at the start.
+pub const SIZE: u32 = 4 * 1024 * 1024;
 
 #[derive(Debug, defmt::Format)]
 pub enum Error {

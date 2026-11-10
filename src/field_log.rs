@@ -34,6 +34,8 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Timer;
 
 #[cfg(feature = "field-log")]
+use crate::rtt_ring;
+#[cfg(feature = "field-log")]
 use crate::spi_flash::{self, SpiFlash};
 use crate::spi_flash::{FLASH, SECTOR};
 
@@ -43,6 +45,15 @@ pub const SECTORS: u32 = (REGION.end - REGION.start) / SECTOR;
 
 const MAGIC: u32 = u32::from_le_bytes(*b"urL1");
 const HEADER: u32 = 16;
+
+// The ring is whole sectors, to the chip's end and no further: the chip
+// takes an address past its end as one from its start, where the
+// bootloader's recovery firmware is. And a sector's header (with the
+// length written into it later) lies within its first page, as one
+// program must.
+const _: () = assert!(REGION.start.is_multiple_of(SECTOR) && REGION.end.is_multiple_of(SECTOR));
+const _: () = assert!(REGION.end <= crate::spi_flash::SIZE && SECTORS > 1);
+const _: () = assert!(HEADER <= crate::spi_flash::PAGE);
 
 /// Where the log is being written: (sector index, bytes used including the
 /// header), once the writer has started.
@@ -98,7 +109,7 @@ fn waiting() -> usize {
     let size = channel.size as usize;
     let write = channel.write.load(Ordering::Acquire) as usize;
     let read = channel.read.load(Ordering::Relaxed) as usize;
-    (write + size - read) % size
+    rtt_ring::waiting(size, read, write)
 }
 
 #[cfg(feature = "field-log")]
@@ -116,39 +127,29 @@ fn frames(room: usize) -> Option<(&'static [u8], &'static [u8])> {
     let size = channel.size as usize;
     let write = channel.write.load(Ordering::Acquire) as usize;
     let read = channel.read.load(Ordering::Relaxed) as usize;
-    let waiting = (write + size - read) % size;
-    // Frames end in a zero byte; anything after the last one is a frame
-    // still being written. `fits` is the end of the last frame within
-    // `room`. A plain loop over the ring, rather than iterator adapters
-    // over its two pieces: ~250 bytes less flash.
-    let mut whole = false;
-    let mut fits = 0;
-    for i in 0..waiting {
-        // SAFETY: Bytes between the read and write cursors are written, and
-        // left alone by defmt-rtt until we move the read cursor past them
-        // (which only `consume` does, after the caller is done with these).
-        if unsafe { channel.buffer.add((read + i) % size).read() } == 0 {
-            whole = true;
-            if i >= room {
-                break;
-            }
-            fits = i + 1;
-        }
-    }
-    if !whole {
+    let waiting = rtt_ring::waiting(size, read, write);
+    // Which bytes to look at, and how many of them are whole frames, is
+    // `rtt_ring`'s arithmetic (proved to stay between the cursors); the
+    // bytes themselves are read here.
+    //
+    // SAFETY: Bytes between the read and write cursors are written, and
+    // left alone by defmt-rtt until we move the read cursor past them
+    // (which only `consume` does, after the caller is done with these).
+    let byte = |at: usize| unsafe { channel.buffer.add(at).read() };
+    let Some(fits) = rtt_ring::whole_frames(size, read, waiting, room, byte) else {
         if waiting == size - 1 {
             // Full, without a frame end: a frame too big for the buffer,
             // which we drop rather than stall on.
             consume(waiting);
         }
         return None;
-    }
-    let in_first = fits.min(size - read);
+    };
+    let (in_first, in_second) = rtt_ring::pieces(size, read, fits);
     // SAFETY: As above: the first `fits` bytes after the read cursor.
     unsafe {
         Some((
             core::slice::from_raw_parts(channel.buffer.add(read), in_first),
-            core::slice::from_raw_parts(channel.buffer, fits - in_first),
+            core::slice::from_raw_parts(channel.buffer, in_second),
         ))
     }
 }
@@ -161,7 +162,7 @@ fn consume(n: usize) {
     let read = channel.read.load(Ordering::Relaxed) as usize;
     channel
         .read
-        .store(((read + n) % size) as u32, Ordering::Release);
+        .store(rtt_ring::after(size, read, n) as u32, Ordering::Release);
 }
 
 // ==============================================================================
