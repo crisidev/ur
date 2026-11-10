@@ -28,6 +28,7 @@ use crate::palette::Palette;
 use crate::system_off::Reason;
 use crate::ui::{Editing, Status};
 
+use super::helpers::{self, digit_glyph};
 use super::{
     BuiltIn, Call, CallButton, Editor, EditorButton, EditorField, Face, Glance, Grid, Handles,
     MediaAction, Music, Scheme, SettingsPage, Theme,
@@ -290,14 +291,12 @@ impl Theme for Retro {
     }
 
     fn call_overflow(&self, caller: &str) -> i32 {
-        font::small_text_width(caller) * 2 - layout::CALL_TEXT_WIDTH
+        helpers::overflow(caller, 2, layout::CALL_TEXT_WIDTH)
     }
 
     fn music_overflow(&self, artist: &str, track: &str) -> i32 {
-        let overflow = |text: &str, scale: i32| {
-            font::small_text_width(text) * scale - layout::MUSIC_TEXT_WIDTH
-        };
-        overflow(track, 2).max(overflow(artist, 1))
+        let room = layout::MUSIC_TEXT_WIDTH;
+        helpers::overflow(track, 2, room).max(helpers::overflow(artist, 1, room))
     }
 }
 
@@ -342,15 +341,4 @@ fn draw_digit(canvas: &mut Canvas, x: i32, y: i32, digit: u64, scale: i32, color
     let glyph = digit_glyph(digit);
     canvas.sprite(x + 1, y + 1, font::DIGIT_W, glyph, scale, Color::SHADOW);
     canvas.sprite(x, y, font::DIGIT_W, glyph, scale, color);
-}
-
-/// The 5×7 glyph for `digit`. A value too big for its cell (a bug
-/// upstream) draws as 9 rather than indexing out of range: a wrong digit
-/// on the screen beats a panic and a reset.
-fn digit_glyph(digit: u64) -> &'static [u8; 7] {
-    // Where debug assertions are on (the simulator and its fuzzer), that
-    // bug is caught here instead: a 9 that isn't one reads as a fine
-    // screen. (As was the timer editor's hours, past 99: F1.)
-    debug_assert!(digit <= 9, "not a digit: {digit}");
-    &font::DIGITS[digit.min(9) as usize]
 }

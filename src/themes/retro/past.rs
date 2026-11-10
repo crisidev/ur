@@ -6,7 +6,7 @@ use super::{BACKGROUND, draw_digit};
 use crate::canvas::{Canvas, Color};
 use crate::day::Day;
 use crate::font;
-use crate::themes::hhmm;
+use crate::themes::helpers::hhmm;
 use crate::ui::Fits;
 
 /// Today's charts: a column per hour from midnight, [`CHART_BAR`] wide and

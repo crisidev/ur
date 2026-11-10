@@ -50,8 +50,9 @@ use crate::nav::Side;
 use crate::palette::Palette;
 use crate::route;
 use crate::system_off::Reason;
-use crate::ui::{Editing, Fits, Status};
+use crate::ui::{Editing, Status};
 
+pub mod helpers;
 #[cfg(feature = "theme-retro")]
 pub mod retro;
 
@@ -67,9 +68,12 @@ pub mod retro;
 /// No default methods: a new theme says how it draws each screen, and
 /// where its buttons are, rather than inheriting another theme's without
 /// anyone noticing. A theme draws every screen with its own code, never
-/// another theme's: one that starts from another's look starts from a
-/// copy of its code (see AUTHORING-THEMES.md), and the build refuses a
-/// theme feature that turns on another (see `manifests.rs`).
+/// another theme's: it may use [`helpers`] (mechanics that choose no
+/// colour, place, size or font) and the shared crate modules (the canvas,
+/// fonts, palettes, and the data a screen shows), but no other theme's
+/// module. One that starts from another's look starts from a copy of its
+/// code (see AUTHORING-THEMES.md), and the build refuses a theme feature
+/// that turns on another (see `manifests.rs`).
 ///
 /// Every method has `&self`, the scheme being shown, whose palette the
 /// canvas is in (or, in the dim look, its `dim()` palette): a theme that
@@ -93,7 +97,9 @@ pub trait Theme: Sync {
     /// each of red, green, and blue: every colour here must be one of
     /// those eight (each channel fully on or off), or it comes out as
     /// another, and a grey can only be a half-tone of two
-    /// ([`Palette::columns`]). `host-tests/theme` checks retro's.
+    /// ([`Palette::columns`]). [`Palette::idle_mode_safe`] says whether it
+    /// is, as a `const fn` to assert on it with (retro's does);
+    /// `host-tests/theme` checks retro's too.
     fn dim(&self) -> &Palette;
 
     // The clock, and the screens around it (see `crate::ui`).
@@ -407,50 +413,6 @@ pub enum Handles {
 /// THEME and LIGHT (say 6k, 8k, 10k, 12k), kept with the settings in
 /// flash. Retro's scales ("×1K", "×10K") would then follow the goal.
 pub const STEP_GOAL: u32 = 10_000;
-
-/// Time left, as short as it reads well: "M:SS" under 10 minutes (where
-/// seconds matter), "42 MIN" under an hour, "2H05" beyond.
-pub fn countdown(seconds: i64) -> heapless::String<8> {
-    use core::fmt::Write as _;
-    let mut text = heapless::String::new();
-    // Hours stop at 99, as the editor's two digits do.
-    let seconds = seconds.clamp(0, 100 * 3600 - 1);
-    let result = if seconds < 10 * 60 {
-        write!(text, "{}:{:02}", seconds / 60, seconds % 60)
-    } else if seconds < 60 * 60 {
-        write!(text, "{} MIN", (seconds + 59) / 60)
-    } else {
-        write!(text, "{}H{:02}", seconds / 3600, seconds / 60 % 60)
-    };
-    result.fits();
-    text
-}
-
-/// `minutes` (after midnight, or a duration) as HH:MM.
-pub fn hhmm(minutes: i64) -> heapless::String<6> {
-    use core::fmt::Write as _;
-    // Two digits of hours, and never negative: a time of day, or a
-    // night's sleep. Every caller lays the text out as five characters
-    // wide; more would still fit the buffer (to "999:59"), and so pass
-    // unnoticed, shifted or cut on the screen.
-    debug_assert!((0..100 * 60).contains(&minutes), "not a time: {minutes}");
-    let mut text = heapless::String::new();
-    write!(text, "{:02}:{:02}", minutes / 60, minutes % 60).fits();
-    text
-}
-
-/// A timer's duration (not counting down): "3 MIN", "1H30".
-pub fn duration(minutes: u16) -> heapless::String<8> {
-    use core::fmt::Write as _;
-    let mut text = heapless::String::new();
-    let result = if minutes < 60 {
-        write!(text, "{minutes} MIN")
-    } else {
-        write!(text, "{}H{:02}", minutes / 60, minutes % 60)
-    };
-    result.fits();
-    text
-}
 
 // ==============================================================================
 // The built-in themes and their schemes

@@ -6,7 +6,8 @@ use super::{BACKGROUND, action_icon, draw_digit};
 use crate::canvas::{Canvas, Color};
 use crate::font;
 use crate::route::Turn;
-use crate::themes::{Glance, hhmm};
+use crate::themes::Glance;
+use crate::themes::helpers::hhmm;
 use crate::ui::Status;
 
 /// A glance: the time alone, or the next turn while the phone navigates.

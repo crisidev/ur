@@ -6,6 +6,7 @@ use embassy_time::Instant;
 use super::{BACKGROUND, draw_digit};
 use crate::canvas::{Canvas, Color};
 use crate::system_off::Reason;
+use crate::themes::helpers::centred_lines;
 
 // ==============================================================================
 // Switching off
@@ -17,9 +18,7 @@ const LINE: i32 = 8;
 
 /// Lines of a message about switching off, centred, from `y` down.
 pub(super) fn render_lines(canvas: &mut Canvas, y: i32, lines: &[&str], color: Color) {
-    for (i, line) in lines.iter().enumerate() {
-        canvas.text_centered(40, y + LINE * i as i32, line, color);
-    }
+    centred_lines(canvas, (40, y), LINE, lines, color);
 }
 
 /// Asks whether to switch to storage mode (see [`crate::system_off`]).

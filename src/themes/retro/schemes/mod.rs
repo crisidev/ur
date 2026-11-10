@@ -125,3 +125,7 @@ pub static GLANCE: Palette = palette("GLANCE", [
     0xff0000, 0xffffff,
 ])
 .halftone(1 << Color::GREY.0 | 1 << Color::TRACK.0);
+
+// The dim look keeps to idle mode's colours, checked as it's built
+// (host-tests/theme proves it's only black, white and red, too).
+const _: () = assert!(GLANCE.idle_mode_safe(), "GLANCE: idle mode's colours only");

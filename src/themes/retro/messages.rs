@@ -4,6 +4,7 @@ use super::BACKGROUND;
 use super::layout::{CALL_BUTTONS_Y, CALL_TEXT_WIDTH, MUSIC_CONTROLS_Y, MUSIC_TEXT_WIDTH};
 use crate::canvas::{Canvas, Color};
 use crate::font;
+use crate::themes::helpers::fitted;
 use crate::themes::{Call, Music};
 
 // Notifications look like the watch's other screens: their app is the
@@ -92,11 +93,11 @@ pub(super) fn render_card(canvas: &mut Canvas, app: &str, who: &str, time: &str)
     // The app gives way to the time: 4 px between them, and an ellipsis.
     let time_width = font::small_text_width(time);
     let gap = if time.is_empty() { 0 } else { time_width + 4 };
-    small_fitted(
+    fitted(
         canvas,
-        BANNER_TEXT.start,
-        3,
+        (BANNER_TEXT.start, 3),
         app,
+        font::Face::Small,
         BANNER_TEXT_WIDTH - gap,
         Color::ACCENT,
     );
@@ -145,15 +146,6 @@ pub(super) fn render_card(canvas: &mut Canvas, app: &str, who: &str, time: &str)
     }
 }
 
-/// `text` in the small font at (`x`, `y`), in `room` px, ending in an
-/// ellipsis if it doesn't fit.
-fn small_fitted(canvas: &mut Canvas, x: i32, y: i32, text: &str, room: i32, color: Color) {
-    let mut line = [font::Line::default()];
-    if font::wrap(text, font::Face::Small, room, &mut line) > 0 {
-        canvas.line(x, y, text, line[0], font::Face::Small, color);
-    }
-}
-
 /// Line pitch of the small font in the banner: 5 px capitals, 2 accent
 /// rows, and a row's gap, so an accent never touches the line above.
 const SMALL_PITCH: i32 = 5 + font::ACCENT_ROWS + 1;
@@ -180,11 +172,11 @@ pub(super) fn render_banner(canvas: &mut Canvas, app: &str, who: &str) {
     let top = 63 - SMALL_PITCH * (count as i32 - 1);
     canvas.fill_rect(0, top, 80, 80 - top, BACKGROUND);
     canvas.fill_rect(0, top, 80, 1, Color::ACCENT);
-    small_fitted(
+    fitted(
         canvas,
-        BANNER_TEXT.start,
-        top + 2,
+        (BANNER_TEXT.start, top + 2),
         app,
+        font::Face::Small,
         BANNER_TEXT_WIDTH,
         Color::ACCENT,
     );

@@ -24,7 +24,8 @@ use crate::alarm;
 use crate::battery::Battery;
 use crate::canvas::{Canvas, Color};
 use crate::font;
-use crate::themes::{Face, Media, STEP_GOAL, countdown, hhmm};
+use crate::themes::helpers::{countdown, hhmm, iso_date, percent as percent_text};
+use crate::themes::{Face, Media, STEP_GOAL};
 use crate::ui::Fits;
 
 pub(super) fn render_clock(canvas: &mut Canvas, face: &Face) {
@@ -183,12 +184,12 @@ pub(super) fn render_clock(canvas: &mut Canvas, face: &Face) {
     // (without the shadow, which at 1× would only thicken them), and in the
     // accent colour, so they're still easy to find.
     const NOTE_Y: i32 = 39;
-    let mut date = heapless::String::<10>::new();
-    match &status.local_time {
-        Some(t) => write!(date, "{:04}-{:02}-{:02}", t.year, t.month, t.day).fits(),
-        None => date.push_str("----------").fits(),
-    }
-    canvas.text(4, NOTE_Y, &date, Color::TEXT_DIM);
+    let date = status
+        .local_time
+        .as_ref()
+        .map(|t| iso_date(t.year, t.month, t.day));
+    let date = date.as_deref().unwrap_or("----------");
+    canvas.text(4, NOTE_Y, date, Color::TEXT_DIM);
     for (digit, x) in [seconds / 10, seconds % 10].into_iter().zip([64, 70]) {
         let glyph = digit_glyph(digit);
         canvas.sprite(x, NOTE_Y - 1, font::DIGIT_W, glyph, 1, Color::ACCENT);
@@ -340,8 +341,7 @@ fn render_battery(canvas: &mut Canvas, battery: &Battery, uptime_secs: u64) -> i
     }
     canvas.fill_rect(X + 1, Y + 1, fill.min(8), 3, color);
 
-    let mut text = heapless::String::<8>::new();
-    write!(text, "{percent}%").fits();
+    let text = percent_text(percent);
     let text_x = X - 2 - font::small_text_width(&text);
     canvas.text(text_x, Y, &text, color);
     if battery.charging {

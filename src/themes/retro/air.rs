@@ -8,6 +8,7 @@ use super::{BACKGROUND, draw_digit};
 use crate::aranet::{self, Band, Sighting};
 use crate::canvas::{Canvas, Color};
 use crate::font;
+use crate::themes::helpers::tenths;
 use crate::ui::Fits;
 
 // Canvas layout (80×80), y ranges inclusive:
@@ -59,14 +60,14 @@ pub(super) fn render_air(canvas: &mut Canvas, sighting: &Sighting, now: Instant)
 
     // The temperature, to the tenth: "--.-" if invalid. Within ±100 °C
     // (and a sauna's), so that big it still fits the width.
-    let mut temperature = heapless::String::<8>::new();
-    match reading.tenths().map(|t| t.clamp(-999, 1999)) {
-        Some(t) => {
-            let sign = if t < 0 { "-" } else { "" };
-            write!(temperature, "{sign}{}.{}", t.abs() / 10, t.abs() % 10).fits()
+    let mut temperature = match reading.tenths() {
+        Some(t) => tenths(t.clamp(-999, 1999)),
+        None => {
+            let mut text = heapless::String::new();
+            text.push_str("--.-").fits();
+            text
         }
-        None => temperature.push_str("--.-").fits(),
-    }
+    };
 
     // The big number: CO₂ when the sensor measures it (dashes while an
     // Aranet4 calibrates), the temperature from a thermometer.

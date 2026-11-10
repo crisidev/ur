@@ -1,12 +1,11 @@
 //! Retro's info and settings screens, and Home Assistant's key.
 
-use core::fmt::Write as _;
-
 use super::BACKGROUND;
 use super::layout::{SETTINGS_ROW, SETTINGS_TOP};
 use crate::bthome::Identity;
 use crate::canvas::{Canvas, Color};
 use crate::font;
+use crate::themes::helpers::{self, address, hex, hms, percent, volts};
 use crate::themes::{RowKind, SettingsPage};
 use crate::ui::{Fits, Status};
 
@@ -25,26 +24,10 @@ pub(super) fn render_info(canvas: &mut Canvas, status: &Status) {
     canvas.text(end, 3, release, Color::ACCENT);
 
     let battery = status.battery;
-    let mv = battery.millivolts();
-    let secs = status.uptime_secs;
-    let mut values: [heapless::String<12>; 3] = Default::default();
-    write!(
-        values[0],
-        "{}% {}.{:02}V",
-        battery.percent(),
-        mv / 1000,
-        (mv % 1000) / 10
-    )
-    .fits();
-    write!(values[1], "{}", battery.status()).fits();
-    write!(
-        values[2],
-        "{:02}:{:02}:{:02}",
-        secs / 3600,
-        (secs / 60) % 60,
-        secs % 60
-    )
-    .fits();
+    let mut charge = percent(battery.percent());
+    charge.push(' ').fits();
+    charge.push_str(&volts(battery.millivolts())).fits();
+    let uptime = hms(status.uptime_secs);
     // "PAIRED" rather than "CONNECTED": the phone only counts as here once
     // it has written over an authenticated link (see `ble`), which takes
     // its bond, so this says both that it's connected and that it's paired
@@ -63,9 +46,9 @@ pub(super) fn render_info(canvas: &mut Canvas, status: &Status) {
         build => build,
     };
     let rows = [
-        ("BATTERY", values[0].as_str()),
-        ("POWER", &values[1]),
-        ("UPTIME", &values[2]),
+        ("BATTERY", charge.as_str()),
+        ("POWER", battery.status()),
+        ("UPTIME", &uptime),
         ("PHONE", phone),
         ("BUILD", build),
     ];
@@ -100,10 +83,10 @@ fn row_fits(label: &str, value: &str) -> bool {
 // hairlines, the rows 20 canvas pixels (~7 mm) tall, a fingertip and
 // some.
 
-/// Which row a tap at `y` is on, of `count`.
+/// Which row a tap at `y` is on, of `count`: the title's strip above the
+/// rows counts as the first's, a forgiving target at the screen's edge.
 pub(super) fn row_at(y: i32, count: usize) -> Option<usize> {
-    let row = usize::try_from(y.checked_sub(SETTINGS_TOP)? / SETTINGS_ROW).ok()?;
-    (row < count).then_some(row)
+    helpers::row_at(y.max(SETTINGS_TOP), SETTINGS_TOP, SETTINGS_ROW, count)
 }
 
 /// A settings screen: its title, then each row's label on the left and
@@ -157,8 +140,6 @@ pub(super) fn render_ha_qr(canvas: &mut Canvas, identity: Option<&Identity>) {
     canvas.qr(&identity.key);
 }
 
-const HEX: &[u8; 16] = b"0123456789ABCDEF";
-
 /// Home Assistant's key, for typing into its BTHome integration: 32 hex
 /// digits, big, in four rows of two groups of four, and the address it'll
 /// find the watch at, for picking it out among what it discovers.
@@ -169,14 +150,12 @@ pub(super) fn render_ha_key(canvas: &mut Canvas, identity: Option<&Identity>) {
         canvas.text_centered(40, 36, "NO KEY YET", Color::TEXT_DIM);
         return;
     };
-    let digit = |byte: u8, high: bool| HEX[usize::from(if high { byte >> 4 } else { byte & 15 })];
     for (row, bytes) in identity.key.chunks(4).enumerate() {
         let mut text = [b' '; 9];
         for (i, &byte) in bytes.iter().enumerate() {
             // A space between the two groups.
             let at = 2 * i + usize::from(i >= 2);
-            text[at] = digit(byte, true);
-            text[at + 1] = digit(byte, false);
+            text[at..at + 2].copy_from_slice(&hex(byte));
         }
         // Hex digits and spaces, so never empty (and no `expect`, whose
         // `Utf8Error` `Debug` would cost flash).
@@ -184,14 +163,5 @@ pub(super) fn render_ha_key(canvas: &mut Canvas, identity: Option<&Identity>) {
         // 2×: 8 px a character, so 72 px (bar the last one's gap).
         canvas.text_scaled(5, 13 + 13 * row as i32, text, Color::TEXT, 2);
     }
-    // As people write it: most significant byte first.
-    let mut address = heapless::String::<17>::new();
-    for (i, &byte) in identity.address.iter().rev().enumerate() {
-        if i > 0 {
-            let _ = address.push(':');
-        }
-        let _ = address.push(char::from(digit(byte, true)));
-        let _ = address.push(char::from(digit(byte, false)));
-    }
-    canvas.text_centered(40, 69, &address, Color::TEXT_DIM);
+    canvas.text_centered(40, 69, &address(&identity.address), Color::TEXT_DIM);
 }

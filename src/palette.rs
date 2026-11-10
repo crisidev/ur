@@ -136,6 +136,28 @@ pub const fn palette(name: &'static str, hex: [u32; Color::COUNT]) -> Palette {
 }
 
 impl Palette {
+    /// Whether every colour here is one the panel's idle mode shows as it
+    /// is: each of red, green and blue fully on or off, as idle mode keeps
+    /// only their top bits (see `display::Display::set_idle`). What a dim
+    /// look's palette must be ([`crate::themes::Theme::dim`]); a `const
+    /// fn`, so a theme can assert it where it defines one:
+    ///
+    /// ```ignore
+    /// const _: () = assert!(GLANCE.idle_mode_safe(), "GLANCE: idle mode's colours only");
+    /// ```
+    pub const fn idle_mode_safe(&self) -> bool {
+        let mut i = 0;
+        while i < Color::COUNT {
+            let rgb565 = u16::from_be_bytes(self.colors[i]);
+            let (red, green, blue) = (rgb565 >> 11, (rgb565 >> 5) & 0x3F, rgb565 & 0x1F);
+            if !matches!(red, 0 | 0x1F) || !matches!(green, 0 | 0x3F) || !matches!(blue, 0 | 0x1F) {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+
     /// The same palette, with `roles` (a bit each, bit `n` for `Color(n)`)
     /// half-toned with the background: see [`Palette::columns`].
     pub const fn halftone(self, roles: u16) -> Self {

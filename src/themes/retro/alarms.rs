@@ -10,7 +10,8 @@ use super::{BACKGROUND, draw_digit};
 use crate::alarm;
 use crate::canvas::{Canvas, Color};
 use crate::font;
-use crate::themes::{Editor, countdown, duration, hhmm};
+use crate::themes::Editor;
+use crate::themes::helpers::{countdown, duration, hhmm};
 use crate::ui::{Editing, Fits, Status};
 
 /// Smart wake across the top (label and state, then both times), then the
