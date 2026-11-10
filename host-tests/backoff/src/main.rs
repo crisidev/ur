@@ -15,11 +15,28 @@ mod tests {
     #[test]
     fn waits_grow_then_hold() {
         let mut backoff = Backoff::new();
-        let waits: Vec<u32> = (0..10).map(|_| backoff.failed().wait_ms).collect();
+        let waits: Vec<u32> = (0..11).map(|_| backoff.failed().wait_ms).collect();
         assert_eq!(
             waits,
-            [100, 500, 1_000, 5_000, 10_000, 30_000, 60_000, 60_000, 60_000, 60_000]
+            [100, 200, 500, 1_000, 2_000, 5_000, 10_000, 30_000, 60_000, 60_000, 60_000]
         );
+    }
+
+    /// A bus wedged for a few seconds (five failures, as the dev kit's
+    /// `wedge-i2c` causes) costs a short wait once it's fine again, not
+    /// half a minute: the waits only reach 30 s after ~20 s of failures.
+    #[test]
+    fn short_wedge_short_waits() {
+        let mut backoff = Backoff::new();
+        let mut elapsed_ms = 0;
+        let mut wait_ms = 0;
+        while elapsed_ms < 5_000 {
+            wait_ms = backoff.failed().wait_ms;
+            elapsed_ms += wait_ms;
+        }
+        assert!(wait_ms <= 5_000, "{wait_ms}");
+        let before_30s: u32 = WAITS_MS.iter().take_while(|&&w| w < 30_000).sum();
+        assert!(before_30s >= 15_000, "{before_30s}");
     }
 
     /// The first retry is as quick as the old fixed 100 ms retry, which
@@ -58,10 +75,10 @@ mod tests {
             }
             elapsed_ms += u64::from(retry.wait_ms);
         }
-        assert_eq!(&logged[..WAITS_MS.len()], &[1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(&logged[..WAITS_MS.len()], &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
         assert_eq!(&logged[WAITS_MS.len()..][..2], &[60, 120]);
-        // Seven at the start, then one an hour.
-        assert!((7 + 23..=7 + 25).contains(&logged.len()), "{logged:?}");
+        // Nine at the start, then one an hour.
+        assert!((9 + 23..=9 + 25).contains(&logged.len()), "{logged:?}");
     }
 
     /// `loud` says beforehand what `failed` then decides, so a driver can

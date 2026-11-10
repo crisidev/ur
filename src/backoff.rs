@@ -19,7 +19,11 @@
 /// How long to wait after each failed attempt in turn, in ms; the last
 /// repeats for good. The first is short: an attempt cut short by
 /// something else on the bus works when tried again at once.
-pub const WAITS_MS: [u32; 7] = [100, 500, 1_000, 5_000, 10_000, 30_000, 60_000];
+/// The waits only get long once the failures have gone on for ~20 s: a
+/// bus that's stuck that long is stuck for good, or nearly, but a run of
+/// a few failures (a wedged bus soon recovered) shouldn't leave a sensor
+/// waiting half a minute after it's fine again.
+pub const WAITS_MS: [u32; 9] = [100, 200, 500, 1_000, 2_000, 5_000, 10_000, 30_000, 60_000];
 
 /// Once the waits have stopped growing, one failure in this many is logged.
 pub const LOG_EVERY: u16 = 60;
