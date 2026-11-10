@@ -175,7 +175,10 @@ mod tests {
         let idle = |color| {
             theme::GLANCE.columns(color).map(|bytes| {
                 let rgb565 = u16::from_be_bytes(bytes);
-                rgb565 & 0b10000_100000_10000
+                // Grouped as RGB565's channels: 5, 6 and 5 bits.
+                #[allow(clippy::unusual_byte_groupings)]
+                let top_bits = 0b10000_100000_10000;
+                rgb565 & top_bits
             })
         };
         for (i, &(a_name, a)) in STAGES.iter().enumerate() {
@@ -240,5 +243,67 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+/// Kani proofs (`cargo kani` here, one at a time with `--harness`), about
+/// every role in every theme, where the tests above compare chosen roles.
+/// Looking a role up never panics, and its columns are its colour or the
+/// background's; and the dim look has only the colours the panel's idle
+/// mode can show.
+///
+/// A role is any of the `Color::COUNT` the canvas's 4 bits hold. A
+/// `Color` made of a higher number (nothing makes one) would index past
+/// the palette.
+#[cfg(kani)]
+mod proofs {
+    use crate::theme::{self, Color, Theme};
+
+    fn any_theme() -> &'static Theme {
+        match kani::any::<u8>() % 5 {
+            0 => &theme::ARCADE,
+            1 => &theme::TERMINAL,
+            2 => &theme::HANDHELD,
+            3 => &theme::PARCHMENT,
+            _ => &theme::GLANCE,
+        }
+    }
+
+    fn any_role() -> Color {
+        let role: u8 = kani::any();
+        kani::assume(usize::from(role) < Color::COUNT);
+        Color(role)
+    }
+
+    /// For every role in every theme: the panel's even columns get the
+    /// role's colour, and its odd columns the same, or the background's
+    /// if the theme half-tones the role. Only the dim look half-tones
+    /// any, and only its grey and its track: every other role, in every
+    /// theme, is a solid colour.
+    #[kani::proof]
+    fn a_role_is_its_colour_or_half_the_background() {
+        let (theme, role) = (any_theme(), any_role());
+        let [even, odd] = theme.columns(role);
+        assert_eq!(even, theme.bytes(role));
+        if odd != even {
+            assert_eq!(odd, theme.bytes(Color::BACKGROUND));
+            assert!(core::ptr::eq(theme, &theme::GLANCE));
+            assert!(role == Color::GREY || role == Color::TRACK);
+        }
+    }
+
+    /// For every role in the dim look: its colour is one the panel's idle
+    /// mode shows as it is, each of red, green and blue fully on or off
+    /// (idle mode keeps only their top bits, so anything between would
+    /// come out as something else); and of those eight, only black,
+    /// white and red, as the theme's docs promise.
+    #[kani::proof]
+    fn the_dim_look_is_black_white_and_red() {
+        let rgb565 = u16::from_be_bytes(theme::GLANCE.bytes(any_role()));
+        let (red, green, blue) = (rgb565 >> 11, (rgb565 >> 5) & 0x3F, rgb565 & 0x1F);
+        assert!(red == 0 || red == 0x1F);
+        assert!(green == 0 || green == 0x3F);
+        assert!(blue == 0 || blue == 0x1F);
+        assert!(matches!(rgb565, 0x0000 | 0xFFFF | 0xF800));
     }
 }
