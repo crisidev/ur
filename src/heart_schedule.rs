@@ -48,14 +48,67 @@
 //! looking, so `heart` measures right away), but their readings count as
 //! measurements, and their LED time comes out of the budget.
 //!
-//! Three rules about the sessions themselves live here too, being as
+//! Two rules about the sessions themselves live here too, being as
 //! hardware-free: a background session only starts once the wrist has
-//! been calm for a few seconds ([`START_CALM_POLLS`]), stops if the wrist
-//! gets busy before its first windows are in, to try again at the next
-//! still moment ([`interrupt`]), and gives up early if it stays busy
-//! ([`give_up`]). At a desk, a hand rests for a moment between movements,
-//! and sessions started in that moment spent their 30 s of LED on a wrist
-//! that was soon moving again.
+//! been calm for a few seconds ([`START_CALM_POLLS`]), and, if it runs out
+//! of time on a calm wrist with a faint pulse, may go on brighter
+//! ([`brighter`]). Once started, it runs its full length however the
+//! wrist moves (see below), unless it reads first or finds no skin.
+//!
+//! # Trying through movement
+//!
+//! Until 0.10.0-rc.3, a background session stopped early for a busy
+//! wrist: in its first 12 s if the wrist got restless (movement above 300)
+//! before any window had passed the signal checks, to try again at the
+//! next still moment (every third stop in a row counting as a failure),
+//! and at 12 s if the wrist had been busy (above `heart::CALM`) at most of
+//! its checks. The evidence for stopping was sound as far as it went:
+//!
+//! - Replaying three days of field logs against a Garmin with every
+//!   signal check off, windows at 301-700 landed within 5 BPM of it 15% of
+//!   the time, against 12% when paired with a Garmin reading from hours
+//!   away: no pulse to be had. At 151-300 it was 38% (23% by chance), and
+//!   calm, 46% (21%). 12 s stretches of a desk session read 31% of the time
+//!   when calm throughout, 16% at worst 151-300, and 1% at worst 301-700.
+//! - Replayed on the field logs' sessions (two nights and three desk days),
+//!   stopping for a restless wrist would have lost one desk reading of 14,
+//!   and two of 136 at night, and saved 12-27% of the desk sessions' LED.
+//!   Giving up at 12 s cut 45 failing sessions of 129 short, saving ~860 s
+//!   of LED, and lost three background readings (at a desk, from windows
+//!   that only passed after 15 s of a busy wrist).
+//! - Simulated on three desk days' movement, trying again at the next
+//!   still moment made 0.43, 1.8 and 0.93 background readings an hour where
+//!   giving up made 0.25, 1.7 and 0.76, for 10-19 s more LED an hour.
+//!   Retrying failed sessions sooner instead (from 2 minutes rather than
+//!   5) took 26-48 s more for 0.37, 1.6 and 0.99.
+//!
+//! But a desk morning on the sealed watch (2026-11-10) showed what it
+//! cost: every session on a busy wrist ended after 3-19 s, and nine went
+//! by in 51 minutes without a reading. The user chose readings over
+//! battery ("we should be trying through movement"), and the field log
+//! gains what it never had: full-length PPG under movement (its samples
+//! and the wrist's movement, a second at a time, at `trace`), the data a
+//! motion-tolerant estimator would be developed against. So a session now
+//! runs its full `heart::SESSION_LIMIT` through movement. Accuracy doesn't
+//! rest on stopping: every window still has to pass the signal checks,
+//! sustained movement still vetoes it, a slow one on a busy wrist is still
+//! rejected, and a reading still takes three accepted windows that agree,
+//! or two in a row on a calm wrist (see `ppg::Consensus`), so a moving
+//! wrist mostly just spends the LED. Asleep, a session gave up at 12 s too
+//! (4 of 82 that night, on turning over), and runs on as well now: once
+//! the wrist settles, the pulse is as before.
+//!
+//! What running on gains can only partly be replayed, as a recording ends
+//! where the firmware that made it stopped. Replaying the awake sessions
+//! of the field logs of 2026-11-07 to 11-10 with and without the old
+//! stops: the sealed watch's 91 background sessions, recorded under them,
+//! read 29 times rather than 27; the 195 older ones (whose logs don't say
+//! which were background, so glances are among them), as if all had been,
+//! 57 rather than 38, and of the 61 recorded to 28 s or more, 12 rather
+//! than 7; the nights' 195 sessions read 183 times either way. Over all
+//! the replayed sessions that's ~20% more LED. Each failure now costs a
+//! whole session (30 s of LED, 72 budget seconds at 30 mA) where a stop
+//! cost 3-19 s, which is why [`LED_BUDGET`] grew.
 //!
 //! Time is whole seconds since boot, as `u32` (136 years). Like
 //! [`crate::sleep`], this knows nothing of hardware or the clock, so it
@@ -106,6 +159,15 @@ pub const ELEVATED_BY: u8 = 15;
 /// rest is worth a retry soonish (calm is necessary for a reading, not
 /// sufficient), but not a tight loop: each failure costs a whole
 /// `SESSION_LIMIT` (30 s) of LED, or climbs to 40 mA off the wrist.
+///
+/// Not from 2 minutes: simulated on three desk days' movement (with
+/// sessions that then gave up at 12 s), retrying from 2 minutes made 0.37,
+/// 1.6 and 0.99 background readings an hour against 0.25, 1.7 and 0.76,
+/// for 26-48 s more LED an hour; with a failure now a whole 30 s session,
+/// that's ~2.5 times the LED for at best a reading every few hours, and it
+/// would spend the budget that [`OVERDUE`]'s retries need. A desk that
+/// keeps failing reaches those (every 10 minutes) half an hour after its
+/// last reading anyway, after waits of 5 and 10 minutes.
 pub const FAILED_INTERVAL: u32 = 5 * 60;
 
 /// The longest wait after a session that failed on a calm wrist (see
@@ -154,33 +216,6 @@ pub const MOVED_POLLS: u8 = 6;
 /// nothing: asleep, or at rest, nearly every poll is calm.
 pub const START_CALM_POLLS: u8 = 3;
 
-/// Seconds into a background session at which it gives up if no window
-/// has passed the signal checks yet and the wrist has been busy (above
-/// `heart::CALM`) at most of its level checks (see [`give_up`]).
-///
-/// The first two windows end at ~8.5 and ~10.5 s. Replaying 129 field-log
-/// sessions (`host-tests/ppg`), giving up at 12 s cut 45 failing sessions
-/// short, saving ~860 s of LED (~19 s each), and lost three background
-/// readings (at a desk, from windows that only passed after 15 s of a busy
-/// wrist); at 10 s it would have lost six.
-pub const GIVE_UP_AFTER: u32 = 12;
-
-/// Seconds into a background session during which it stops, rather than
-/// carrying on, if the wrist gets restless before any window has passed
-/// the signal checks (see [`interrupt`]): the first two windows'. After
-/// that, [`give_up`] judges the session as a whole.
-pub const INTERRUPT_BEFORE: u32 = GIVE_UP_AFTER;
-
-/// Interrupted background sessions in a row (see [`Outcome::Interrupted`])
-/// of which the last counts as a failure, for the usual back-off. A
-/// wrist that never keeps still for long (a watch carried in the hand,
-/// say) would otherwise spend the LED budget on short tries all day.
-/// Simulated on three desk days' movement (see [`interrupt`]), three
-/// made 0.43, 1.8 and 0.93 readings an hour, against 0.61, 2.1 and 1.1
-/// with no limit, for 25-35% less LED: each extra reading cost ~100 s of
-/// LED, rather than ~150.
-pub const INTERRUPTIONS: u8 = 3;
-
 /// Polls (2 s each) without steps after which a reading counts as resting
 /// (see [`Schedule::ended`]): three minutes, by when the heart rate has
 /// mostly come down after a walk.
@@ -201,16 +236,28 @@ pub const RESTING_STEPLESS_POLLS: u8 = 90;
 const SEED_AGREEMENT: u8 = 6;
 
 /// LED seconds per hour that sessions may spend, background and watched
-/// alike. 180 s is what the fixed schedule this replaced spent at worst
-/// (six failing 30 s sessions an hour), and ~2.3× what a calm hour of it
-/// actually used: room for a busy hour of elevated readings, but a bad
-/// day (a fidgety wrist failing session after session) can't drain more
-/// than ~0.14 mA on average.
+/// alike: room for a busy hour of elevated readings, or of tries at a desk,
+/// but a bad day (a fidgety wrist failing session after session) can't
+/// drain more than ~0.23 mA on average.
 ///
 /// Seconds at the lowest drive, 12.5 mA, which is all sessions use but
-/// for the occasional [`brighter`] phase: a second at 30 mA costs 2.4 (see
-/// [`budget_seconds`]).
-pub const LED_BUDGET: u32 = 180;
+/// for the occasional [`brighter`] phase and the bright arm (see [`Arm`]):
+/// a second at 30 mA costs 2.4 (see [`budget_seconds`]).
+///
+/// It was 180 s (what the fixed schedule this replaced spent at worst, six
+/// failing 30 s sessions an hour) while a session at a desk stopped within
+/// 3-19 s on a busy wrist. Now that it runs its 30 s (see "Trying through
+/// movement" in the module docs), a desk hour of glances (~13 s each) and
+/// rounds of tries that read at the third goes past 180: simulated over 8
+/// hours with a glance every 7.5 minutes, 180 held back 29 of 54 sessions
+/// until the budget had earned them (31 of 51 all on the bright arm), and
+/// 300 none of 78 (17 of 78). 300 also lets every try of an overdue desk
+/// on the bright arm start at 30 mA (432 budget seconds an hour, inside
+/// [`OVERDUE_BUDGET`]), where at 180 a third to a half of them stepped
+/// down. The user would rather spend battery than lose readings: the cap
+/// goes from ~3.3 to ~5.6 mAh a day, and what an hour at a desk actually
+/// spends is in docs/power-plan.md.
+pub const LED_BUDGET: u32 = 300;
 
 /// Budget a background session needs before it may start: its longest
 /// run, `SESSION_LIMIT`, so one session can't overdraw the bucket by
@@ -250,10 +297,10 @@ const _: () = assert!(SESSION_RESERVE <= LED_BUDGET);
 /// [`Outcome::OffWrist`]), than a faint pulse.
 ///
 /// At its worst (a whole day overdue, every session failing), it doubles
-/// the LED's hourly cap: from ~0.14 mA to ~0.28 mA on average, ~3.3 mAh a
+/// the LED's hourly cap: from ~0.23 mA to ~0.46 mA on average, ~5.6 mAh a
 /// day more (see docs/power-plan.md). Overdue half an hour sooner moves
-/// each failing spell's doubling earlier, not that cap: at most 90 budget
-/// seconds more a spell, ~0.07 mAh.
+/// each failing spell's doubling earlier, not that cap: at most 150 budget
+/// seconds more a spell, ~0.12 mAh.
 pub const OVERDUE: u32 = 30 * 60;
 
 /// The LED budget, and its refill rate, while a reading is overdue (see
@@ -263,10 +310,16 @@ pub const OVERDUE_BUDGET: u32 = 2 * LED_BUDGET;
 /// The longest wait after a failure while a reading is overdue (see
 /// [`OVERDUE`]), unless the watch was off the wrist: as for a calm failure
 /// (see [`CALM_RETRY_INTERVAL`]), and with no limit on how many, as the
-/// doubled budget bounds them. At a desk, failures (a busy wrist, or a
-/// third interruption) otherwise back off to 20 minutes, or an hour with
-/// no movement in between; with this, a desk day that hasn't read for half
-/// an hour tries six times an hour at its still moments.
+/// doubled budget bounds them. At a desk, failures (a busy wrist) otherwise
+/// back off to 20 minutes, or an hour with no movement in between; with
+/// this, a desk day that hasn't read for half an hour tries six times an
+/// hour at its still moments.
+///
+/// Not sooner: each try is a whole session (30 s of LED, 72 budget seconds
+/// on the bright arm), so six an hour take 432 budget seconds of the
+/// doubled budget's 600 on the bright arm, leaving the rest for glances
+/// (and, should the budget run short, [`bright_start`] steps down rather
+/// than hold a try back).
 pub const OVERDUE_RETRY: u32 = CALM_RETRY_INTERVAL;
 
 /// Consecutive failures counted (beyond this the wait is capped anyway).
@@ -320,12 +373,6 @@ pub enum Outcome {
     CalmNoReading,
     /// No skin, or ambient light flooding the sensor: not on a wrist.
     OffWrist,
-    /// A background session stopped early because the wrist got restless
-    /// (see [`interrupt`]). It isn't counted, as a measurement or a
-    /// failure: the session is still due, and starts again once the wrist
-    /// is calm, unless it's the [`INTERRUPTIONS`]th in a row, which counts
-    /// as [`Outcome::NoReading`]. Its LED time comes out of the budget.
-    Interrupted,
 }
 
 /// What the wrist had been doing when a session started, from `activity`;
@@ -372,9 +419,6 @@ pub struct Schedule {
     /// Whether the last reading was elevated (so `interval` is
     /// [`ELEVATED_INTERVAL`] for that reason; for [`Why`]).
     elevated: bool,
-    /// Interrupted background sessions since the last counted one (see
-    /// [`Outcome::Interrupted`]).
-    interruptions: u8,
     /// Resting estimates, awake and asleep.
     resting_awake: Resting,
     resting_asleep: Resting,
@@ -408,7 +452,6 @@ impl Schedule {
             off_wrist: false,
             calm_failures: 0,
             elevated: false,
-            interruptions: 0,
             resting_awake: Resting {
                 bpm: 0,
                 candidate: 0,
@@ -516,18 +559,6 @@ impl Schedule {
         if !background && !matches!(outcome, Outcome::Reading(_)) {
             return;
         }
-        // Stopped for a restless wrist: likewise, until there have been
-        // too many in a row.
-        let outcome = if outcome == Outcome::Interrupted {
-            self.interruptions += 1;
-            if self.interruptions < INTERRUPTIONS {
-                return;
-            }
-            Outcome::NoReading
-        } else {
-            outcome
-        };
-        self.interruptions = 0;
         let moved = moved(active_polls, asleep);
         self.last = now;
         match outcome {
@@ -584,10 +615,7 @@ impl Schedule {
                 };
                 self.interval = next as u16;
             }
-            Outcome::NoReading
-            | Outcome::CalmNoReading
-            | Outcome::OffWrist
-            | Outcome::Interrupted => {
+            Outcome::NoReading | Outcome::CalmNoReading | Outcome::OffWrist => {
                 self.failures = (self.failures + 1).min(MAX_FAILURES);
                 self.off_wrist = outcome == Outcome::OffWrist;
                 self.calm_failures = if outcome == Outcome::CalmNoReading {
@@ -603,12 +631,6 @@ impl Schedule {
                 }
             }
         }
-    }
-
-    /// Whether the last background session was interrupted (see
-    /// [`Outcome::Interrupted`]) and not counted, so it's still due.
-    pub fn interrupted(&self) -> bool {
-        self.interruptions > 0
     }
 
     /// The resting heart rate estimates, awake and asleep (0: none yet).
@@ -697,54 +719,17 @@ fn moved(active_polls: u8, asleep: bool) -> bool {
     !asleep && active_polls >= MOVED_POLLS
 }
 
-/// Whether a background session should give up now, `seconds` in, with no
-/// reading: no window has passed the signal checks yet (`accepted`), and
-/// the wrist was busy at more than half of the `checks` (one a second) so
-/// far (`busy`). A busy wrist's next windows would hold most of that
-/// movement, so they'd be rejected too, and the session's remaining LED
-/// time would likely be spent for nothing. It counts as a session without
-/// a reading, so the schedule backs off as after any other.
-pub fn give_up(seconds: u32, accepted: bool, busy: u8, checks: u8) -> bool {
-    seconds >= GIVE_UP_AFTER && !accepted && u16::from(busy) * 2 > u16::from(checks)
-}
-
-/// Whether a background session should stop now, `seconds` in, to try
-/// again at the next still moment (see [`Outcome::Interrupted`]): no
-/// window has passed the signal checks yet (`accepted`), it's still within
-/// [`INTERRUPT_BEFORE`], and the wrist is `restless` (above
-/// `heart::RESTLESS`), awake (not `asleep`).
-///
-/// Sitting at a desk, the wrist is rarely still, and a still moment
-/// rarely lasts the ~12 s a reading takes: in a field log of a morning
-/// there (2026-11-09), 11% of the accelerometer's polls were calm, and
-/// three calm polls were followed by six more only 12% of the time. Yet a
-/// still moment is where the readings are, and a restless one has none
-/// (see `heart::RESTLESS`), so a session that has lost its still moment
-/// is better spent on the next.
-///
-/// Replayed on the field logs' sessions (two nights and three desk days,
-/// against a Garmin), stopping would have lost one desk reading of 14,
-/// and two of 136 at night, both awake (one 13 BPM off), and saved
-/// 12-27% of the desk sessions' LED. What the next still moment makes of
-/// it can't be replayed: simulated on three desk days' movement (with a
-/// 12 s stretch that's calm throughout reading 31% of the time; see
-/// `heart::RESTLESS`), trying again made 0.43, 1.8 and 0.93 background
-/// readings an hour where giving up made 0.25, 1.7 and 0.76, for 19, 13
-/// and 10 s more LED an hour. Retrying failed sessions sooner instead
-/// (from 2 minutes rather than 5) took 26-48 s more for 0.37, 1.6 and
-/// 0.99.
-///
-/// Asleep, a restless second is turning over, after which the pulse is
-/// as before; watched, someone is looking, so neither stops.
-pub fn interrupt(seconds: u32, accepted: bool, restless: bool, asleep: bool) -> bool {
-    seconds < INTERRUPT_BEFORE && !accepted && restless && !asleep
-}
-
 /// Whether a session that ran out of time without a reading found the
 /// wrist calm (see [`Outcome::CalmNoReading`]): busy (above `heart::CALM`)
 /// at no more than a quarter of its level checks. A few busy seconds are
 /// a twitch, or turning over; more, and it's a wrist that won't keep still,
 /// which the usual back-off is for.
+///
+/// It also keeps a busy wrist's session from going on [`brighter`]: now
+/// that a session runs its full length through movement, a desk session
+/// often runs out on a wrist that was busy for much of it, and more light
+/// doesn't steady the sensor on the skin. (Its last window must be calm
+/// too, so a wrist that settles only at the end doesn't qualify either.)
 pub fn calm_throughout(busy: u8, checks: u8) -> bool {
     u16::from(busy) * 4 <= u16::from(checks)
 }
@@ -827,10 +812,10 @@ pub fn brighter(drive: u8, steps: u8, peak: u32, spare: u32) -> Option<u8> {
 /// `budget` covers a whole session (`SESSION_RESERVE` seconds) at it.
 ///
 /// Why start brighter, rather than step up late as [`brighter`] does: at a
-/// desk, sessions stop for a restless wrist or give up within ~12 s, so
-/// they never reach the late step, and a still moment there lasts seconds.
-/// Whether more light helps against the tendons and fingers moving the
-/// sensor is what the arms compare.
+/// desk, a still moment lasts seconds, and a session on a wrist that's
+/// busy for much of its 30 s never takes the late step (see
+/// [`calm_throughout`]). Whether more light helps against the tendons and
+/// fingers moving the sensor is what the arms compare.
 ///
 /// TODO: once the arms have answered that, start bright only when a
 /// reading looks hard on a calm wrist (the last session failed, or read a
@@ -857,14 +842,14 @@ pub fn bright_start(drive: u8, peak: u32, budget: u32) -> Option<u8> {
 /// have it meanwhile; if it doesn't, half pay for it.
 ///
 /// A round is a reading's worth of tries: the background session the
-/// schedule had due for its own reasons, and every one after it
-/// (interrupted, retried, overdue) until a reading, background or watched,
-/// ends it (see [`Schedule::begin`]). Its first awake session chooses the
+/// schedule had due for its own reasons, and every one after it (retried,
+/// overdue) until a reading, background or watched, ends it (see
+/// [`Schedule::begin`]). Its first awake session chooses the
 /// arm, and the rest keep it. Taking turns by session instead (0.10.0-rc.3)
 /// handed each try's retry to the other arm, so whenever a round's first
 /// try failed and its retry read, the next round's first try was on the
 /// same arm as this one's: in a field log (2026-11-10), one arm got nearly
-/// all the first tries, which come at the scheduled time and are often cut
+/// all the first tries, which come at the scheduled time and were often cut
 /// short by movement, and the other the retries, which wait for a still
 /// moment. By round, both arms get first tries and retries alike, and a
 /// round's outcome (read or not, after how many tries and how much LED) is

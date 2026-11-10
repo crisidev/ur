@@ -9,7 +9,7 @@
 #[allow(dead_code)]
 mod ppg;
 
-/// For [`heart_schedule::give_up`], which the replay applies.
+/// For [`heart_schedule::brighter`], which the replay applies.
 #[path = "../../../src/heart_schedule.rs"]
 #[allow(dead_code)]
 mod heart_schedule;
@@ -526,9 +526,6 @@ const MOTION_LIMIT: u16 = 1500;
 const LEVEL_CHECK_SAMPLES: usize = 27;
 /// What `heart::CALM` is: movement above which the wrist is busy.
 const CALM: u16 = 150;
-/// What `heart::RESTLESS` is: movement above which a background session
-/// stops before its first windows are in.
-const RESTLESS: u16 = 300;
 
 /// A session extracted from a field log by `scripts/ppg_sessions.py`, one
 /// per line: UTC start, a reference rate (another watch's, or 0), the
@@ -645,57 +642,15 @@ fn windows(session: &Recorded) -> Vec<(usize, Verdict, bool)> {
     verdicts
 }
 
-/// How a session ended before its recording did.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Stopped {
-    /// It gave up on a busy wrist (see [`heart_schedule::give_up`]).
-    GaveUp,
-    /// It stopped for a restless wrist, to try again at the next still
-    /// moment (see [`heart_schedule::interrupt`]).
-    Interrupted,
-}
-
-/// When, in seconds, and how a session would stop short of a reading,
-/// if it would.
-///
-/// A brighter phase isn't judged: it only starts on a calm wrist, 30 s in,
-/// past [`heart_schedule::interrupt`]'s seconds, and the counts that
-/// [`heart_schedule::give_up`] goes by are the whole session's, which a
-/// segment doesn't have.
-fn stops_at(session: &Recorded, windows: &[(usize, Verdict, bool)]) -> Option<(u32, Stopped)> {
-    // Likewise a segment after a level change (rare on a wrist, but a
-    // bright start that saturates steps back down).
-    if session.brighter || session.cont {
-        return None;
-    }
-    let (mut checks, mut busy) = (0u8, 0u8);
-    for (k, &moved) in session.movement.iter().enumerate() {
-        checks += 1;
-        busy += u8::from(moved > CALM);
-        // The firmware looks at the top of its next poll.
-        let at = (k as u32 + 1) * LEVEL_CHECK_SAMPLES as u32;
-        let accepted = windows
-            .iter()
-            .any(|(i, verdict, _)| *i < at as usize && matches!(verdict, Verdict::Window(Ok(_))));
-        let seconds = (at as f32 * session.period / 1e6) as u32;
-        if heart_schedule::give_up(seconds, accepted, busy, checks) {
-            return Some((seconds, Stopped::GaveUp));
-        }
-        let restless = moved > RESTLESS;
-        if session.background
-            && heart_schedule::interrupt(seconds, accepted, restless, session.asleep)
-        {
-            return Some((seconds, Stopped::Interrupted));
-        }
-    }
-    None
-}
-
 /// What `heart::SESSION_LIMIT` is: when a session's first phase runs out.
 const SESSION_LIMIT: f32 = 30.0;
 
 /// How long a segment's phase runs, at most: a session's first, or a
 /// brighter one.
+///
+/// A session runs its phase out on a busy wrist too (it used to stop
+/// early; see `heart_schedule`'s "Trying through movement"), so a replay
+/// ends at the reading, or where the recording does.
 fn phase_limit(session: &Recorded) -> f32 {
     if session.brighter {
         heart_schedule::BRIGHTER_FOR as f32
@@ -707,7 +662,7 @@ fn phase_limit(session: &Recorded) -> f32 {
 /// The brighter drive the firmware would go on at once this segment's
 /// phase ran out without a reading, as `heart` decides it (see
 /// `heart_schedule::brighter`), with the budget to spare. `ended`: the
-/// replay's reading, or stop, came first.
+/// replay's reading came first.
 fn goes_brighter(
     session: &Recorded,
     windows: &[(usize, Verdict, bool)],
@@ -905,15 +860,15 @@ impl Arm {
 
 /// Replays sessions extracted from a field log through `Ppg` and
 /// `Consensus`, vetoing windows on movement as the firmware does, and
-/// prints each window's verdict next to the reference, the reading the
-/// firmware would now make, and when the session would give up on a busy
-/// wrist. `strict` replays the rule before calm pairs (see
-/// `ppg::Consensus`): only three accepted windows make a reading.
+/// prints each window's verdict next to the reference, and the reading the
+/// firmware would now make. `strict` replays the rule before calm pairs
+/// (see `ppg::Consensus`): only three accepted windows make a reading.
 ///
-/// A session ends at its reading, or where it gives up: the totals count
-/// only readings before then, and the LED time to then. (Recordings end
-/// where the firmware that made them stopped, so sessions are a lower
-/// bound on what a longer one would have read.)
+/// A session ends at its reading, or where its recording does: the totals
+/// count the LED time to then. (Recordings end where the firmware that
+/// made them stopped, up to 0.10.0-rc.3 often within seconds on a busy
+/// wrist, so sessions are a lower bound on what a longer one would have
+/// read.)
 ///
 /// Where the firmware would go on with a brighter LED (see
 /// `heart_schedule::brighter`), it says so; a brighter phase that was
@@ -923,7 +878,6 @@ fn replay(path: &str, strict: bool) {
     let text = std::fs::read_to_string(path).expect("readable sessions file");
     let (mut sessions, mut read, mut referenced) = (0, 0, 0);
     let (mut error, mut wrong, mut read_at, mut led) = (0.0, 0, 0.0, 0.0);
-    let (mut gave_up, mut interrupted, mut lost) = (0, 0, 0);
     // Brighter phases: the firmware's choices to go on brighter in the
     // replay, the brighter segments recorded, and of those, how many read;
     // and the light at the drive before each, to compare.
@@ -940,9 +894,7 @@ fn replay(path: &str, strict: bool) {
         }
         let mut verdicts = Vec::new();
         let windows = windows(&session);
-        let stop = stops_at(&session, &windows);
-        let end = stop.map_or(length, |(at, _)| (at as f32).min(length));
-        let reading = reading(&session, &windows, end, strict);
+        let reading = reading(&session, &windows, length, strict);
         let lit = light(&session, &windows);
         let (lit_pulse, lit_dc, lit_quality) = (lit.pulse, lit.dc, lit.quality);
         if session.brighter {
@@ -964,8 +916,7 @@ fn replay(path: &str, strict: bool) {
                 verdicts.push("without the phase before)".into());
             }
         }
-        if let Some(drive) = goes_brighter(&session, &windows, reading.is_some() || stop.is_some())
-        {
+        if let Some(drive) = goes_brighter(&session, &windows, reading.is_some()) {
             would_brighten += 1;
             verdicts.push(format!("[brighter: drive {drive}]"));
         }
@@ -998,21 +949,9 @@ fn replay(path: &str, strict: bool) {
         }
         // A brighter phase, or a new level, is the same session going on.
         sessions += usize::from(!session.brighter && !session.cont);
-        if let Some((at, how)) = stop {
-            if how == Stopped::GaveUp {
-                gave_up += 1;
-                verdicts.insert(0, format!("[gives up at {at} s]"));
-            } else {
-                interrupted += 1;
-                verdicts.insert(0, format!("[stops at {at} s]"));
-            }
-            if session.outcome.parse::<u8>().is_ok() {
-                lost += 1;
-            }
-        }
         // The LED is on until the reading, or the end; plus the half
         // second before the first sample.
-        let lit_for = 0.5 + reading.map_or(end, |(_, at)| at);
+        let lit_for = 0.5 + reading.map_or(length, |(_, at)| at);
         led += lit_for;
         if let Some(bright) = session.bright {
             let arm = &mut arms[usize::from(bright)];
@@ -1070,11 +1009,7 @@ fn replay(path: &str, strict: bool) {
         read_at / read.max(1) as f32,
         error / referenced.max(1) as f32
     );
-    println!(
-        "LED {led:.0} s in all; {gave_up} would give up on a busy wrist, {interrupted} stop \
-         for a restless one (to try again later), {lost} of them had read (if in the \
-         background, now lost)"
-    );
+    println!("LED {led:.0} s in all");
     println!(
         "{would_brighten} would go on brighter; {brighter} brighter phases recorded, \
          {brighter_read} of them read"
@@ -1432,12 +1367,9 @@ mod tests {
         }
     }
 
-    /// The reading a recorded session would now make, ending where the
-    /// firmware would give up.
+    /// The reading a recorded session would now make.
     fn replayed(session: &Recorded, strict: bool) -> Option<(u8, f32)> {
-        let windows = windows(session);
-        let end = stops_at(session, &windows).map_or(f32::INFINITY, |(at, _)| at as f32);
-        reading(session, &windows, end, strict)
+        reading(session, &windows(session), f32::INFINITY, strict)
     }
 
     /// Calm sessions from field logs whose pulse was too faint for three
@@ -1471,7 +1403,7 @@ mod tests {
 
     /// Those sessions would go on brighter, had the schedule started
     /// them: they ran out calm, on a faint or aperiodic window. Sessions
-    /// that read, or that a restless wrist stops, don't.
+    /// that read don't, nor do ones on a restless wrist.
     #[test]
     fn a_calm_wrist_without_a_visible_pulse_goes_brighter() {
         let text = include_str!("../fixtures/calm-pulseless.txt");
@@ -1494,29 +1426,30 @@ mod tests {
                 session.start
             );
         }
-        for fixture in [
-            include_str!("../fixtures/desk-calm.txt"),
-            include_str!("../fixtures/desk-restless.txt"),
-        ] {
-            for session in parse_sessions(fixture) {
-                let windows = windows(&session);
-                let ended =
-                    replayed(&session, false).is_some() || stops_at(&session, &windows).is_some();
-                assert!(ended, "{}", session.start);
-                assert_eq!(
-                    goes_brighter(&session, &windows, ended),
-                    None,
-                    "{}",
-                    session.start
-                );
-            }
+        for session in parse_sessions(include_str!("../fixtures/desk-calm.txt")) {
+            let windows = windows(&session);
+            let ended = replayed(&session, false).is_some();
+            assert!(ended, "{}", session.start);
+            assert_eq!(
+                goes_brighter(&session, &windows, ended),
+                None,
+                "{}",
+                session.start
+            );
+        }
+        // A restless desk's sessions (recorded only to 12 s) weren't calm
+        // throughout, as the firmware judges it at the end of the phase.
+        for session in parse_sessions(include_str!("../fixtures/desk-restless.txt")) {
+            let busy = session.movement.iter().filter(|&&m| m > CALM).count();
+            let checks = session.movement.len();
+            assert!(
+                !heart_schedule::calm_throughout(busy as u8, checks as u8),
+                "{}",
+                session.start
+            );
         }
     }
 
-    /// Background sessions at a desk (2026-11-09, the Garmin at 84 and
-    /// 80) whose wrist started typing again within seconds: every window
-    /// was rejected, and they gave up at 12 s. They now stop at the first
-    /// restless second, to try again at the next still moment.
     /// The LED experiment's arms (see `heart_schedule::Arm`) and rounds
     /// parse, and a bright start counts as a brighter step, as
     /// `heart::measure` counts it.
@@ -1542,31 +1475,33 @@ mod tests {
         assert_eq!(parse_sessions(&line)[0].round, Some(12));
     }
 
+    /// Background sessions at a desk (2026-11-09, the Garmin at 84 and
+    /// 80) whose wrist started typing again within seconds: every window
+    /// is rejected, so running on through the movement (as sessions now
+    /// do) makes no wrong reading of it.
     #[test]
-    fn a_restless_desk_stops_before_its_first_windows() {
+    fn a_restless_desk_is_not_misread() {
         let text = include_str!("../fixtures/desk-restless.txt");
         for session in parse_sessions(text) {
             assert!(session.background, "{}", session.start);
-            let windows = windows(&session);
-            let (at, how) = stops_at(&session, &windows).expect("a stop");
-            assert_eq!(how, Stopped::Interrupted, "{}", session.start);
+            assert_eq!(replayed(&session, false), None, "{}", session.start);
             assert!(
-                at < heart_schedule::GIVE_UP_AFTER,
-                "{}: {at} s",
+                windows(&session)
+                    .iter()
+                    .all(|(_, verdict, _)| !matches!(verdict, Verdict::Window(Ok(_)))),
+                "{}",
                 session.start
             );
-            assert_eq!(replayed(&session, false), None, "{}", session.start);
         }
     }
 
     /// Background sessions at a desk that day (the Garmin at 82 and 67)
-    /// whose wrist kept still: neither stops, and both read, one at 28 s.
+    /// whose wrist kept still: both read, one at 28 s.
     #[test]
     fn a_still_desk_is_read() {
         let text = include_str!("../fixtures/desk-calm.txt");
         for session in parse_sessions(text) {
             assert!(session.background, "{}", session.start);
-            assert_eq!(stops_at(&session, &windows(&session)), None);
             let (bpm, at) = replayed(&session, false).expect("a reading");
             assert!(
                 (f32::from(bpm) - session.reference).abs() <= 5.0,

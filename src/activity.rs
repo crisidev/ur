@@ -816,16 +816,6 @@ pub fn take_active_polls() -> u8 {
     ACTIVE_POLLS.swap(0, Ordering::Relaxed)
 }
 
-/// Gives back `polls` taken by [`take_active_polls`] for a heart rate
-/// session the schedule didn't count (see
-/// [`crate::heart_schedule::Outcome::Interrupted`]), so they count towards
-/// the next.
-pub fn give_back_active_polls(polls: u8) {
-    ACTIVE_POLLS.update(Ordering::Relaxed, Ordering::Relaxed, |now| {
-        now.saturating_add(polls)
-    });
-}
-
 static ACTIVE_POLLS: AtomicU8 = AtomicU8::new(0);
 
 /// How many polls in a row, up to the latest, were calm enough to measure

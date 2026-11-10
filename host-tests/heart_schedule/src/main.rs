@@ -144,7 +144,8 @@ mod tests {
         // It lives in the heart task's static future, where RAM is tight.
         // (20 bytes until counting interruptions took one more, and
         // alignment three more; 28 with when the last reading came, 32
-        // with the LED experiment's rounds.)
+        // with the LED experiment's rounds, and no fewer for dropping
+        // the interruptions again.)
         assert!(size_of::<Schedule>() <= 32);
     }
 
@@ -474,121 +475,73 @@ mod tests {
         assert_eq!(sessions[0].start, 28);
     }
 
+    /// A desk that won't read: each session runs its full 30 s through
+    /// movement and fails, as the sealed watch's desk mornings would now.
+    /// Tries come 5 and then 10 minutes apart, and from half an hour after
+    /// the last reading, overdue (see `OVERDUE`), they go on every 10
+    /// minutes rather than backing off to 20 and more. The budget never holds
+    /// one back, even with every try on the bright arm (72 budget seconds
+    /// each, as `heart` starts them, stepping down if the budget is short)
+    /// and a 13 s glance every 7.5 minutes: an overdue desk's retries aren't
+    /// starved, and all of them start at 30 mA.
     #[test]
-    fn busy_sessions_give_up_once_their_first_windows_are_in() {
-        // Not before the first windows have had their chance.
-        assert!(!give_up(GIVE_UP_AFTER - 1, false, 11, 11));
-        // A wrist busy at most checks, with nothing accepted.
-        assert!(give_up(GIVE_UP_AFTER, false, 7, 12));
-        // But not once a window has passed, nor while mostly calm.
-        assert!(!give_up(GIVE_UP_AFTER, true, 12, 12));
-        assert!(!give_up(GIVE_UP_AFTER, false, 6, 12));
-        assert!(!give_up(29, false, 14, 29));
-        // Saturated counts don't wrap.
-        assert!(give_up(300, false, u8::MAX, u8::MAX - 1));
-    }
-
-    #[test]
-    fn restless_sessions_stop_before_their_first_windows_are_in() {
-        assert!(interrupt(0, false, true, false));
-        assert!(interrupt(INTERRUPT_BEFORE - 1, false, true, false));
-        // Not once it's had its first windows' chance, nor after one
-        // passed, nor on a wrist that keeps still enough, nor asleep.
-        assert!(!interrupt(INTERRUPT_BEFORE, false, true, false));
-        assert!(!interrupt(3, true, true, false));
-        assert!(!interrupt(3, false, false, false));
-        assert!(!interrupt(3, false, true, true));
-    }
-
-    /// An interrupted session doesn't count: it's still due, and starts
-    /// again at the next still moment, until `INTERRUPTIONS` in a row,
-    /// which back off like any failure. Their LED time is spent, though.
-    #[test]
-    fn interrupted_sessions_try_again_until_too_many() {
+    fn a_desk_that_wont_read_tries_every_ten_minutes_from_half_an_hour() {
         let mut schedule = Schedule::new();
-        schedule.ended(100, 13, Outcome::Reading(60), true, awake(0));
-        let due = schedule.due(0, false);
-        let budget = schedule.budget(due.0);
-        let mut t = due.0;
-        for _ in 1..INTERRUPTIONS {
-            schedule.ended(t + 4, 4, Outcome::Interrupted, true, awake(0));
-            assert!(schedule.interrupted());
-            assert_eq!(schedule.due(0, false), due);
-            t += 30;
-        }
-        assert!(schedule.budget(t) < budget);
-        schedule.ended(t + 4, 4, Outcome::Interrupted, true, awake(0));
-        assert!(!schedule.interrupted());
-        assert_eq!(
-            schedule.due(0, false),
-            (t + 4 + FAILED_INTERVAL, Why::Retry)
-        );
-        // A counted session starts the count again.
-        let t = t + 4 + FAILED_INTERVAL;
-        schedule.ended(t + 4, 4, Outcome::Interrupted, true, awake(0));
-        schedule.ended(t + 60, 13, Outcome::Reading(60), true, awake(0));
-        assert!(!schedule.interrupted());
-        schedule.ended(t + 400, 4, Outcome::Interrupted, true, awake(0));
-        assert!(schedule.interrupted());
-    }
-
-    /// A desk where the wrist keeps still for 8 s in every 40, just long
-    /// enough to start a session but not to finish one: tries come three
-    /// at a time, a still moment apart, then back off as failures do, so
-    /// the LED stays well within the budget.
-    #[test]
-    fn interruptions_dont_spin() {
-        let mut schedule = Schedule::new();
-        let sessions = simulate(&mut schedule, 0, 4 * HOUR, |t| Moment {
-            calm: t % 40 < 8,
-            outcome: Outcome::Interrupted,
-            seconds: 4,
-            ..resting(t)
-        });
-        let waits = gaps(&sessions);
-        let n = usize::from(INTERRUPTIONS);
-        for (i, wait) in waits.iter().enumerate() {
-            if (i + 1) % n == 0 {
-                assert!(*wait >= FAILED_INTERVAL, "{waits:?}");
-            } else {
-                assert!(*wait < 60, "{waits:?}");
+        schedule.ended(0, 13, Outcome::Reading(60), true, awake(0));
+        let (mut t, mut glance) = (0, 450);
+        let mut sessions = Vec::new();
+        while t < 8 * HOUR {
+            let (due, _) = schedule.due(0, false);
+            while glance < due {
+                schedule.ended(glance + 13, 13, Outcome::NoReading, false, awake(0));
+                glance += 450;
             }
+            let (due, why) = schedule.due(0, false);
+            assert_ne!(why, Why::Budget, "{sessions:?}");
+            // Three calm polls first.
+            t = t.max(due) + 6;
+            let drive = bright_start(0, 2500, schedule.budget(t)).unwrap_or(0);
+            assert_eq!(drive, 2, "{sessions:?}");
+            let start = t;
+            t += 30;
+            let cost = budget_seconds(drive, 30_000);
+            schedule.ended(t, cost, Outcome::NoReading, true, awake(0));
+            sessions.push(Session { start, end: t, why });
         }
-        // An hour without a reading, they come every ten minutes rather
-        // than backing off (see `OVERDUE`), still well within the budget.
-        assert!(
-            led(&sessions, HOUR, 2 * HOUR) < LED_BUDGET / 2,
-            "{sessions:?}"
-        );
-        assert!(sessions.iter().any(|s| s.why == Why::Overdue));
+        let waits = gaps(&sessions);
+        // The first try at 4 minutes (the resting back-off), then 5 and 10
+        // minutes on (and three calm polls each).
+        assert!(about(sessions[0].start, 4 * MINUTE + 6), "{sessions:?}");
+        assert!(about(waits[0], 5 * MINUTE + 6), "{waits:?}");
+        assert!(waits[1..].iter().all(|&w| about(w, 10 * MINUTE + 6)));
+        // The 10 minutes after the third failure are the overdue retry's:
+        // the back-off's would be 20.
+        assert_eq!(sessions[2].why, Why::Retry);
+        assert!(sessions[3].start >= OVERDUE, "{sessions:?}");
+        assert!(sessions[3..].iter().all(|s| s.why == Why::Overdue));
+        // Six tries an hour, 3 minutes of LED.
+        for hour in 1..8 {
+            let spent = led(&sessions, hour * HOUR, (hour + 1) * HOUR);
+            assert!((150..=180).contains(&spent), "hour {hour}: {spent} s");
+        }
     }
 
-    /// Giving up counts as a session without a reading: the failure
-    /// back-off applies, from when it gave up, until half an hour after
-    /// the last reading.
+    /// A busy failure backs off like any other, from when the session ended,
+    /// until half an hour after the last reading.
     #[test]
-    fn giving_up_backs_off_like_any_failure() {
+    fn busy_failures_back_off_until_overdue() {
         let mut schedule = Schedule::new();
         schedule.ended(100, 13, Outcome::Reading(60), true, awake(0));
-        let mut t = 400;
+        let mut t = 160;
         for retry in [5, 10] {
-            schedule.ended(
-                t + GIVE_UP_AFTER,
-                GIVE_UP_AFTER,
-                Outcome::NoReading,
-                true,
-                awake(0),
-            );
+            schedule.ended(t + 30, 30, Outcome::NoReading, true, awake(0));
             let (due, why) = schedule.due(0, false);
-            assert_eq!((due, why), (t + GIVE_UP_AFTER + retry * MINUTE, Why::Retry));
+            assert_eq!((due, why), (t + 30 + retry * MINUTE, Why::Retry));
             t = due;
         }
-        // 20 minutes would pass the half hour: the overdue retry's 10.
-        schedule.ended(t + GIVE_UP_AFTER, 12, Outcome::NoReading, true, awake(0));
-        assert_eq!(
-            schedule.due(0, false),
-            (t + GIVE_UP_AFTER + OVERDUE_RETRY, Why::Overdue)
-        );
+        // 20 minutes would pass the half hour.
+        schedule.ended(t + 30, 30, Outcome::NoReading, true, awake(0));
+        assert_eq!(schedule.due(0, false), (100 + OVERDUE, Why::Overdue));
     }
 
     #[test]
@@ -851,10 +804,10 @@ mod tests {
     fn watching_spends_the_budget_but_isnt_held_to_it() {
         let mut schedule = Schedule::new();
         schedule.ended(100, 13, Outcome::Reading(60), true, awake(0));
-        // Five minutes staring at the clock face.
-        schedule.ended(500, 300, Outcome::Reading(62), false, awake(0));
+        // Five minutes staring at the clock face, the watch in a hand.
+        schedule.ended(500, 300, Outcome::NoReading, false, awake(0));
         assert_eq!(schedule.budget(500), 0);
-        // The background waits for the budget to earn back a session, ~10
+        // The background waits for the budget to earn back a session, 6
         // minutes, rather than the 4 minutes it would otherwise.
         let (at, why) = schedule.due(0, false);
         assert_eq!(why, Why::Budget);
@@ -889,7 +842,7 @@ mod tests {
     }
 
     /// The LED experiment's arms take turns by round: every try of a round
-    /// (interrupted, failed, retried) keeps its arm, and only a reading
+    /// (failed, retried) keeps its arm, and only a reading
     /// starts the next round, on the other arm. The field log that showed
     /// the need (2026-11-10): a round's first try, bright, stopped for a
     /// moving wrist after 6 s, and its retry read, dim; the next round's
@@ -900,14 +853,14 @@ mod tests {
         let mut schedule = Schedule::new();
         let mut t = 0;
         let mut first_tries = Vec::new();
-        // Each round: a first try that's stopped for a moving wrist, one
-        // that fails outright, a retry that reads; or, every other round,
-        // a first try that reads.
+        // Each round: a first try that fails on a moving wrist, one that
+        // fails calm, a retry that reads; or, every other round, a first
+        // try that reads.
         for round in 1..=8 {
             let tries: &[Outcome] = if round % 2 == 1 {
                 &[
-                    Outcome::Interrupted,
                     Outcome::NoReading,
+                    Outcome::CalmNoReading,
                     Outcome::Reading(60),
                 ]
             } else {
@@ -973,15 +926,16 @@ mod tests {
         schedule.ended(400, 300, Outcome::NoReading, false, awake(0));
         assert_eq!(schedule.budget(400), 0);
         let overdue = 100 + OVERDUE;
-        // Until then, at the usual rate, and no more than the usual cap.
-        assert_eq!(schedule.budget(400 + 600), 30);
-        assert_eq!(schedule.budget(overdue - 100), 70);
+        // Until then, at the usual rate (a second every 12), and no more
+        // than the usual cap.
+        assert_eq!(schedule.budget(400 + 600), 50);
+        assert_eq!(schedule.budget(overdue - 100), 116);
         let mut schedule = Schedule::new();
         schedule.ended(100, 13, Outcome::Reading(60), true, awake(0));
         schedule.ended(overdue - 300, 300, Outcome::NoReading, false, awake(0));
-        assert_eq!(schedule.budget(overdue), 15);
+        assert_eq!(schedule.budget(overdue), 25);
         // Then twice as fast, up to twice as much.
-        assert_eq!(schedule.budget(overdue + 900), 105);
+        assert_eq!(schedule.budget(overdue + 900), 175);
         assert_eq!(schedule.budget(overdue + HOUR), OVERDUE_BUDGET);
         assert_eq!(schedule.budget(overdue + 10 * HOUR), OVERDUE_BUDGET);
         // Spending some, and earning it back, keeps the part-earned second.
@@ -995,12 +949,15 @@ mod tests {
                 awake(0),
             );
         }
-        assert_eq!(schedule.budget(overdue + HOUR + 500), OVERDUE_BUDGET - 50);
+        assert_eq!(
+            schedule.budget(overdue + HOUR + 500),
+            OVERDUE_BUDGET - 100 + 83
+        );
         // A reading: the usual cap again, and the usual rate.
         schedule.ended(overdue + 2 * HOUR, 13, Outcome::Reading(60), true, awake(0));
         assert_eq!(schedule.budget(overdue + 2 * HOUR), LED_BUDGET);
         schedule.ended(overdue + 2 * HOUR, 150, Outcome::NoReading, false, awake(0));
-        assert_eq!(schedule.budget(overdue + 2 * HOUR + 600), 60);
+        assert_eq!(schedule.budget(overdue + 2 * HOUR + 600), 200);
     }
 
     /// The background waits for an overdue budget to hold a session at the
@@ -1013,14 +970,14 @@ mod tests {
         // A reading that empties it puts off being overdue: the usual rate,
         // past when it would have been.
         schedule.ended(overdue - 400, 600, Outcome::Reading(60), false, awake(0));
-        assert_eq!(schedule.budget(overdue + 200), 600 / 20);
+        assert_eq!(schedule.budget(overdue + 200), 600 / 12);
         let mut schedule = Schedule::new();
         schedule.ended(100, 13, Outcome::Reading(60), true, awake(0));
         schedule.ended(overdue - 420, 600, Outcome::NoReading, false, awake(0));
         schedule.ended(overdue - 300, 30, Outcome::NoReading, true, awake(0));
-        // 0 left at `overdue - 300`: 15 earned by `overdue`, 15 more in
-        // 150 s.
-        assert_eq!(schedule.due(0, false), (overdue + 150, Why::Budget));
+        // 0 left at `overdue - 300`: 25 earned by `overdue`, 5 more in
+        // 30 s.
+        assert_eq!(schedule.due(0, false), (overdue + 30, Why::Budget));
     }
 
     /// A whole day overdue, every session failing calm and going on

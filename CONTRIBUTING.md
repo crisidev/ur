@@ -531,6 +531,15 @@ Some host-test crates replay decoded logs, to tune against real wrists:
   Android [Health Connect] export (the tuning so far compared against a
   Garmin worn on the other wrist).
 
+  Logs after 0.10.0-rc.3 have whole sessions on a busy wrist too (a
+  background session no longer stops early for movement), the data for
+  making the estimator tolerate motion; up to rc.3, they end within 3-19
+  s. A session's samples, movement and verdicts take ~100 bytes of log a
+  second of LED: a desk hour that won't read (six 30 s tries) takes ~18
+  KB, where it took ~8 KB. Next to the ~75 KB an hour the log takes
+  anyway (0.10.0-rc.3's, mostly the accelerometer's lines), the 2 MB
+  still holds a day.
+
   For 0.10's LED experiment (`heart_schedule::Arm`), its last lines
   compare the awake background sessions that started dim with those that
   started bright: sessions, readings (replayed, and as recorded),

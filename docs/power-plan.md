@@ -31,7 +31,7 @@ day hour is awake, with the phone connected, the sun up, and AUTO.
 
 | Item | Night hour µA | Day hour µA | Basis |
 |---|---:|---:|---|
-| Heart-rate LED | ~110 | ~50 | L: 77–116 s/h, all at 12.5 mA, on the old 10-minute schedule. Asleep it is now every 5 min, ~144 s/h (`heart_schedule.rs:72`). By day it's ~40–100 s/h, capped at 180 s/h (`LED_BUDGET`), or 360 s/h half an hour after the last reading (`OVERDUE`; see [below](#the-led-budget-overdue-and-brighter)). × 2.8 mA (E, never measured) |
+| Heart-rate LED | ~110 | ~50 | L: 77–116 s/h, all at 12.5 mA, on the old 10-minute schedule. Asleep it is now every 5 min, ~144 s/h (`heart_schedule.rs:72`). By day it's ~40–180 s/h (180 at a desk that won't read: six 30 s tries an hour), capped at 300 s/h (`LED_BUDGET`), or 600 s/h half an hour after the last reading (`OVERDUE`; see [below](#the-led-budget-overdue-and-brighter)). × 2.8 mA (E, never measured) |
 | Screen | ~20 | ~310 | L: panel 5–51 s/h at night, and 58–107 s/h by day at the old 15 s timeout. By day, now: ~40 s/h of full wakes at AUTO's 19.6 mA backlight plus ~4.5 mA panel, and ~25 s/h of glances at low (1.83 mA) in idle mode. At night: dim, at low |
 | BMA421, 100 Hz, 4× averaging | 50 | 50 | M (aykevl) |
 | Rest of the floor | ~32 | ~40 | nRF 3, ST7789 asleep 10, touch 8 by day and ~0 in the quiet night, flash 1, divider 2, regulator and leakage 15, button polls ~1 (D/E) |
@@ -250,29 +250,57 @@ on-time counters let a single dev-kit measurement settle it.
 
 ### The LED budget, overdue and brighter
 
-`heart_schedule::LED_BUDGET` caps the LED at 180 s an hour, counted at
+`heart_schedule::LED_BUDGET` caps the LED at 300 s an hour, counted at
 12.5 mA's rate: a second at 30 mA counts 2.4, at 40 mA 3.2
 (`budget_seconds`). On the assumption above, a budget second costs
 ~2.6 mA·s of LED, plus up to ~0.18 mA·s of chip and I2C polling (0.11 mA
 and ~0.07 mA, per real second, which is at most one per budget second).
-So the cap is ~0.14 mA on average, ~3.3 mAh a day.
+So the cap is ~0.23 mA on average, ~5.6 mAh a day. (It was 180 s,
+~3.3 mAh a day, until sessions stopped stopping early at a desk; see
+below.)
 
 Half an hour without a reading (`OVERDUE`; an hour until 0.10.0-rc.3),
 the cap and its refill double until the next reading, and failures retry
 every 10 minutes. At worst (every hour of the day overdue, every session
-failing and spending all it may), that's 360 s an hour: ~0.28 mA, **~3.3
-mAh a day more** than the usual cap, about 2% of the battery. A host test
-(`the_doubled_budget_caps_an_overdue_day`) pins the cap. Off the wrist
-(the nightstand) is exempt from the faster retries, and sessions there
-end in a second or two, so it costs nothing there; what can reach the
-worst case is a wrist that won't read all day, or a still surface that
-reflects the LED like skin.
+failing and spending all it may), that's 600 s an hour: ~0.46 mA, **~5.6
+mAh a day more** than the usual cap, about 3% of the battery. A host
+test (`the_doubled_budget_caps_an_overdue_day`) pins the cap. Off the
+wrist (the nightstand) is exempt from the faster retries, and sessions
+there end in a second or two, so it costs nothing there; what can reach
+the worst case is a wrist that won't read all day, or a still surface
+that reflects the LED like skin.
 
 Awake, every other round of background sessions (a scheduled one and its
 retries) starts at 30 mA (`heart_schedule::Arm`, an experiment). That
-doesn't move the cap, only how soon it's reached: a ~12 s desk session
-costs ~29 budget seconds rather than 12, ~0.013 mAh more. At ~3 bright
-sessions an hour over 8 desk hours, ~0.3 mAh a day.
+doesn't move the cap, only how soon it's reached: a 30 s desk session
+that fails costs 72 budget seconds rather than 30, ~0.03 mAh more. At
+~3 bright sessions an hour over 8 desk hours, ~0.7 mAh a day.
+
+### A desk that won't read
+
+Up to 0.10.0-rc.3, a background session stopped early on a busy wrist
+(at the first restless second in its first 12 s, or at 12 s if the
+wrist was busy most of it). Since, it runs its full 30 s through
+movement (see `heart_schedule`'s "Trying through movement"), which
+costs more at a desk that won't read. Simulated with the schedule
+itself (sessions starting a few seconds after due, every one failing),
+per hour once a reading is overdue:
+
+| | Tries | LED | Budget seconds | mAh |
+|---|---:|---:|---:|---:|
+| Before, giving up at 13 s, dim | 6 | 78 s | 78 | ~0.06 |
+| Before, giving up at 13 s, bright | 6 | 78 s | 192 | ~0.14 |
+| Before, at worst (two stops at 11 s, then giving up), dim | 18 | 210 s | 210 | ~0.16 |
+| Before, at worst, bright (stepping down for the budget) | 18 | 210 s | 380 | ~0.29 |
+| After, 30 s, dim | 6 | 180 s | 180 | ~0.14 |
+| After, 30 s, bright | 6 | 180 s | 432 | ~0.32 |
+
+The first hour after the last reading spends about the same as later
+ones now (overdue from half an hour, tries at 4, 9, 20 and 31 minutes),
+where before it was 4 tries (52 s, or 140 s at worst). Over 8 desk
+hours that never read, about half on each arm, that's ~1.8 mAh a day
+where it was ~0.8 (or ~1.8 at worst). A 13 s glance every 7.5 minutes
+adds ~0.08 mAh an hour either way.
 
 ### What a connection event and an advertising event cost
 
@@ -536,7 +564,9 @@ before 3–4, since they're bigger wins than their effort.
   fixed 10 minutes with `heart_schedule`: 2–20 min by movement and
   readings, every 5 min asleep for sleep staging, failures backing off
   to 1 h, a 180 s/h LED budget, and later a calm start and an early
-  give-up at a desk. Every LED millisecond since has been at 12.5 mA.
+  give-up at a desk (dropped after 0.10.0-rc.3, to try through movement,
+  with the budget raised to 300 s/h). Every LED millisecond since has
+  been at 12.5 mA, but for 0.10's brighter-LED experiment.
 
 ### Step 4: the floor (`#5`, `#6`)
 

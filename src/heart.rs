@@ -8,14 +8,12 @@
 //!   (every 2–20 minutes, depending on movement and recent readings), once
 //!   the wrist has been still for a few seconds after that (see [`CALM`]),
 //!   for up to [`SESSION_LIMIT`] or until it has a reading (typically
-//!   ~11 s), stopping to wait for the next still moment if the wrist gets
-//!   busy before its first windows are in ([`heart_schedule::interrupt`]),
-//!   and giving up sooner if it won't keep still
-//!   ([`heart_schedule::give_up`]); if it runs out on a calm wrist with a
-//!   pulse too faint to read, it may go on for another 15 s with a
-//!   brighter LED, once or twice ([`heart_schedule::brighter`]); awake,
-//!   every other round of tries (a scheduled session and its retries)
-//!   starts with a brighter LED (see [`Arm`]); both are an experiment, and
+//!   ~11 s), carrying on through movement (see `heart_schedule`'s "Trying
+//!   through movement"); if it runs out on a calm wrist with a pulse too
+//!   faint to read, it may go on for another 15 s with a brighter LED,
+//!   once or twice ([`heart_schedule::brighter`]); awake, every other
+//!   round of tries (a scheduled session and its retries) starts with a
+//!   brighter LED (see [`Arm`]); both are an experiment, and
 //! - while the clock face is showing (see
 //!   [`crate::heart_reading::set_watching`]), continuously,
 //!   since then someone is looking at the number, and
@@ -61,6 +59,11 @@ use crate::ppg::{Consensus, Conversions, Ppg, Rejection};
 /// A still wrist's signal comes and goes over minutes rather than
 /// seconds, so the LED does more good in another session soon after (see
 /// [`heart_schedule::CALM_RETRY_INTERVAL`]) than in a longer one.
+///
+/// A background session runs all of it however the wrist moves, unless
+/// it reads, or finds no skin: a busy wrist may settle within it, and its
+/// samples under movement, in a field log, are the data a motion-tolerant
+/// estimator needs (see `heart_schedule`'s "Trying through movement").
 const SESSION_LIMIT: Duration = Duration::from_secs(30);
 
 /// Wrist movement (see [`activity::movement`]) above which the PPG can't be
@@ -84,7 +87,7 @@ pub const MOTION_LIMIT: u16 = 1500;
 /// [`heart_schedule::START_CALM_POLLS`] polls. A due session waits for
 /// that, however long it takes: measuring a busy wrist only spends LED
 /// time. Above it, the wrist counts as busy for
-/// [`heart_schedule::give_up`].
+/// [`heart_schedule::calm_throughout`].
 ///
 /// On the wrist the pulse is tiny (±5 counts on ~3000), and sitting at a
 /// desk, a hand's small movements make bursts ten times that every few
@@ -94,21 +97,6 @@ pub const MOTION_LIMIT: u16 = 1500;
 /// 300–2500 throughout never read. Two sessions at 75–240 failed too:
 /// calm is necessary, not sufficient.
 pub const CALM: u16 = 150;
-
-/// Wrist movement (see [`activity::movement`]) above which a background
-/// session's first windows won't read: it stops there, and waits for the
-/// next still moment instead (see [`heart_schedule::interrupt`]).
-///
-/// Sitting at a desk, typing and mousing keep the wrist at 190-680, and
-/// the hand and fingers move the sensor on the skin far more than the
-/// pulse does. Replaying three days of field logs against a Garmin with
-/// every signal check off, windows at 301-700 landed within 5 BPM of it
-/// 15% of the time, against 12% when paired with a Garmin reading from
-/// hours away: no pulse to be had. At 151-300 it was 38% (23% by
-/// chance), and calm, 46% (21%). 12 s stretches of a desk session read
-/// 31% of the time when calm throughout, 16% at worst 151-300, and 1% at
-/// worst 301-700.
-pub const RESTLESS: u16 = 300;
 
 /// How often to look again, while waiting for a background session to
 /// fall due, at whether movement has brought it forward. Precision isn't
@@ -485,8 +473,6 @@ pub async fn heart_task(i2c: Device) {
             Ok(Ended::TimedOut { calm: true }) => {
                 info!("heart: no reading after {} s; wrist calm", led_seconds)
             }
-            Ok(Ended::GaveUp) => info!("heart: gave up after {} s; wrist busy", led_seconds),
-            Ok(Ended::Interrupted) => info!("heart: stopped after {} s; wrist moving", led_seconds),
             Ok(Ended::NoContact) => info!("heart: not on a wrist (after {} s)", led_seconds),
             Ok(Ended::TooBright) => info!("heart: too much light (after {} s)", led_seconds),
             Err(()) => warn!("heart: lost the sensor mid-session"),
@@ -499,21 +485,13 @@ pub async fn heart_task(i2c: Device) {
             Ok(Ended::Measured(bpm)) => (Some(true), Outcome::Reading(bpm)),
             Ok(Ended::NoContact | Ended::TooBright) => (Some(false), Outcome::OffWrist),
             Ok(Ended::TimedOut { calm: true }) => (None, Outcome::CalmNoReading),
-            Ok(Ended::TimedOut { calm: false } | Ended::GaveUp) | Err(()) => {
-                (None, Outcome::NoReading)
-            }
-            Ok(Ended::Interrupted) => (None, Outcome::Interrupted),
+            Ok(Ended::TimedOut { calm: false }) | Err(()) => (None, Outcome::NoReading),
         };
         crate::heart_reading::set_worn(worn);
         // At the lowest drive, `spent` is `led_seconds`, short of the
         // moments around the LED's switching on and off.
         let spent = spent.max(led_seconds);
         schedule.ended(uptime(), spent, outcome, background, before);
-        // A session the schedule didn't count leaves the movement before
-        // it to count towards the next.
-        if outcome == Outcome::Interrupted && schedule.interrupted() {
-            activity::give_back_active_polls(before.active_polls);
-        }
 
         // A session only ends while someone's watching if there's no
         // signal to be had (off the wrist, typically); don't start another
@@ -591,15 +569,10 @@ enum Ended {
     /// We have a reading (and nobody's watching for more): the last, in
     /// BPM.
     Measured(u8),
-    /// No reading within [`SESSION_LIMIT`]; `calm` if the wrist was calm
-    /// through most of it (see [`heart_schedule::calm_throughout`]).
+    /// No reading within [`SESSION_LIMIT`] (and any brighter phases); `calm`
+    /// if the wrist was calm through most of it (see
+    /// [`heart_schedule::calm_throughout`]).
     TimedOut { calm: bool },
-    /// No window passed the signal checks, and the wrist kept moving (see
-    /// [`heart_schedule::give_up`]).
-    GaveUp,
-    /// A background session's wrist got busy before any window passed the
-    /// signal checks (see [`heart_schedule::interrupt`]).
-    Interrupted,
     /// Almost no light comes back even at the highest level.
     NoContact,
     /// The ADC clips even at the lowest level: ambient light is getting in.
@@ -622,7 +595,6 @@ async fn measure(
     spent: &mut u32,
     skin_peak: &mut u32,
 ) -> Result<Ended, ()> {
-    let background = budget.is_some();
     // The LED's drive: `LEVELS[*level]`'s, unless the session started
     // brighter or a phase of it has gone brighter (see
     // `heart_schedule::brighter`), keeping the gain.
@@ -648,10 +620,9 @@ async fn measure(
     let started = Instant::now();
     // The latest reading, once there is one.
     let mut measured = None;
-    // For giving up on a busy wrist: whether any window has passed the
-    // signal checks, and the level checks so far, and how many found the
-    // wrist busy.
-    let (mut accepted, mut checks, mut busy) = (false, 0u8, 0u8);
+    // For judging whether the wrist was calm through the session: the level
+    // checks so far, and how many found it busy.
+    let (mut checks, mut busy) = (0u8, 0u8);
     // This window's movement, a reading a second (the accelerometer
     // reports every 2 s, so about four distinct values).
     let mut movement = heapless::HistoryBuf::<u16, MOTION_HISTORY>::new();
@@ -711,17 +682,6 @@ async fn measure(
             Some(Ended::TimedOut {
                 calm: heart_schedule::calm_throughout(busy, checks),
             })
-        } else if heart_schedule::give_up(elapsed.as_secs() as u32, accepted, busy, checks) {
-            Some(Ended::GaveUp)
-        } else if background
-            && heart_schedule::interrupt(
-                elapsed.as_secs() as u32,
-                accepted,
-                movement.recent().is_some_and(|&m| m > RESTLESS),
-                activity::asleep(),
-            )
-        {
-            Some(Ended::Interrupted)
         } else {
             None
         };
@@ -877,7 +837,6 @@ async fn measure(
             "heart: window {} BPM (quality {}, drift {})",
             bpm, estimate.quality, estimate.drift
         );
-        accepted = true;
         if let Some(bpm) = consensus.push(bpm, calm) {
             measured = Some(read(bpm, measured, started, at(*level, drive), conversions));
         }
