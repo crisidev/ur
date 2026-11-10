@@ -578,6 +578,11 @@ impl Schedule {
     /// [`MIN_INTERVAL`]), and the session it makes due deserves its chance
     /// at a calm start too.
     pub fn start(&self, now: u32, since: u32, calm_polls: u8) -> Start {
+        // `since` is a time the heart task read off the same clock, earlier
+        // in its wait. Were it later than `now` (a stale `since` kept across
+        // a session, say), the wait would be measured as no time at all,
+        // and a busy wrist would hold a session back for good.
+        debug_assert!(since <= now, "found due at {since}, after now ({now})");
         if calm_polls >= START_CALM_POLLS {
             Start::Calm
         } else if now >= self.overdue_from() || now.saturating_sub(since) >= CALM_WAIT {
@@ -652,6 +657,10 @@ impl Schedule {
             stepless_polls,
             asleep,
         } = before;
+        // The uptime only moves on. Going back, `due` would count its waits
+        // from a session that ended before an earlier one, and the budget
+        // would earn the same seconds twice.
+        debug_assert!(self.as_of() <= now, "ended at {now}: {self:?}");
         self.refill(now);
         self.tokens = self
             .tokens
@@ -663,6 +672,7 @@ impl Schedule {
         // counts as a measurement nor as a failure. The LED time still
         // came out of the budget above.
         if !background && !matches!(outcome, Outcome::Reading(_)) {
+            self.check();
             return;
         }
         let moved = moved(active_polls, asleep);
@@ -737,6 +747,85 @@ impl Schedule {
                 }
             }
         }
+        self.check();
+    }
+
+    /// Whether the fields agree with each other, as every method leaves
+    /// them (and relies on finding them): what [`Self::check`] asserts, and
+    /// what the proofs in `host-tests/heart_schedule` start from, to show
+    /// that it holds after any number of sessions, not just a few.
+    pub fn consistent(&self) -> bool {
+        let interval = u32::from(self.interval);
+        // Before the first counted session there's nothing to count from;
+        // after it, the interval is one `ended` chose.
+        let counted = if self.interval == 0 {
+            self.last == 0 && self.last_reading == 0 && self.failures == 0
+        } else {
+            (MIN_INTERVAL..=MAX_INTERVAL).contains(&interval)
+        };
+        // A reading is a counted session, so none is later than the last.
+        let read = self.last_reading <= self.last;
+        // What describes the last failure is only set while there is one:
+        // `due` reads `failures - 1` as a shift.
+        let failed = self.failures <= MAX_FAILURES
+            && (self.failures > 0 || (!self.off_wrist && self.calm_failures == 0))
+            && !(self.off_wrist && self.calm_failures > 0);
+        // An elevated reading is a reading, and sets its own interval.
+        let elevated = !self.elevated || (self.failures == 0 && interval == ELEVATED_INTERVAL);
+        // The bucket holds more than `LED_BUDGET` only by having earned it
+        // while a reading was overdue, and a reading takes it back.
+        let tokens = u32::from(self.tokens);
+        let budget = tokens <= LED_BUDGET
+            || (tokens <= OVERDUE_BUDGET && self.refilled_at > self.overdue_from());
+        counted && read && failed && elevated && budget
+    }
+
+    /// The latest time the schedule has been told of: every later call's
+    /// `now` is at least this, as the uptime only moves on.
+    pub fn as_of(&self) -> u32 {
+        self.last.max(self.refilled_at)
+    }
+
+    /// A schedule in whatever state `any`'s numbers make, [consistent] or
+    /// not: for the host tests' proofs and fuzzing, which can't otherwise
+    /// start from anywhere but a boot (the fields are private), and so
+    /// could only say what holds after a few sessions. Not in the firmware.
+    ///
+    /// [consistent]: Self::consistent
+    #[cfg(not(target_os = "none"))]
+    pub fn any(mut any: impl FnMut() -> u32) -> Self {
+        let mut resting = || Resting {
+            bpm: any() as u8,
+            candidate: any() as u8,
+        };
+        let (resting_awake, resting_asleep) = (resting(), resting());
+        let mut flag = || any() & 1 != 0;
+        let (off_wrist, elevated, in_round, armed, bright) =
+            (flag(), flag(), flag(), flag(), flag());
+        Self {
+            last: any(),
+            last_reading: any(),
+            interval: any() as u16,
+            failures: any() as u8,
+            off_wrist,
+            calm_failures: any() as u8,
+            elevated,
+            resting_awake,
+            resting_asleep,
+            tokens: any() as u16,
+            refilled_at: any(),
+            round: any() as u16,
+            in_round,
+            armed,
+            bright,
+        }
+    }
+
+    /// Asserts [`Self::consistent`], in builds with debug assertions (the
+    /// host tests and Kani; the firmware's release build has none, so this
+    /// costs it nothing).
+    fn check(&self) {
+        debug_assert!(self.consistent(), "inconsistent: {self:?}");
     }
 
     /// The resting heart rate estimates, awake and asleep (0: none yet).
@@ -868,6 +957,9 @@ pub const BRIGHTER_PEAK_LIMIT: u32 = 1 << 13;
 /// What `millis` of LED at `drive` cost the [`LED_BUDGET`], which counts
 /// seconds at the lowest drive (12.5 mA), rounded up.
 pub fn budget_seconds(drive: u8, millis: u32) -> u32 {
+    // A PDRIVE setting, as `heart` always passes. The mask below keeps a
+    // release build in the table, but would bill another drive's current.
+    debug_assert!(drive <= 3, "drive {drive} isn't a setting");
     let weighted = u64::from(millis) * u64::from(DRIVE_CURRENT[usize::from(drive & 3)]);
     weighted.div_ceil(1000 * u64::from(DRIVE_CURRENT[0])) as u32
 }
@@ -1010,6 +1102,8 @@ impl Schedule {
 /// scaled by the current, stays within [`BRIGHTER_PEAK_LIMIT`], and that
 /// `affordable` allows.
 fn step_up(drive: u8, peak: u32, affordable: impl Fn(u8) -> bool) -> Option<u8> {
+    // As in `budget_seconds`; and from 254 on, the range below overflows.
+    debug_assert!(drive <= 3, "drive {drive} isn't a setting");
     let now = DRIVE_CURRENT[usize::from(drive & 3)];
     (drive + 1..=(drive + 2).min(3)).rev().find(|&next| {
         let current = DRIVE_CURRENT[usize::from(next)];
