@@ -153,7 +153,9 @@
 //!   as a banner for the next time the screen is properly on (and all of
 //!   them in the history).
 //! - Touches don't wake the screen (pillows and bedding tap it); the button
-//!   and turning the wrist still do. Once it's on, touches work as usual.
+//!   still does, and so does turning the wrist, bar while sleep tracking
+//!   says the wearer is asleep (see `activity::motion_task`). Once it's
+//!   on, touches work as usual.
 //! - A double press of the button ends it: the first press wakes the
 //!   screen (dimly) as usual, and the second, rather than turning it off
 //!   again, brightens it.
@@ -164,6 +166,26 @@
 //!   [`crate::touch::set_asleep`]).
 //! - Alarms (which end the night), timers, "find my watch", and calls still
 //!   ring and buzz.
+//!
+//! The quiet night yields to the wearer using the watch, for as long as
+//! they do, and only to that: the screen woken (by the button, or a
+//! glance) and touched. What moves a sleeper (turning over, bedding on the
+//! screen) mustn't count, which is the point of the night; and once the
+//! wearer stops, it's as quiet as before. What it does, and whether it
+//! yields:
+//!
+//! | The quiet night | While the wearer uses the screen | Why |
+//! |---|---|---|
+//! | Screen off [`SCREEN_TIMEOUT`] after the last input | Yields: a long press held on is input until it lifts (up to [`crate::gesture::HOLD_LIMIT`], a minute), so a grid hold's release comes at the lift. The same by day | It's input that lasts; the screen going off put the touch controller to sleep, ending the hold 10 s in |
+//! | The touch controller sleeps | Yields: only while the screen is off | A touch with the screen off is as likely bedding |
+//! | Touches don't wake the screen, nor do the media gestures with it off | Kept | As above; the button wakes it. A touch that woke it from a glance doesn't hold it on either |
+//! | No glances while asleep (as sleep tracking says) | Kept | That's turning over in bed; and the screen's on anyway |
+//! | The dim look, at the low backlight | Kept | Eyes adapted to the dark, and maybe someone asleep alongside; a double press of the button ends the night for the full look |
+//! | Notifications don't buzz or light the screen | Yields already: one waiting shows as a banner while the screen is on. Still no buzz | The banner is seen; the buzz would only wake someone alongside |
+//! | No room sensor scans in the background | Yields already: the clock face, or the Air screen, scans (see [`aranet::Nearby::due`]) | |
+//! | Media gestures | Yields already: the awake clock face's work as by day | |
+//! | Navigation's turns don't buzz or glance | Kept | No one navigates in bed; up and walking, the night soon ends |
+//! | Sleep tracking, and when the night ends | Kept: using the watch only counts through the wrist's movement | See [`sleep::Night`] on [`sleep::QUIET_AWAKE`] |
 
 use core::fmt::Write as _;
 use core::num::NonZeroU32;

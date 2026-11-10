@@ -319,6 +319,16 @@ pub fn last_sleep(minutes: usize, kind: impl Fn(usize) -> Kind) -> Option<(usize
 /// Otherwise the alarm would end the night only for it to start again the
 /// next minute.
 ///
+/// Using the watch in the night (reading it, holding a grid button) is
+/// awake only through the movement it takes, as the classifier sees it:
+/// nothing here hears of touches. A minute or two of it is a stir at
+/// most. [`WAKE_RUN`] minutes of fidgeting with it are waking, which
+/// starts the [`QUIET_AWAKE`] count; settling then, [`RESUME`] still
+/// minutes are asleep again, well within it, and the night goes on. Only
+/// moving the wrist for about `WAKE_RUN + QUIET_AWAKE - RESUME` (18)
+/// minutes without settling ends it, as being up would. A wrist held
+/// still while reading counts as still, and so as asleep.
+///
 /// A **nap** is quiet too, but ends sooner: sleep that starts in the
 /// daytime ([`nap_hours`]) ends after [`NAP_AWAKE`] minutes awake, not
 /// [`QUIET_AWAKE`]. Waking from a nap is waking up, not a trip to the
