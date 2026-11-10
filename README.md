@@ -38,8 +38,8 @@ on top:
   move, while you sleep, or while it's high. Each try starts once your
   wrist is still, or two minutes on if it never is, and keeps going for
   up to 30 s even if you start typing again, as a moment's calm may
-  come. If a still wrist gives none, it tries a brighter LED for a few
-  more seconds, and again within 10 minutes. Awake, every other
+  come. If a still wrist gives none, it tries a brighter LED for up to
+  15 s more, and again within 10 minutes. Awake, every other
   reading's tries start with the brighter LED, an experiment to see if
   that reads better at a desk. After half an hour without a reading, it
   tries every 10 minutes, without waiting for a still wrist, and may
