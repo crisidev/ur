@@ -86,6 +86,7 @@ pub struct Tracking {
 
 impl Tracking {
     pub fn new(at: (i32, i32)) -> Self {
+        debug_assert!(on_panel(at), "a touch starting off the panel");
         Self {
             start: at,
             last: at,
@@ -97,6 +98,7 @@ impl Tracking {
 
     /// The finger is now at `at`.
     pub fn moved_to(&mut self, at: (i32, i32)) {
+        debug_assert!(on_panel(at), "a touch moving off the panel");
         self.last = at;
         let (dx, dy) = (at.0 - self.start.0, at.1 - self.start.1);
         self.moved |= dx.abs().max(dy.abs()) >= SWIPE_DISTANCE;
@@ -148,6 +150,9 @@ impl Tracking {
         }
         let event = self.classify();
         let release = (event.gesture == Gesture::LongPress).then(|| self.release());
+        // Only `release` says a touch is one: were `classify` to, this
+        // touch's one event would be a release of nothing.
+        debug_assert!(event.gesture != Gesture::Release);
         (event, release)
     }
 
@@ -169,6 +174,18 @@ impl Tracking {
             held_ms: self.since.elapsed().as_millis().min(u64::from(u16::MAX)) as u16,
         }
     }
+}
+
+/// Whether `at` is on the panel, in its pixels: what [`Tracking`] is only
+/// ever given. The touch driver drops the controller's misreads beyond it
+/// (`touch::PANEL`), and the simulator's mouse is on its window. The
+/// arithmetic here counts on it: differences of two positions that far
+/// apart at most, and a start that scales to a place on the canvas, for
+/// the screens' hit tests (`host-tests/gesture` proves both for positions
+/// on the panel, and that any `i32` would overflow).
+fn on_panel(at: (i32, i32)) -> bool {
+    let side = 0..(canvas::WIDTH * canvas::SCALE) as i32;
+    side.contains(&at.0) && side.contains(&at.1)
 }
 
 /// How long the screen stays on after the last input: `timeout`, as the

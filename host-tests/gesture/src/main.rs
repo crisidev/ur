@@ -10,8 +10,10 @@
 #[allow(dead_code)]
 mod gesture;
 
-/// The one thing `gesture` needs from the canvas.
+/// What `gesture` needs from the canvas: its size, and the panel's
+/// pixels to each of its own.
 mod canvas {
+    pub const WIDTH: usize = 80;
     pub const SCALE: usize = 3;
 }
 
@@ -396,12 +398,101 @@ mod proofs {
     /// distance, and so a wrong gesture, in the firmware's release
     /// build). Not from anything the controller can report, whose
     /// positions are 12 bits each: this only says the arithmetic isn't
-    /// safe for every `i32`, should another caller ever feed it.
+    /// safe for every `i32`, should another caller ever feed it. With
+    /// debug assertions on, as here, [`Tracking`] refuses such a position
+    /// itself, before the arithmetic gets to it: either way, a panic.
     #[kani::proof]
     #[kani::stub(Instant::now, now)]
     #[kani::should_panic]
     fn positions_off_the_panel_would_overflow() {
         let mut tracking = Tracking::new(kani::any());
         tracking.moved_to(kani::any());
+    }
+
+    /// Every long press gets exactly one release, and nothing else does:
+    /// what the button grid's holds stand on, as whatever a hold starts
+    /// (a light dimming, in Home Assistant) only stops at its release.
+    /// (Two firmware bugs were a release that never came: a lift just
+    /// before the long press's timer, and a touch cut short by the
+    /// controller going to sleep.)
+    ///
+    /// The touch is driven as `touch::touch_task` drives it, with its
+    /// events counted in the order it would send them. Twice over,
+    /// after any wait: either a report moves the finger anywhere, or,
+    /// if the long press's timer is due, it may fire (the task's
+    /// `select3` can as well take a report that's ready at the same
+    /// moment, so the timer firing is a choice, not a must), which
+    /// reports the long press with the finger down. Then the touch ends
+    /// one of the two ways it can: the finger lifts
+    /// ([`Tracking::lifted`]), or the controller is put to sleep under
+    /// it ([`Tracking::lost`]).
+    ///
+    /// Whatever happens:
+    ///
+    /// - a release only ever follows a long press, and at most one of
+    ///   each is sent;
+    /// - what the timer reports is a long press;
+    /// - a touch that lifts sends exactly one event that isn't a
+    ///   release, and its release if (and only if) that was a long
+    ///   press;
+    /// - a touch cut short sends nothing but the release of a long
+    ///   press already reported.
+    #[kani::proof]
+    #[kani::stub(Instant::now, now)]
+    #[kani::unwind(3)]
+    fn every_long_press_gets_exactly_one_release() {
+        let mut tracking = Tracking::new(any_position());
+        let (mut long_presses, mut releases, mut others) = (0u8, 0u8, 0u8);
+        let mut count = |touch: Touch| match touch.gesture {
+            Gesture::LongPress => {
+                assert!(releases == 0, "a long press after its release");
+                long_presses += 1;
+            }
+            Gesture::Release => {
+                assert!(long_presses == 1, "a release with no long press");
+                releases += 1;
+            }
+            _ => others += 1,
+        };
+        for _ in 0..2 {
+            wait_any();
+            if kani::any() {
+                tracking.moved_to(any_position());
+            } else if tracking
+                .long_press_at()
+                .is_some_and(|due| Instant::now() >= due)
+            {
+                // As `touch_task` does when its timer fires.
+                tracking.held = true;
+                let event = tracking.classify();
+                assert_eq!(event.gesture, Gesture::LongPress);
+                count(event);
+            }
+        }
+        wait_any();
+        let lifted: bool = kani::any();
+        if lifted {
+            let (event, release) = tracking.lifted();
+            count(event);
+            if let Some(release) = release {
+                count(release);
+            }
+        } else if let Some(release) = tracking.lost() {
+            count(release);
+        }
+        assert!(long_presses <= 1 && releases <= 1);
+        if lifted {
+            assert_eq!(long_presses + others, 1);
+            assert_eq!(releases, long_presses);
+        } else {
+            assert_eq!(others, 0);
+            assert_eq!(releases, long_presses);
+        }
+        kani::cover!(
+            lifted && long_presses == 1 && !tracking.held,
+            "a lift that beat the timer"
+        );
+        kani::cover!(!lifted && releases == 1, "a hold cut short");
+        kani::cover!(lifted && others == 1, "a tap or a swipe");
     }
 }
