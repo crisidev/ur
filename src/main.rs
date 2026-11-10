@@ -61,6 +61,7 @@ mod brightness;
 mod bthome;
 mod bthome_sensor;
 mod buttons;
+mod calendar;
 mod canvas;
 mod clock;
 #[cfg(feature = "compare")]

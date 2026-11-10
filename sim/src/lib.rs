@@ -49,6 +49,9 @@ mod bthome_sensor;
 #[path = "../../src/buttons.rs"]
 #[allow(dead_code)]
 mod buttons;
+#[path = "../../src/calendar.rs"]
+#[allow(dead_code)]
+mod calendar;
 #[path = "../../src/canvas.rs"]
 #[allow(dead_code)]
 mod canvas;
