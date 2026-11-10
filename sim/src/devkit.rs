@@ -873,6 +873,17 @@ impl<'a> Follower<'a> {
                 };
                 self.inject(20, on, 0, 0)?;
             }
+            // The quiet night, which a dev kit on a desk never sleeps
+            // into: its sleep tracking told the wearer is asleep (or
+            // left to say so itself again).
+            "asleep" => {
+                let on = match arg(0) {
+                    Some("on") => 1,
+                    Some("off") => 0,
+                    other => return Err(format!("asleep {other:?}? (on or off)")),
+                };
+                self.inject(21, on, 0, 0)?;
+            }
             "steps" => {
                 let steps: u16 = arg(0)
                     .ok_or("steps: needs N")?

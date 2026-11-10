@@ -246,7 +246,7 @@ writes `NAME.png`: the simulator's frame, the dev kit's, and where they
 differ (magenta), side by side; the run fails if any differ. The script
 can only do what a dev kit can be made to do (`scripts/screenshot.py`'s
 inputs: `button`, `glance`, gestures, `press`/`lift`, `notify N [HOURS]`,
-`media`, `steps`, `battery`, `find on|off`), plus `wait`, `compare`, and `expect` (of
+`media`, `steps`, `battery`, `find on|off`, `asleep on|off`), plus `wait`, `compare`, and `expect` (of
 `screen-on`, `dim`, `quiet-night`). With the screen
 off, the dev kit's panel keeps an old frame, and `compare` skips it. A
 phone connected to the dev kit may play music: the dev kit exports the

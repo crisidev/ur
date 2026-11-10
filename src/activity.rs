@@ -726,8 +726,9 @@ static LAST_SLEEP: Mutex<CriticalSectionRawMutex, Cell<Option<Sleep>>> =
 /// Falling asleep is recognised once [`sleep::ONSET`] minutes of stillness
 /// have passed, waking after [`sleep::WAKE_RUN`] minutes of movement (or
 /// at once on getting up and walking), so this lags both by that much.
+/// (Or a dev kit was told the wearer is: see `debug::asleep_forced`.)
 pub fn asleep() -> bool {
-    ASLEEP.load(Ordering::Relaxed)
+    ASLEEP.load(Ordering::Relaxed) || crate::debug::asleep_forced()
 }
 
 static ASLEEP: AtomicBool = AtomicBool::new(false);

@@ -14,9 +14,9 @@
 //! of RAM, and [`input_task`]'s poll (ten wake-ups of a few µs a second),
 //! for nothing. Screenshots are always there: they cost a pointer.
 
-use core::sync::atomic::{AtomicPtr, Ordering};
 #[cfg(feature = "debug-input")]
-use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32};
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 #[cfg(feature = "debug-input")]
 use embassy_time::Timer;
@@ -52,8 +52,9 @@ static UR_CANVAS: AtomicPtr<Canvas> = AtomicPtr::new(core::ptr::null_mut());
 /// through the phone's parser), 19 two taps 0.1 s apart (a double tap,
 /// too quick for two inputs over the probe; for the button grid), 20
 /// Gadgetbridge's "find my watch" line, through the phone's parser, on
-/// unless `x` is 0 (see [`FIND_LINES`])) and the next two the canvas x
-/// and y.
+/// unless `x` is 0 (see [`FIND_LINES`]), 21 the wearer asleep from now
+/// on if `x` is 1, or as sleep tracking says again if 0 (see
+/// [`asleep_forced`])) and the next two the canvas x and y.
 /// Cleared once taken.
 #[cfg(feature = "debug-input")]
 #[unsafe(no_mangle)]
@@ -83,6 +84,23 @@ const FIND_LINES: [&[u8]; 2] = [
 /// The battery voltage injected by input 13, in millivolts, or 0.
 #[cfg(feature = "debug-input")]
 static BATTERY_MV: AtomicU16 = AtomicU16::new(0);
+
+/// Whether input 21 said the wearer is asleep.
+#[cfg(feature = "debug-input")]
+static ASLEEP: AtomicBool = AtomicBool::new(false);
+
+/// Whether to take the wearer as asleep, whatever sleep tracking says
+/// (see `activity::asleep`): input 21, for the quiet night on a dev kit,
+/// which lies still on a desk, but whose heart rate sensor sees no skin,
+/// so never sleeps. The quiet night starts at the next tick, as on
+/// falling asleep, and once this is off again, ends as on waking (after
+/// `sleep::QUIET_AWAKE`), or at once with a double press of the button.
+pub fn asleep_forced() -> bool {
+    #[cfg(feature = "debug-input")]
+    return ASLEEP.load(Ordering::Relaxed);
+    #[cfg(not(feature = "debug-input"))]
+    false
+}
 
 /// How many hours ago the next test notification arrived (input 9's `y`),
 /// to see how older ones show in the history; taken by
@@ -206,6 +224,11 @@ pub async fn input_task() {
                     // Not awaiting room in the queue, as for input 14.
                     let _ = INPUT.try_send(InputEvent::Phone(event));
                 }
+                continue;
+            }
+            21 => {
+                defmt::warn!("debug: asleep {}", x == 1);
+                ASLEEP.store(x == 1, Ordering::Relaxed);
                 continue;
             }
             15 => {

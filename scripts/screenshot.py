@@ -49,6 +49,10 @@ task as the touch controller's reports would, so a long press is
 recognised while the finger is held (e.g. `--input press:40,40 lift`
 holds it for --wait seconds), and moving it (`press:40,40 press:40,70
 lift --wait 0.3`) makes a swipe.
+`asleep:1,0` makes the watch take the wearer as asleep from then on, as
+if sleep tracking said so (the quiet night starts a second later), and
+`asleep:0,0` leaves it to sleep tracking again (the night then ends as
+on waking, or at once with `button:2,0`).
 
 `--theme` renders the frame in another theme's colours (e.g. HANDHELD, for
 the day look at night): the canvas holds colour roles, not colours.
@@ -93,6 +97,7 @@ KINDS = {
     "bitmaps": 18,
     "doubletap": 19,
     "find": 20,
+    "asleep": 21,
 }
 
 
