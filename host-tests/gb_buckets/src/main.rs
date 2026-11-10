@@ -716,11 +716,11 @@ mod tests {
     fn a_held_fetch_ends_at_a_bucket() {
         let history: History = (0..30).map(|i| (NOON + i, minute(10, 0, None))).collect();
         let mut fetch = Fetch::new(NOON, NOON, NOON + 30);
-        fetch.hold(NOON + 10);
-        assert_eq!(fetch.sent_until(), NOON + 9);
+        fetch.hold(NOON + 12);
+        assert_eq!(fetch.sent_until(), NOON + 10);
         let buckets = run(fetch, &history, NOON);
-        assert_eq!(buckets.len(), 3);
-        assert_eq!(buckets.last().map(|b| b.start), Some(NOON + 6));
+        assert_eq!(buckets.len(), 2);
+        assert_eq!(buckets.last().map(|b| b.start), Some(NOON + 5));
     }
 
     // ==========================================================================

@@ -825,25 +825,25 @@ fn activity_fetch_holds_back_the_night() {
     );
     assert_eq!(samples(first), Vec::<String>::new(), "{log}");
     let second = samples(second);
-    // 23:00 to 06:30 in 3-minute buckets, then the one with the steps.
-    assert_eq!(second.len(), 151, "{log}");
+    // 23:00 to 06:30 in 5-minute buckets, then the one with the steps.
+    assert_eq!(second.len(), 91, "{log}");
     assert_eq!(
         second[0],
         format!(
             r#"{{"t":"act","ts":{},"stp":0,"mov":0,"hrm":0,"act":"LIGHT_SLEEP"}}"#,
-            (night * 60 + 179) * 1000
+            (night * 60 + 299) * 1000
         )
     );
     assert!(
-        second[..150]
+        second[..90]
             .iter()
             .all(|s| s.ends_with(r#""act":"LIGHT_SLEEP"}"#))
     );
     assert_eq!(
-        second[150],
+        second[90],
         format!(
             r#"{{"t":"act","ts":{},"stp":50,"mov":0,"hrm":0}}"#,
-            (t0 + 179) * 1000
+            (t0 + 299) * 1000
         )
     );
 }
