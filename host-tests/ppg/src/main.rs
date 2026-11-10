@@ -1182,8 +1182,8 @@ mod tests {
     /// gentle enough to pass for pulse).
     #[test]
     fn motion_is_masked_or_rejected() {
-        // (start s, duration s, whether some windows over it may be read)
-        for (start, duration, _readable) in
+        // (start s, duration s, whether most windows over it are read)
+        for (start, duration, readable) in
             [(12.0, 1.5, true), (12.0, 2.0, true), (10.0, 6.0, false)]
         {
             let scenario = Scenario {
@@ -1219,7 +1219,7 @@ mod tests {
                 }
             }
             println!("{duration} s of motion: {read}/{over} windows over it read");
-            if duration <= 2.0 {
+            if readable {
                 assert!(read * 2 > over, "{duration} s: only {read}/{over} read");
             }
         }
