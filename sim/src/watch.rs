@@ -373,7 +373,7 @@ impl Watch {
             let line = message.to_line();
             let line = line.trim_end();
             if self.connected {
-                self.log(format!("to the phone: {line}"));
+                to_phone(line);
             } else {
                 self.log(format!("to the phone, but not connected: {line}"));
             }
@@ -750,6 +750,42 @@ impl Board for Hardware<'_> {
 // ==============================================================================
 // Odds and ends
 // ==============================================================================
+
+/// The watch's lines to the phone since [`take_to_phone`] last took them,
+/// while [`capture_to_phone`] has it on: for whoever plays the phone
+/// (`gadgetbridge.rs`) to read. `None` when off, as it is for a script or
+/// the window, which would only ever fill it.
+static TO_PHONE: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
+/// Starts (or stops) keeping the watch's lines to the phone.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn capture_to_phone(on: bool) {
+    *TO_PHONE.lock().expect("nothing panics while holding it") = on.then(Vec::new);
+}
+
+/// The lines kept since the last call, without their line ends.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn take_to_phone() -> Vec<String> {
+    TO_PHONE
+        .lock()
+        .expect("nothing panics while holding it")
+        .as_mut()
+        .map(std::mem::take)
+        .unwrap_or_default()
+}
+
+/// A line the watch sends a connected phone (without its line end):
+/// logged, and kept if anyone's reading (see [`capture_to_phone`]).
+pub fn to_phone(line: &str) {
+    log(format!("to the phone: {line}"));
+    if let Some(lines) = TO_PHONE
+        .lock()
+        .expect("nothing panics while holding it")
+        .as_mut()
+    {
+        lines.push(line.to_owned());
+    }
+}
 
 /// Prints what happened, with the uptime and the wall-clock time.
 pub fn log(message: impl AsRef<str>) {

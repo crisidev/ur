@@ -297,6 +297,9 @@ mod fuzz;
 /// For the coverage-guided fuzzer in `fuzz/`.
 #[cfg(not(target_arch = "wasm32"))]
 pub use fuzz::{host_one, host_script};
+/// For its other target: the simulator against a model of Gadgetbridge.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod gadgetbridge;
 #[cfg(all(feature = "window", not(target_arch = "wasm32")))]
 mod window;
 

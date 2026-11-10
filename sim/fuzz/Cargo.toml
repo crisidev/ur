@@ -21,6 +21,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "gadgetbridge"
+path = "fuzz_targets/gadgetbridge.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
 libfuzzer-sys = "0.4.13"
 ur-sim = { path = "..", default-features = false }

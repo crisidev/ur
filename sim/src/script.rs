@@ -688,7 +688,7 @@ fn activity_fetch(watch: &mut Watch, since_ms: i64) {
 
     let send = |message: Outgoing| {
         let line = message.to_line();
-        watch.log(format!("to the phone: {}", line.trim_end()));
+        crate::watch::to_phone(line.trim_end());
     };
     send(Outgoing::ActivityFetch { done: false });
     let now = clock::now_utc_seconds();

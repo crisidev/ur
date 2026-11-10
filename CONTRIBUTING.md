@@ -328,6 +328,28 @@ cargo +nightly bolero test fuzz::bthome_objects_read_as_the_spec_says --engine l
 `src/__fuzz__/` (ignored by git), which `cargo test` replays too: an
 input worth keeping becomes a test.
 
+### A Gadgetbridge to test against
+
+`gbmock/` is a model of Gadgetbridge's Bangle.js support, written from
+its source at one commit (named in its crate docs, with how to move it):
+what it sends, spelled as it spells it, and what it makes of the watch's
+answers, down to the activity samples in its database. Three things use
+it:
+
+- `host-tests/gb`'s `src/mock.rs`: whatever Gadgetbridge sends means to
+  the watch what it meant, whatever the watch sends is understood, and
+  a model of the watch's activity fetch fills the mock's database with
+  what the watch sent. Tests, and Bolero harnesses (`mock::fuzz::…`).
+- `host-tests/gb`'s `src/mock_proofs.rs`: Kani proofs of the same, where the
+  state is small (`cargo kani --harness NAME`).
+- The simulator: `sim/tests/gadgetbridge.rs` runs sessions of the mock
+  with the simulated watch, and a second fuzz target does so for as long
+  as it's left to:
+
+  ```sh
+  cd sim && cargo +nightly fuzz run -s none gadgetbridge -- -fork=8 -timeout=20
+  ```
+
 ### cargo-careful and Miri
 
 `cargo +nightly careful test` (a standard library with its debug checks)
