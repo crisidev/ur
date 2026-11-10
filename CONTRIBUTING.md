@@ -18,17 +18,20 @@ needs nothing special; LFS stores it.
 
 - `src/`: the firmware. `main.rs` starts the tasks and runs the UI loop;
   each module's documentation explains its part. The hardware-free ones
-  (`ppg`, `sleep`, `stages`, `alarm`, `aranet`, `glance`, `heart_schedule`,
-  `brightness`, `temperature`, `battery`, `snapshot`, `nav`, `day`,
-  `route`, `arrival`, `decimal`, `gesture`, `wake`, `gb`, `phone`,
-  `link`, `buttons`, `qr`, `mcuboot`, `backoff` (retrying sensor setup),
+  (`ppg`, `sleep`, `stages`, `alarm`, `aranet` and `bthome_sensor`,
+  `glance`, `heart_schedule`, `brightness`, `temperature`, `battery`,
+  `snapshot`, `nav`, `day`, `route`, `arrival`, `decimal`, `gesture`,
+  `wake`, `gb`, `phone`, `gb_buckets` and `sleep_hold` (the activity as
+  Gadgetbridge fetches it), `live`, `link`, `buttons`, `qr`, `font`,
+  `mcuboot`, `backoff` (retrying sensor setup),
   `on_time` (`power`'s hourly split),
   `minute_ring` (`activity`'s history as the clock moves), and `bthome`'s
   encoding) are pure logic, tested on the computer, as are
   `theme`'s colours (that those with different meanings differ in every
   theme).
 - `host-tests/<module>/`: one crate per hardware-free module (`sleep`'s
-  covers `stages` too, and `gb`'s `phone`), which includes the firmware's
+  covers `stages` too, `gb`'s `phone`, `gb_buckets`'s `sleep_hold`, and
+  `aranet`'s `bthome_sensor`), which includes the firmware's
   source file with `#[path]` and tests it on the host. Some also replay
   real data (see [Field logs](#field-logs)).
 - `sim/`: a simulator that runs the UI on the computer; see
@@ -36,10 +39,12 @@ needs nothing special; LFS stores it.
 - `scripts/`: packaging (`package.py`, `release.sh`), flashing and
   screenshots over SWD (`run-esprobe.sh`, `screenshot.py`), and Bluetooth tools
   (`dfu.py`, `fetch-log.py`).
-- `.cargo/config.toml`: the target, the linker scripts, and the runner
-  for `cargo run`; see [Iterating](#iterating).
+- `.cargo/config.toml`: the target and the runner for `cargo run`; see
+  [Iterating](#iterating). `build.rs` passes the linker scripts.
 - `memory.x`: the flash and RAM layout around the bootloader.
-- `docs/`: designs for work in progress, and the README's screenshots.
+- `docs/`: the designs behind features (Aranet4, BTHome, the power
+  plan), the guides the README links (the button grid, Gadgetbridge's
+  settings), and the README's screenshots.
 
 ## Building
 
@@ -49,7 +54,7 @@ cargo build --release
 
 `rust-toolchain.toml` pins the compiler ([rustup] installs it on first
 use), with the `thumbv7em-none-eabihf` target. `.cargo/config.toml` makes
-that target the default, and passes the linker scripts (`link.x` from
+that target the default, and `build.rs` passes the linker scripts (`link.x` from
 `cortex-m-rt`, which includes `memory.x`, and [defmt]'s `defmt.x`). The
 release profile is what runs on watches; unoptimised builds are too large
 and slow.
@@ -161,7 +166,7 @@ With `opt-level = "z"`, what makes frames big:
 
 - Big values returned or moved by value: each function on the way may
   build its own copy, in its own frame. Fill a `&mut` the caller keeps
-  instead (as `ui::wrap` does), or copy into place.
+  instead (as `font::wrap` does), or copy into place.
 - A task's `async` body is polled by one function with everything it
   awaits or joins inlined, so its frame holds all their locals at once,
   under every poll. A future beside a deep path can be polled in a frame
@@ -179,8 +184,8 @@ cargo run --release -- tour.txt --out ../tmp/tour
 ```
 
 It renders exactly what the panel would, so most UI work can be checked
-there before a dev kit; `sim/readme-screenshots.txt` makes the README's
-screenshots. It takes the dev kit's inputs, every message from the phone
+there before a dev kit; `sim/readme-screenshots.txt` and `readme-gifs.txt` make the
+README's screenshots and GIFs. It takes the dev kit's inputs, every message from the phone
 (also as Gadgetbridge's own lines), and sensor readings, and skips ahead
 in time, for alarms and the quiet night.
 
@@ -294,9 +299,8 @@ proofs at the end of their `src/main.rs`: what the tests check for some
 inputs, for every input, within bounds. `cargo kani` in the crate runs
 them; `--harness NAME` one (and one at a time). They need tight
 `kani::unwind` and `kani::assume` bounds: CBMC's memory grows fast with
-loops (one unbounded alarm proof took 18 GB). `gb` and `day` also have
-[Bolero] property tests, which `cargo test` runs briefly with random
-inputs, and `cargo bolero test NAME` fuzzes for as long as you like.
+loops (one unbounded alarm proof took 18 GB). For [Bolero] property
+tests, see [Fuzzing the host tests](#fuzzing-the-host-tests).
 
 ### Fuzzing the host tests
 
@@ -515,8 +519,7 @@ contribution (as `scripts/run-<probe>.sh`).
 ## Field logs
 
 A sealed watch has no debug probe. The `ur-logging` build instead keeps
-everything it logs in the watch's 4 MB SPI flash (2 MB of it, about a day
-and a half), and serves it over Bluetooth. Install it like any update (see
+everything it logs in the watch's 4 MB SPI flash (2 MB of it, about a day), and serves it over Bluetooth. Install it like any update (see
 the README), wear the watch, then, from a computer paired with it (the
 phone can stay connected), fetch the log with `scripts/fetch-log.py`
 (which needs [bleak]) and decode it with that build's ELF and
@@ -570,7 +573,9 @@ Some host-test crates replay decoded logs, to tune against real wrists:
   Logs after 0.10.0-rc.3 have whole sessions on a busy wrist too (a
   background session no longer stops early for movement), the data for
   making the estimator tolerate motion; up to rc.3, they end within 3-19
-  s. A session's samples, movement and verdicts take ~100 bytes of log a
+  s. After rc.4, sessions also start on a busy wrist, two minutes after
+  they were due (or at once when a reading is overdue), each marked by a
+  `heart: busy start (N s)` line. A session's samples, movement and verdicts take ~100 bytes of log a
   second of LED: a desk hour that won't read (six 30 s tries) takes ~18
   KB, where it took ~8 KB. Next to the ~75 KB an hour the log takes
   anyway (0.10.0-rc.3's, mostly the accelerometer's lines), the 2 MB
@@ -666,8 +671,9 @@ gh release download v0.9.0 --pattern sha256.sum --dir published
 
 ## CI
 
-- `check.yml`: rustfmt, clippy (both variants, with the pinned toolchain
-  and on beta; and the simulator), [shellcheck], and that the Python
+- `check.yml`: rustfmt, clippy (both variants and the dev kit's
+  `compare`, `flash-stress` and `touch-probe` builds, with the pinned
+  toolchain and on beta; and the simulator), [shellcheck], and that the Python
   scripts parse.
 - `test.yml`: the host tests (pinned and beta), the simulator's tests
   and screenshots (as the run's `screenshots` artifact), and a packaged
@@ -679,8 +685,8 @@ gh release download v0.9.0 --pattern sha256.sum --dir published
   logs) as one zip.
 - `release.yml`: on a version tag; see [Releasing](#releasing).
 
-Dependabot proposes updates to the actions, Cargo.lock, and the pinned
-toolchain quarterly.
+Dependabot proposes updates to the actions, the firmware's and host
+tests' Cargo.lock, and the pinned toolchain quarterly.
 
 [embassy]: https://embassy.dev
 [PineTime]: https://pine64.org/devices/pinetime/
