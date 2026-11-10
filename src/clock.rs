@@ -120,6 +120,11 @@ const RETAINED_MAGIC: u32 = 0x7572_4332; // "urC2"
 /// Must match the `RETAINED` region in `memory.x`.
 const RETAINED_ADDRESS: usize = 0x2000_D420;
 const _: () = assert!(size_of::<Retained>() <= 32);
+// `checkpoint` and `restore` write and read a `Retained` there, which is
+// only defined for an address aligned for one (to 8 bytes, for its
+// `i64`s): were the block ever moved in `memory.x`, to an address that
+// isn't.
+const _: () = assert!(RETAINED_ADDRESS.is_multiple_of(align_of::<Retained>()));
 
 fn retained() -> *mut Retained {
     #[cfg(target_os = "none")]
