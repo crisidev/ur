@@ -288,9 +288,11 @@ stack, or a grid hold without its release, is shrunk to a repro. See
 ### Proofs
 
 Some host test crates (`host-tests/alarm`, `buttons`, `gesture`, `day`,
-`decimal`) have [Kani] proofs at the end of their `src/main.rs`: what the
-tests check for some inputs, for every input, within bounds. `cargo kani`
-in the crate runs them; `--harness NAME` one. They need tight
+`decimal`, `battery`, `heart_schedule`, `temperature`, `brightness`,
+`wake`, `on_time`, `minute_ring`, `link`, `theme`, `live`) have [Kani]
+proofs at the end of their `src/main.rs`: what the tests check for some
+inputs, for every input, within bounds. `cargo kani` in the crate runs
+them; `--harness NAME` one (and one at a time). They need tight
 `kani::unwind` and `kani::assume` bounds: CBMC's memory grows fast with
 loops (one unbounded alarm proof took 18 GB). `gb` and `day` also have
 [Bolero] property tests, which `cargo test` runs briefly with random
