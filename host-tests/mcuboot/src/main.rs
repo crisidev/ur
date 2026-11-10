@@ -456,3 +456,126 @@ mod tests {
 
 #[cfg(test)]
 mod fuzz;
+
+/// Proofs, for `cargo kani`: what the tests and the fuzzer try for some
+/// images, for every header, and for every TLV area up to a length.
+///
+/// An update's image is whatever its sender chose, and it's read on the
+/// watch before anything asks the bootloader to install it: nothing in it
+/// may panic the check (which would reset the watch mid-update), and a
+/// header is only taken if its sizes add up.
+#[cfg(kani)]
+mod proofs {
+    use super::mcuboot::{self, Check, HEADER_LEN, Header, Problem, Sha256};
+
+    /// What `dfu` allows: the secondary slot, less MCUBoot's trailer.
+    const CAPACITY: u32 = 0x74000 - 0x1B0;
+
+    /// In `Sha256::update`'s place, for the TLV proof: the hash is beside
+    /// its point, and CBMC would spend its time on the rounds. (The
+    /// fuzzer holds it to the `sha2` crate's.)
+    fn no_update(_sha: &mut Sha256, _data: &[u8]) {}
+
+    /// In `Sha256::finish`'s place: any digest, so both verdicts on the
+    /// hash are followed.
+    fn any_digest(_sha: Sha256) -> [u8; 32] {
+        kani::any()
+    }
+
+    /// For every 32 bytes of header, every image length and every slot
+    /// capacity: reading it never panics or overflows, and it's taken
+    /// only if it has MCUBoot's magic, a header size of a header or
+    /// more, no protected TLVs and no flags, at least two vectors of
+    /// firmware, and sizes that leave room for a TLV header within the
+    /// image's length, which fits the slot. Each refusal is for the
+    /// first of those that doesn't hold.
+    ///
+    /// The sums here are in 64 bits, where the firmware's are in 32 with
+    /// checks: so no size a sender picks wraps round to look small.
+    ///
+    /// Bar one slot no flash has: of all 4 GiB (`u32::MAX` bytes). There
+    /// `parse`'s sum saturates, and an image of exactly that length may
+    /// claim up to 3 bytes more than it has. `dfu`'s slot is 464 KiB.
+    #[kani::proof]
+    fn a_header_is_taken_only_if_its_sizes_add_up() {
+        let bytes: [u8; HEADER_LEN] = kani::any();
+        let (len, capacity): (u32, u32) = kani::any();
+        kani::assume(capacity < u32::MAX);
+        let u16_at = |at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+        let u32_at = |at: usize| {
+            u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+        let magic = u32_at(0) == 0x96f3_b83d;
+        let (header_size, protected, firmware, flags) =
+            (u16_at(8), u16_at(10), u32_at(12), u32_at(16));
+        let supported = header_size >= 32 && protected == 0 && flags == 0;
+        let fits = firmware >= 8
+            && u64::from(header_size) + u64::from(firmware) + 4 <= u64::from(len)
+            && len <= capacity;
+        match Header::parse(&bytes, len, capacity) {
+            Ok(header) => {
+                assert!(magic && supported && fits);
+                assert_eq!(header.version.major, bytes[20]);
+                assert_eq!(header.version.minor, bytes[21]);
+                assert_eq!(header.version.revision, u16_at(22));
+                assert_eq!(header.version.build, u32_at(24));
+            }
+            Err(Problem::NotAnImage) => assert!(!magic),
+            Err(Problem::Unsupported) => assert!(magic && !supported),
+            Err(Problem::WrongSize) => assert!(magic && supported && !fits),
+            Err(_) => unreachable!("a header is refused for one of those three"),
+        }
+        // Less than a header is no header, whatever it holds.
+        let short: usize = kani::any();
+        kani::assume(short < HEADER_LEN);
+        assert!(matches!(
+            Header::parse(&bytes[..short], len, capacity),
+            Err(Problem::WrongSize)
+        ));
+    }
+
+    /// The longest TLV area tried: its header, a SHA-256 entry, and
+    /// another entry's header after it, so that every state of the
+    /// reader is reached (in an entry's header, in a value, in the
+    /// hash, past the hash).
+    const TLVS: usize = 4 + 36 + 4;
+    /// The smallest image before them: a 32-byte header, and two vectors.
+    const HASHED: usize = HEADER_LEN + 8;
+
+    /// For the smallest image there is, with any vectors, followed by
+    /// any bytes at all as its TLV area, up to [`TLVS`] of them: the
+    /// check never panics, indexes out of the hash it copies, or wraps a
+    /// count round (`mcuboot`'s own `debug_assert!`s hold); and the image
+    /// passes only if the area starts with its magic and its own length,
+    /// which is all that's left of the image.
+    ///
+    /// The header's size and the firmware's are fixed (the header proof
+    /// covers every other); the hash is stubbed out, with any digest.
+    #[kani::proof]
+    #[kani::stub(mcuboot::Sha256::update, no_update)]
+    #[kani::stub(mcuboot::Sha256::finish, any_digest)]
+    #[kani::unwind(86)]
+    fn any_tlv_area_is_read_without_panicking() {
+        let mut image: [u8; HASHED + TLVS] = kani::any();
+        image[..4].copy_from_slice(&0x96f3_b83du32.to_le_bytes());
+        image[8..12].copy_from_slice(&[32, 0, 0, 0]);
+        image[12..16].copy_from_slice(&8u32.to_le_bytes());
+        image[16..20].copy_from_slice(&[0; 4]);
+        let len: usize = kani::any();
+        kani::assume(HASHED + 4 <= len && len <= image.len());
+        let image = &image[..len];
+
+        let Ok(header) = Header::parse(image, len as u32, CAPACITY) else {
+            unreachable!("its sizes add up");
+        };
+        let mut check = Check::new(header, len as u32);
+        check.update(image);
+        if check.finish().is_ok() {
+            assert_eq!(image[HASHED..HASHED + 2], 0x6907u16.to_le_bytes());
+            let total = u16::from_le_bytes([image[HASHED + 2], image[HASHED + 3]]);
+            assert_eq!(usize::from(total), len - HASHED);
+            // Room for the one SHA-256 it must have.
+            assert!(len - HASHED >= 4 + 36);
+        }
+    }
+}

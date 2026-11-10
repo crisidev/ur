@@ -21,6 +21,8 @@ sha2 = "0.10"
 # that an image that would wrap a number round fails a test here.
 [profile.release]
 overflow-checks = true
+# And the modules' own `debug_assert!`s, which a release build drops.
+debug-assertions = true
 
 # What `cargo bolero test` builds with (see `src/fuzz.rs`): fast, as a
 # fuzzer is only as good as the images it gets through, but with the
@@ -31,3 +33,12 @@ opt-level = 3
 incremental = false
 codegen-units = 1
 overflow-checks = true
+
+# `cargo kani` builds with `--cfg kani`, for the proofs in `src/main.rs`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+# The TLV proof stubs SHA-256 out (`kani::stub`), which Kani still calls
+# unstable.
+[package.metadata.kani.unstable]
+stubbing = true

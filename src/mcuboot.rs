@@ -166,6 +166,13 @@ pub struct Check {
 impl Check {
     /// For an image of `len` bytes whose header [`Header::parse`] read.
     pub fn new(header: Header, len: u32) -> Self {
+        // `Header::parse` checked the header's sizes against the length
+        // it was given: `finish` takes the TLV area's length from this
+        // one (`len - hashed`), which must be the same.
+        debug_assert!(
+            header.hashed.saturating_add(4) <= len,
+            "the header was parsed for an image this long"
+        );
         Self {
             header,
             len,
@@ -263,6 +270,12 @@ impl Tlvs {
         }
         if self.left > 0 {
             if self.in_sha256 {
+                // A SHA-256 entry of any other length broke the parse as
+                // its header was read (below), so there are 32 bytes to
+                // come at most, and this stays inside `sha256`. (Out of
+                // it, the index would panic: in an update's validation,
+                // on bytes its sender chose.)
+                debug_assert!(self.left <= 32, "a SHA-256 entry is 32 bytes");
                 self.sha256[32 - usize::from(self.left)] = byte;
             }
             self.left -= 1;
