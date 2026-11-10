@@ -230,5 +230,10 @@ pub async fn wedge_task() {
             .write(|w| w.set_enable(twim::vals::Enable::from_bits(0)));
         Timer::after_millis(20).await;
     }
+    // Leave the controller as a real recovery would, rather than disabled
+    // until some driver's next transfer fails (which made the
+    // accelerometer's first attempt after the wedge fail every time, and
+    // wait 10 s more).
+    reset_controller().await;
     info!("i2c: no longer wedging the bus");
 }
