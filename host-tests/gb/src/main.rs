@@ -1829,3 +1829,35 @@ mod fuzz {
         );
     }
 }
+
+/// Proofs, for `cargo kani`: what the fuzzer tries for some text, for
+/// every run of characters up to a length.
+#[cfg(kani)]
+mod proofs {
+    use super::phone::TextBuilder;
+
+    /// How many characters the text below keeps, and how many are pushed
+    /// at it: enough to fill it, overflow it, and go on after.
+    const KEPT: usize = 3;
+    const PUSHED: usize = 5;
+
+    /// For every run of [`PUSHED`] characters (any of Unicode's: letters,
+    /// spaces, controls, emoji, the invisible ones) pushed at a text
+    /// that keeps [`KEPT`]: `TextBuilder::finish`'s own check holds (no
+    /// 0 before the text's end and only 0s after, no space at either end
+    /// nor two in a row, no control character but the ellipsis's, and
+    /// `is_empty` agreeing), so `Text` needs no length; it shows no more
+    /// characters than it keeps; and nothing panics on the way.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn any_characters_build_a_text_that_needs_no_length() {
+        let mut builder: TextBuilder<KEPT> = TextBuilder::new();
+        for _ in 0..PUSHED {
+            builder.push(kani::any());
+        }
+        let empty = builder.is_empty();
+        let text = builder.finish();
+        assert_eq!(text.is_empty(), empty);
+        assert!(text.chars().count() <= KEPT);
+    }
+}
