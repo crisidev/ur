@@ -13,6 +13,10 @@ publish = false
 [dev-dependencies]
 bolero = "0.13.7"
 
+[lints.rust]
+# `cargo kani` sets `cfg(kani)` for the proofs at the end of src/main.rs.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 # CI runs the host tests with `--release`; keep the arithmetic checks.
 [profile.release]
 overflow-checks = true

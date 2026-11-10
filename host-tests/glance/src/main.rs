@@ -110,3 +110,50 @@ fn swinging_says_nothing() {
 
 #[cfg(test)]
 mod fuzz;
+
+/// Proofs, for every sample the accelerometer can report at once, where
+/// the tests replay logged poses and the fuzzing tries thousands.
+/// `cargo kani` runs them (see CONTRIBUTING.md).
+#[cfg(kani)]
+mod proofs {
+    use super::glance::{Detector, SETTLE, Vector, from_sensor};
+
+    /// A sample as `activity` reads one: each axis 12 bits, signed (the
+    /// sensor's 16, shifted down by 4).
+    fn any_sample() -> Vector {
+        let raw: [i16; 3] = kani::any();
+        from_sensor(raw.map(|axis| axis >> 4))
+    }
+
+    /// Any three samples the accelerometer can report, from a detector
+    /// just started: nothing overflows, and no glance comes before
+    /// there's been a turn away and [`SETTLE`] samples since (so the
+    /// third is the first that can be one).
+    ///
+    /// The arithmetic is what this is for. The detector squares each
+    /// axis and sums the three in an `i32`, and turns the sensor's axes
+    /// into the watch's by negating them in an `i16`: both overflow for
+    /// what an `i16` can hold (three squares from 26,755 up; the
+    /// negation, at -32,768), and neither can for 12 bits, ±2,048, which
+    /// is 2 g: see `a_full_scale_sample_would_overflow` for the
+    /// difference.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn any_sample_the_accelerometer_reports_is_safe() {
+        let mut detector = Detector::default();
+        for pushed in 1..=3u8 {
+            let glance = detector.push(any_sample());
+            assert!(!glance || pushed > SETTLE, "a glance with no turn away");
+            kani::cover!(glance, "away, then readable twice");
+        }
+    }
+
+    /// Why the bound above matters: samples of all 16 bits, as another
+    /// sensor (or another shift) might give, overflow the sum of squares.
+    /// A panic where overflow is checked, as here; wrapped, on the watch.
+    #[kani::proof]
+    #[kani::should_panic]
+    fn a_full_scale_sample_would_overflow() {
+        Detector::default().push(kani::any());
+    }
+}
