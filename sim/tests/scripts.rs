@@ -312,7 +312,7 @@ fn the_bthome_key_stays_until_tapped_away() {
     std::fs::create_dir_all(&dir).expect("the target dir is writable");
     std::fs::write(
         &script,
-        "buttons bthome\nleft\nleft\nwait 1s\ntap 40,72\n\
+        "buttons bthome\nleft\nleft\nleft\nwait 1s\ntap 40,60\n\
          wait 10m\nexpect screen-on\ntap\n\
          wait 10m\nexpect screen-on\ntap\n\
          wait 11s\nexpect not screen-on\n",

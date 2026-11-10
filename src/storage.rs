@@ -78,6 +78,9 @@ pub mod key {
     /// [`crate::themes`]).
     pub const THEME_DAY: u8 = 42;
     pub const THEME_NIGHT: u8 = 43;
+    /// Settings' FORCE: which side's schemes the theme shows (see
+    /// [`crate::ui::Force`]).
+    pub const FORCE: u8 = 44;
     /// Written only by builds with the `flash-stress` feature (see
     /// `flash_stress.rs`); a dev kit that ran one may hold it.
     #[allow(dead_code)] // Used only by those builds.

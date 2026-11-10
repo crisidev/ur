@@ -148,6 +148,23 @@ mod every_theme {
                 names.push((scheme.palette().name, scheme.palette().id));
             }
         }
+        // Each fits retro's THEME row (as every theme's must on its own),
+        // the measure for a name the watch shows: where Retro is built in,
+        // as with `themes-all`. (Each theme also asserts its own row fits
+        // what it shows, as it draws it.)
+        #[cfg(feature = "theme-retro")]
+        {
+            for (name, _) in &names {
+                assert!(
+                    crate::themes::retro::name_fits(name),
+                    "{name} is too long for retro's THEME row"
+                );
+            }
+            // 50 px of the small font: "TOKYO STORMS" (47) fits, one letter
+            // more (51) doesn't.
+            assert!(crate::themes::retro::name_fits("TOKYO STORMS"));
+            assert!(!crate::themes::retro::name_fits("TOKYO STORMSS"));
+        }
         for (i, &(name, id)) in names.iter().enumerate() {
             for &(other, other_id) in &names[i + 1..] {
                 assert_ne!(name, other, "two schemes called {name}");

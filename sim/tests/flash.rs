@@ -60,7 +60,7 @@ fn settings_survive_between_runs() {
     let (ok, log) = run(
         &dir,
         "first.txt",
-        "alarm 1 06:45 on\nleft\nleft\nwait 1s\ntap 40,20\nwait 1s\ntap 40,37\nwait 1s\nsettings\n",
+        "alarm 1 06:45 on\nleft\nleft\nwait 1s\ntap 40,20\nwait 1s\ntap 40,60\nwait 1s\nsettings\n",
         &["--flash", flash],
     );
     assert!(ok, "{log}");
@@ -248,6 +248,50 @@ fn a_saved_scheme_not_built_in_shows_the_first_until_another_is_picked() {
     let (ok, log) = run(&dir, "after.txt", "settings\n", &["--flash", flash]);
     assert!(ok, "{log}");
     assert_eq!(settings(&log), saved);
+}
+
+/// Settings' FORCE pins which side's schemes show, and is kept across a
+/// reboot (the battery running flat, then the charger): at night, FORCE
+/// DAY shows the day's first scheme, and THEME then steps through the
+/// day's, saving the day's choice. Back to NONE, the night's again.
+#[test]
+fn force_pins_the_side_across_a_reboot() {
+    let dir = dir("flash-force");
+    let flash = dir.join("flash.bin");
+    let flash = flash.to_str().expect("UTF-8");
+    // FORCE is the row under THEME on the look's settings (see retro's):
+    // DAY, at a tap.
+    let script = "expect theme arcade\nleft\nleft\nwait 1s\ntap 40,40\nwait 1s\n\
+                  expect theme handheld\ntap 40,20\nwait 1s\nsettings\n\
+                  battery 3300\nwait 90s\nexpect off\nbattery 3500 charging\nwait 5s\n\
+                  expect not off\nsettings\n";
+    let (ok, log) = run(&dir, "force.txt", script, &["--flash", flash]);
+    assert!(ok, "{log}");
+    assert!(log.contains("booted"), "{log}");
+    assert!(log.contains("force: DAY"), "{log}");
+    let picked = tapped_to(&log).to_owned();
+    let saved = settings(&log);
+    assert!(saved.contains(&"force: DAY"), "{log}");
+    assert!(
+        saved
+            .iter()
+            .any(|s| s.starts_with(&format!("day theme: {picked} ("))),
+        "{log}"
+    );
+    assert!(
+        saved.iter().any(|s| s == &"night theme: not stored"),
+        "{log}"
+    );
+
+    // The next run boots forced to day, with the day's pick; then NONE
+    // (two more taps, NIGHT then NONE) shows the night's first again.
+    let script = format!(
+        "expect theme {picked}\nleft\nleft\nwait 1s\ntap 40,40\nwait 1s\nexpect theme arcade\n\
+         tap 40,40\nwait 1s\nexpect theme arcade\nsettings\n"
+    );
+    let (ok, log) = run(&dir, "back.txt", &script, &["--flash", flash]);
+    assert!(ok, "{log}");
+    assert!(settings(&log).contains(&"force: NONE"), "{log}");
 }
 
 #[test]

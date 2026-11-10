@@ -59,10 +59,11 @@
 //! bytes, all there's room for.
 //!
 //! **Encrypted**, with AES-CCM and a key made on the watch at first boot
-//! (shown on the Settings screen, for typing into Home Assistant). Home
-//! Assistant then ignores anything from the watch's address it can't
-//! decrypt, and drops replays of a press, and stale copies of one (which
-//! Bluetooth stacks re-report from their caches) rather than firing again.
+//! (shown from the button grid's settings, for typing into Home
+//! Assistant). Home Assistant then ignores anything from the watch's
+//! address it can't decrypt, and drops replays of a press, and stale
+//! copies of one (which Bluetooth stacks re-report from their caches)
+//! rather than firing again.
 //! The counter in the nonce never repeats: it's reserved in flash ahead of
 //! use (see `device::send`).
 //!
@@ -352,7 +353,7 @@ mod device {
         COUNTER.lock(|c| c.set((reserved, reserved)));
     }
 
-    /// The key and address, for the Settings screen's key page.
+    /// The key and address, for the grid's settings' key page.
     pub fn identity() -> Option<Identity> {
         IDENTITY.lock(Cell::get)
     }

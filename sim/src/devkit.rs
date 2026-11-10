@@ -1814,6 +1814,7 @@ fn boot_app(boot: &compare::Boot) -> App {
         alarm::Settings::from_bytes(boot.alarms),
     );
     app.phone_alarms = alarm::Phone::from_bytes(boot.phone_alarms);
+    app.force = crate::ui::Force::from_byte(boot.force);
     app.brightness = brightness::Setting::from_byte(boot.brightness);
     app.buttons = crate::buttons::Setting::from_byte(boot.buttons);
     app.grid_layout = crate::buttons::Layout::from_byte(boot.grid);
@@ -1833,6 +1834,7 @@ pub(crate) fn booted_from(image: Vec<u8>) -> Result<App, String> {
 pub(crate) struct Persisted {
     light_theme: u8,
     dark_theme: u8,
+    force: u8,
     brightness: u8,
     buttons: u8,
     grid: u8,
@@ -1845,6 +1847,7 @@ impl Persisted {
         Self {
             light_theme: app.themes.day,
             dark_theme: app.themes.night,
+            force: app.force.to_byte(),
             brightness: app.brightness.to_byte(),
             buttons: app.buttons.to_byte(),
             grid: app.grid_layout.to_byte(),
@@ -1865,6 +1868,7 @@ impl Persisted {
         };
         field("light theme", &got.light_theme, &expected.light_theme);
         field("dark theme", &got.dark_theme, &expected.dark_theme);
+        field("force", &got.force, &expected.force);
         field("brightness", &got.brightness, &expected.brightness);
         field("buttons", &got.buttons, &expected.buttons);
         field("grid", &got.grid, &expected.grid);

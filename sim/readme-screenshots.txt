@@ -20,6 +20,7 @@ connect
 left
 left
 left
+left
 wait 6.8s
 shot info.png
 
@@ -101,13 +102,14 @@ shot alarms.png handheld
 button
 wait 1s
 
-# Right, past the alarms: the settings, turning on the button grid
-# (docs/buttons.md). Then below: the grid, just after 2 double-tapped;
-# and with two layers, just after 2, then 3 double-tapped.
+# Right, past the alarms and the look's settings: the button grid's,
+# turning it on (docs/buttons.md). Then below: the grid, just after 2
+# double-tapped; and with two layers, just after 2, then 3 double-tapped.
+left
 left
 left
 wait 1s
-tap 40,44
+tap 40,20
 wait 1s
 shot settings.png
 button

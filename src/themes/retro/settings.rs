@@ -5,10 +5,10 @@ use core::fmt::Write as _;
 use super::BACKGROUND;
 use super::layout::{SETTINGS_ROW, SETTINGS_TOP};
 use crate::bthome::Identity;
-use crate::buttons;
 use crate::canvas::{Canvas, Color};
-use crate::themes::Settings;
-use crate::ui::{Fits, Row, Status};
+use crate::font;
+use crate::themes::{RowKind, SettingsPage};
+use crate::ui::{Fits, Status};
 
 /// First value row, and the spacing between rows.
 const INFO_TOP: i32 = 12;
@@ -81,39 +81,65 @@ pub(super) fn render_info(canvas: &mut Canvas, status: &Status) {
     canvas.text_centered(40, 68, "HOLD: STORAGE MODE", Color::TEXT_FAINT);
 }
 
-/// One setting a row, each a tap for its next value, between hairlines.
-pub(super) fn render_settings(canvas: &mut Canvas, settings: &Settings) {
-    let Settings {
-        rows,
-        scheme,
-        light,
-        buttons,
-        layout,
-    } = *settings;
+/// Whether a scheme's name fits on the THEME row, right of the label
+/// with a gap, as every built-in scheme's must (the simulator's tests
+/// check, for every theme's: they're the names the watch shows). The
+/// firmware asserts each row fits as it draws it (`row_fits`), so only
+/// they call this.
+#[allow(dead_code, reason = "only the simulator's tests call it")]
+pub fn name_fits(name: &str) -> bool {
+    row_fits("THEME", name)
+}
+
+/// Whether a settings row's value fits right of its label, with a gap.
+fn row_fits(label: &str, value: &str) -> bool {
+    4 + font::small_text_width(label) + 4 <= 77 - font::small_text_width(value)
+}
+
+// The settings: screens of at most three rows, each a tap, between
+// hairlines, the rows 20 canvas pixels (~7 mm) tall, a fingertip and
+// some.
+
+/// Which row a tap at `y` is on, of `count`.
+pub(super) fn row_at(y: i32, count: usize) -> Option<usize> {
+    let row = usize::try_from(y.checked_sub(SETTINGS_TOP)? / SETTINGS_ROW).ok()?;
+    (row < count).then_some(row)
+}
+
+/// A settings screen: its title, then each row's label on the left and
+/// its value on the right. A value to step through is bright; one that
+/// can't change in this build, or a screen to go to, dim.
+pub(super) fn render_settings(canvas: &mut Canvas, page: &SettingsPage) {
     canvas.clear(BACKGROUND);
-    canvas.text(4, 3, "SETTINGS", Color::ACCENT);
-    for (i, &row) in rows.iter().enumerate() {
+    canvas.text(4, 3, page.title, Color::ACCENT);
+    for (i, row) in page.rows.iter().enumerate() {
         let top = SETTINGS_TOP + SETTINGS_ROW * i as i32;
         if i > 0 {
             canvas.fill_rect(4, top, 72, 1, Color::TEXT_FAINT);
         }
-        let (label, value, color) = match row {
-            Row::Theme => ("THEME", scheme, Color::TEXT),
-            Row::Light => ("LIGHT", light.name(), Color::TEXT),
-            Row::Buttons => ("BUTTONS", buttons.name(), Color::TEXT),
-            Row::Grid => ("GRID", layout.name(), Color::TEXT),
-            // Not a value, but somewhere to go.
-            Row::BtHomeKey => ("BTHOME KEY", "SHOW", Color::TEXT_DIM),
-        };
+        debug_assert!(
+            row_fits(row.label, row.value),
+            "{} is too long for {}",
+            row.value,
+            row.label
+        );
         let y = top + (SETTINGS_ROW - 5) / 2 + 1;
-        canvas.text(4, y, label, Color::TEXT_DIM);
-        canvas.text_right(77, y, value, color);
-        // Two layers reach Home Assistant unlike six buttons do (as dimmers
-        // turned by the code): FAQ B04 says how, and how to automate them.
-        // The asterisk, as on a footnote, says it's a caveat to the value
-        // beside it, not a value of its own.
-        if row == Row::Grid && buttons.bthome() && layout == buttons::Layout::TwoLayers {
-            canvas.text(24, y, "*B04", Color::TEXT_FAINT);
+        canvas.text(4, y, row.label, Color::TEXT_DIM);
+        let color = match row.kind {
+            RowKind::Choice => Color::TEXT,
+            RowKind::Fixed | RowKind::Link => Color::TEXT_DIM,
+        };
+        canvas.text_right(77, y, row.value, color);
+        // A caveat, faint, after the label: an asterisk, as on a
+        // footnote, says it's about the value beside it, not one of its
+        // own.
+        if let Some(note) = row.note {
+            canvas.text(
+                4 + font::small_text_width(row.label) + 5,
+                y,
+                note,
+                Color::TEXT_FAINT,
+            );
         }
     }
 }

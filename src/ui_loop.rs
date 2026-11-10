@@ -41,7 +41,7 @@ use crate::display::Display;
 use crate::heart_reading as heart;
 use crate::system_off::Reason;
 use crate::touch::Touch;
-use crate::ui::{App, Status, ThemeChoice};
+use crate::ui::{App, Force, Status, ThemeChoice};
 use crate::{
     activity, alarm, aranet, ble, brightness, buttons, clock, debug, dfu, gb, geo, glance, live,
     power, sleep, storage, temperature, themes, touch, ui,
@@ -164,6 +164,7 @@ pub trait Board {
 #[derive(Clone, Copy)]
 pub struct Settings {
     themes: ThemeChoice,
+    force: Force,
     brightness: brightness::Setting,
     buttons: buttons::Setting,
     grid: buttons::Layout,
@@ -174,6 +175,7 @@ impl Settings {
     pub fn of(app: &App) -> Self {
         Self {
             themes: app.themes,
+            force: app.force,
             brightness: app.brightness,
             buttons: app.buttons,
             grid: app.grid_layout,
@@ -184,6 +186,7 @@ impl Settings {
     /// The UI as it boots, at `now`, with these settings.
     fn apply(self, now: Instant) -> App {
         let mut app = App::new(now, self.themes, self.alarms);
+        app.force = self.force;
         app.brightness = self.brightness;
         app.buttons = self.buttons;
         app.grid_layout = self.grid;
@@ -237,6 +240,7 @@ impl Stored {
             .await
             .map(alarm::Phone::from_bytes)
             .unwrap_or_default();
+        let force = Force::from_byte(load_u8(storage::key::FORCE).await);
         let brightness = brightness::Setting::from_byte(load_u8(storage::key::BRIGHTNESS).await);
         let buttons = buttons::Setting::from_byte(load_u8(storage::key::BUTTONS).await);
         let grid = buttons::Layout::from_byte(load_u8(storage::key::GRID).await);
@@ -252,6 +256,7 @@ impl Stored {
         Self {
             settings: Settings {
                 themes,
+                force,
                 brightness,
                 buttons,
                 grid,
@@ -284,6 +289,10 @@ pub async fn save_changes(before: Settings, app: &mut App) {
             let id = themes::id(day, now.into());
             storage::save(key, &id.to_le_bytes()).await;
         }
+    }
+    if app.force != before.force {
+        info!("force: {=str}", app.force.name());
+        storage::save(storage::key::FORCE, &[app.force.to_byte()]).await;
     }
     if app.brightness != before.brightness {
         info!("brightness: {=str}", app.brightness.name());

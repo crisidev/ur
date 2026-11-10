@@ -77,13 +77,14 @@ wait 200ms
 shot 09-paused.png
 
 # Right of the alarms (and the phone's alarms), the settings: a finger
-# swiping left (through the touch task's recogniser), then two more.
-# Tapping THEME switches to the next colour scheme for the time of day
+# swiping left (through the touch task's recogniser), then two more,
+# to the look's. Tapping THEME switches to the next colour scheme for
+# the time of day
 # (it's still light, at 15:42 in Oslo in November): PARCHMENT, whatever
 # else is built in, as it comes straight after HANDHELD. Then back to
 # HANDHELD by name (another tap could be another theme's, with every
-# theme built in), with the sun's say again. Then the info screen, last
-# on the right.
+# theme built in), with the sun's say again. Then the button grid's
+# settings, and the info screen, last on the right.
 press 60,40
 wait 50ms
 press 20,40
@@ -101,20 +102,24 @@ expect theme parchment
 shot 11-settings-theme.png
 theme handheld
 theme auto
-wait 2s
+wait 1s
+left
+wait 1s
+shot 11-settings-grid.png
 left
 wait 1s
 shot 11a-info.png
 button
 wait 1s
 
-# The button grid: off until the settings' BUTTONS row says where its
+# The button grid: off until its settings' BUTTONS row says where its
 # presses go; then it's first below the clock. Six buttons, by default.
 left
 left
 left
+left
 wait 1s
-tap 40,44
+tap 40,20
 wait 1s
 shot 11b-settings-buttons.png
 button
@@ -163,8 +168,9 @@ expect not buzzing
 left
 left
 left
+left
 wait 1s
-tap 40,58
+tap 40,40
 wait 1s
 shot 11f1-settings-layers.png
 button
@@ -303,7 +309,9 @@ shot 19-morning.png
 # ==============================================================================
 
 # Storage mode: a long press on the info screen (right of the alarms,
-# the phone's alarms, and the settings) offers it, a tap confirms.
+# the phone's alarms, and the two settings screens) offers it, a tap
+# confirms.
+left
 left
 left
 left

@@ -492,7 +492,7 @@ impl Layout {
         self as u8
     }
 
-    /// The other one (a tap on the Settings screen).
+    /// The other one (a tap on the grid's settings).
     pub fn next(self) -> Self {
         match self {
             Self::Six => Self::TwoLayers,
@@ -547,7 +547,7 @@ impl Setting {
         self as u8
     }
 
-    /// The next choice, round the cycle (a tap on the Settings screen).
+    /// The next choice, round the cycle (a tap on the grid's settings).
     pub fn next(self) -> Self {
         match self {
             Self::Off => Self::BtHome,
@@ -562,7 +562,7 @@ impl Setting {
     /// called. The app is "VIA APP": presses go through an app,
     /// Gadgetbridge, which passes them on to others (Tasker and the like);
     /// "GADGETBRIDGE" wouldn't fit. Both is just "BOTH": "BTHOME+APP"
-    /// would crowd "BUTTONS" on the Settings screen, and in the cycle it
+    /// would crowd "BUTTONS" on the grid's settings, and in the cycle it
     /// follows the two it means.
     pub fn name(self) -> &'static str {
         match self {

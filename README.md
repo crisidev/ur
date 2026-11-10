@@ -154,7 +154,7 @@ if it's short.
 
 **Screens:** swipe right for Today (steps and heart rate by the hour),
 then Last night; left for Alarms, the alarms set in Gadgetbridge,
-Settings, then Info; down for the last three notifications; up for the
+the settings (LOOK, then BUTTON GRID), then Info; down for the last three notifications; up for the
 button grid (if on), Music, and Air (while a room sensor is near: its
 CO₂, temperature, humidity and pressure, or those it measures). A short
 bar on an edge means there's more that way.
@@ -182,11 +182,14 @@ bar on an edge means there's more that way.
 - **A ringing alarm:** tap to snooze for 9 minutes; press the button to
   stop it.
 
-On Settings, tap **THEME** for the next theme, **LIGHT** to switch
-brightness from AUTO to SOFT, a step dimmer, for a longer battery,
-**BUTTONS** to turn on the [button grid](docs/buttons.md), **GRID** for
-its layout (six buttons, or two layers), and **BTHOME KEY** (while
-presses go over BTHome) for the key Home Assistant asks for (see
+On the settings' **LOOK**, tap **THEME** for the next colour scheme,
+**FORCE** to show the day's schemes (DAY) or the night's (NIGHT)
+whatever the sun says, or follow the sun (NONE), and **LIGHT** to
+switch brightness from AUTO to SOFT, a step dimmer, for a longer
+battery. On **BUTTON GRID**, the next, tap **BUTTONS** to turn on the
+[button grid](docs/buttons.md), **GRID** for its layout (six buttons,
+or two layers), and **BTHOME KEY** (while presses go over BTHome) for
+the key Home Assistant asks for (see
 [Home Assistant](docs/buttons.md#home-assistant)). To set an alarm or
 timer, tap it, then swipe the hours and minutes. Alarms set in
 Gadgetbridge are read-only on the watch; a one-off one switches
@@ -438,7 +441,7 @@ Gadgetbridge, under Notifications.
 ### P01: How do I put the watch away for a while?
 
 Use storage mode: long-press the Info screen (swipe left from the clock,
-past Alarms, any alarms from Gadgetbridge, and Settings), then tap to
+past Alarms, any alarms from Gadgetbridge, and the settings), then tap to
 confirm. The watch saves the activity the phone hasn't fetched and
 switches itself off, using roughly 40% of a full charge in six weeks.
 Press the button or plug in the charger to wake it; the phone sets the

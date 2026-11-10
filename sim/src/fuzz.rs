@@ -1185,6 +1185,7 @@ fn random_storage(original: &[u8], rng: &mut Rng, scratch: &Path) -> Result<Vec<
         // As 0.10 and earlier saved the themes, which boot migrates from.
         (key::THEME_LIGHT, 2),
         (key::THEME_DARK, 2),
+        (key::FORCE, 3),
         (key::BRIGHTNESS, 2),
         (key::BUTTONS, 4),
         (key::GRID, 4),

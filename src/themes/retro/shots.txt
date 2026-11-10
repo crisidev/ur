@@ -45,8 +45,9 @@ shot night-last-night.png
 button
 wait 1s
 
-# Right: the alarms (and one in the editor), the phone's, the settings,
-# the info, and storage mode's prompt.
+# Right: the alarms (and one in the editor), the phone's, the two
+# settings screens (the look's, the grid's, and its key), the info, and
+# storage mode's prompt.
 left
 wait 1s
 shot night-alarms.png
@@ -60,8 +61,11 @@ wait 1s
 shot night-phone-alarms.png
 left
 wait 1s
-shot night-settings.png
-tap 40,72
+shot night-look-settings.png
+left
+wait 1s
+shot night-grid-settings.png
+tap 40,60
 wait 1s
 shot night-bthome-qr.png
 tap
@@ -212,8 +216,11 @@ wait 1s
 shot day-phone-alarms.png
 left
 wait 1s
-shot day-settings.png
-tap 40,72
+shot day-look-settings.png
+left
+wait 1s
+shot day-grid-settings.png
+tap 40,60
 wait 1s
 shot day-bthome-qr.png
 tap
@@ -280,6 +287,7 @@ button
 wait 1s
 
 # Switching off, last: storage mode, from the info screen.
+left
 left
 left
 left

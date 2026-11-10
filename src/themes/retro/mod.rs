@@ -26,11 +26,11 @@ use crate::gb::MusicCommand;
 use crate::nav::Side;
 use crate::palette::Palette;
 use crate::system_off::Reason;
-use crate::ui::{Editing, Row, Status};
+use crate::ui::{Editing, Status};
 
 use super::{
     BuiltIn, Call, CallButton, Editor, EditorButton, EditorField, Face, Glance, Grid, Handles,
-    MediaAction, Music, Scheme, Settings, Theme,
+    MediaAction, Music, Scheme, SettingsPage, Theme,
 };
 
 mod air;
@@ -45,6 +45,8 @@ mod settings;
 mod system;
 
 pub use schemes::{ARCADE, GLANCE, Retro};
+#[allow(unused_imports)] // For the simulator's tests.
+pub use settings::name_fits;
 
 /// Retro in the firmware's list of themes (see [`super::THEMES`]).
 pub const BUILT_IN: BuiltIn = BuiltIn {
@@ -77,11 +79,10 @@ mod layout {
     /// done on the right. Above them, a swipe up or down on the left half
     /// changes the hours, on the right the minutes.
     pub const EDITOR_BUTTONS_Y: i32 = 60;
-    /// Where the settings' rows start, and how tall each is: up to five
-    /// rows of 14 canvas pixels (~5 mm), as much of a fingertip as fits
-    /// under the title.
+    /// Where the settings' rows start, and how tall each is: three fill
+    /// the screen under the title (see `settings`).
     pub const SETTINGS_TOP: i32 = 10;
-    pub const SETTINGS_ROW: i32 = 14;
+    pub const SETTINGS_ROW: i32 = 20;
     /// Where a call's buttons start: decline on the left half, answer on
     /// the right.
     pub const CALL_BUTTONS_Y: i32 = 55;
@@ -159,8 +160,8 @@ impl Theme for Retro {
         grid::render_buttons(canvas, grid, palette.is_dark());
     }
 
-    fn settings(&self, canvas: &mut Canvas, settings: &Settings) {
-        settings::render_settings(canvas, settings);
+    fn settings(&self, canvas: &mut Canvas, page: &SettingsPage) {
+        settings::render_settings(canvas, page);
     }
 
     fn info(&self, canvas: &mut Canvas, status: &Status) {
@@ -255,9 +256,8 @@ impl Theme for Retro {
         }
     }
 
-    fn settings_row(&self, rows: &[Row], _x: i32, y: i32) -> Option<Row> {
-        let row = y.checked_sub(layout::SETTINGS_TOP)? / layout::SETTINGS_ROW;
-        rows.get(usize::try_from(row).ok()?).copied()
+    fn settings_row(&self, page: &SettingsPage, _x: i32, y: i32) -> Option<usize> {
+        settings::row_at(y, page.rows.len())
     }
 
     fn grid_button(&self, layout: buttons::Layout, x: i32, y: i32) -> u8 {

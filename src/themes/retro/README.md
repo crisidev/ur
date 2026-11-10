@@ -26,7 +26,8 @@ black in every one.
 | Alarms | <img src="shots/night-alarms.png" width="120" alt="Alarms, at night, in ARCADE"> | <img src="shots/day-alarms.png" width="120" alt="Alarms, by day, in HANDHELD"> |
 | The alarm editor | <img src="shots/night-editor.png" width="120" alt="The alarm editor, at night, in ARCADE"> | <img src="shots/day-editor.png" width="120" alt="The alarm editor, by day, in HANDHELD"> |
 | The phone's alarms | <img src="shots/night-phone-alarms.png" width="120" alt="The phone's alarms, at night, in ARCADE"> | <img src="shots/day-phone-alarms.png" width="120" alt="The phone's alarms, by day, in HANDHELD"> |
-| Settings | <img src="shots/night-settings.png" width="120" alt="Settings, at night, in ARCADE"> | <img src="shots/day-settings.png" width="120" alt="Settings, by day, in HANDHELD"> |
+| The look's settings | <img src="shots/night-look-settings.png" width="120" alt="The look's settings, at night, in ARCADE"> | <img src="shots/day-look-settings.png" width="120" alt="The look's settings, by day, in HANDHELD"> |
+| The button grid's settings | <img src="shots/night-grid-settings.png" width="120" alt="The button grid's settings, at night, in ARCADE"> | <img src="shots/day-grid-settings.png" width="120" alt="The button grid's settings, by day, in HANDHELD"> |
 | Home Assistant's key, as a QR code | <img src="shots/night-bthome-qr.png" width="120" alt="Home Assistant's key, as a QR code, at night, in ARCADE"> | <img src="shots/day-bthome-qr.png" width="120" alt="Home Assistant's key, as a QR code, by day, in HANDHELD"> |
 | Home Assistant's key, as text | <img src="shots/night-bthome-key.png" width="120" alt="Home Assistant's key, as text, at night, in ARCADE"> | <img src="shots/day-bthome-key.png" width="120" alt="Home Assistant's key, as text, by day, in HANDHELD"> |
 | Info | <img src="shots/night-info.png" width="120" alt="Info, at night, in ARCADE"> | <img src="shots/day-info.png" width="120" alt="Info, by day, in HANDHELD"> |

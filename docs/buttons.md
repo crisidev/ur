@@ -2,7 +2,7 @@
 
 Unlabelled buttons on the screen below the clock face, for Home
 Assistant, or for Tasker (or any Android automation app) through
-Gadgetbridge. Two layouts, picked in Settings:
+Gadgetbridge. Two layouts, picked in its settings:
 
 - **Six buttons** (the default): each tapped, double-tapped, or held.
   Home Assistant offers each button and gesture as a trigger in its
@@ -14,7 +14,7 @@ Gadgetbridge. Two layouts, picked in Settings:
 <p align="center">
   <img src="screenshots/buttons.png" width="150" alt="Six buttons: chunky grey keycaps with red sides, like an arcade cabinet's, in two rows of three; the top middle one is pressed in and white, showing 2 and 2X: 2, double-tapped, just sent">
   <img src="screenshots/buttons-layers.png" width="150" alt="Two layers: nine smaller keycaps in three rows of three; the top right one is pressed in and white, showing 23 and 2X: 2, then 3 double-tapped, just sent">
-  <img src="screenshots/settings.png" width="150" alt="The Settings screen: THEME, LIGHT, BUTTONS (set to BTHOME), GRID (set to 6 BUTTONS), and BTHOME KEY, a row each">
+  <img src="screenshots/settings.png" width="150" alt="The button grid's settings: BUTTONS (set to BTHOME), GRID (set to 6 BUTTONS), and BTHOME KEY, a row each">
 </p>
 
 ## Six buttons
@@ -84,7 +84,8 @@ it, as both of the watch's Bluetooth connections were in use (see
 
 ## Turning it on
 
-Swipe left from the clock, past the alarms, to **Settings**, and tap
+Swipe left from the clock, past the alarms and the look's settings, to
+the **BUTTON GRID** settings, and tap
 **BUTTONS** until it says where presses go: **BTHOME** (Home
 Assistant), **VIA APP** (Gadgetbridge, for Tasker and the like), or
 **BOTH**. Tap **GRID** for the layout: **6 BUTTONS** or **2 LAYERS**.
@@ -97,11 +98,11 @@ Assistant's BTHome integration picks up through any Bluetooth adapter or
 [ESPHome Bluetooth proxy][proxy] within range: no phone, no pairing.
 Presses are encrypted with a key the watch made for itself.
 
-1. On the watch, **Settings → BTHOME KEY** (there while **BUTTONS** is
+1. On the watch, **BUTTON GRID → BTHOME KEY** (there while **BUTTONS** is
    on **BTHOME** or **BOTH**) shows the key as a QR code; scan it with
    the phone's camera, and copy the text it reads. A tap shows the key
    as text instead (32 characters), with the watch's Bluetooth address,
-   and another goes back to Settings. The screen stays on meanwhile,
+   and another goes back to the grid's settings. The screen stays on meanwhile,
    however long it takes.
 2. Press any grid button. Home Assistant discovers a BTHome device with
    that address (Settings → Devices & services); add it, and paste (or

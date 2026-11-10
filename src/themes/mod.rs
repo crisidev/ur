@@ -2,7 +2,7 @@
 //!
 //! A theme is a type that draws every screen and says where a touch on
 //! it lands ([`Theme`], with no default methods). Its colour schemes,
-//! what Settings' THEME row picks between, are statics of that type:
+//! what the settings' THEME row picks between, are statics of that type:
 //! retro ([`retro`], the watch's own look) is one type, and ARCADE,
 //! TERMINAL, HANDHELD and PARCHMENT are its schemes, each with a palette
 //! of its own. A theme with one look has one scheme (or one a side). The
@@ -27,7 +27,7 @@
 //! A scheme is for darkness or for daylight: each theme lists its
 //! schemes by side ([`BuiltIn`]), and may have either side, or both, and
 //! several a side. The UI uses the night schemes from sunset, the day
-//! ones from sunrise, and Settings' THEME row steps through the side in
+//! ones from sunrise, and the settings' THEME row steps through the side in
 //! use: every built-in theme's schemes for it, in [`THEMES`]' order. A
 //! build with no scheme for a side (only night themes, say) uses the
 //! other side's then.
@@ -41,7 +41,6 @@ use embassy_time::{Duration, Instant};
 
 use crate::alarm;
 use crate::aranet::Sighting;
-use crate::brightness;
 use crate::bthome::Identity;
 use crate::buttons::{self, Press};
 use crate::canvas::Canvas;
@@ -51,7 +50,7 @@ use crate::nav::Side;
 use crate::palette::Palette;
 use crate::route;
 use crate::system_off::Reason;
-use crate::ui::{Editing, Fits, Row, Status};
+use crate::ui::{Editing, Fits, Status};
 
 #[cfg(feature = "theme-retro")]
 pub mod retro;
@@ -132,8 +131,10 @@ pub trait Theme: Sync {
     /// The button grid (see [`crate::buttons`], and
     /// [`Theme::grid_button`]).
     fn buttons(&self, canvas: &mut Canvas, grid: &Grid);
-    /// The settings, a row each (see [`Theme::settings_row`]).
-    fn settings(&self, canvas: &mut Canvas, settings: &Settings);
+    /// A settings screen, the look's or the button grid's: its title,
+    /// and its rows, a setting each, as the UI words them (see
+    /// [`SettingsPage`]).
+    fn settings(&self, canvas: &mut Canvas, page: &SettingsPage);
     /// The watch's state: battery, uptime, the phone, the build.
     fn info(&self, canvas: &mut Canvas, status: &Status);
     /// Asking whether to switch to storage mode (see
@@ -188,9 +189,9 @@ pub trait Theme: Sync {
     fn editor_button(&self, x: i32, y: i32) -> Option<EditorButton>;
     /// Which part of the time a swipe up or down in the editor changes.
     fn editor_field(&self, x: i32, y: i32) -> EditorField;
-    /// Which of the settings' `rows` (top to bottom, as
+    /// Which of a settings screen's rows (its index in `page.rows`, as
     /// [`Theme::settings`] draws them) a tap is on, if any.
-    fn settings_row(&self, rows: &[Row], x: i32, y: i32) -> Option<Row>;
+    fn settings_row(&self, page: &SettingsPage, x: i32, y: i32) -> Option<usize>;
     /// Which button of the grid, in `layout`, a touch is on: 1 to
     /// `layout.buttons()`, every touch on one (the grid takes a touch
     /// anywhere as a press; see [`buttons::Grid::touch`]).
@@ -317,15 +318,41 @@ pub struct Grid<'a> {
     pub dim: bool,
 }
 
-/// The settings screen's.
-pub struct Settings {
-    /// The rows, top to bottom (see [`Theme::settings_row`]).
-    pub rows: &'static [Row],
-    /// The chosen scheme's name, for THEME.
-    pub scheme: &'static str,
-    pub light: brightness::Setting,
-    pub buttons: buttons::Setting,
-    pub layout: buttons::Layout,
+/// A settings screen's: the look's (THEME, FORCE, LIGHT) or the button
+/// grid's (BUTTONS, GRID, and BTHOME KEY while its presses go over
+/// BTHome). Every row is in words already, so a theme draws both screens,
+/// and any the UI adds, the same way: it only lays out and styles rows.
+/// Each setting has a fixed place on its screen, so none moves under a
+/// finger tapping it round; BTHOME KEY, the one that comes and goes, is
+/// last.
+pub struct SettingsPage<'a> {
+    pub title: &'static str,
+    /// Top to bottom; three at most.
+    pub rows: &'a [SettingRow],
+}
+
+/// A row on a settings screen: a setting's name, and its value.
+pub struct SettingRow {
+    pub label: &'static str,
+    pub value: &'static str,
+    /// What a tap on it does, for the theme to style it by.
+    pub kind: RowKind,
+    /// A caveat to the value, beside it: GRID's "*B04" (FAQ B04), as two
+    /// layers reach Home Assistant unlike six buttons do.
+    pub note: Option<&'static str>,
+}
+
+/// What a tap on a setting's row does.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RowKind {
+    /// Its next value.
+    Choice,
+    /// Nothing, but a banner with an FAQ code: it can't change in this
+    /// build (THEME with one scheme for the side, FORCE with schemes of one
+    /// side only).
+    Fixed,
+    /// Another screen: the value says what it shows (BTHOME KEY's SHOW).
+    Link,
 }
 
 /// The alarm editor's.
@@ -525,8 +552,8 @@ impl Theme for Scheme {
     fn buttons(&self, canvas: &mut Canvas, grid: &Grid) {
         with_theme!(*self, theme => theme.buttons(canvas, grid))
     }
-    fn settings(&self, canvas: &mut Canvas, settings: &Settings) {
-        with_theme!(*self, theme => theme.settings(canvas, settings))
+    fn settings(&self, canvas: &mut Canvas, page: &SettingsPage) {
+        with_theme!(*self, theme => theme.settings(canvas, page))
     }
     fn info(&self, canvas: &mut Canvas, status: &Status) {
         with_theme!(*self, theme => theme.info(canvas, status))
@@ -576,8 +603,8 @@ impl Theme for Scheme {
     fn editor_field(&self, x: i32, y: i32) -> EditorField {
         with_theme!(*self, theme => theme.editor_field(x, y))
     }
-    fn settings_row(&self, rows: &[Row], x: i32, y: i32) -> Option<Row> {
-        with_theme!(*self, theme => theme.settings_row(rows, x, y))
+    fn settings_row(&self, page: &SettingsPage, x: i32, y: i32) -> Option<usize> {
+        with_theme!(*self, theme => theme.settings_row(page, x, y))
     }
     fn grid_button(&self, layout: buttons::Layout, x: i32, y: i32) -> u8 {
         with_theme!(*self, theme => theme.grid_button(layout, x, y))

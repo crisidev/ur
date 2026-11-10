@@ -144,7 +144,7 @@ jobs:
           while IFS=$'\t' read -r name display sides; do
             entry="\`ur-$name-$VERSION-dfu.zip\` ([$display](https://github.com/$REPO/tree/$TAG/src/themes/$name))"
             if [[ $sides != both ]]; then
-              entry+=", with $sides colour schemes only, which it shows by day and by night alike"
+              entry+=", with $sides colour schemes only, which it shows by day and by night alike (FORCE can't change; see the README's [FAQ D02](https://github.com/$REPO#d02-the-watch-says-no-day-themes-or-no-night-themes))"
             fi
             themes+=("$entry")
           done <themes/themes.tsv

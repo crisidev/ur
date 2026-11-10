@@ -49,9 +49,10 @@ compare 08-alarm-off
 button
 wait 500ms
 
-# Right again, past the alarms: the settings; their THEME row, tapped
-# twice, goes round. Then the info screen. (On a dev kit that has
-# alarms from a phone, their screen comes between: one more swipe.)
+# Right again, past the alarms: the look's settings; their THEME row,
+# tapped twice, goes round. Then the button grid's settings, and the info
+# screen. (On a dev kit that has alarms from a phone, their screen comes
+# between: one more swipe.)
 left
 left
 wait 1s
@@ -62,6 +63,9 @@ compare 10-settings-next-theme
 tap 40,20
 wait 1s
 compare 11-settings-theme-back
+left
+wait 1s
+compare 11a-settings-grid
 left
 wait 1s
 compare 11a-info
@@ -124,11 +128,12 @@ compare 21-woken
 # kit's UI handed its radio the presses the simulator's did.
 left
 left
+left
 wait 1s
-tap 40,44
+tap 40,20
 wait 1s
 compare 22-settings-bthome
-tap 40,72
+tap 40,60
 wait 1s
 compare 23-ha-qr
 tap 40,40
@@ -170,8 +175,9 @@ down
 wait 1s
 left
 left
+left
 wait 1s
-tap 40,58
+tap 40,40
 wait 1s
 compare 26-settings-layers
 button
@@ -194,14 +200,15 @@ down
 wait 1s
 left
 left
+left
 wait 1s
-tap 40,58
+tap 40,40
 wait 500ms
-tap 40,44
+tap 40,20
 wait 500ms
-tap 40,44
+tap 40,20
 wait 500ms
-tap 40,44
+tap 40,20
 wait 1s
 compare 28-settings-buttons-off
 button

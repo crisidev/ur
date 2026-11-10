@@ -14,7 +14,8 @@
 //! - Left, the past: Today (steps, and the heart rate, by the hour), then
 //!   Last night (sleep).
 //! - Right, what's next: Alarms, then the phone's alarms, once it has sent
-//!   some; then Settings, and Info.
+//!   some; then the settings, the look's ("LOOK") and the button grid's
+//!   ("BUTTON GRID"), and Info.
 //! - Above: the last [`HISTORY`] notifications, newest nearest, one a page,
 //!   with when each arrived (see [`crate::arrival`]).
 //! - Below: the button grid (see [`buttons`]), if it's on; Music, while
@@ -56,17 +57,26 @@
 //!   on the info screen, offer storage mode (see [`crate::system_off`]),
 //!   which a tap then confirms, and anything else cancels. Elsewhere,
 //!   nothing.
-//! - On the settings screen, tap a row for its next value: the colour
-//!   theme ("THEME", the next within the current group: dark themes after
-//!   sunset, light ones after sunrise; each group remembers its own), the
-//!   brightness ("LIGHT", auto or soft; see [`crate::brightness`]), the
-//!   button grid ("BUTTONS": off, or where its presses go: "BTHOME",
-//!   "VIA APP" for Gadgetbridge on the phone, or "BOTH"), its layout ("GRID": six buttons, or two layers; over
-//!   BTHome, the latter shows "*B04", a caveat: FAQ B04 explains the
-//!   events it sends then), and, on the last row ("BTHOME KEY", there only
-//!   while presses go over BTHome), the key Home Assistant needs for them
-//!   (see [`crate::bthome`]): a QR code to scan, then, at a tap, as text
-//!   with the watch's address. Another tap, or anything else, closes it.
+//! - On the settings screens, tap a row for its next value. On the
+//!   look's: the theme ("THEME": the next colour scheme, of every theme
+//!   built in, for the side of the day showing, night after sunset, day
+//!   after sunrise; each side remembers its own), which side's schemes
+//!   show ("FORCE": NONE for the sun's, or DAY or NIGHT whatever the sun
+//!   says; only the theme's side: the brightness and the rest still go by
+//!   the sun), and the brightness ("LIGHT", auto or
+//!   soft; see [`crate::brightness`]). On the button grid's: where its
+//!   presses go ("BUTTONS": off, "BTHOME", "VIA APP" for Gadgetbridge on
+//!   the phone, or "BOTH"), its layout ("GRID": six buttons, or two
+//!   layers; over BTHome, the latter shows "*B04", a caveat: FAQ B04
+//!   explains the events it sends then), and, on the last row ("BTHOME
+//!   KEY", there only while presses go over BTHome), the key Home
+//!   Assistant needs for them (see [`crate::bthome`]): a QR code to scan,
+//!   then, at a tap, as text with the watch's address. Another tap, or
+//!   anything else, closes it. THEME and FORCE are always there, so no
+//!   row moves: with one scheme for the side showing, THEME can't change,
+//!   nor FORCE with schemes of one side only in the build, and a tap on
+//!   either shows a banner with the FAQ entry that says why ("ONLY ONE
+//!   THEME", D01; "NO DAY THEMES" or "NO NIGHT THEMES", D02).
 //! - On the button grid, taps and holds are the grid's (see [`buttons`]
 //!   for how they become presses). While a press waits to see whether
 //!   more follows, its buttons stay lit; once sent, the last one shows the
@@ -220,7 +230,9 @@ use crate::phone::Text;
 pub use crate::phone::{PhoneEvent, Unpaired};
 use crate::route::Route;
 use crate::sleep::{self, Change, Over};
-use crate::themes::{self, CallButton, EditorButton, EditorField, Handles, MediaAction, Theme};
+use crate::themes::{
+    self, CallButton, EditorButton, EditorField, Handles, MediaAction, RowKind, SettingRow, Theme,
+};
 use crate::touch::Gesture;
 use crate::wake::{self, Action};
 
@@ -308,7 +320,8 @@ enum Screen {
     Music,
     /// The button grid (see [`buttons`]).
     Buttons,
-    Settings,
+    /// One of the two settings screens.
+    Settings(Page),
     /// A nearby Aranet4's readings.
     Air,
     Info,
@@ -323,9 +336,9 @@ enum Screen {
     HaKey,
 }
 
-/// The most screens in a line: the notifications', or the one below (the
-/// grid, music, settings, and info).
-const LONGEST_LINE: usize = if HISTORY > 4 { HISTORY } else { 4 };
+/// The most screens in a line: the notifications', or the one on the
+/// right (the alarms, the phone's, the two settings screens, and info).
+const LONGEST_LINE: usize = if HISTORY > 5 { HISTORY } else { 5 };
 type Screens = heapless::Vec<Screen, LONGEST_LINE>;
 
 /// An alarm ringing.
@@ -372,6 +385,11 @@ enum Shows {
     /// That a grid press couldn't go to Home Assistant (see
     /// [`App::ha_unsent`]).
     Unsent,
+    /// That THEME can't change: the build has one scheme for the side
+    /// showing (a tap on it, see [`App::change`]).
+    OneTheme,
+    /// That FORCE can't change: the build has schemes of one side only.
+    OneSide,
 }
 
 /// How many notifications the history above the clock keeps. Each costs
@@ -538,6 +556,9 @@ pub struct App {
     night: sleep::Night,
     /// The brightness setting, as stored (`main` saves it when it changes).
     pub brightness: brightness::Setting,
+    /// The settings' FORCE, as stored (`main` saves it when it changes): which
+    /// side of the day's schemes the theme shows, if not the sun's.
+    pub force: Force,
     /// Whether it's between local midnight and the wearer getting up (see
     /// [`brightness::small_hours`]).
     small_hours: bool,
@@ -622,6 +643,7 @@ impl App {
             centre_until: Instant::from_ticks(0),
             night: sleep::Night::default(),
             brightness: brightness::Setting::default(),
+            force: Force::default(),
             small_hours: false,
             storage_mode: false,
             takeover: false,
@@ -853,18 +875,44 @@ impl App {
     /// The colour scheme chosen for the time of day (see
     /// [`crate::themes`]), which draws every screen, dim or not.
     pub fn theme(&self) -> &'static themes::Scheme {
-        let choice = if self.daytime {
+        let day = self.theme_side();
+        let choice = if day {
             self.themes.day
         } else {
             self.themes.night
         };
-        themes::get(self.daytime, usize::from(choice))
+        themes::get(day, usize::from(choice))
     }
 
-    /// The next scheme for the time of day.
+    /// FORCE, as it applies: in a build with schemes of one side only,
+    /// whatever was saved (by a build with both) pins nothing, as there's
+    /// nothing to pin, and shows as NONE. It stays saved, for a build with
+    /// both again.
+    fn force(&self) -> Force {
+        if themes::has(true) && themes::has(false) {
+            self.force
+        } else {
+            Force::Sun
+        }
+    }
+
+    /// Whether the theme shows a scheme for daylight, rather than for
+    /// darkness: the sun's say (`daytime`), unless the settings' FORCE pins
+    /// a side. Only the theme's: the brightness, and everything else
+    /// that goes by the sun, still does.
+    fn theme_side(&self) -> bool {
+        match self.force() {
+            Force::Sun => self.daytime,
+            Force::Day => true,
+            Force::Night => false,
+        }
+    }
+
+    /// The next scheme for the side the theme shows.
     fn next_theme(&mut self) {
-        let count = themes::count(self.daytime);
-        let choice = if self.daytime {
+        let day = self.theme_side();
+        let count = themes::count(day);
+        let choice = if day {
             &mut self.themes.day
         } else {
             &mut self.themes.night
@@ -906,9 +954,10 @@ impl App {
                 // than at the end of the line below, behind the grid,
                 // music, and the air, which come and go (so the way to
                 // them would change); after the phone's alarms, so the two
-                // kinds of alarm stay together. Settings first, as it's
-                // the one that's used.
-                add(Screen::Settings);
+                // kinds of alarm stay together. The settings first, as
+                // they're what's used: the look's, then the grid's.
+                add(Screen::Settings(Page::Look));
+                add(Screen::Settings(Page::Grid));
                 add(Screen::Info);
             }
             Side::Above => {
@@ -939,7 +988,7 @@ impl App {
     fn place(&self) -> Place {
         let screen = match self.screen {
             Screen::Storage => Screen::Info,
-            Screen::HaQr | Screen::HaKey => Screen::Settings,
+            Screen::HaQr | Screen::HaKey => Screen::Settings(Page::Grid),
             screen => screen,
         };
         Side::ALL
@@ -1015,6 +1064,10 @@ impl App {
             Shows::IntentsOff => ("INTENTS OFF", "SEE FAQ C04"),
             Shows::UpdateRefused => ("UPDATE REFUSED", "SEE FAQ U02"),
             Shows::Unsent => ("BTHOME NOT SENT", "SEE FAQ B05"),
+            Shows::OneTheme => ("ONLY ONE THEME", "SEE FAQ D01"),
+            // The side there are none of, which FORCE would pick.
+            Shows::OneSide if themes::has(true) => ("NO NIGHT THEMES", "SEE FAQ D02"),
+            Shows::OneSide => ("NO DAY THEMES", "SEE FAQ D02"),
         };
         app.clear();
         who.clear();
@@ -1338,7 +1391,7 @@ impl App {
                 }
                 (Gesture::Tap, Screen::HaQr) => self.go_to(Screen::HaKey, Sweep::RightToLeft),
                 (_, Screen::HaQr | Screen::HaKey) => {
-                    self.go_to(Screen::Settings, Sweep::LeftToRight)
+                    self.go_to(Screen::Settings(Page::Grid), Sweep::LeftToRight)
                 }
                 (Gesture::Tap | Gesture::LongPress, Screen::Buttons) => self.on_grid(touch, now),
                 (Gesture::SwipeLeft, _) => self.navigate(nav::Swipe::Left),
@@ -1368,17 +1421,17 @@ impl App {
                         motor::buzz(Pattern::NOTIFY);
                     }
                 }
-                (Gesture::Tap, Screen::Settings) => {
-                    match self
-                        .theme()
-                        .settings_row(settings_rows(self.buttons), touch.x, touch.y)
+                (Gesture::Tap, Screen::Settings(page)) => {
+                    let settings = page.settings(self.buttons);
+                    let rows = self.settings_rows(settings);
+                    let shown = themes::SettingsPage {
+                        title: page.title(),
+                        rows: &rows,
+                    };
+                    if let Some(row) = self.theme().settings_row(&shown, touch.x, touch.y)
+                        && let Some(&setting) = settings.get(row)
                     {
-                        Some(Row::Theme) => self.next_theme(),
-                        Some(Row::Light) => self.brightness = self.brightness.next(),
-                        Some(Row::Buttons) => self.buttons = self.buttons.next(),
-                        Some(Row::Grid) => self.grid_layout = self.grid_layout.next(),
-                        Some(Row::BtHomeKey) => self.go_to(Screen::HaQr, Sweep::RightToLeft),
-                        None => {}
+                        self.change(setting, now);
                     }
                 }
                 // TODO: remove once something real uses the motor; for now
@@ -1668,7 +1721,7 @@ impl App {
     /// then took it for), and a banner waiting to be seen under it never
     /// started its time. Nothing is lost by closing it: each edit takes
     /// effect, and is saved, as it's made, so this is what DONE does, and
-    /// what the other screens that change settings (Settings, the grid's
+    /// what the other screens that change settings (the settings, the grid's
     /// layout) amount to when a wake takes the wearer off them.
     fn screen_off(&mut self) {
         self.awake = false;
@@ -2301,15 +2354,13 @@ impl App {
                 };
                 theme.buttons(canvas, &grid);
             }
-            Screen::Settings => {
-                let settings = themes::Settings {
-                    rows: settings_rows(self.buttons),
-                    scheme: theme.palette().name,
-                    light: self.brightness,
-                    buttons: self.buttons,
-                    layout: self.grid_layout,
+            Screen::Settings(page) => {
+                let rows = self.settings_rows(page.settings(self.buttons));
+                let shown = themes::SettingsPage {
+                    title: page.title(),
+                    rows: &rows,
                 };
-                theme.settings(canvas, &settings);
+                theme.settings(canvas, &shown);
             }
             Screen::Info => theme.info(canvas, status),
             Screen::Storage => theme.storage_prompt(canvas),
@@ -2408,38 +2459,173 @@ fn fits(ok: bool) {
 // The settings' rows
 // ==============================================================================
 //
-// Which settings there are is the UI's; where each row is, and so which a
-// tap is on, the theme's (see `Theme::settings_row`).
+// Which settings there are, on which screen, and what each says, is the
+// UI's; how a row looks, where it is, and so which a tap is on, the
+// theme's (see `Theme::settings`). Every screen keeps each setting in its
+// place: one that can't change in the build (THEME with one scheme for
+// the side, FORCE with schemes of one side) is still there, saying so
+// at a tap, rather than leaving a gap or moving the rows below it up.
 
-/// The settings screen's rows, top to bottom.
+/// The settings screens, side by side on the right-hand line.
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+enum Page {
+    /// The look's: THEME, FORCE, LIGHT.
+    Look,
+    /// The button grid's: BUTTONS, GRID, BTHOME KEY.
+    Grid,
+}
+
+impl Page {
+    fn title(self) -> &'static str {
+        match self {
+            Page::Look => "LOOK",
+            // Not "BUTTONS", which would only repeat its first row's label.
+            Page::Grid => "BUTTON GRID",
+        }
+    }
+
+    /// Its settings, top to bottom: BTHome's key only while the grid's
+    /// presses go over BTHome, as it's of no use otherwise. It's last, so
+    /// it comes and goes (at a tap on BUTTONS) without moving another row.
+    fn settings(self, buttons: buttons::Setting) -> &'static [Setting] {
+        const LOOK: [Setting; 3] = [Setting::Theme, Setting::Force, Setting::Light];
+        const GRID: [Setting; 3] = [Setting::Buttons, Setting::Layout, Setting::BtHomeKey];
+        match self {
+            Page::Look => &LOOK,
+            Page::Grid if buttons.bthome() => &GRID,
+            Page::Grid => &GRID[..2],
+        }
+    }
+}
+
+/// One setting: a row on a settings screen.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Row {
+enum Setting {
     Theme,
+    Force,
     Light,
     Buttons,
-    Grid,
+    /// GRID: the grid's layout.
+    Layout,
     BtHomeKey,
 }
 
-const ROWS: [Row; 5] = [
-    Row::Theme,
-    Row::Light,
-    Row::Buttons,
-    Row::Grid,
-    Row::BtHomeKey,
-];
+/// Which side of the day's schemes the theme shows (the settings' FORCE): as
+/// the sun says, or always the day's or the night's.
+#[derive(Clone, Copy, PartialEq, Eq, Default, defmt::Format)]
+pub enum Force {
+    #[default]
+    Sun,
+    Day,
+    Night,
+}
 
-/// The rows shown with the grid's presses going where `buttons` says:
-/// BTHome's key only while they go over BTHome, as it's of no use
-/// otherwise. It's last, so hiding it moves no other row, and a tap
-/// where it would be is a tap on nothing. (Nothing else changes the
-/// setting while its screen is open: the row only goes at a tap on
-/// BUTTONS.)
-fn settings_rows(buttons: buttons::Setting) -> &'static [Row] {
-    if buttons.bthome() {
-        &ROWS
-    } else {
-        &ROWS[..ROWS.len() - 1]
+impl Force {
+    /// As Settings shows it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Force::Sun => "NONE",
+            Force::Day => "DAY",
+            Force::Night => "NIGHT",
+        }
+    }
+
+    /// What a tap on FORCE makes it.
+    pub fn next(self) -> Self {
+        match self {
+            Force::Sun => Force::Day,
+            Force::Day => Force::Night,
+            Force::Night => Force::Sun,
+        }
+    }
+
+    pub fn to_byte(self) -> u8 {
+        self as u8
+    }
+
+    /// As stored; anything else, as nothing stored: the sun's.
+    pub fn from_byte(byte: u8) -> Self {
+        match byte {
+            1 => Force::Day,
+            2 => Force::Night,
+            _ => Force::Sun,
+        }
+    }
+}
+
+impl App {
+    /// `settings`' rows, in words, for the theme to draw.
+    fn settings_rows(&self, settings: &[Setting]) -> heapless::Vec<SettingRow, 3> {
+        settings
+            .iter()
+            .map(|&setting| self.setting_row(setting))
+            .collect()
+    }
+
+    fn setting_row(&self, setting: Setting) -> SettingRow {
+        let (label, value) = match setting {
+            Setting::Theme => ("THEME", self.theme().palette().name),
+            Setting::Force => ("FORCE", self.force().name()),
+            Setting::Light => ("LIGHT", self.brightness.name()),
+            Setting::Buttons => ("BUTTONS", self.buttons.name()),
+            Setting::Layout => ("GRID", self.grid_layout.name()),
+            Setting::BtHomeKey => ("BTHOME KEY", "SHOW"),
+        };
+        let kind = match setting {
+            // Not a value, but somewhere to go.
+            Setting::BtHomeKey => RowKind::Link,
+            _ if self.changeable(setting) => RowKind::Choice,
+            _ => RowKind::Fixed,
+        };
+        // Two layers reach Home Assistant unlike six buttons do (as dimmers
+        // turned by the code): FAQ B04 says how, and how to automate them.
+        // The asterisk, as on a footnote, says it's a caveat to the value
+        // beside it, not a value of its own.
+        let note = (setting == Setting::Layout
+            && self.buttons.bthome()
+            && self.grid_layout == buttons::Layout::TwoLayers)
+            .then_some("*B04");
+        SettingRow {
+            label,
+            value,
+            kind,
+            note,
+        }
+    }
+
+    /// Whether a tap changes `setting`, in this build: THEME needs another
+    /// scheme for the side showing, FORCE schemes of both sides to pick
+    /// between.
+    fn changeable(&self, setting: Setting) -> bool {
+        match setting {
+            Setting::Theme => themes::count(self.theme_side()) > 1,
+            Setting::Force => themes::has(true) && themes::has(false),
+            _ => true,
+        }
+    }
+
+    /// A tap on `setting`'s row: its next value, or for one that can't
+    /// change, a banner saying why, and where the README says how to get a
+    /// build where it can.
+    fn change(&mut self, setting: Setting, now: Instant) {
+        if !self.changeable(setting) {
+            if setting == Setting::Theme {
+                defmt::info!("ui: one scheme for this side, in this build (FAQ D01)");
+                self.show_banner(Shows::OneTheme, now);
+            } else {
+                defmt::info!("ui: schemes for one side only, in this build (FAQ D02)");
+                self.show_banner(Shows::OneSide, now);
+            }
+            return;
+        }
+        match setting {
+            Setting::Theme => self.next_theme(),
+            Setting::Force => self.force = self.force.next(),
+            Setting::Light => self.brightness = self.brightness.next(),
+            Setting::Buttons => self.buttons = self.buttons.next(),
+            Setting::Layout => self.grid_layout = self.grid_layout.next(),
+            Setting::BtHomeKey => self.go_to(Screen::HaQr, Sweep::RightToLeft),
+        }
     }
 }
 

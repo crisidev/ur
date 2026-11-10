@@ -10,7 +10,7 @@
 //! a module of its own beside this file (`tokyo_night.rs`, `mod
 //! tokyo_night;` here), listed in [`NIGHT`] or [`DAY`] after the four
 //! below: nothing else to change, and no feature, as every one of
-//! Retro's schemes is part of `theme-retro`. Its name is what Settings'
+//! Retro's schemes is part of `theme-retro`. Its name is what the settings'
 //! THEME row shows, on its own, and its ID in flash
 //! ([`crate::palette::id`]), so a name says which it is ("TOKYO NIGHT",
 //! not "NIGHT"), and is for good. See AUTHORING-THEMES.md.

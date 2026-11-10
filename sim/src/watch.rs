@@ -306,11 +306,15 @@ impl Watch {
         }
         self.log(format!("input: {}", describe(&event)));
         let themes = self.app.themes;
+        let force = self.app.force;
         let brightness = self.app.brightness;
         let buttons = self.app.buttons;
         self.handle(Wake::Input(event));
         if self.app.themes != themes {
             self.log(format!("theme: {}", self.app.palette().name));
+        }
+        if self.app.force != force {
+            self.log(format!("force: {}", self.app.force.name()));
         }
         if self.app.brightness != brightness {
             self.log(format!("brightness: {}", self.app.brightness.name()));

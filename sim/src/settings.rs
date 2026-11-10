@@ -44,6 +44,13 @@ async fn read() -> Vec<String> {
         }
     }
 
+    let value = storage::load::<1>(key::FORCE)
+        .await
+        .map_or_else(none, |[byte]| {
+            crate::ui::Force::from_byte(byte).name().to_owned()
+        });
+    lines.push(format!("force: {value}"));
+
     let value = storage::load::<1>(key::BRIGHTNESS)
         .await
         .map_or_else(none, |[byte]| {

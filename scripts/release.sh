@@ -33,11 +33,12 @@
 # - `ur-<theme>`, for each theme (see src/themes/) other than the default:
 #   `ur` with only that theme in it, for wearers who'd rather have that
 #   look. One with colour schemes of one side only (night, say) shows them
-#   by day and by night alike; the release's notes say so. Only its
-#   `-dfu.zip`: the other files are for dev kits and for decoding logs,
-#   and a wearer who reports a problem can do so on `ur` or `ur-logging`.
-#   Its ELF is held to every size constraint first (`scripts/size.py
-#   check`), as CI holds the others.
+#   by day and by night alike, and its FORCE can't change (README FAQ
+#   D02); the release's notes say so. Only its `-dfu.zip`:
+#   the other files are for dev kits and for decoding logs, and a wearer
+#   who reports a problem can do so on `ur` or `ur-logging`. Its ELF is
+#   held to every size constraint first (`scripts/size.py check`), as CI
+#   holds the others.
 #
 # Both `ur` and `ur-logging` have the default themes (Cargo.toml's
 # `default`).
