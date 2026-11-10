@@ -660,3 +660,8 @@ async fn main(spawner: Spawner) {
         ui.handle(&mut app, &mut board, wake).await;
     }
 }
+
+// Last, so that nothing above moves (panic messages carry line numbers, and
+// a release image must stay byte for byte the same without the feature).
+#[cfg(feature = "coverage")]
+mod coverage;

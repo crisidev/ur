@@ -69,6 +69,11 @@ debug-input = []
 # against a dev kit (`ur-sim --devkit`, which drives it with `debug-input`);
 # see `src/compare.rs`. Costs ~2.3 KB of RAM, so not for releases.
 compare = ["debug-input"]
+# Edge coverage for the dev kit fuzzer, on top of `compare`: only meaningful
+# in a build by `sim/coverage-build.sh`, which instruments this crate's own
+# code. Costs a byte of RAM per branch, so never for releases. See
+# `src/coverage.rs`.
+coverage = ["compare"]
 # Save to flash back to back, for `scripts/flash-stress.py` to check that
 # erases and writes never overrun their radio timeslots; see
 # `src/flash_stress.rs`. Only for dev kits.

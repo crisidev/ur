@@ -48,6 +48,15 @@ fn main() {
     println!("cargo:rustc-link-arg-bins=--wrap=sdc_init");
     println!("cargo:rustc-link-arg-bins=--wrap=mpsl_init");
 
+    // The `coverage` feature's sections (see `coverage.x`), and only with
+    // it: a release build links exactly as without this.
+    println!("cargo:rerun-if-changed=coverage.x");
+    if env::var_os("CARGO_FEATURE_COVERAGE").is_some() {
+        fs::copy("coverage.x", out.join("coverage.x"))
+            .expect("coverage.x exists in the crate root");
+        println!("cargo:rustc-link-arg-bins=-Tcoverage.x");
+    }
+
     let cargo = env::var("CARGO_PKG_VERSION").expect("cargo always sets CARGO_PKG_VERSION");
     println!("cargo:rerun-if-env-changed=UR_VERSION");
     let full = env::var("UR_VERSION").unwrap_or_else(|_| format!("{cargo}-dev"));
