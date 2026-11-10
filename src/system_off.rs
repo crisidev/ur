@@ -419,7 +419,8 @@ fn pet(watchdog: &mut Option<WatchdogHandle>) {
 ///
 /// A pin wakes the chip through its SENSE setting: once any armed pin is
 /// at its sensed level, the chip resets. (If one already is, it resets at
-/// once, so the charger is only armed when it's unplugged.) GPIO settings
+/// once, so the charger is only armed when it's unplugged; switching off
+/// for an empty battery on the charger resets instead.) GPIO settings
 /// and output levels are kept while off, which is what keeps the button
 /// powered, and is also why every output must be left in its idle state.
 fn enter(button: bool) -> ! {
@@ -442,6 +443,16 @@ fn enter(button: bool) -> ! {
     // The charger's power-present line (P0.19) is pulled up externally and
     // goes low with power.
     let unplugged = p0.in_().read().pin(19);
+    // Switching off for an empty battery while power has come back (the
+    // "battery empty" screen invites plugging in, and switching off takes
+    // several seconds after it): the charger can't be armed, as it's
+    // already at its level, and nothing else would be, so System OFF would
+    // have no way out short of the battery running flat again, months
+    // later on a full one. Start afresh on the charger instead: the record
+    // is saved, and `Battery::critical` doesn't fire on the charger.
+    if !button && !unplugged {
+        cortex_m::peripheral::SCB::sys_reset();
+    }
     // Nothing else may wake us: embassy's GPIO driver arms SENSE on pins it
     // waits on (the touch interrupt, the button's release). And inputs
     // left connected to floating lines (a sleeping chip's output) can draw
