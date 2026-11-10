@@ -1,0 +1,3 @@
+# The firmware config above targets the nRF52; the mock runs on whatever computer builds it.
+[build]
+target = "host-tuple"

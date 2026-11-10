@@ -1,0 +1,17 @@
+[package]
+name = "gbmock"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "A model of Gadgetbridge's Bangle.js support, written from Gadgetbridge commit deffcca650e96ffcccf0dc2f0aa34d8efb34041f (2026-11-10, \"Bangle.js: Allow updating of sample raw kind during upsert (#7296)\")"
+
+# What Gadgetbridge sends a Bangle.js, and what it makes of the answers:
+# for the host tests (`host-tests/gb`) and the simulator (`sim`) to test
+# the watch's side against. No dependencies, so that it builds wherever
+# they do (wasm32 and Kani included). Not part of the firmware workspace:
+# run `cargo test` from this directory. See `src/lib.rs` for the commit
+# it models and how to bring it up to date.
+[workspace]
+
+[dependencies]
