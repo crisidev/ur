@@ -123,6 +123,67 @@ mod tests {
         );
     }
 
+    /// What a touch's lift reports, by gesture: none but a long press's
+    /// has a release.
+    fn lifted(tracking: &Tracking) -> (Gesture, Option<Gesture>) {
+        let (event, release) = tracking.lifted();
+        (event.gesture, release.map(|release| release.gesture))
+    }
+
+    #[test]
+    fn a_long_press_is_released_whenever_it_was_seen() {
+        let _clock = clock();
+        // Reported while held: the lift is only its release.
+        let mut held = Tracking::new((120, 120));
+        wait(LONG_PRESS.as_millis());
+        held.held = true;
+        wait(900);
+        assert_eq!(lifted(&held), (Gesture::Release, None));
+        // A lift that beat the timer (the touch task's lift report read
+        // just after it was due): the long press, then its release, from
+        // where it started, after all the time it was down. This once
+        // sent no release, and a button grid hold never ended.
+        let beaten = Tracking::new((120, 120));
+        wait(LONG_PRESS.as_millis() + 5);
+        assert_eq!(
+            lifted(&beaten),
+            (Gesture::LongPress, Some(Gesture::Release))
+        );
+        let (_, release) = beaten.lifted();
+        let release = release.expect("a long press has one");
+        assert_eq!((release.x, release.y), (40, 40));
+        assert_eq!(u64::from(release.held_ms), LONG_PRESS.as_millis() + 5);
+        // Anything else has none.
+        let tap = Tracking::new((120, 120));
+        wait(LONG_PRESS.as_millis() - 10);
+        assert_eq!(lifted(&tap), (Gesture::Tap, None));
+        let mut swipe = Tracking::new((120, 120));
+        swipe.moved_to((120, 120 + SWIPE_DISTANCE));
+        wait(LONG_PRESS.as_millis() + 100);
+        assert_eq!(lifted(&swipe), (Gesture::SwipeDown, None));
+    }
+
+    #[test]
+    fn a_touch_cut_short_reports_only_a_long_press_release() {
+        let _clock = clock();
+        // Put to sleep before it was anything: nothing to say.
+        let short = Tracking::new((120, 120));
+        wait(LONG_PRESS.as_millis() + 5);
+        assert!(short.lost().is_none());
+        // A long press reported while held (a button grid hold, past the
+        // screen's timeout in the quiet night): its release goes now, as
+        // its lift never will. This once sent nothing, and the hold ran
+        // on.
+        let mut held = Tracking::new((120, 120));
+        wait(LONG_PRESS.as_millis());
+        held.held = true;
+        wait(10_000);
+        let release = held.lost().expect("a long press is released");
+        assert_eq!(release.gesture, Gesture::Release);
+        assert_eq!((release.x, release.y), (40, 40));
+        assert_eq!(u64::from(release.held_ms), LONG_PRESS.as_millis() + 10_000);
+    }
+
     #[test]
     fn a_finger_that_strayed_is_never_a_long_press() {
         let _clock = clock();

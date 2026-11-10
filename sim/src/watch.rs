@@ -336,15 +336,16 @@ impl Watch {
     }
 
     /// The finger lifted: what it did is decided now, unless it was a long
-    /// press, which was reported while it was down; its lift is a release.
+    /// press, which was reported while it was down; its lift is a release
+    /// (see `Tracking::lifted`).
     pub fn lift(&mut self) {
         let Some(finger) = self.finger.take() else {
             return;
         };
-        if finger.held {
-            self.input(InputEvent::Touch(finger.release()));
-        } else {
-            self.input(InputEvent::Touch(finger.classify()));
+        let (event, release) = finger.lifted();
+        self.input(InputEvent::Touch(event));
+        if let Some(release) = release {
+            self.input(InputEvent::Touch(release));
         }
     }
 
@@ -490,8 +491,11 @@ impl Watch {
             return;
         }
         if touch::asleep() {
-            // The controller's asleep: whatever was in progress is moot.
-            self.finger = None;
+            // The controller's asleep: whatever was in progress is moot,
+            // bar a long press's release (see `Tracking::lost`).
+            if let Some(release) = self.finger.take().and_then(|finger| finger.lost()) {
+                self.input(InputEvent::Touch(release));
+            }
         }
         self.timer = ui_loop::timer_at(&self.app, self.finger.is_some());
     }

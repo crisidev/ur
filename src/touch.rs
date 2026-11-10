@@ -25,7 +25,11 @@
 //! see [`set_asleep`]), the chip goes into deep sleep, as InfiniTime puts
 //! it to sleep with the screen: it stops scanning the panel, and sends no
 //! interrupts for bedding to set off. Only a reset (P0.10) wakes it, which
-//! then needs configuring again, as at boot.
+//! then needs configuring again, as at boot. A touch in progress then is
+//! dropped, bar a long press's release, which goes then rather than at a
+//! lift that will never be seen (see [`crate::gesture::Tracking::lost`]).
+//! Nothing keeps the screen on for a finger that's down: a sleeve or
+//! bedding resting on it would keep it lit all night.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -186,7 +190,13 @@ pub async fn touch_task(
             Either3::Third(()) => {
                 if ASLEEP.load(Ordering::Relaxed) {
                     // Whatever was in progress is moot: the screen is off.
-                    tracking = None;
+                    // Bar a long press's release, as its lift won't be
+                    // seen now: a button grid hold held past the screen's
+                    // timeout ends here, rather than never.
+                    if let Some(release) = tracking.take().and_then(|touch| touch.lost()) {
+                        info!("touch: cut short after {}ms", release.held_ms);
+                        crate::INPUT.send(crate::InputEvent::Touch(release)).await;
+                    }
                     sleep(&mut i2c, &mut reset).await;
                     // Nothing to do until it's time to wake.
                     while ASLEEP.load(Ordering::Relaxed) {
@@ -313,27 +323,21 @@ async fn finish(touch: &Tracking) {
     // Over, as of now: the UI may act on the event before the loop comes
     // round to say so.
     DOWN.store(false, Ordering::Relaxed);
+    let (event, release) = touch.lifted();
     // A long press was reported while held, and that was the touch's one
     // event, whatever the finger did after: its lift is only a release.
     if touch.held {
+        info!("touch: lifted after {}ms", event.held_ms);
+    } else {
         info!(
-            "touch: lifted after {}ms",
-            touch.since.elapsed().as_millis()
+            "touch: {} from ({},{}) to ({},{}) in {}ms",
+            event.gesture, touch.start.0, touch.start.1, touch.last.0, touch.last.1, event.held_ms
         );
-        crate::INPUT
-            .send(crate::InputEvent::Touch(touch.release()))
-            .await;
-        return;
     }
-    let event = touch.classify();
-    info!(
-        "touch: {} from ({},{}) to ({},{}) in {}ms",
-        event.gesture,
-        touch.start.0,
-        touch.start.1,
-        touch.last.0,
-        touch.last.1,
-        touch.since.elapsed().as_millis()
-    );
     crate::INPUT.send(crate::InputEvent::Touch(event)).await;
+    // A long press only seen now, its lift having beaten the timer: its
+    // release follows at once (see `Tracking::lifted`).
+    if let Some(release) = release {
+        crate::INPUT.send(crate::InputEvent::Touch(release)).await;
+    }
 }

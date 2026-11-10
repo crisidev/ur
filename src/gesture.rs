@@ -12,7 +12,9 @@
 //! and the wearer knows when to let go rather than guessing. That touch
 //! is then spent: moving the finger does nothing more, and lifting it is
 //! only a [`Gesture::Release`], for what lasts while the finger stays
-//! down (the button grid's holds; everything else ignores it). A
+//! down (the button grid's holds; everything else ignores it). Every
+//! long press gets its release, even one only seen at the lift, or a
+//! touch cut short (see [`Tracking::lifted`] and [`Tracking::lost`]). A
 //! finger that moves past the tap tolerance before then is on its way to
 //! a swipe, and the long press is off for that touch, even if it comes
 //! back. Anything else is a tap.
@@ -119,6 +121,32 @@ impl Tracking {
     /// was down in all.
     pub fn release(&self) -> Touch {
         self.touch(Gesture::Release)
+    }
+
+    /// The finger lifted: what to report, in order. A long press already
+    /// reported while held leaves only its release. Otherwise the touch's
+    /// one event, as [`Tracking::classify`] has it; and if that's a long
+    /// press (a lift that beat the timer: the touch task reads the lift's
+    /// report just after [`LONG_PRESS`], say), its release straight
+    /// after, as for one reported while held. Whatever a long press
+    /// started (a button grid hold, sent to Home Assistant) ends only with
+    /// its release: without one, it would run on.
+    pub fn lifted(&self) -> (Touch, Option<Touch>) {
+        if self.held {
+            return (self.release(), None);
+        }
+        let event = self.classify();
+        let release = (event.gesture == Gesture::LongPress).then(|| self.release());
+        (event, release)
+    }
+
+    /// The touch is cut short, unfinished: its lift will never be seen
+    /// (the touch task put the controller to sleep with the finger down).
+    /// What it was is moot, bar a long press already reported, whose
+    /// release must still go, for the same reason as in
+    /// [`Tracking::lifted`]: the release comes early, rather than never.
+    pub fn lost(&self) -> Option<Touch> {
+        self.held.then(|| self.release())
     }
 
     fn touch(&self, gesture: Gesture) -> Touch {
