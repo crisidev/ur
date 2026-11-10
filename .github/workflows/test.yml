@@ -56,6 +56,22 @@ jobs:
       - name: cargo test
         working-directory: host-tests/${{ matrix.crate }}
         run: cargo ${{ matrix.toolchain == 'beta' && '+beta' || '' }} test --locked --release
+  # The Gadgetbridge mock's own tests (its JSON, escaping and upsert
+  # against Gadgetbridge's behaviour). It's shared by `host-tests/gb` and
+  # `sim`, so it lives at the top, not in `host-tests/` with the matrix.
+  gbmock:
+    runs-on: ubuntu-latest
+    name: gbmock
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
+        with:
+          workspaces: gbmock
+      - name: cargo test
+        working-directory: gbmock
+        run: cargo test --locked --release
   sim:
     runs-on: ubuntu-latest
     name: sim
