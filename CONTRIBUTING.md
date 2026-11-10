@@ -237,6 +237,72 @@ with each screen's name and how many pixels differ, notes that the
 images couldn't be attached, and links the artifact of the run that
 drew them (kept for 7 days).
 
+## Finding bugs
+
+Beyond the tests, four tools look for what nobody thought to test. All
+but the dev kit's run on the computer; the heavy ones can take a lot of
+memory, so run them in a capped scope (`systemd-run --user --scope -p
+MemoryMax=6G --quiet …`): on a machine without much swap, an
+out-of-memory kill can take down the terminal it ran from.
+
+### Fuzzing the simulator
+
+`sim/fuzz` drives the simulator (the firmware's UI, storage and
+Gadgetbridge handling) with libFuzzer, guided by branch coverage: each
+input's bytes choose the settings in storage and a script of steps, as
+`ur-sim --fuzz` makes from a seed. It fails on a panic (overflows and
+`debug_assert!`s included), on a step that never ends (the UI spinning),
+and when the settings the UI has aren't the ones it would boot with:
+
+```sh
+cd sim && cargo +nightly fuzz run -s none steps -- -fork=16 -timeout=20
+```
+
+(`-s none`: it's safe Rust, so no sanitizer; `--` passes the rest to
+libFuzzer.)
+
+A finding is an input file; `ur-sim --fuzz-input FILE --out DIR` writes the
+script and storage image it makes, to run in the simulator (`--flash
+DIR/storage.bin`) or on a dev kit (`--devkit … --storage`, with
+`--storage BASE` to keep a dev kit's bonds).
+
+### Fuzzing a dev kit
+
+`ur-sim --fuzz ELF` runs random scripts on a dev kit with a `compare`
+build, each from random settings, and follows it as `--devkit` does: any
+difference from the simulator, a restart the script didn't ask for (with
+the dev kit's log of why), a step that leaves less than 512 bytes of
+stack, or a grid hold without its release, is shrunk to a repro. See
+[sim/README.md]. Two ways to make it less random:
+
+- `--corpus DIR` runs the simulator fuzzer's inputs instead: what it
+  found, by branch coverage, checked against the hardware. Distil the
+  corpus first, to one input per branch (see sim/README.md).
+- `--guided`, with a build from `sim/coverage-build.sh`, extends the runs
+  that reached functions no run had before. It's function coverage, not
+  branches (those don't fit in flash), but of everything on the watch,
+  Bluetooth and the hardware included, which the simulator can't run;
+  `--out`'s `coverage.txt` lists what's not been reached.
+
+### Proofs
+
+Some host test crates (`host-tests/alarm`, `buttons`, `gesture`, `day`,
+`decimal`) have [Kani] proofs at the end of their `src/main.rs`: what the
+tests check for some inputs, for every input, within bounds. `cargo kani`
+in the crate runs them; `--harness NAME` one. They need tight
+`kani::unwind` and `kani::assume` bounds: CBMC's memory grows fast with
+loops (one unbounded alarm proof took 18 GB). `gb` and `day` also have
+[Bolero] property tests, which `cargo test` runs briefly with random
+inputs, and `cargo bolero test NAME` fuzzes for as long as you like.
+
+### cargo-careful and Miri
+
+`cargo +nightly careful test` (a standard library with its debug checks)
+and `cargo +nightly miri test` (an interpreter that catches undefined
+behaviour) both run the host tests unchanged. Neither found anything in
+November 2026; Miri can't run `ppg` (libm's x86 square root is inline
+assembly) and takes over 15 minutes on `gb`, `mcuboot` and `sleep`.
+
 ## A dev kit
 
 A PineTime dev kit is a PineTime with its SWD port exposed. With a debug
@@ -589,3 +655,5 @@ toolchain quarterly.
 [CHANGELOG.md]: CHANGELOG.md
 [sim/README.md]: sim/README.md
 [shellcheck]: https://www.shellcheck.net
+[Kani]: https://model-checking.github.io/kani/
+[Bolero]: https://camshaft.github.io/bolero/
