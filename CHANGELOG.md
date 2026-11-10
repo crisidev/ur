@@ -14,7 +14,12 @@ missing below were test builds for the dev kit.
 
 ### Added
 
+- Add themes as build features: how every screen looks is a theme (`src/themes/`), Retro (today's look, with ARCADE and TERMINAL by night and HANDHELD and PARCHMENT by day) by default, and a build can have other themes instead or as well (`theme-<name>`, or `themes-all`), LOOK's THEME then stepping through every scheme built in for the time of day; a release has a package of each other theme, `ur-<theme>-<version>-dfu.zip` (one with only night or only day colour schemes shows them by day and by night alike, its FORCE fixed); and the chosen schemes are now saved by name, so they survive a build with other themes, and a watch updated from 0.10.0 keeps its own (6ff3133, c2d0b0c, 59aa7ad, bfa2d57)
+- Add a FORCE row to LOOK, under THEME: NONE follows the sun as before, and DAY or NIGHT shows that side's colour schemes whatever the time, THEME then stepping through those and saving the choice as that side's; only the look, as the brightness and everything else still follow the sun. With one scheme for the time of day, THEME can't change, nor FORCE in a build with schemes of one side only: either is dim, and a tap says why, "ONLY ONE THEME" / "SEE FAQ D01", or "NO DAY THEMES" (or NIGHT) / "SEE FAQ D02" (98b856d)
+
 ### Changed
+
+- Split the Settings screen in two, side by side where it was, before Info: LOOK, with THEME, FORCE and LIGHT, and BUTTON GRID, with BUTTONS, GRID and BTHOME KEY; three rows at most each, so every row is taller, about 7 mm rather than 5, for a fingertip, and none moves as another comes or goes (98b856d)
 
 ### Deprecated
 

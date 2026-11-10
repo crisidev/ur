@@ -51,7 +51,7 @@ black in every one.
 | <img src="shots/dim-glance.png" width="120" alt="A glance: the hours above the minutes, big, white on black"> | <img src="shots/dim-route-glance.png" width="120" alt="A glance while the phone navigates: the time, small and red, over an arrow turning left, 150 M, and the street"> | <img src="shots/dim-notification.png" width="120" alt="A notification that arrived with the screen off: the app in red, and who it's from, big, in white"> | <img src="shots/dim-quiet-night.png" width="120" alt="The clock face in the quiet night: white and red on black"> | <img src="shots/dim-grid.png" width="120" alt="The button grid in the quiet night: grey keycaps outlined in red"> |
 
 These are `shots.txt`'s, which the simulator's tests check (see
-CONTRIBUTING.md's section on themes).
+[AUTHORING-THEMES.md](../../../AUTHORING-THEMES.md#the-readme-and-its-screenshots)).
 
 ## Credits
 

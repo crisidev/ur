@@ -29,9 +29,11 @@ needs nothing special; LFS stores it.
   `minute_ring` (`activity`'s history as the clock moves), `dfu_slot`
   (where `dfu` erases and writes an update), `rtt_ring` (which bytes
   `field_log` reads of the log's buffer), and `bthome`'s
-  encoding) are pure logic, tested on the computer, as are
-  `theme`'s colours (that those with different meanings differ in every
-  theme).
+  encoding) are pure logic, tested on the computer, as are retro's
+  colours (`palette`, and `themes/retro/schemes.rs`: that those with
+  different meanings differ in every colour scheme).
+- `src/themes/<name>/`: a theme each, how every screen looks; see
+  [Themes](#themes).
 - `host-tests/<module>/`: one crate per hardware-free module (`sleep`'s
   covers `stages` too, `gb`'s `phone`, `gb_buckets`'s `sleep_hold`,
   `aranet`'s `bthome_sensor`, and `dfu`'s is of `dfu_slot`), which
@@ -82,8 +84,12 @@ Info screen. The variants:
 - `ur-logging`: keeps its log in the watch's SPI flash, for fetching
   over Bluetooth; see [Field logs](#field-logs). It writes to flash
   constantly, and costs a little battery.
+- `ur-<theme>`: `ur` with only that theme, for each theme other than the
+  default (see [Themes](#themes)); one with colour schemes of one side
+  only shows them by day and by night alike. Only its `-dfu.zip`
+  (`release.sh` checks its ELF fits first, with `scripts/size.py`).
 
-Each comes as `-dfu.zip` (to send over Bluetooth), `.img` (the raw MCUBoot
+Both `ur` and `ur-logging` have the default theme, retro. Each comes as `-dfu.zip` (to send over Bluetooth), `.img` (the raw MCUBoot
 image), `-slot.elf` (the image as an ELF, for flashing over SWD), and
 `.elf` (with symbols, for decoding logs). Neither has the dev kit's
 injected input (the `debug-input` feature; see [Iterating](#iterating)):
@@ -247,6 +253,36 @@ If the images can't be uploaded, the comment still says what changed,
 with each screen's name and how many pixels differ, notes that the
 images couldn't be attached, and links the artifact of the run that
 drew them (kept for 7 days).
+
+## Themes
+
+How every screen looks, where its buttons are, and its colours are a
+theme's: a type implementing `themes::Theme`, its colour schemes
+statics of it (see `src/themes/mod.rs`). Retro, in `src/themes/retro/`,
+is the watch's own. Each theme is a Cargo feature, `theme-<name>`, so a
+build has only the themes it names; `theme-retro` is the default,
+`themes-all` every one, and a build needs one (`--no-default-features`
+alone fails, on purpose). The settings' THEME row steps through every
+built-in theme's schemes for the side of the day in use. To build
+another mix:
+
+```sh
+cargo build --release --no-default-features --features theme-retro,theme-<name>
+scripts/release.sh   # ur and ur-logging with the default; ur-<theme> for each other theme
+```
+
+The simulator takes the same features (with none, it has the firmware's
+default: `sim/build.rs` reads it from Cargo.toml); its web page has
+every theme.
+
+[AUTHORING-THEMES.md](AUTHORING-THEMES.md) is how to add one: a colour
+scheme of Retro's (a palette in `src/themes/retro/schemes/`, part of
+`theme-retro`), or a theme of its own, which draws every screen with
+its own code, starting from a copy of Retro's (`scripts/new-theme.sh
+IDENT "Name"` makes one) and the shared `themes::helpers`: the trait,
+where to list it, its README and screenshots, and what CI checks. The
+themes there are, are listed in
+[src/themes/README.md](src/themes/README.md).
 
 ## Finding bugs
 
@@ -689,12 +725,19 @@ gh release download v0.9.0 --pattern sha256.sum --dir published
 
 ## CI
 
-- `check.yml`: rustfmt, clippy (both variants and the dev kit's
-  `compare` and `flash-stress` builds, with the pinned toolchain and on
-  beta; and the simulator), [shellcheck], and that the Python scripts
-  parse.
+- `check.yml`: rustfmt, clippy (both variants, the dev kit's `compare`
+  and `flash-stress` builds, and every theme, with the pinned toolchain
+  and on beta; and the simulator, with every theme too), [shellcheck],
+  and that the Python scripts parse.
+- `features.yml`: that every theme builds alone (as its package is) and
+  all together with every feature (`--all-features`), and that the
+  simulator builds with everything. The heavier jobs wait for it:
+  `test.yml`'s simulator, web and firmware jobs, `screenshots.yml`'s
+  rendering, and `pages.yml`'s build (those two only for its simulator
+  check).
 - `test.yml`: the host tests (pinned and beta), the simulator's tests
-  and screenshots (as the run's `screenshots` artifact), and a packaged
+  and screenshots (as the run's `screenshots` artifact; every theme's
+  own too, with `themes-all`), and a packaged
   build (by `release.sh`, so without `debug-input`) of every PR and
   every commit on main, to try on a watch:
   `0.9.0-pr.<number>+<commit>`, or `0.9.0-snap.<commits>+<commit>`. The

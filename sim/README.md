@@ -18,6 +18,12 @@ It builds for whatever computer you're on (`.cargo/config.toml` sets the
 `host-tuple` target, overriding the firmware's). Without a display (CI),
 build with `--no-default-features` to leave the window out.
 
+It has the firmware's themes as features of the same names (see
+[Themes](../CONTRIBUTING.md#themes)): with none, the firmware's default
+(so `--no-default-features` still builds it), and `--features
+themes-all` every one, as the web page has them. `--list-themes` prints
+those built in, with how many colour schemes each has for night and day.
+
 ## The window
 
 The watch, drawn to scale from PINE64's dimensions and photos: the 1.3″
@@ -120,7 +126,9 @@ tap                               # snooze
   `screenshot.py --theme`; with `--watch`, the whole watch, as the window
   draws it; with `--panel`, as the real panel shows it, as the window
   does), `record FILE.gif` … `stop` (see below), `expect`, and
-  `settings` (what the flash holds, decoded as the firmware does).
+  `settings` (what the flash holds, decoded as the firmware does), and
+  `store KEY HEX` writes raw bytes under a key, as an older firmware
+  might have (to check a boot's migrations).
 
 `gb` takes a line exactly as Gadgetbridge sends it (less the `\x10`
 before it), say from Gadgetbridge's log, and runs it through the

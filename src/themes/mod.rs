@@ -12,8 +12,8 @@
 //!
 //! Each theme lives in a directory of its own, `src/themes/<name>/`: its
 //! code, a README with screenshots, and the simulator script that takes
-//! them (`shots.txt`, into `shots/`). See CONTRIBUTING.md for adding a
-//! theme or a scheme.
+//! them (`shots.txt`, into `shots/`). See AUTHORING-THEMES.md for adding
+//! a theme.
 //!
 //! Each theme is a Cargo feature, `theme-<name>` (`theme-retro` the
 //! default; `themes-all`, every one), so a build has only the themes it
