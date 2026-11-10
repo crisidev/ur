@@ -69,10 +69,10 @@ at once (after 0.6 s, finger still down), and lifting the finger then
 sends a **release**, for what should last while you hold, like dimming a
 light. Held on, to 1.5 s, it's a **long press** too, sent then, finger
 still down (the button shows LONG, and buzzes again), before the
-release: a third thing a hold can do. In between, the button stays
-pressed until you let go. A hold lifted sooner has none. The
-screen stays on while you hold, quiet night or not, and every hold gets
-its release when you let go. Past a minute, the watch takes it for
+release: a third thing a hold can do. A hold lifted sooner has none.
+The held button shows pressed until you let go, and the screen stays
+on while you hold, quiet night or not; every hold gets its release
+when you let go. Past a minute, the watch takes it for
 something resting on the screen (bedding, a sleeve): the screen goes
 off as if you had let go, and in the quiet night, the release goes
 then. To cancel a tap that's waiting, swipe away or press the button.
@@ -88,7 +88,7 @@ Swipe left from the clock, past the alarms, to **Settings**, and tap
 **BUTTONS** until it says where presses go: **BTHOME** (Home
 Assistant), **VIA APP** (Gadgetbridge, for Tasker and the like), or
 **BOTH**. Tap **GRID** for the layout: **6 BUTTONS** or **2 LAYERS**.
-The grid is then the first screen up from the clock.
+The grid is then the first screen below the clock: swipe up.
 
 ## Home Assistant
 
