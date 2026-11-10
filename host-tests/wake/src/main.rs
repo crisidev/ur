@@ -1,7 +1,9 @@
 //! Host tests for the firmware's `wake` module: what a touch does while
 //! the screen is off, or glancing. `cargo test` runs them.
 
+// Used only by the tests (and the proofs).
 #[path = "../../../src/wake.rs"]
+#[allow(dead_code)]
 mod wake;
 
 fn main() {
@@ -529,6 +531,159 @@ mod tests {
                     Action::Wake { first_tap: false }
                 );
             }
+        }
+    }
+}
+
+/// Kani proofs (`cargo kani` here, one at a time with `--harness`): the
+/// guards the module docs list, for every touch, where the tests above
+/// try chosen ones. A touch is any kind, starting anywhere an `i32` can
+/// say (on the canvas or off it), held for any time, any time after the
+/// last tap. Nothing panics or overflows, and a brush, a lone touch, or a
+/// touch in the quiet night never does what the docs say it can't.
+#[cfg(kani)]
+mod proofs {
+    use super::wake::*;
+
+    fn any_kind() -> Kind {
+        match kani::any::<u8>() % 3 {
+            0 => Kind::Tap,
+            1 => Kind::LongPress,
+            _ => Kind::Swipe,
+        }
+    }
+
+    fn media(action: Action) -> bool {
+        matches!(action, Action::PlayPause | Action::Next)
+    }
+
+    /// The numbers in the docs: a touch is inside from 8 canvas pixels in
+    /// from every edge of the 80, and a hold centred at 16..=63 across and
+    /// 20..=59 down. So every centred hold is inside too, and a
+    /// tap-and-hold's hold meets what a tap must.
+    #[kani::proof]
+    fn the_middle_is_inside_the_margin() {
+        let (x, y): (i32, i32) = kani::any();
+        assert_eq!(inside(x, y), (8..=71).contains(&x) && (8..=71).contains(&y));
+        assert_eq!(
+            centred(x, y),
+            (16..=63).contains(&x) && (20..=59).contains(&y)
+        );
+        assert!(!centred(x, y) || inside(x, y));
+        // On the clock face, a hold must be in the middle only just after
+        // a touch woke the screen.
+        assert!(awake_long_press(x, y, false));
+        assert_eq!(awake_long_press(x, y, true), centred(x, y));
+    }
+
+    /// For every touch: a tap follows another if reported within half a
+    /// second of its lift, and a hold if it started within that (it's
+    /// reported later, having been held), however long it's been down.
+    /// Sooner always follows too.
+    #[kani::proof]
+    fn a_pair_is_two_touches_half_a_second_apart() {
+        let (since, held): (u32, u16) = kani::any();
+        assert_eq!(follows(Kind::Tap, since, held), since <= 500);
+        let started = i64::from(since) - i64::from(held);
+        assert_eq!(follows(Kind::LongPress, since, held), started <= 500);
+
+        let (kind, sooner) = (any_kind(), kani::any());
+        kani::assume(sooner <= since);
+        assert!(!follows(kind, since, held) || follows(kind, sooner, held));
+    }
+
+    /// For every touch with the screen off:
+    ///
+    /// - In the quiet night, at the edge, or swiping, it does nothing.
+    /// - On its own (no tap just before), it wakes the screen if it's a
+    ///   deliberate tap, and is otherwise at most the first of a pair.
+    /// - Only a pair plays, pauses or skips, and only with a phone: a tap
+    ///   plays or pauses, and a hold in the middle skips.
+    /// - A hold never wakes the screen, and a wake's tap is the first of
+    ///   a media gesture's pair only if there's a phone to control.
+    #[kani::proof]
+    fn a_dark_screen_ignores_what_it_should() {
+        let (kind, held) = (any_kind(), kani::any());
+        let (x, y): (i32, i32) = kani::any();
+        let (recent_tap, phone, quiet): (bool, bool, bool) = kani::any();
+        let action = screen_off(kind, x, y, held, recent_tap, phone, quiet);
+
+        if quiet || !inside(x, y) || kind == Kind::Swipe {
+            assert_eq!(action, Action::Ignore);
+        }
+        if !recent_tap {
+            let wakes = action == (Action::Wake { first_tap: phone });
+            assert_eq!(wakes, !quiet && deliberate(kind, x, y, held));
+            assert!(wakes || action == Action::FirstTap || action == Action::Ignore);
+            assert!(action != Action::FirstTap || kind == Kind::Tap);
+        }
+        if media(action) {
+            assert!(recent_tap && phone);
+        }
+        match action {
+            Action::PlayPause => assert!(kind == Kind::Tap),
+            Action::Next => assert!(kind == Kind::LongPress && centred(x, y)),
+            Action::Wake { first_tap } => assert!(kind == Kind::Tap && (phone || !first_tap)),
+            Action::FirstTap => assert!(kind == Kind::Tap && held < DELIBERATE_TAP_MS),
+            Action::Ignore => {}
+        }
+    }
+
+    /// For every touch on a glance (with a phone, outside the quiet
+    /// night):
+    ///
+    /// - Only a pair plays, pauses or skips, and the same pair as with
+    ///   the screen off does the same.
+    /// - A hold on its own is ignored, and so is a light tap at the edge.
+    /// - A swipe, or a deliberate tap anywhere, wakes the screen, but a
+    ///   tap at the edge is never the first of a media gesture.
+    #[kani::proof]
+    fn a_glance_takes_the_gestures_a_dark_screen_does() {
+        let (kind, held) = (any_kind(), kani::any());
+        let (x, y): (i32, i32) = kani::any();
+        let recent_tap: bool = kani::any();
+        let action = glance(kind, x, y, held, recent_tap);
+        let off = screen_off(kind, x, y, held, recent_tap, true, false);
+
+        assert!(!media(action) || recent_tap);
+        assert_eq!(media(action), media(off));
+        assert!(!media(action) || action == off);
+        if !recent_tap {
+            match kind {
+                Kind::Swipe => assert_eq!(action, Action::Wake { first_tap: false }),
+                Kind::LongPress => assert_eq!(action, Action::Ignore),
+                Kind::Tap if held >= DELIBERATE_TAP_MS => {
+                    let first_tap = inside(x, y);
+                    assert_eq!(action, Action::Wake { first_tap });
+                }
+                Kind::Tap if inside(x, y) => assert_eq!(action, Action::FirstTap),
+                Kind::Tap => assert_eq!(action, Action::Ignore),
+            }
+        }
+        // At the edge, a touch is no part of a media gesture, as its
+        // second or as its first.
+        if !inside(x, y) {
+            assert!(!media(action) && action != Action::FirstTap);
+            assert!(action != Action::Wake { first_tap: true });
+        }
+    }
+
+    /// For every touch: the second of a pair makes a media gesture only
+    /// from inside the margin, a tap playing or pausing and a hold in the
+    /// middle skipping; a swipe never does.
+    #[kani::proof]
+    fn a_media_gesture_starts_away_from_the_edge() {
+        let kind = any_kind();
+        let (x, y): (i32, i32) = kani::any();
+        match second(kind, x, y) {
+            Some(Action::PlayPause) => assert!(kind == Kind::Tap && inside(x, y)),
+            Some(Action::Next) => assert!(kind == Kind::LongPress && centred(x, y)),
+            Some(_) => unreachable!("a pair only plays, pauses or skips"),
+            None => assert!(match kind {
+                Kind::Tap => !inside(x, y),
+                Kind::LongPress => !centred(x, y),
+                Kind::Swipe => true,
+            }),
         }
     }
 }
