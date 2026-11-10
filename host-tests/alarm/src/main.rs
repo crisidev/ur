@@ -751,3 +751,117 @@ mod tests {
         assert_eq!(p.alarms().len(), PHONE_ALARMS);
     }
 }
+
+/// Kani proofs (`cargo kani` here): what the tests above check for some
+/// inputs, for every input. The settings and the phone's alarms come from
+/// any bytes at all (as from corrupt or future-format storage, through
+/// `from_bytes`), and the clock reads anything from 1969 to 2200: then
+/// nothing panics (no `expect` fails, no arithmetic overflows), and the
+/// next alarm is at most a week and a day away.
+#[cfg(kani)]
+mod proofs {
+    use super::alarm::*;
+
+    /// Local seconds the clock can read: from a day before 1970 (zones
+    /// west of UTC) to 2200.
+    fn any_now() -> i64 {
+        let now: i64 = kani::any();
+        kani::assume((-86_400..7_258_118_400).contains(&now));
+        now
+    }
+
+    /// Seconds since boot, which timers and the snooze count in: up to
+    /// ten years.
+    fn any_uptime() -> i64 {
+        let uptime: i64 = kani::any();
+        kani::assume((0..=10 * 365 * 86_400).contains(&uptime));
+        uptime
+    }
+
+    fn any_settings() -> Settings {
+        Settings::from_bytes(kani::any())
+    }
+
+    fn any_phone() -> Phone {
+        Phone::from_bytes(kani::any())
+    }
+
+    /// Up to two alarms from the phone, as `push` takes them (any hour,
+    /// minute and days; nonsense ones refused): what CBMC can take through
+    /// `due`'s loops. Ten, through `from_bytes`, took it past 10 GB; the
+    /// alarms are alike, so two show what any number would.
+    fn any_two_phone_alarms() -> Phone {
+        let mut phone = Phone::default();
+        for _ in 0..2 {
+            if kani::any() {
+                phone.push(kani::any(), kani::any(), kani::any(), kani::any());
+            }
+        }
+        phone
+    }
+
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn next_at_is_within_eight_days() {
+        let time: u16 = kani::any();
+        kani::assume(time < 24 * 60);
+        // As `Phone::push` keeps them: bit 7 masked off.
+        let days: u8 = kani::any::<u8>() & 0x7F;
+        let after = any_now() / 60;
+        let at = next_at(time, days, after);
+        assert!(at > after && at - after <= 8 * 24 * 60);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn next_smart_is_within_three_days() {
+        let settings = any_settings();
+        let now = any_now() / 60;
+        let at = next_smart(&settings, now);
+        assert!(at > now && at - now <= 3 * 24 * 60);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn settings_and_phone_alarms_from_any_bytes_are_sane() {
+        let settings = any_settings();
+        assert!(settings.smart_weekday < 24 * 60 && settings.smart_weekend < 24 * 60);
+        assert!(settings.at_time.iter().all(|&t| t < 24 * 60));
+        assert!(
+            settings
+                .timers
+                .iter()
+                .all(|&t| (1..=MAX_TIMER).contains(&t))
+        );
+        let phone = any_phone();
+        assert!(phone.alarms().len() <= PHONE_ALARMS);
+        assert!(
+            phone
+                .alarms()
+                .iter()
+                .all(|a| a.time < 24 * 60 && a.days < 0x80)
+        );
+    }
+
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn the_next_alarm_never_panics() {
+        let (settings, phone) = (any_settings(), any_two_phone_alarms());
+        let mut state = State::default();
+        if kani::any() {
+            state.start_timer(kani::any::<bool>() as usize, &settings, any_uptime());
+        }
+        if kani::any() {
+            state.snooze(any_uptime());
+        }
+        let _ = state.next(&settings, &phone, any_now(), any_uptime());
+    }
+
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn checking_what_is_due_never_panics() {
+        let (mut settings, mut phone) = (any_settings(), any_two_phone_alarms());
+        let mut state = State::default();
+        let _ = state.due(&mut settings, &mut phone, any_now(), kani::any());
+    }
+}

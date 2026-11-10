@@ -9,3 +9,7 @@ publish = false
 [workspace]
 
 [dependencies]
+
+[lints.rust]
+# `cargo kani` sets `cfg(kani)` for the proofs at the end of src/main.rs.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
