@@ -14,3 +14,7 @@ publish = false
 # that a sum that would wrap round fails a test here.
 [profile.release]
 overflow-checks = true
+
+# `cargo kani` builds with `--cfg kani`, for the proofs in `src/main.rs`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

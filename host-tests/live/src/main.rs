@@ -215,3 +215,175 @@ mod tests {
         assert_eq!(live.poll(145, true, 0, None), report(0, 0));
     }
 }
+
+/// Kani proofs (`cargo kani` here, one at a time with `--harness`): what
+/// the tests above check for chosen requests and sessions, for every
+/// one. Nothing panics or overflows; a request's interval is always one
+/// we follow; the request handed to the UI loop arrives as it was; and a
+/// session reports every step once, and only a heart rate that's its own
+/// and fresh.
+///
+/// Time is seconds since boot, up to ten years: a session adds its
+/// interval to it unchecked, which would overflow in the last ten minutes
+/// of a `u32` of seconds (136 years).
+#[cfg(kani)]
+mod proofs {
+    use super::live::*;
+
+    /// Seconds since boot: up to ten years.
+    const UPTIME: u32 = 10 * 365 * 86_400;
+
+    fn any_time(after: u32) -> u32 {
+        let now: u32 = kani::any();
+        kani::assume(after <= now && now < UPTIME);
+        now
+    }
+
+    /// Any request Gadgetbridge can make: any `int` at all, or none.
+    fn any_request() -> Request {
+        Request::new(kani::any(), kani::any(), kani::any())
+    }
+
+    /// For every `int` Gadgetbridge could send, or none: the interval is
+    /// one we follow (1 s to `MAX_INTERVAL`), its own if that's one, the
+    /// longest if it's longer, and the default if it's missing or under
+    /// a second.
+    #[kani::proof]
+    fn a_request_has_an_interval_we_follow() {
+        let (heart_rate, steps, int): (bool, bool, Option<i64>) = kani::any();
+        let request = Request::new(heart_rate, steps, int);
+        assert_eq!((request.heart_rate, request.steps), (heart_rate, steps));
+        assert!((1..=MAX_INTERVAL).contains(&request.interval));
+        match int {
+            Some(int) if int >= 1 => {
+                assert_eq!(i64::from(request.interval), int.min(MAX_INTERVAL.into()))
+            }
+            _ => assert_eq!(request.interval, DEFAULT_INTERVAL),
+        }
+        assert_eq!(request.wanted(), heart_rate || steps);
+    }
+
+    /// For every request, with any interval a `u16` holds: what `ask` is
+    /// given, `take` gives back, once; and of two asked, only the latest.
+    #[kani::proof]
+    fn what_is_asked_is_what_is_taken() {
+        let any = || Request {
+            heart_rate: kani::any(),
+            steps: kani::any(),
+            interval: kani::any(),
+        };
+        assert_eq!(take(), None);
+        let (first, latest) = (any(), any());
+        ask(first);
+        assert_eq!(take(), Some(first));
+        assert_eq!(take(), None);
+        ask(first);
+        ask(latest);
+        assert_eq!(take(), Some(latest));
+        assert_eq!(take(), None);
+    }
+
+    /// For every session, started at any time and step count, perhaps
+    /// restarted later with another interval, through two reports:
+    ///
+    /// - Nothing is due before a whole interval has passed since the
+    ///   (re)start or the last report, and a report is, from then.
+    /// - The steps of the two reports add up to the steps counted since
+    ///   the session first started, the count wrapping or not: none
+    ///   lost to the restart, none counted twice. (Over 65535 in one
+    ///   report would be cut down to that; here there aren't.)
+    /// - The sensor is on exactly when the latest request wants it.
+    #[kani::proof]
+    fn a_session_reports_every_step_once() {
+        let mut live = Live::new();
+        assert_eq!(
+            live.poll(kani::any(), kani::any(), kani::any(), None),
+            Poll::Idle
+        );
+        assert!(!live.heart_rate());
+
+        let (mut request, mut now) = (any_request(), any_time(0));
+        kani::assume(request.wanted());
+        let start: u32 = kani::any();
+        assert_eq!(live.ask(request, now, start), None);
+        if kani::any() {
+            (request, now) = (any_request(), any_time(now));
+            kani::assume(request.wanted());
+            assert_eq!(live.ask(request, now, kani::any()), None);
+        }
+        assert_eq!(live.heart_rate(), request.heart_rate);
+
+        let (mut counted, mut reported) = (start, 0u32);
+        for _ in 0..2 {
+            // Too soon: nothing, and nothing changes.
+            let soon = any_time(now);
+            kani::assume(soon - now < u32::from(request.interval));
+            assert_eq!(live.poll(soon, true, kani::any(), None), Poll::Idle);
+
+            let (due, steps) = (any_time(now), kani::any::<u32>());
+            kani::assume(due - now >= u32::from(request.interval));
+            kani::assume(steps.wrapping_sub(counted) <= u32::from(u16::MAX));
+            let Poll::Report(report) = live.poll(due, true, steps, None) else {
+                unreachable!("a report is due");
+            };
+            assert_eq!(report.heart_rate, 0);
+            reported += u32::from(report.steps);
+            (now, counted) = (due, steps);
+        }
+        assert_eq!(reported, counted.wrapping_sub(start));
+    }
+
+    /// For every session and every heart rate reading, at a report: the
+    /// reading is reported only if it's from this session (not from
+    /// before it started, or restarted) and fresh: no older than `FRESH`,
+    /// or than the interval if that's longer. Otherwise the report says
+    /// none (0), as it does with no reading.
+    #[kani::proof]
+    fn a_report_has_only_a_fresh_reading_of_its_session() {
+        let mut live = Live::new();
+        let (request, started) = (any_request(), any_time(0));
+        kani::assume(request.wanted());
+        assert_eq!(live.ask(request, started, kani::any()), None);
+
+        let now = any_time(started);
+        kani::assume(now - started >= u32::from(request.interval));
+        let (bpm, at): (u8, u32) = kani::any();
+        kani::assume(at <= now);
+        let Poll::Report(report) = live.poll(now, true, kani::any(), Some((bpm, at))) else {
+            unreachable!("a report is due");
+        };
+        let old = now - at > FRESH && now - at > u32::from(request.interval);
+        if at < started || old {
+            assert_eq!(report.heart_rate, 0);
+        } else {
+            assert_eq!(report.heart_rate, bpm);
+        }
+    }
+
+    /// For every session, at any later time: the phone going away ends
+    /// it, and Gadgetbridge asking for nothing does, each saying so once;
+    /// after either, nothing more is reported, the sensor is off, and
+    /// asking for nothing again says nothing.
+    #[kani::proof]
+    fn a_session_ends_once() {
+        let mut live = Live::new();
+        let stop = Request::new(false, false, kani::any());
+        assert_eq!(live.ask(stop, kani::any(), kani::any()), None);
+
+        let (request, started) = (any_request(), any_time(0));
+        kani::assume(request.wanted());
+        assert_eq!(live.ask(request, started, kani::any()), None);
+        let now = any_time(started);
+        if kani::any() {
+            let poll = live.poll(now, false, kani::any(), kani::any());
+            assert_eq!(poll, Poll::Ended(Ended::Disconnected));
+        } else {
+            assert_eq!(live.ask(stop, now, kani::any()), Some(Ended::Asked));
+        }
+        assert!(!live.heart_rate());
+        let later = any_time(now);
+        let poll = live.poll(later, kani::any(), kani::any(), kani::any());
+        assert_eq!(poll, Poll::Idle);
+        assert_eq!(live.ask(stop, later, kani::any()), None);
+    }
+}
