@@ -302,6 +302,23 @@ hours that never read, about half on each arm, that's ~1.8 mAh a day
 where it was ~0.8 (or ~1.8 at worst). A 13 s glance every 7.5 minutes
 adds ~0.08 mAh an hour either way.
 
+### A wrist that's never calm
+
+Up to 0.10.0-rc.4, a due background session also waited for three calm
+polls in a row, however long that took; since, it waits two minutes at
+most, and not at all once a reading is overdue (`heart_schedule::CALM_WAIT`,
+`Schedule::start`). The tries are the schedule's as before; what changes
+is that a wrist that's never calm for long gets them too. At worst, a
+whole waking day of it (walking, or busy hands at a desk) that never
+reads, which used to start nothing, makes the overdue tries above, six
+an hour: ~0.14 mAh an hour dim, ~0.34 bright, **~2.2–5.4 mAh over 16
+hours** (1–3% of the battery). Against how long calm actually took in the
+sealed watch's logs (2026-11-09/10: a mean of 123 s at a desk, 422 s
+walking), an overdue hour that waited made ~4.8 tries at a desk and ~3.4
+walking, so the change adds ~0.9 and ~2.3 tries an hour: ~0.35–0.8 mAh
+over 16 desk hours, ~0.9–2.1 walking (dim to bright). The hourly caps
+(`LED_BUDGET`, `OVERDUE_BUDGET`) are unchanged and still bound it all.
+
 ### What a connection event and an advertising event cost
 
 Nordic's figures for the nRF52832: radio TX at 0 dBm is 5.3 mA and RX is
@@ -564,8 +581,9 @@ before 3–4, since they're bigger wins than their effort.
   fixed 10 minutes with `heart_schedule`: 2–20 min by movement and
   readings, every 5 min asleep for sleep staging, failures backing off
   to 1 h, a 180 s/h LED budget, and later a calm start and an early
-  give-up at a desk (dropped after 0.10.0-rc.3, to try through movement,
-  with the budget raised to 300 s/h). Every LED millisecond since has
+  give-up at a desk (the give-up dropped after 0.10.0-rc.3, to try through
+  movement, with the budget raised to 300 s/h; the wait for a calm start
+  capped at two minutes after rc.4). Every LED millisecond since has
   been at 12.5 mA, but for 0.10's brighter-LED experiment.
 
 ### Step 4: the floor (`#5`, `#6`)
