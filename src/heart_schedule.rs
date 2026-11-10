@@ -477,6 +477,21 @@ impl Schedule {
     ///
     /// Due isn't "start now": `heart` also waits for a still wrist.
     pub fn due(&self, active_polls: u8, asleep: bool) -> (u32, Why) {
+        let (at, why) = self.due_unbudgeted(active_polls, asleep);
+
+        // The budget: when will the bucket hold a whole session's worth?
+        // That holds the first session after boot back too: the clock
+        // face looked at before it, without a reading, spends the budget
+        // all the same.
+        let affordable = self.holds(SESSION_RESERVE);
+        if affordable > at {
+            return (affordable, Why::Budget);
+        }
+        (at, why)
+    }
+
+    /// [`Self::due`], as if the budget were unlimited.
+    fn due_unbudgeted(&self, active_polls: u8, asleep: bool) -> (u32, Why) {
         if self.interval == 0 {
             return (0, Why::First);
         }
@@ -518,12 +533,6 @@ impl Schedule {
             if soonest < at {
                 (at, why) = (soonest, Why::Overdue);
             }
-        }
-
-        // The budget: when will the bucket hold a whole session's worth?
-        let affordable = self.holds(SESSION_RESERVE);
-        if affordable > at {
-            return (affordable, Why::Budget);
         }
         (at, why)
     }

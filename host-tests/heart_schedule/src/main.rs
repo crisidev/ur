@@ -815,6 +815,25 @@ mod tests {
     }
 
     #[test]
+    fn watching_before_the_first_session_holds_it_to_the_budget() {
+        let mut schedule = Schedule::new();
+        // The clock face looked at four times after boot, the watch on a
+        // desk: none counts as the first session, but each spends the
+        // budget.
+        for end in [40, 80, 120, 160] {
+            schedule.ended(end, 96, Outcome::OffWrist, false, awake(0));
+        }
+        assert_eq!(schedule.budget(160), 0);
+        let (at, why) = schedule.due(0, false);
+        assert_eq!(why, Why::Budget);
+        assert_eq!(at, 160 + SESSION_RESERVE * 3600 / LED_BUDGET);
+        // A single look leaves a session's worth: the first is at once.
+        let mut schedule = Schedule::new();
+        schedule.ended(40, 96, Outcome::OffWrist, false, awake(0));
+        assert_eq!(schedule.due(0, false), (0, Why::First));
+    }
+
+    #[test]
     fn watching_without_a_reading_is_neither_a_measurement_nor_a_failure() {
         let mut schedule = Schedule::new();
         schedule.ended(100, 13, Outcome::Reading(60), true, awake(0));
@@ -1111,18 +1130,16 @@ mod proofs {
     /// After any six sessions, whatever the wrist has done since: the
     /// first counted session is due at once, and every later one at
     /// least `MIN_INTERVAL` after the last (so sessions never run back to
-    /// back) and, unless the budget holds it back, at most
+    /// back); unless the budget holds it back, at most
     /// `MAX_FAILED_INTERVAL` after (so the schedule never stalls).
     ///
     /// The budget: at the time it's due, the bucket holds the
     /// `SESSION_RESERVE` a background session needs; and if it's the
     /// budget that holds it back, that's the first second it does, and
-    /// within the 6 minutes that earn a session's worth (and 6 s).
-    ///
-    /// TODO: but for the first session after a boot, which is due at once
-    /// even when watched sessions without a reading (which don't count as
-    /// the first) have emptied the bucket. The proof found it, and leaves
-    /// it out.
+    /// within the 6 minutes that earn a session's worth (and 6 s). That
+    /// goes for the first session after a boot too, which watched
+    /// sessions without a reading (which don't count as the first) may
+    /// have emptied the bucket for.
     #[kani::proof]
     #[kani::unwind(7)]
     fn a_session_is_due_within_the_hour_and_the_budget() {
@@ -1130,19 +1147,20 @@ mod proofs {
         let schedule = &history.schedule;
         let (at, why) = schedule.due(kani::any(), kani::any());
 
-        let Some((last, _)) = history.counted else {
-            assert_eq!((at, why), (0, Why::First));
-            return;
-        };
-        assert!(why != Why::First);
-        assert!(at >= last + MIN_INTERVAL);
         assert!(schedule.budget(at) >= SESSION_RESERVE);
         if why == Why::Budget {
             assert!(schedule.budget(at - 1) < SESSION_RESERVE);
             // (And the part-earned second lost as a reading becomes
             // overdue: under 6 s at the doubled rate.)
             assert!(at < history.now + SESSION_RESERVE * 3600 / LED_BUDGET + 6);
-        } else {
+        }
+        let Some((last, _)) = history.counted else {
+            assert!(why == Why::Budget || (at, why) == (0, Why::First));
+            return;
+        };
+        assert!(why != Why::First);
+        assert!(at >= last + MIN_INTERVAL);
+        if why != Why::Budget {
             assert!(at <= last + MAX_FAILED_INTERVAL);
         }
     }
