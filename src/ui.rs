@@ -2679,9 +2679,7 @@ fn render_route_glance(canvas: &mut Canvas, status: &Status, step: &route::Step)
             }
         }
         // Too long even for two lines (one very long word): its start.
-        _ => {
-            canvas.text(2, STREET_Y, &step.street, Color::TEXT_DIM);
-        }
+        _ => canvas.text_cut(2, STREET_Y, &step.street, Color::TEXT_DIM),
     }
 }
 

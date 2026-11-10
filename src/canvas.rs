@@ -144,12 +144,42 @@ impl Canvas {
         set_nibble(&mut self.back, y as usize * WIDTH + x as usize, color.0);
     }
 
+    /// Fills a rectangle.
+    ///
+    /// Unlike a single [`Canvas::pixel`], a rectangle is expected to lie on
+    /// the canvas, and to have a size: every screen lays its bars and
+    /// boxes out from constants, so one that hangs off an edge (or comes
+    /// out negative, and so draws nothing) is arithmetic gone wrong
+    /// upstream, which the clipping would otherwise hide.
     pub fn fill_rect(&mut self, x: i32, y: i32, w: i32, h: i32, color: Color) {
+        debug_assert!(w >= 0 && h >= 0, "a rectangle of a negative size");
+        debug_assert!(
+            w == 0 || h == 0 || self.on_canvas(x..x + w, y..y + h),
+            "a rectangle off the canvas"
+        );
+        self.rect(x, y, w, h, color);
+    }
+
+    /// A rectangle, wherever it is: what's of it on the canvas. For the
+    /// sprites' pixels, which may hang off an edge (see [`Canvas::pixel`]).
+    fn rect(&mut self, x: i32, y: i32, w: i32, h: i32, color: Color) {
         for yy in y..y + h {
             for xx in x..x + w {
                 self.pixel(xx, yy, color);
             }
         }
+    }
+
+    /// Whether a box drawn over `columns` and `rows` lies wholly on the
+    /// canvas, for the drawing functions' checks. While a clip is set
+    /// ([`Canvas::marquee`]), what's drawn is meant to be cut, so anything
+    /// goes.
+    fn on_canvas(&self, columns: Range<i32>, rows: Range<i32>) -> bool {
+        self.clip.is_some()
+            || (columns.start >= 0
+                && columns.end <= WIDTH as i32
+                && rows.start >= 0
+                && rows.end <= HEIGHT as i32)
     }
 
     /// Draws a 1-bit sprite: each row is a bitmask whose most significant of
@@ -160,7 +190,7 @@ impl Canvas {
                 if row & (1 << (width - 1 - dx)) != 0 {
                     let px = x + dx as i32 * scale;
                     let py = y + dy as i32 * scale;
-                    self.fill_rect(px, py, scale, scale, color);
+                    self.rect(px, py, scale, scale, color);
                 }
             }
         }
@@ -182,7 +212,7 @@ impl Canvas {
             let row = if mirror { row.reverse_bits() } else { row };
             for dx in 0..16 {
                 if row & (1 << (15 - dx)) != 0 {
-                    self.fill_rect(x + dx * scale, y + dy as i32 * scale, scale, scale, color);
+                    self.rect(x + dx * scale, y + dy as i32 * scale, scale, scale, color);
                 }
             }
         }
@@ -196,7 +226,31 @@ impl Canvas {
     /// Text in the small font at `scale`× (each font pixel a `scale`-sided
     /// square); returns the x just past its end. `y` is the top of the
     /// capitals; accents extend above it.
+    ///
+    /// The capitals must fit on the canvas (its last letter's spacing
+    /// column, and accents, may hang off it): screens measure their text
+    /// to place it, or cut it to fit with [`font::wrap`], so text running
+    /// off an edge is a string longer than its layout allowed for. What's
+    /// meant to be cut at the edge goes through [`Canvas::text_cut`], and
+    /// what scrolls, through [`Canvas::marquee`].
     pub fn text_scaled(&mut self, x: i32, y: i32, text: &str, color: Color, scale: i32) -> i32 {
+        let end = self.glyphs(x, y, text, color, scale);
+        debug_assert!(
+            text.is_empty() || self.on_canvas(x..end - scale, y..y + 5 * scale),
+            "text off the canvas"
+        );
+        end
+    }
+
+    /// Like [`Canvas::text`], for text that may be too long for the
+    /// canvas: it's cut at the right edge.
+    pub fn text_cut(&mut self, x: i32, y: i32, text: &str, color: Color) {
+        self.glyphs(x, y, text, color, 1);
+    }
+
+    /// Draws `text` as [`Canvas::text_scaled`] has it, wherever that puts
+    /// it.
+    fn glyphs(&mut self, x: i32, y: i32, text: &str, color: Color, scale: i32) -> i32 {
         let mut cursor = x;
         let top = y - font::ACCENT_ROWS * scale;
         for c in text.chars() {
@@ -218,6 +272,11 @@ impl Canvas {
             self.sprite(cursor, top, glyph.width, &glyph.rows, 1, color);
             cursor += glyph.width as i32 + 1;
         }
+        // As for the small font (see `text_scaled`).
+        debug_assert!(
+            text.is_empty() || self.on_canvas(x..cursor - 1, y..y + font::MEDIUM_HEIGHT),
+            "text off the canvas"
+        );
         cursor
     }
 
@@ -260,6 +319,11 @@ impl Canvas {
         } else {
             0
         };
+        // Within what it has to travel, so the text's start and end both
+        // come to rest in view.
+        debug_assert!((0..=overflow.max(0)).contains(&offset));
+        // One at a time: the clip isn't a stack.
+        debug_assert!(self.clip.is_none(), "a marquee within a marquee");
         let left = columns.start;
         self.clip = Some(columns);
         self.text_scaled(left - offset, y, text, color, scale);
@@ -308,6 +372,11 @@ impl Canvas {
             sent = true;
         }
         self.front_valid = true;
+        // Every row that differed was pushed, over at least the columns
+        // that did, and `push` records what it sends: the panel now shows
+        // the frame. If `changed_span` ever missed a pixel, it would stay
+        // stale on the panel until that pixel next changed.
+        debug_assert!(self.back == self.front, "a flush left the panel stale");
         self.overlay(display, sent, whole).await;
     }
 
@@ -429,6 +498,9 @@ impl Canvas {
             ticker.next().await;
         }
         defmt::debug!("transition took {}ms", started.elapsed().as_millis());
+        // Every lane's every block was revealed (pushed) by the last
+        // step, so the panel shows the whole frame, whatever it showed.
+        debug_assert!(self.back == self.front, "a transition left a block");
         self.front_valid = true;
         // Every block was sent.
         self.overlay(display, true, true).await;
@@ -513,6 +585,13 @@ async fn stream(
     columns: Range<usize>,
     mut color: impl FnMut(usize, usize) -> [[u8; 2]; 2],
 ) {
+    // On the canvas, and not empty: the panel's window is given by its
+    // last row and column, inclusive, so an empty rectangle would name a
+    // window wrapping below zero, and one off the canvas would write
+    // outside the panel (and index `front` out of range). A full-width
+    // row is the most `batch` holds at once.
+    debug_assert!(rows.start < rows.end && rows.end <= HEIGHT);
+    debug_assert!(columns.start < columns.end && columns.end <= WIDTH);
     start_pixels(display, rows.clone(), columns.clone()).await;
     let line_len = columns.len() * SCALE * 2;
     let row_len = line_len * SCALE;
@@ -573,6 +652,9 @@ fn nibble(buffer: &[u8; BYTES], i: usize) -> u8 {
 }
 
 fn set_nibble(buffer: &mut [u8; BYTES], i: usize, value: u8) {
+    // A colour role is 4 bits (`theme::Color::COUNT` is checked against
+    // that); more would spill into the pixel beside it.
+    debug_assert!(value < 16, "a colour role over 4 bits");
     let byte = &mut buffer[i / 2];
     *byte = if i.is_multiple_of(2) {
         (*byte & 0xF0) | value
