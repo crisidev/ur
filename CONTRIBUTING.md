@@ -25,14 +25,18 @@ needs nothing special; LFS stores it.
   Gadgetbridge fetches it), `live`, `link`, `buttons`, `qr`, `font`,
   `mcuboot`, `backoff` (retrying sensor setup),
   `on_time` (`power`'s hourly split),
-  `minute_ring` (`activity`'s history as the clock moves), and `bthome`'s
+  `minute_ring` (`activity`'s history as the clock moves), `dfu_slot`
+  (where `dfu` erases and writes an update), `rtt_ring` (which bytes
+  `field_log` reads of the log's buffer), and `bthome`'s
   encoding) are pure logic, tested on the computer, as are
   `theme`'s colours (that those with different meanings differ in every
   theme).
 - `host-tests/<module>/`: one crate per hardware-free module (`sleep`'s
-  covers `stages` too, `gb`'s `phone`, `gb_buckets`'s `sleep_hold`, and
-  `aranet`'s `bthome_sensor`), which includes the firmware's
-  source file with `#[path]` and tests it on the host. Some also replay
+  covers `stages` too, `gb`'s `phone`, `gb_buckets`'s `sleep_hold`,
+  `aranet`'s `bthome_sensor`, and `dfu`'s is of `dfu_slot`), which
+  includes the firmware's source file with `#[path]` and tests it on the
+  host; `packet_pool`'s does the same for the Bluetooth host's packet
+  buffers, which aren't pure logic but build there. Some also replay
   real data (see [Field logs](#field-logs)).
 - `sim/`: a simulator that runs the UI on the computer; see
   [The simulator](#the-simulator).
@@ -295,7 +299,8 @@ stack, or a grid hold without its release, is shrunk to a repro. See
 Some host test crates (`host-tests/alarm`, `buttons`, `gesture`, `day`,
 `decimal`, `battery`, `heart_schedule`, `temperature`, `brightness`,
 `wake`, `on_time`, `minute_ring`, `link`, `theme`, `live`, `nav`, `route`,
-`glance`) have [Kani] proofs at the end of their `src/main.rs`: what the tests check for some
+`glance`, `dfu`, `rtt_ring`, `mcuboot`, `snapshot`, `bthome`, `aranet`,
+`gb_buckets`) have [Kani] proofs at the end of their `src/main.rs`: what the tests check for some
 inputs, for every input, within bounds. `cargo kani` in the crate runs
 them; `--harness NAME` one (and one at a time). They need tight
 `kani::unwind` and `kani::assume` bounds: CBMC's memory grows fast with
