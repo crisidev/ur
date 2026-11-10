@@ -127,6 +127,35 @@ mod temperature;
 #[path = "../../src/themes/mod.rs"]
 mod themes;
 
+/// What every built-in theme must have, whatever it draws: a scheme at
+/// least, and schemes with names and IDs (see `palette::id`) of their own
+/// across every theme, as Settings' THEME row and flash know them. With
+/// `--features themes-all` (as CI runs it), every theme in the repository.
+#[cfg(test)]
+mod every_theme {
+    use crate::themes::{THEMES, Theme as _};
+
+    #[test]
+    fn has_schemes_with_names_and_ids_of_their_own() {
+        let mut names = Vec::new();
+        for theme in THEMES {
+            assert!(
+                !theme.night.is_empty() || !theme.day.is_empty(),
+                "{} has no schemes",
+                theme.name
+            );
+            for scheme in theme.night.iter().chain(theme.day) {
+                names.push((scheme.palette().name, scheme.palette().id));
+            }
+        }
+        for (i, &(name, id)) in names.iter().enumerate() {
+            for &(other, other_id) in &names[i + 1..] {
+                assert_ne!(name, other, "two schemes called {name}");
+                assert_ne!(id, other_id, "{name} and {other} have one ID");
+            }
+        }
+    }
+}
 #[path = "../../src/ui.rs"]
 #[allow(dead_code)]
 mod ui;

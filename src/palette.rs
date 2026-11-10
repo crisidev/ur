@@ -77,6 +77,9 @@ pub struct Palette {
     /// The roles shown half-toned, a bit each (bit `n` for `Color(n)`):
     /// see [`Palette::columns`].
     halftone: u16,
+    /// The name's [`id`], worked out as the palette's built, for saving
+    /// which scheme is chosen.
+    pub id: u32,
 }
 
 impl Palette {
@@ -128,6 +131,7 @@ pub const fn palette(name: &'static str, hex: [u32; Color::COUNT]) -> Palette {
         name,
         colors,
         halftone: 0,
+        id: id(name),
     }
 }
 
@@ -155,4 +159,23 @@ impl Palette {
         };
         lightness(Color::BACKGROUND) < lightness(Color::TEXT)
     }
+}
+
+/// A scheme's stable ID, for saving which is chosen (see
+/// `ui_loop::Stored`): its palette's name's 32-bit FNV-1a hash, worked
+/// out at compile time (see [`Palette::id`]). Not an index, as
+/// which schemes there are, and in what order, varies from build to build
+/// (see `crate::themes`); so renaming a scheme forgets it was chosen,
+/// and the watch shows the first instead. `host-tests/theme` checks
+/// retro's don't collide.
+pub const fn id(name: &str) -> u32 {
+    let bytes = name.as_bytes();
+    let mut hash: u32 = 0x811c_9dc5;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u32;
+        hash = hash.wrapping_mul(0x0100_0193);
+        i += 1;
+    }
+    hash
 }

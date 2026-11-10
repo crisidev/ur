@@ -700,3 +700,41 @@ pub fn get(day: bool, index: usize) -> &'static Scheme {
     let schemes = schemes(day);
     &schemes[index % schemes.len()]
 }
+
+// ==============================================================================
+// Saving the choice
+// ==============================================================================
+//
+// Settings save the chosen scheme for each side by its ID (see
+// `palette::id`), not by its place in `schemes`: which schemes there are,
+// and in what order, varies from build to build, and an index saved by
+// one would pick another scheme in the next.
+
+/// The ID of the `index`th scheme for daylight (`day`) or darkness, to
+/// save.
+pub fn id(day: bool, index: usize) -> u32 {
+    get(day, index).palette().id
+}
+
+/// Where the scheme saved as `id` is among those for daylight (`day`) or
+/// darkness, if it's built in; otherwise the first, as on a watch that
+/// had saved nothing.
+pub fn find(day: bool, id: u32) -> usize {
+    schemes(day)
+        .iter()
+        .position(|scheme| scheme.palette().id == id)
+        .unwrap_or(0)
+}
+
+/// The ID of what 0.10 and earlier saved: an index into retro's schemes
+/// for that side of the day, as they were then (wrapping round, as they
+/// did then), so an upgraded watch keeps its schemes. Only names: the
+/// schemes needn't be built in (a build without retro shows its first).
+pub fn migrate(day: bool, index: u8) -> u32 {
+    use crate::palette::id;
+    const OLD: [[u32; 2]; 2] = [
+        [id("ARCADE"), id("TERMINAL")],
+        [id("HANDHELD"), id("PARCHMENT")],
+    ];
+    OLD[usize::from(day)][usize::from(index & 1)]
+}

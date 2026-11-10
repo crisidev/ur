@@ -269,6 +269,18 @@ mod tests {
         assert_eq!(names.len(), count, "two schemes share a name: {names:?}");
     }
 
+    /// Nor do two share an ID (`palette::id`, a hash of the name), which
+    /// is what the watch saves the chosen one as: two that did would each
+    /// load as the first of them.
+    #[test]
+    fn schemes_have_ids_of_their_own() {
+        let mut ids: Vec<_> = schemes().map(|s| s.palette.id).collect();
+        ids.sort();
+        let count = ids.len();
+        ids.dedup();
+        assert_eq!(ids.len(), count, "two schemes' names hash to one ID");
+    }
+
     /// The measure itself: the colours Last night first drew deep and REM in
     /// (accent and heart) are one red in Arcade, and the tests would say so.
     #[test]

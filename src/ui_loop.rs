@@ -44,7 +44,7 @@ use crate::touch::Touch;
 use crate::ui::{App, Status, ThemeChoice};
 use crate::{
     activity, alarm, aranet, ble, brightness, buttons, clock, debug, dfu, gb, geo, glance, live,
-    power, sleep, storage, temperature, touch, ui,
+    power, sleep, storage, temperature, themes, touch, ui,
 };
 
 // ==============================================================================
@@ -207,9 +207,27 @@ impl Stored {
     /// future keeps (the futures are static RAM).
     pub async fn load() -> Self {
         let load_u8 = async |key| storage::load::<1>(key).await.map_or(0, |[value]| value);
+        // Each side's scheme by its ID; or, from before IDs, retro's index
+        // (see `themes::migrate`), until the wearer next picks one. With
+        // neither, that's retro's first scheme for the side (index 0, as
+        // 0.10 took nothing saved to be), or this build's first if it
+        // hasn't retro. In a loop, rather than an `async` closure called
+        // for each side, which would put a copy of its awaits in this
+        // future for each.
+        let mut chosen = [0; 2];
+        for (day, key, old) in [
+            (false, storage::key::THEME_NIGHT, storage::key::THEME_DARK),
+            (true, storage::key::THEME_DAY, storage::key::THEME_LIGHT),
+        ] {
+            let id = match storage::load::<4>(key).await {
+                Some(id) => u32::from_le_bytes(id),
+                None => themes::migrate(day, load_u8(old).await),
+            };
+            chosen[usize::from(day)] = themes::find(day, id) as u8;
+        }
         let themes = ThemeChoice {
-            light: load_u8(storage::key::THEME_LIGHT).await,
-            dark: load_u8(storage::key::THEME_DARK).await,
+            night: chosen[0],
+            day: chosen[1],
         };
         let alarms = storage::load(storage::key::ALARMS)
             .await
@@ -247,11 +265,25 @@ impl Stored {
 
 /// Saves the settings that changed since `before`.
 pub async fn save_changes(before: Settings, app: &mut App) {
-    if app.themes.light != before.themes.light {
-        storage::save(storage::key::THEME_LIGHT, &[app.themes.light]).await;
-    }
-    if app.themes.dark != before.themes.dark {
-        storage::save(storage::key::THEME_DARK, &[app.themes.dark]).await;
+    // In a loop, as in `Stored::load`.
+    for (day, key, now, then) in [
+        (
+            false,
+            storage::key::THEME_NIGHT,
+            app.themes.night,
+            before.themes.night,
+        ),
+        (
+            true,
+            storage::key::THEME_DAY,
+            app.themes.day,
+            before.themes.day,
+        ),
+    ] {
+        if now != then {
+            let id = themes::id(day, now.into());
+            storage::save(key, &id.to_le_bytes()).await;
+        }
     }
     if app.brightness != before.brightness {
         info!("brightness: {=str}", app.brightness.name());

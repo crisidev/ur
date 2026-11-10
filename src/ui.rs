@@ -585,8 +585,8 @@ const SENT_TIME: Duration = Duration::from_millis(800);
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ThemeChoice {
     /// Indices into `themes::schemes`, for daylight and for darkness.
-    pub light: u8,
-    pub dark: u8,
+    pub day: u8,
+    pub night: u8,
 }
 
 impl App {
@@ -854,9 +854,9 @@ impl App {
     /// [`crate::themes`]), which draws every screen, dim or not.
     pub fn theme(&self) -> &'static themes::Scheme {
         let choice = if self.daytime {
-            self.themes.light
+            self.themes.day
         } else {
-            self.themes.dark
+            self.themes.night
         };
         themes::get(self.daytime, usize::from(choice))
     }
@@ -865,9 +865,9 @@ impl App {
     fn next_theme(&mut self) {
         let count = themes::count(self.daytime);
         let choice = if self.daytime {
-            &mut self.themes.light
+            &mut self.themes.day
         } else {
-            &mut self.themes.dark
+            &mut self.themes.night
         };
         *choice = ((usize::from(*choice) + 1) % count) as u8;
     }

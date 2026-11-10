@@ -624,8 +624,8 @@ pub fn boot(at: Instant, app: &crate::ui::App) {
     with(|export| {
         export.head.boot = Boot {
             at: at.as_ticks(),
-            theme_light: app.themes.light,
-            theme_dark: app.themes.dark,
+            theme_light: app.themes.day,
+            theme_dark: app.themes.night,
             brightness: app.brightness.to_byte(),
             buttons: app.buttons.to_byte(),
             grid: app.grid_layout.to_byte(),

@@ -1805,8 +1805,8 @@ fn side_by_side(path: &Path, sim: &[u16], devkit: &[u16]) -> Result<(), String> 
 /// The UI the dev kit's boot made, from the settings it exported.
 fn boot_app(boot: &compare::Boot) -> App {
     let themes = ThemeChoice {
-        light: boot.theme_light,
-        dark: boot.theme_dark,
+        day: boot.theme_light,
+        night: boot.theme_dark,
     };
     let mut app = App::new(
         Instant::from_ticks(boot.at),
@@ -1843,8 +1843,8 @@ pub(crate) struct Persisted {
 impl Persisted {
     pub(crate) fn of(app: &App) -> Self {
         Self {
-            light_theme: app.themes.light,
-            dark_theme: app.themes.dark,
+            light_theme: app.themes.day,
+            dark_theme: app.themes.night,
             brightness: app.brightness.to_byte(),
             buttons: app.buttons.to_byte(),
             grid: app.grid_layout.to_byte(),

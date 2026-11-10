@@ -581,10 +581,10 @@ impl Watch {
         // one side, the other side shows them too (see `themes::schemes`).
         if let Some(i) = find(true).filter(|_| themes::has(true)) {
             self.daytime = Some(true);
-            self.change_settings(|app| app.themes.light = i as u8);
+            self.change_settings(|app| app.themes.day = i as u8);
         } else if let Some(i) = find(false) {
             self.daytime = Some(false);
-            self.change_settings(|app| app.themes.dark = i as u8);
+            self.change_settings(|app| app.themes.night = i as u8);
         }
         Ok(())
     }

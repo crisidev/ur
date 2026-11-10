@@ -30,7 +30,7 @@ fn dir(name: &str) -> PathBuf {
     dir
 }
 
-/// What `settings` printed last (from its first line, the light theme, to
+/// What `settings` printed last (from its first line, the day theme, to
 /// the last bond), less the times.
 fn settings(log: &str) -> Vec<&str> {
     let lines: Vec<_> = log
@@ -39,7 +39,7 @@ fn settings(log: &str) -> Vec<&str> {
         .collect();
     let first = lines
         .iter()
-        .rposition(|line| line.starts_with("light theme: "))
+        .rposition(|line| line.starts_with("day theme: "))
         .expect("`settings` ran");
     let last = first
         + lines[first..]
@@ -69,7 +69,7 @@ fn settings_survive_between_runs() {
         saved.iter().any(|s| s.starts_with("alarms: 06:45 on")),
         "{log}"
     );
-    for what in ["light theme", "dark theme", "brightness"] {
+    for what in ["day theme", "night theme", "brightness"] {
         let stored = saved
             .iter()
             .any(|s| s.starts_with(what) && !s.ends_with("not stored"));
@@ -91,6 +91,158 @@ fn settings_survive_between_runs() {
     let (ok, log) = run(&dir, "third.txt", "settings\n", &[]);
     assert!(ok, "{log}");
     assert!(log.contains("alarms: not stored"), "{log}");
+}
+
+/// A watch upgraded from 0.10, which saved each side's theme as an index
+/// into retro's schemes (under keys 17 and 18), boots with the same
+/// schemes: TERMINAL at night and PARCHMENT by day, the second of each.
+/// Once the wearer picks another, it's saved by its ID, which boot then
+/// goes by.
+#[test]
+fn themes_saved_as_indices_carry_over() {
+    let dir = dir("flash-theme-migration");
+    let flash = dir.join("flash.bin");
+    let flash = flash.to_str().expect("UTF-8");
+    let (ok, log) = run(
+        &dir,
+        "old.txt",
+        "store 17 01\nstore 18 01\n",
+        &["--flash", flash],
+    );
+    assert!(ok, "{log}");
+
+    // At night (the sun's unknown), THEME steps on from TERMINAL to
+    // ARCADE; from ARCADE, as boot would pick with nothing saved, it
+    // would be TERMINAL.
+    let settings_tap = "left\nleft\nwait 1s\ntap 40,20\nwait 1s\n";
+    let (ok, log) = run(&dir, "night.txt", settings_tap, &["--flash", flash]);
+    assert!(ok, "{log}");
+    assert!(log.contains("theme: ARCADE"), "{log}");
+    // By day in Oslo, from PARCHMENT to HANDHELD.
+    let day =
+        format!("time 2026-06-21 12:00 +02:00\nlocation 59.91 10.75\nwait 2s\n{settings_tap}");
+    let (ok, log) = run(&dir, "day.txt", &day, &["--flash", flash]);
+    assert!(ok, "{log}");
+    assert!(log.contains("theme: HANDHELD"), "{log}");
+
+    // Both now saved by ID, which boot goes by, over the old index.
+    let (ok, log) = run(&dir, "after.txt", "settings\n", &["--flash", flash]);
+    assert!(ok, "{log}");
+    let saved = settings(&log);
+    assert!(
+        saved.iter().any(|s| s.starts_with("night theme: ARCADE (")),
+        "{log}"
+    );
+    assert!(
+        saved.iter().any(|s| s.starts_with("day theme: HANDHELD (")),
+        "{log}"
+    );
+}
+
+/// `palette::id`: a scheme's name's 32-bit FNV-1a hash.
+fn id(name: &str) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in name.bytes() {
+        hash = (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
+/// A scheme's ID as it's stored (little-endian), as `store` takes it.
+fn id_hex(name: &str) -> String {
+    id(name)
+        .to_le_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// A watch that saved a scheme this build hasn't, as when a build with
+/// another theme (here "TOKYO NIGHT" and "TOKYO DAY", a theme of the
+/// future) is followed by one without it. Its IDs are written straight
+/// into storage, as that build would have saved them: boot can't tell
+/// them from any other scheme's not built in. Each side shows its first
+/// scheme then (ARCADE, HANDHELD); the IDs stay in flash, for that theme
+/// to find again if it comes back, until the wearer picks one for the
+/// side, which then saves its own; and nothing gets stuck on the way.
+#[test]
+fn a_saved_scheme_not_built_in_shows_the_first_until_another_is_picked() {
+    let dir = dir("flash-unknown-scheme");
+    let flash = dir.join("flash.bin");
+    let flash = flash.to_str().expect("UTF-8");
+    let (night, day) = (id_hex("TOKYO NIGHT"), id_hex("TOKYO DAY"));
+    let (ok, log) = run(
+        &dir,
+        "other.txt",
+        &format!("store 43 {night}\nstore 42 {day}\n"),
+        &["--flash", flash],
+    );
+    assert!(ok, "{log}");
+
+    // Boots, falls back on both sides, and saves nothing over the IDs.
+    let (ok, log) = run(&dir, "boot.txt", "wait 1m\nsettings\n", &["--flash", flash]);
+    assert!(ok, "{log}");
+    let saved = settings(&log);
+    assert!(
+        saved
+            .iter()
+            .any(|s| s.starts_with("night theme: ARCADE (") && s.ends_with(", not built in)")),
+        "{log}"
+    );
+    assert!(
+        saved
+            .iter()
+            .any(|s| s.starts_with("day theme: HANDHELD (") && s.ends_with(", not built in)")),
+        "{log}"
+    );
+
+    // At night, THEME steps on from ARCADE, the first; and that, and only
+    // that side, is saved by its own ID.
+    let tap_theme = "left\nleft\nwait 1s\ntap 40,20\nwait 1s\nexpect screen-on\n";
+    let (ok, log) = run(
+        &dir,
+        "night.txt",
+        &format!("{tap_theme}settings\n"),
+        &["--flash", flash],
+    );
+    assert!(ok, "{log}");
+    assert!(log.contains("theme: TERMINAL"), "{log}");
+    let saved = settings(&log);
+    // As `settings` shows an ID: so this file's hash is the firmware's.
+    let terminal = format!("night theme: TERMINAL ({:#010x})", id("TERMINAL"));
+    assert!(saved.contains(&terminal.as_str()), "{log}");
+    assert!(
+        saved
+            .iter()
+            .any(|s| s.ends_with(", not built in)") && s.starts_with("day theme: HANDHELD")),
+        "{log}"
+    );
+
+    // By day in Oslo, the same, from HANDHELD.
+    let day_tap = format!(
+        "time 2026-06-21 12:00 +02:00\nlocation 59.91 10.75\nwait 2s\n{tap_theme}settings\n"
+    );
+    let (ok, log) = run(&dir, "day.txt", &day_tap, &["--flash", flash]);
+    assert!(ok, "{log}");
+    assert!(log.contains("theme: PARCHMENT"), "{log}");
+    let saved = settings(&log);
+    assert!(
+        saved
+            .iter()
+            .any(|s| s.starts_with("day theme: PARCHMENT (") && !s.contains("not built in")),
+        "{log}"
+    );
+    assert!(
+        saved
+            .iter()
+            .any(|s| s.starts_with("night theme: TERMINAL (")),
+        "{log}"
+    );
+
+    // And the storage still reads whole, at the next boot.
+    let (ok, log) = run(&dir, "after.txt", "settings\n", &["--flash", flash]);
+    assert!(ok, "{log}");
+    assert_eq!(settings(&log), saved);
 }
 
 #[test]

@@ -44,8 +44,9 @@ pub mod key {
     /// Bluetooth bonds, one per slot.
     pub const BONDS: [u8; 2] = [1, 2];
     // 16: retired (a single theme index, before themes followed the sun).
-    /// The chosen scheme within those for daylight and for darkness (see
-    /// [`crate::themes`]), as an index.
+    /// Retired, but read to migrate from: the chosen scheme for daylight
+    /// and for darkness as an index into retro's, as 0.10 and earlier
+    /// saved it (see `themes::migrate`).
     pub const THEME_LIGHT: u8 = 17;
     pub const THEME_DARK: u8 = 18;
     // 19: retired (sunrise/sunset from weather, before we computed them).
@@ -71,6 +72,12 @@ pub mod key {
     pub const CALIBRATION: u8 = 40;
     /// The button grid's layout; see [`crate::buttons::Layout`].
     pub const GRID: u8 = 41;
+    /// The chosen colour scheme for daylight and for darkness, by its ID
+    /// ([`crate::palette::id`], little-endian), not an index, as which
+    /// schemes there are varies from build to build (see
+    /// [`crate::themes`]).
+    pub const THEME_DAY: u8 = 42;
+    pub const THEME_NIGHT: u8 = 43;
     /// Written only by builds with the `flash-stress` feature (see
     /// `flash_stress.rs`); a dev kit that ran one may hold it.
     #[allow(dead_code)] // Used only by those builds.

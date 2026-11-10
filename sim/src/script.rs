@@ -107,6 +107,10 @@ Output:
                              face and the Today screen alike
   settings                   what the flash holds (see --flash), as the
                              firmware decodes it
+  store KEY HEX              save HEX under storage key KEY (see the
+                             firmware's storage.rs), as an older firmware
+                             might have; the next boot (a run with the
+                             same --flash, or switching on again) reads it
   echo TEXT | verbose on|off | help | quit
 ";
 
@@ -581,6 +585,22 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
         "settings" => {
             for line in crate::settings::describe() {
                 watch.log(line);
+            }
+        }
+        "store" => {
+            let key = need(0, "KEY HEX")?;
+            let key: u8 = key.parse().map_err(|_| format!("store: key {key}?"))?;
+            let hex = need(1, "KEY HEX")?;
+            let bytes = (0..hex.len())
+                .step_by(2)
+                .map(|i| {
+                    hex.get(i..i + 2)
+                        .and_then(|b| u8::from_str_radix(b, 16).ok())
+                })
+                .collect::<Option<Vec<u8>>>()
+                .ok_or_else(|| format!("store: {hex} isn't hex"))?;
+            if !crate::watch::run(crate::storage::save(key, &bytes), &mut None) {
+                return Err(format!("store: couldn't save key {key}"));
             }
         }
         "echo" => watch.log(args.join(" ")),

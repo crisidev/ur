@@ -1182,14 +1182,28 @@ fn random_storage(original: &[u8], rng: &mut Rng, scratch: &Path) -> Result<Vec<
         }
     };
     for (key, valid) in [
-        (key::THEME_LIGHT, themes::count(true) as u64),
-        (key::THEME_DARK, themes::count(false) as u64),
+        // As 0.10 and earlier saved the themes, which boot migrates from.
+        (key::THEME_LIGHT, 2),
+        (key::THEME_DARK, 2),
         (key::BRIGHTNESS, 2),
         (key::BUTTONS, 4),
         (key::GRID, 4),
     ] {
         if rng.chance(0.6) {
             saves.push((key, vec![byte(rng, valid)]));
+        }
+    }
+    // The themes' IDs: mostly a built-in scheme's, now and then one that
+    // isn't (another build's), which boot takes for its first.
+    for (key, day) in [(key::THEME_DAY, true), (key::THEME_NIGHT, false)] {
+        if rng.chance(0.6) {
+            let id = if rng.chance(0.9) {
+                let index = rng.below(themes::count(day) as u64) as usize;
+                themes::id(day, index)
+            } else {
+                rng.next() as u32
+            };
+            saves.push((key, id.to_le_bytes().to_vec()));
         }
     }
     if rng.chance(0.6) {

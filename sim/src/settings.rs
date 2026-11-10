@@ -20,16 +20,28 @@ async fn read() -> Vec<String> {
     let none = || "not stored".to_owned();
 
     let themes = [
-        ("light theme", key::THEME_LIGHT, true),
-        ("dark theme", key::THEME_DARK, false),
+        ("day theme", key::THEME_DAY, key::THEME_LIGHT, true),
+        ("night theme", key::THEME_NIGHT, key::THEME_DARK, false),
     ];
-    for (what, key, day) in themes {
-        let value = storage::load::<1>(key).await.map_or_else(none, |[i]| {
-            // As `App::new` picks one: out-of-range indices wrap around.
-            let theme = themes::get(day, usize::from(i));
-            format!("{} ({i})", theme.palette().name)
+    for (what, key, old, day) in themes {
+        // By its ID, as boot finds it among this build's schemes (the
+        // first, for one not built in).
+        let value = storage::load::<4>(key).await.map_or_else(none, |id| {
+            let id = u32::from_le_bytes(id);
+            let theme = themes::get(day, themes::find(day, id));
+            let known = themes::schemes(day).iter().any(|t| t.palette().id == id);
+            let unknown = if known { "" } else { ", not built in" };
+            format!("{} ({id:#010x}{unknown})", theme.palette().name)
         });
         lines.push(format!("{what}: {value}"));
+        // What 0.10 and earlier saved, which boot migrates from while
+        // there's no ID (see `themes::migrate`).
+        if let Some([index]) = storage::load::<1>(old).await {
+            let id = themes::migrate(day, index);
+            let theme = themes::get(day, themes::find(day, id));
+            let name = theme.palette().name;
+            lines.push(format!("{what}, as 0.10 saved it: index {index} ({name})"));
+        }
     }
 
     let value = storage::load::<1>(key::BRIGHTNESS)
