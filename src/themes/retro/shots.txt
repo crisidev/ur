@@ -1,0 +1,290 @@
+# Retro's screenshots, for its README: every screen, at night (in ARCADE)
+# and by day (in HANDHELD), the clock face in each scheme, and the dim
+# look. From sim/:
+#
+#     cargo run --release -- --out ../src/themes/retro/shots ../src/themes/retro/shots.txt
+#
+# The simulator's tests check them against the approved ones in shots/,
+# as they do sim/shots/ (`UPDATE_SHOTS=1 cargo test` approves).
+
+battery 3990
+time 2026-11-09 15:42:10 +01:00
+location 59.91 10.75
+connect
+heart 64
+temperature 31
+demo-day
+last-night 23:20 06:55 deep=82 rem=96
+phone-alarms 06:45/31 08:30/96/off
+smart on 06:30 08:30
+music "Ida Moreau" "Night Signals" playing
+aranet 1091 20.75 53 1012.3 87 3m
+buttons both
+
+# ==============================================================================
+# At night, in ARCADE
+# ==============================================================================
+
+theme arcade
+wait 1.5s
+expect clock
+shot night-clock.png
+shot clock-arcade.png
+shot clock-terminal.png terminal
+
+# Left of the clock: the past.
+right
+wait 1s
+shot night-today.png
+right
+wait 1s
+shot night-last-night.png
+button
+wait 1s
+
+# Right: the alarms (and one in the editor), the phone's, the settings,
+# the info, and storage mode's prompt.
+left
+wait 1s
+shot night-alarms.png
+tap 20,40
+wait 1s
+shot night-editor.png
+button
+wait 1s
+left
+wait 1s
+shot night-phone-alarms.png
+left
+wait 1s
+shot night-settings.png
+tap 40,72
+wait 1s
+shot night-bthome-qr.png
+tap
+wait 1s
+shot night-bthome-key.png
+tap
+wait 1s
+left
+wait 1s
+shot night-info.png
+long 40,40
+wait 1s
+shot night-storage-prompt.png
+button
+wait 1s
+expect clock
+
+# Above: a notification, as a banner, then in the history.
+notify Signal "Nora Lindqvist"
+wait 1s
+shot night-banner.png
+wait 5s
+down
+wait 1s
+shot night-notification.png
+button
+wait 1s
+
+# Below: the button grid, the music, and the air.
+up
+wait 1s
+shot night-grid.png
+up
+wait 1s
+shot night-music.png
+up
+wait 1s
+shot night-air.png
+button
+wait 1s
+
+# What takes the screen over.
+call "Nora Lindqvist"
+wait 1s
+shot night-call.png
+call over
+wait 1s
+find on
+wait 1s
+shot night-find.png
+find off
+wait 1s
+passkey 482913
+wait 1s
+shot night-pairing.png
+passkey off
+update 42
+wait 1s
+shot night-update.png
+update off
+wait 1s
+alarm 1 15:46 on
+until 15:46
+wait 1s
+shot night-ringing.png
+button
+wait 1s
+
+# The dim look: a glance, the route's, a notification that came with the
+# screen off, and the quiet night.
+button
+wait 1s
+expect not screen-on
+glance
+wait 1s
+expect dim
+shot dim-glance.png
+wait 6s
+nav left "150 m" Storgata
+glance
+wait 1s
+shot dim-route-glance.png
+nav off
+wait 6s
+notify Signal "Nora Lindqvist"
+wait 1s
+expect dim
+shot dim-notification.png
+wait 6s
+until 23:40
+asleep on
+wait 2m
+expect quiet-night
+button
+wait 1s
+expect dim
+shot dim-quiet-night.png
+up
+wait 1s
+shot dim-grid.png
+button
+wait 1s
+asleep off
+until 07:10
+heart 64
+button
+wait 1s
+expect not quiet-night
+
+# Midday, with the day's readings so far.
+until 12:30
+demo-day
+heart 64
+aranet 1091 20.75 53 1012.3 87 3m
+button
+wait 1s
+
+# ==============================================================================
+# By day, in HANDHELD
+# ==============================================================================
+
+theme handheld
+wait 1s
+expect clock
+shot day-clock.png
+shot clock-handheld.png
+shot clock-parchment.png parchment
+
+right
+wait 1s
+shot day-today.png
+right
+wait 1s
+shot day-last-night.png
+button
+wait 1s
+
+left
+wait 1s
+shot day-alarms.png
+tap 20,40
+wait 1s
+shot day-editor.png
+button
+wait 1s
+left
+wait 1s
+shot day-phone-alarms.png
+left
+wait 1s
+shot day-settings.png
+tap 40,72
+wait 1s
+shot day-bthome-qr.png
+tap
+wait 1s
+shot day-bthome-key.png
+tap
+wait 1s
+left
+wait 1s
+shot day-info.png
+long 40,40
+wait 1s
+shot day-storage-prompt.png
+button
+wait 1s
+expect clock
+
+notify Signal "Nora Lindqvist"
+wait 1s
+shot day-banner.png
+wait 5s
+down
+wait 1s
+shot day-notification.png
+button
+wait 1s
+
+up
+wait 1s
+shot day-grid.png
+up
+wait 1s
+shot day-music.png
+up
+wait 1s
+shot day-air.png
+button
+wait 1s
+
+call "Nora Lindqvist"
+wait 1s
+shot day-call.png
+call over
+wait 1s
+find on
+wait 1s
+shot day-find.png
+find off
+wait 1s
+passkey 482913
+wait 1s
+shot day-pairing.png
+passkey off
+update 42
+wait 1s
+shot day-update.png
+update off
+wait 1s
+alarm 2 12:50 on
+until 12:50
+wait 1s
+shot day-ringing.png
+button
+wait 1s
+
+# Switching off, last: storage mode, from the info screen.
+left
+left
+left
+left
+wait 1s
+long 40,40
+wait 1s
+tap 40,40
+wait 1s
+expect off
+shot day-off.png

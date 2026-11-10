@@ -149,7 +149,10 @@ screenshots are committed, as approved, and `cargo test` checks that
 each script still draws exactly those: `tour.txt`'s in `shots/tour/`,
 `gadgetbridge.txt`'s in `shots/gadgetbridge/`, and
 `readme-screenshots.txt`'s in `../docs/screenshots/`, the README's own,
-so it can't go stale. A test fails on a screenshot that differs (with
+so it can't go stale, and each theme's (`../src/themes/<name>/shots.txt`,
+into `shots/` beside it, for the theme's README), for the themes the
+build has: the default one, unless it's built with others
+(`--features themes-all` checks them all). A test fails on a screenshot that differs (with
 how many pixels, and an image of it before, after, and where it differs,
 in magenta, side by side), on a new one, and on one no longer taken.
 
@@ -163,7 +166,8 @@ UPDATE_SHOTS=1 cargo test
 That makes each approved directory exactly what its script drew: it
 adds new screenshots, rewrites changed ones, and deletes those no longer
 taken. The Info screen shows the version, from Cargo.toml (`0.9.0-dev`
-here), so a release's new version needs approving too. The README's
+here), so a release's new version needs approving too (the tour's, and
+each theme's). The README's
 `info.png` is the exception: it shows a release's version and commit
 (`UR_VERSION`; see `readme-screenshots.txt`), which the tests' build
 never does, so they neither check nor update it, and the tour's

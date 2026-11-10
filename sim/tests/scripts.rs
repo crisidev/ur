@@ -4,7 +4,8 @@
 //! per process.
 //!
 //! `tour.txt` checks itself with `expect`; this checks that it, the
-//! README's screenshots, and Gadgetbridge's lines run to the end, and that
+//! README's screenshots, Gadgetbridge's lines, and each built-in theme's
+//! screenshots (`src/themes/<name>/shots.txt`) run to the end, and that
 //! every screenshot they take is the approved one, pixel for pixel.
 
 use std::collections::BTreeSet;
@@ -49,12 +50,14 @@ fn out(name: &str) -> PathBuf {
 // the differences on the PR: see .github/workflows/screenshots.yml.)
 
 /// A script whose screenshots are checked.
-struct Shots {
-    script: &'static str,
+struct Shots<'a> {
+    /// What to call its run, under the target directory's `shots/`.
+    name: &'a str,
+    script: &'a str,
     /// Where its approved screenshots are, from sim/.
-    approved: &'static str,
+    approved: &'a str,
     /// Approved images that aren't the script's to check, or to update.
-    unchecked: &'static [&'static str],
+    unchecked: &'a [&'a str],
 }
 
 /// Whether to approve what the scripts draw, rather than check it.
@@ -78,8 +81,7 @@ fn pngs(dir: &Path) -> BTreeSet<String> {
 /// Runs `shots.script`, and checks its screenshots against the approved
 /// ones (or, with `UPDATE_SHOTS`, approves them). Returns its log.
 fn check_shots(shots: Shots) -> String {
-    let name = shots.script.trim_end_matches(".txt");
-    let dir = out(&format!("shots/{name}"));
+    let dir = out(&format!("shots/{}", shots.name));
     let rendered = dir.join("rendered");
     let (ok, log) = run(shots.script, &["--out", rendered.to_str().expect("UTF-8")]);
     assert!(ok, "{log}");
@@ -194,6 +196,7 @@ fn check_shots(shots: Shots) -> String {
 #[test]
 fn the_tour() {
     check_shots(Shots {
+        name: "tour",
         script: "tour.txt",
         approved: "shots/tour",
         unchecked: &[],
@@ -206,6 +209,7 @@ fn the_tour() {
 #[test]
 fn the_readme_screenshots() {
     check_shots(Shots {
+        name: "readme-screenshots",
         script: "readme-screenshots.txt",
         approved: "../docs/screenshots",
         // The README's Info screen shows a release's version and commit
@@ -213,6 +217,43 @@ fn the_readme_screenshots() {
         // The tour checks the screen itself.
         unchecked: &["info.png"],
     });
+}
+
+/// Each theme's own screenshots, for its README (`src/themes/<name>/`:
+/// `shots.txt` takes them, into `shots/`), for every theme this build
+/// has: just the default with `--no-default-features`, every one with
+/// `--features themes-all` (as CI runs them too). Each is listed in
+/// `src/themes/README.md`, too.
+#[test]
+fn every_themes_screenshots() {
+    // `theme-<name>`, in `src/themes/<name>/` (see the build script).
+    let built = env!("UR_THEME_FEATURES")
+        .split(',')
+        .filter(|f| !f.is_empty());
+    let themes = Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/themes");
+    let index = std::fs::read_to_string(themes.join("README.md")).expect("src/themes/README.md");
+    let mut checked = 0;
+    for feature in built {
+        let name = feature.trim_start_matches("theme-");
+        for file in ["shots.txt", "README.md"] {
+            assert!(
+                themes.join(name).join(file).is_file(),
+                "src/themes/{name}/ has no {file}, for its screenshots"
+            );
+        }
+        assert!(
+            index.contains(&format!("({name}/)")),
+            "src/themes/README.md doesn't list {name}: add a line with a link to ({name}/)"
+        );
+        check_shots(Shots {
+            name: &format!("theme-{name}"),
+            script: &format!("../src/themes/{name}/shots.txt"),
+            approved: &format!("../src/themes/{name}/shots"),
+            unchecked: &[],
+        });
+        checked += 1;
+    }
+    assert!(checked > 0, "no theme built in");
 }
 
 #[test]
@@ -646,6 +687,7 @@ fn find_my_watch_rings_until_found_and_never_silences_an_alarm() {
 #[test]
 fn gadgetbridge_lines() {
     let log = check_shots(Shots {
+        name: "gadgetbridge",
         script: "gadgetbridge.txt",
         approved: "shots/gadgetbridge",
         unchecked: &[],
