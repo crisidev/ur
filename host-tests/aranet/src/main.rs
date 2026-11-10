@@ -767,3 +767,144 @@ mod tests {
         assert!(nearby.around(40 * MIN));
     }
 }
+
+/// Proofs, for `cargo kani`: what the tests and the fuzzer try for some
+/// advertisements, for every one. The watch reads whatever any device in
+/// range advertises, in the Bluetooth host's receive loop: nothing there
+/// may panic, whatever the bytes.
+#[cfg(kani)]
+mod proofs {
+    use super::aranet::{self, Kind, Reading, Skip};
+    use super::bthome_sensor;
+
+    /// For every payload up to 25 bytes (a byte past the longest known):
+    /// reading it never panics; it's a reading only at 22 bytes with
+    /// "Smart Home integrations" on, and then each field is the one the
+    /// table in `aranet::parse`'s docs gives, with the invalid marks and
+    /// a temperature too high for hundredths as `None`; every other
+    /// length is skipped for the reason its length (and that bit) gives.
+    #[kani::proof]
+    fn any_aranet_payload_reads_by_the_table() {
+        let bytes: [u8; 25] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= bytes.len());
+        let integrations = bytes[0] & 0x20 != 0;
+        let u16_at = |at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+        match aranet::parse(&bytes[..len]) {
+            Ok(reading) => {
+                assert!(len == 22 && integrations);
+                assert_eq!(reading.kind, Kind::Aranet4);
+                let co2 = u16_at(8);
+                assert_eq!(reading.co2, (co2 & 0x8000 == 0).then_some(co2));
+                let twentieths = u16_at(10);
+                match reading.hundredths {
+                    Some(hundredths) => {
+                        assert!(twentieths & 0x4000 == 0);
+                        assert_eq!(i32::from(hundredths), i32::from(twentieths) * 5);
+                    }
+                    None => assert!(twentieths & 0x4000 != 0 || twentieths > 6553),
+                }
+                let pressure = u16_at(12);
+                assert_eq!(
+                    reading.pressure,
+                    (pressure & 0x8000 == 0).then_some(pressure)
+                );
+                assert_eq!(reading.humidity, Some(bytes[14]));
+                assert_eq!(reading.battery, Some(bytes[15]));
+                assert_eq!((reading.interval, reading.age), (u16_at(17), u16_at(19)));
+                // A status is a band; without one, the CO₂ says, if any.
+                assert_eq!(
+                    reading.band.is_none(),
+                    !(1..=3).contains(&bytes[16]) && reading.co2.is_none()
+                );
+            }
+            Err(Skip::IntegrationsOff) => assert!((len == 7 || len == 22) && !integrations),
+            Err(Skip::OldFirmware) => assert!(len == 7 && integrations),
+            Err(Skip::OtherModel) => assert!(len == 24),
+            Err(Skip::Malformed) => assert!(!matches!(len, 7 | 22 | 24)),
+        }
+    }
+
+    /// For every temperature a reading can hold: its tenths and quarter
+    /// degrees are the nearest (half up), computed without overflow.
+    #[kani::proof]
+    fn any_temperature_rounds_to_the_nearest() {
+        let hundredths: i16 = kani::any();
+        let reading = a_reading(Some(hundredths));
+        let (tenths, quarters) = (reading.tenths(), reading.quarters());
+        let (Some(tenths), Some(quarters)) = (tenths, quarters) else {
+            unreachable!("a temperature has both");
+        };
+        let h = i32::from(hundredths);
+        assert!(10 * tenths - 5 <= h && h < 10 * tenths + 5);
+        assert!(100 * quarters - 50 <= 4 * h && 4 * h < 100 * quarters + 50);
+    }
+
+    fn a_reading(hundredths: Option<i16>) -> Reading {
+        Reading {
+            kind: Kind::Aranet4,
+            co2: None,
+            hundredths,
+            pressure: None,
+            humidity: None,
+            battery: None,
+            band: None,
+            interval: 0,
+            age: 0,
+        }
+    }
+
+    /// For every BTHome service data of up to 8 bytes (the device
+    /// information, an object's id, and more bytes than any fixed-length
+    /// object takes, or a second object): reading it never panics. So
+    /// each id's value is read within the length `object_length` gives
+    /// it, for every id, whatever follows, however short it's cut; the
+    /// walk goes on object by object the same way. And what's read is a
+    /// BTHome v2 device's, unencrypted, with a temperature.
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn any_bthome_object_is_read_within_its_bytes() {
+        let bytes: [u8; 8] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= bytes.len());
+        match bthome_sensor::parse(&bytes[..len]) {
+            Ok(reading) => {
+                assert!(len >= 4, "the information, an id, and two bytes at least");
+                assert!(bytes[0] & 1 == 0 && bytes[0] >> 5 == 2);
+                let irregular = bytes[0] & 4 != 0;
+                assert_eq!(reading.kind, Kind::BTHome { irregular });
+                assert!(reading.hundredths.is_some());
+                assert_eq!((reading.interval, reading.age), (0, 0));
+                // BTHome has no status colour: the band is the CO₂'s.
+                assert_eq!(reading.band.is_some(), reading.co2.is_some());
+            }
+            Err(bthome_sensor::Skip::Malformed) => {
+                assert!(len == 0 || (bytes[0] & 2 != 0 && len < 7));
+            }
+            Err(bthome_sensor::Skip::Encrypted) => assert!(bytes[0] & 1 != 0),
+            Err(bthome_sensor::Skip::Version) => assert!(bytes[0] >> 5 != 2),
+            Err(bthome_sensor::Skip::NoTemperature) => {}
+        }
+    }
+
+    /// For every length-prefixed advertising data of up to 8 bytes, and
+    /// every type and one-byte prefix looked for: the walk never panics
+    /// or reads past the data, and what it finds lies within the data,
+    /// right after a structure's length, that type, and that prefix.
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn what_is_found_is_in_the_advertisement() {
+        let bytes: [u8; 8] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= bytes.len());
+        let (kind, prefix): (u8, u8) = kani::any();
+        let ad = &bytes[..len];
+        if let Some(found) = aranet::find(ad, kind, &[prefix]) {
+            // Where it is in `ad`, by its address.
+            let at = found.as_ptr() as usize - ad.as_ptr() as usize;
+            assert!(3 <= at && at + found.len() <= len);
+            assert_eq!(ad[at - 2..at], [kind, prefix]);
+            assert_eq!(usize::from(ad[at - 3]), 2 + found.len());
+        }
+    }
+}

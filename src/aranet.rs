@@ -530,6 +530,13 @@ impl Nearby {
                 }
             }
         }
+        // One sighting a sensor: `end` takes each as another sensor, and
+        // `heard_everyone` counts by address.
+        debug_assert!(
+            self.heard.iter().filter(|s| s.address == address).count()
+                == usize::from(self.heard.iter().any(|s| s.address == address)),
+            "a sensor is heard at most once a scan"
+        );
         true
     }
 
@@ -628,6 +635,14 @@ impl Nearby {
             }
         }
         self.known.retain(|k| now.saturating_sub(k.heard) < RECENT);
+        // One entry a sensor, as for `heard`: a second would be waited
+        // for (and looked for) on its own, though no scan could update it.
+        debug_assert!(
+            self.known
+                .iter()
+                .all(|k| self.known.iter().filter(|o| o.address == k.address).count() == 1),
+            "a sensor is known once"
+        );
         let Some(strongest) = self.heard.iter().max_by_key(|s| s.rssi).copied() else {
             return Ended { heard: false, ask };
         };
