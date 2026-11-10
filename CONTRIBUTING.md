@@ -432,6 +432,19 @@ python3 scripts/touch_probe.py analyse tmp/touch-probe.log --csv tmp/touch-probe
 (The bigger RTT buffer, as a finger down logs ~100 lines a second;
 `analyse` counts the lines dropped anyway.)
 
+A build with the `wedge-i2c` feature checks that the sensors come back
+from a stuck bus by themselves, as they must when a reset (a probe's, a
+watchdog's, an update's) leaves one holding it: for its first 5 s, it
+keeps switching the I2C controller off, so every transfer hangs (see
+`wedge_task` in `src/i2c.rs`). Each driver's setup times out and retries,
+slower each time; within ~10 s of boot, the log should show
+`activity: accelerometer running` and `heart: sensor ready`, and a tap
+should still register:
+
+```sh
+RTT_SECS=30 cargo run --release --features wedge-i2c
+```
+
 **Probe sessions halt the core.** Most `esprobe` commands (`core read`
 and `core write`, `rtt`, `flash`) are a probe-rs session, which halts
 the core for ~20 ms as it attaches and again as it detaches (to clear

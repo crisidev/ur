@@ -479,6 +479,8 @@ async fn main(spawner: Spawner) {
     interrupt::TWISPI1.set_priority(APP_PRIORITY);
     let i2c_bus: &'static _ = I2C_BUS.init(Mutex::new(twim));
     let _ = i2c::BUS.init(i2c_bus);
+    #[cfg(feature = "wedge-i2c")]
+    spawner.spawn(i2c::wedge_task().expect("spawned once"));
 
     let touch_interrupt = Input::new(p.P0_28, Pull::Up);
     let touch_reset = Output::new(p.P0_10, Level::High, OutputDrive::Standard);

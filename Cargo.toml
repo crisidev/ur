@@ -84,3 +84,8 @@ flash-stress = []
 # lines a second while touched, so not with `field-log`, and only for dev
 # kits: releases leave it out (scripts/release.sh checks).
 touch-probe = []
+# Wedge the sensor bus for the first 5 s after boot, so that touch, the
+# accelerometer and the heart-rate sensor all have to recover from it; see
+# `wedge_task` in `src/i2c.rs`. Only for dev kits: it implies `debug-input`
+# so that scripts/release.sh refuses it.
+wedge-i2c = ["debug-input"]

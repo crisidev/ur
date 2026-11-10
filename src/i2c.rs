@@ -209,3 +209,25 @@ async fn free_bus() {
     p0.pin_cnf(SDA).write_value(saved[0]);
     p0.pin_cnf(SCL).write_value(saved[1]);
 }
+
+/// For checking recovery on the dev kit (feature `wedge-i2c`): for the
+/// first few seconds after boot, keeps switching the I2C controller off
+/// behind every driver's back, so their transfers hang, as a wedged
+/// controller's do (and one cut off mid-read can leave a sensor holding
+/// SDA). Touch, the accelerometer and the heart-rate sensor all set up in
+/// that time, so each has to time out, recover the bus, and retry its
+/// setup until it works.
+#[cfg(feature = "wedge-i2c")]
+#[embassy_executor::task]
+pub async fn wedge_task() {
+    const WEDGED: Duration = Duration::from_secs(5);
+    warn!("i2c: wedging the bus for {=u64} s", WEDGED.as_secs());
+    let until = embassy_time::Instant::now() + WEDGED;
+    while embassy_time::Instant::now() < until {
+        embassy_nrf::pac::TWIM1
+            .enable()
+            .write(|w| w.set_enable(twim::vals::Enable::from_bits(0)));
+        Timer::after_millis(20).await;
+    }
+    info!("i2c: no longer wedging the bus");
+}
