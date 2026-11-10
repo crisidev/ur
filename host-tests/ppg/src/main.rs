@@ -1183,7 +1183,7 @@ mod tests {
     #[test]
     fn motion_is_masked_or_rejected() {
         // (start s, duration s, whether some windows over it may be read)
-        for (start, duration, readable) in
+        for (start, duration, _readable) in
             [(12.0, 1.5, true), (12.0, 2.0, true), (10.0, 6.0, false)]
         {
             let scenario = Scenario {
@@ -1593,3 +1593,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod fuzz;
