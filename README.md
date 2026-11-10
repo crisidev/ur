@@ -182,11 +182,13 @@ bar on an edge means there's more that way.
   stop it.
 
 On Settings, tap **THEME** for the next theme, **LIGHT** to switch
-brightness from AUTO to SOFT, a step dimmer, for a longer battery, and
-**BUTTONS** to turn on the [button grid](docs/buttons.md), and **GRID**
-for its layout: six buttons, or two layers. To set
-an alarm or timer, tap it, then swipe the hours and minutes. Alarms set
-in Gadgetbridge are read-only on the watch; a one-off one switches
+brightness from AUTO to SOFT, a step dimmer, for a longer battery,
+**BUTTONS** to turn on the [button grid](docs/buttons.md), **GRID** for
+its layout (six buttons, or two layers), and **BTHOME KEY** (while
+presses go over BTHome) for the key Home Assistant asks for (see
+[Home Assistant](docs/buttons.md#home-assistant)). To set an alarm or
+timer, tap it, then swipe the hours and minutes. Alarms set in
+Gadgetbridge are read-only on the watch; a one-off one switches
 itself off once it has rung, without Gadgetbridge hearing of it, so
 switch it off and on there to set it again. Alarms follow the phone's
 time zone and summer time, from when Gadgetbridge sends the change (at
