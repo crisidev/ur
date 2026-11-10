@@ -362,7 +362,7 @@ fn a_hold_held_on_is_a_long_press() {
 /// the screen (or ending a glance) only if its first tap is light. A
 /// deliberate first tap wakes it at once, and the second plays or pauses
 /// on the clock face, as it would have with the screen off. The awake
-/// clock face's own double tap still skips.
+/// clock face's own double tap plays or pauses too.
 #[test]
 fn a_double_tap_plays_or_pauses_without_waking_only_after_a_light_first_tap() {
     let dir = out("double-tap");
@@ -386,8 +386,8 @@ fn a_double_tap_plays_or_pauses_without_waking_only_after_a_light_first_tap() {
     let (gestures, clock) = log.split_once("] clock\n").expect("the script runs on");
     assert_eq!(gestures.matches(r#""n":"playpause""#).count(), 4, "{log}");
     assert_eq!(gestures.matches(r#""n":"next""#).count(), 0, "{log}");
-    assert_eq!(clock.matches(r#""n":"next""#).count(), 1, "{log}");
-    assert_eq!(clock.matches(r#""n":"playpause""#).count(), 0, "{log}");
+    assert_eq!(clock.matches(r#""n":"playpause""#).count(), 1, "{log}");
+    assert_eq!(clock.matches(r#""n":"next""#).count(), 0, "{log}");
 }
 
 /// With a phone connected, a tap, then a touch held (a tap-and-hold),
@@ -399,10 +399,11 @@ fn a_double_tap_plays_or_pauses_without_waking_only_after_a_light_first_tap() {
 /// glance) as it was; nor does a pair with either touch nearer the edge,
 /// where an arm folded over the watch rests. After a deliberate tap, which
 /// wakes the screen, the hold skips on the clock face (unless the tap was
-/// at the edge of a glance: then it's the clock face's long press). On the
-/// awake clock face, a long press still plays or pauses anywhere, bar for
-/// 3 s after a touch woke it (maybe the folded arm): then only in the
-/// middle.
+/// at the edge of a glance: then it stands alone, and a tap-and-hold of
+/// the clock face's own skips). On the awake clock face, a tap-and-hold
+/// skips too, anywhere, bar for 3 s after a touch woke it (maybe the
+/// folded arm): then only in the middle. A long press on its own does
+/// nothing there either, nor does a hold too long after the tap.
 #[test]
 fn a_tap_and_hold_skips_and_a_lone_long_press_does_nothing() {
     let dir = out("tap-and-hold");
@@ -411,8 +412,11 @@ fn a_tap_and_hold_skips_and_a_lone_long_press_does_nothing() {
     std::fs::write(
         &script,
         "connect\nwait 1s\n\
-         echo awake-edge\nlong 12,40\nexpect buzzing\nwait 2s\n\
-         press 75,40\nwait 610ms\nexpect buzzing\nlift\nexpect clock\n\
+         echo awake-edge\ntap 40,40 50\nlong 12,40\nexpect buzzing\nwait 2s\n\
+         tap 40,40 50\npress 75,40\nwait 610ms\nexpect buzzing\nlift\nexpect clock\n\
+         wait 1s\necho awake-lone\nlong 40,40\nexpect not buzzing\npress 40,40\n\
+         wait 700ms\nexpect not buzzing\nlift\nwait 1s\ntap 40,40 50\nwait 600ms\n\
+         press 40,40\nwait 700ms\nexpect not buzzing\nlift\nexpect clock\n\
          wait 11s\nexpect not screen-on\n\
          echo off-lone\nlong 40,40\nexpect not buzzing\npress 40,40\nwait 700ms\n\
          expect not buzzing\nlift\nexpect not screen-on\nwait 1s\n\
@@ -432,12 +436,14 @@ fn a_tap_and_hold_skips_and_a_lone_long_press_does_nothing() {
          expect dim\nwait 6s\nexpect not screen-on\n\
          echo tap-woke\ntap 40,40\nexpect screen-on\npress 40,40\nwait 610ms\n\
          expect buzzing\nlift\nwait 11s\nexpect not screen-on\n\
-         echo tap-woke-edge\ntap 40,40\nexpect screen-on\nwait 1s\nlong 40,4\n\
-         expect not buzzing\nwait 1s\nlong 12,40\nexpect not buzzing\n\
-         echo tap-woke-later\nlong 40,40\nexpect buzzing\nwait 1500ms\n\
-         long 40,4\nexpect buzzing\nwait 11s\nexpect not screen-on\n\
+         echo tap-woke-edge\ntap 40,40\nexpect screen-on\nwait 1s\ntap 40,40 50\n\
+         long 40,4\nexpect not buzzing\nwait 1s\ntap 40,40 50\nlong 12,40\n\
+         expect not buzzing\n\
+         echo tap-woke-later\ntap 40,40 50\nlong 40,40\nexpect buzzing\nwait 1500ms\n\
+         tap 40,40 50\nlong 40,4\nexpect buzzing\nwait 11s\nexpect not screen-on\n\
          echo glance-tap-woke-edge\nglance\ntap 40,4\nexpect screen-on\n\
-         long 40,40\nexpect buzzing\nwait 1s\nlong 40,70\nexpect not buzzing\n\
+         long 40,40\nexpect not buzzing\ntap 40,40 50\nlong 40,40\nexpect buzzing\n\
+         wait 1s\ntap 40,40 50\nlong 40,70\nexpect not buzzing\n\
          echo done\n",
     )
     .expect("the target dir is writable");
@@ -446,7 +452,8 @@ fn a_tap_and_hold_skips_and_a_lone_long_press_does_nothing() {
     // Each section, from its echo to the next one's: how many times it
     // played or paused, and skipped.
     let sections = [
-        ("awake-edge", 2, 0),
+        ("awake-edge", 0, 2),
+        ("awake-lone", 0, 0),
         ("off-lone", 0, 0),
         ("off", 0, 1),
         ("off-late", 0, 0),
@@ -455,10 +462,11 @@ fn a_tap_and_hold_skips_and_a_lone_long_press_does_nothing() {
         ("glance-edge", 0, 0),
         ("tap-woke", 0, 1),
         ("tap-woke-edge", 0, 0),
-        ("tap-woke-later", 2, 0),
+        ("tap-woke-later", 0, 2),
         // The tap at the edge can't start a tap-and-hold, so the hold
-        // after it is the clock face's long press, in the middle.
-        ("glance-tap-woke-edge", 1, 0),
+        // after it stands alone; a tap-and-hold of the clock face's own,
+        // in the middle, then skips.
+        ("glance-tap-woke-edge", 0, 1),
         ("done", 0, 0),
     ];
     let at = |name: &str| {

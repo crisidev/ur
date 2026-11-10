@@ -320,7 +320,8 @@ mod tests {
         assert_eq!(off(Kind::Tap, (15, 70), 32, true, true), Action::PlayPause);
     }
 
-    /// On the awake clock face, anywhere: something woke the screen first.
+    /// On the awake clock face, a tap-and-hold's hold anywhere: something
+    /// woke the screen first.
     /// Unless a touch woke it just before, which may have been the folded
     /// arm: then only in the middle, as on a glance.
     #[test]
@@ -348,8 +349,8 @@ mod tests {
     /// 2.75 s later, played and paused on the clock face; both count as
     /// just after the wake, so do nothing now. The wearer's own, 1.28 s
     /// and 4.96 s after a swipe woke the screen from a glance, and 2.90 s
-    /// after a tap woke it from off, were in the middle, so play or pause
-    /// either way.
+    /// after a tap woke it from off, were in the middle, so count either
+    /// way (now as a tap-and-hold's hold, which skips).
     #[test]
     fn the_field_logs_long_presses_just_after_a_touch_woke_the_screen() {
         assert_eq!(

@@ -47,10 +47,9 @@ on top:
   seconds without lighting the screen. While Google Maps, OsmAnd, or
   CoMaps navigates, so does the next turn, with two taps as it comes
   within 50 m.
-- **Media gestures:** with the screen off or on a glance, double-tap to
-  play or pause, and tap, then tap and hold, to skip; on the clock face,
-  long-press to play or pause, and double-tap to skip. A buzz says it
-  took.
+- **Media gestures:** double-tap to play or pause, and tap, then tap and
+  hold, to skip, whether the screen is off, on a glance, or on the clock
+  face. A buzz says it took.
 - **Screens in four directions** around the clock: the past to one side,
   alarms and settings to the other, notifications above, music below.
 - **A button grid** for Home Assistant or Tasker: six buttons, each
@@ -152,19 +151,18 @@ bar on an edge means there's more that way.
 - **The button** goes back to the clock, or off from it. It also
   silences a call or stops an alarm or "find my watch" (as does a tap),
   and a double press ends a quiet night.
-- **Long-press** (the watch buzzes once it's taken, at 0.6 s) plays or
-  pauses on the clock face (for 3 s after a touch woke it, only in the
-  middle: a quarter of the screen away from the top and bottom, a fifth
-  from the sides, clear of a folded arm), switches an alarm or timer on
-  or off, and on Info, offers storage mode.
-- **Double-tap** the clock face for the next track.
-- **With the screen off or on a glance**, double-tap to play or pause,
-  and tap, then tap and hold (until the buzz, 0.6 s), for the next
-  track; the hold within half a second of the tap, in the middle. A long
-  press alone does nothing there, nor does a touch at the edge. Tap
-  lightly first to leave the screen off; a firm first tap wakes it, and
-  the second touch then does the same. Without a phone connected, a
-  double tap wakes the screen instead.
+- **Long-press** (the watch buzzes once it's taken, at 0.6 s) switches
+  an alarm or timer on or off, and on Info, offers storage mode.
+- **Media:** double-tap to play or pause, and tap, then tap and hold
+  (until the buzz, 0.6 s), for the next track, the hold within half a
+  second of the tap. A long press alone does nothing. On the clock face,
+  anywhere (for 3 s after a touch woke it, the hold only in the middle:
+  a quarter of the screen away from the top and bottom, a fifth from the
+  sides, clear of a folded arm). With the screen off or on a glance, the
+  hold always in the middle, and nothing at the edge; tap lightly first
+  to leave the screen off: a firm first tap wakes it, and the second
+  touch then does the same. Without a phone connected, a double tap
+  wakes a dark screen instead.
 - **A ringing alarm:** tap to snooze for 9 minutes; press the button to
   stop it.
 

@@ -20,9 +20,10 @@
 //! pause or skip without looking. They need only a connected phone, not
 //! word from it of what plays: Gadgetbridge only says when that changes,
 //! so after the watch restarts there may be none for a long while, and its
-//! commands act on the phone's player regardless. (The awake clock face
-//! has its own, the other way round, for now: a long press plays or
-//! pauses, and a double tap skips; see `crate::ui`.)
+//! commands act on the phone's player regardless. The awake clock face
+//! has the same gestures, so the wearer needn't know whether the screen
+//! is on to use them, with looser guards (see `crate::ui`, and
+//! [`awake_long_press`]): something woke the screen to get there.
 //!
 //! A deliberate tap wakes the screen at once, so for a media gesture to
 //! leave it off, its first tap must be light (under [`DELIBERATE_TAP_MS`]).
@@ -117,8 +118,8 @@ pub const DOUBLE_TAP_MS: u32 = 500;
 pub const TAP_MARGIN: i32 = 8;
 /// Canvas pixels (48 panel pixels, a fifth of the screen) at the screen's
 /// left and right edges where a hold doesn't skip with the screen off or
-/// on a glance (nor a long press play or pause on the clock face just
-/// after a touch woke it): see [`centred`].
+/// on a glance (nor on the clock face just after a touch woke it): see
+/// [`centred`].
 pub const LONG_PRESS_MARGIN_X: i32 = 2 * TAP_MARGIN;
 /// Canvas pixels (60 panel pixels, a quarter of the screen) at the
 /// screen's top and bottom edges where a hold doesn't skip with the
@@ -126,8 +127,8 @@ pub const LONG_PRESS_MARGIN_X: i32 = 2 * TAP_MARGIN;
 /// face just after a touch woke it): see [`centred`].
 pub const LONG_PRESS_MARGIN_Y: i32 = 20;
 /// Milliseconds after a touch woke the screen (from off, or a glance)
-/// during which a long press on the clock face must be in the middle too:
-/// see [`awake_long_press`].
+/// during which a tap-and-hold's hold on the clock face must be in the
+/// middle too: see [`awake_long_press`].
 pub const CENTRE_AFTER_TOUCH_WAKE_MS: u32 = 3000;
 /// The canvas's width and height.
 const SIZE: i32 = 80;
@@ -148,8 +149,8 @@ pub fn inside(x: i32, y: i32) -> bool {
 /// starts in the middle of the screen (16..=63 across and 20..=59 down,
 /// away from [`LONG_PRESS_MARGIN_X`] and [`LONG_PRESS_MARGIN_Y`]): what a
 /// tap-and-hold's hold needs to skip, with the screen off or on a glance
-/// (and a long press to play or pause on the clock face just after a touch
-/// woke it; see [`awake_long_press`]).
+/// (and on the clock face just after a touch woke it; see
+/// [`awake_long_press`]).
 ///
 /// A long press on its own used to play or pause with the screen off or
 /// on a glance, and the wearer's other arm, resting against the watch
@@ -238,9 +239,10 @@ pub fn second(kind: Kind, x: i32, y: i32) -> Option<Action> {
 }
 
 /// Whether a long press on the awake clock face, starting at (`x`, `y`)
-/// in canvas pixels, plays or pauses. `touch_woke`: a touch woke the
-/// screen (from off, or a glance) under [`CENTRE_AFTER_TOUCH_WAKE_MS`]
-/// ago.
+/// in canvas pixels, skips to the next track, as a tap-and-hold's hold
+/// (it [`follows`] a tap; on its own, it does nothing). `touch_woke`: a
+/// touch woke the screen (from off, or a glance) under
+/// [`CENTRE_AFTER_TOUCH_WAKE_MS`] ago.
 ///
 /// Anywhere, normally: something woke the screen to get there, so it's
 /// likelier meant than with the screen off. But a folded arm's touch can
@@ -253,7 +255,10 @@ pub fn second(kind: Kind, x: i32, y: i32) -> Option<Action> {
 /// Not longer, so that a long press at the edge after waking the screen
 /// on purpose soon counts again. (The wearer's own, 1.3, 2.9, and 5 s
 /// after waking the screen with a touch, were in the middle anyway.)
-/// Measured, as the UI does, from the waking touch's report (a tap's or
+/// That was when a long press on its own played or paused there; now it
+/// takes a tap first, which a resting arm rarely makes just before, but
+/// the guard stays, as the arm has made tap-and-holds too (see
+/// [`glance`]). Measured, as the UI does, from the waking touch's report (a tap's or
 /// swipe's lift) to the long press's (0.6 s after its finger landed).
 pub fn awake_long_press(x: i32, y: i32, touch_woke: bool) -> bool {
     !touch_woke || centred(x, y)

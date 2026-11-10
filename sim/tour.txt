@@ -54,18 +54,22 @@ shot 07-history.png
 up
 wait 1s
 
-# Music: below the clock, while the phone plays something. A finger held
-# still on the clock (through the touch task's recogniser) plays or pauses.
+# Music: below the clock, while the phone plays something. A double tap
+# on the clock (through the touch task's recogniser) plays or pauses.
 music "Ida Moreau" "Night Signals" playing
 up
 wait 1s
 shot 08-music.png
 button
-wait 1s
+wait 1420ms
 press 40,40
-wait 620ms
-expect buzzing
+wait 50ms
 lift
+wait 100ms
+press 40,40
+wait 50ms
+lift
+expect buzzing
 wait 200ms
 shot 09-paused.png
 
