@@ -1211,4 +1211,241 @@ mod proofs {
             let _ = state.due(&mut settings, &mut phone, now, kani::any());
         }
     }
+
+    // ==========================================================================
+    // What rings, rings once, and says so
+    // ==========================================================================
+    //
+    // The proofs above are of what `due` can't do (panic). These are of
+    // what it does: F4 was a one-off alarm that rang without being saved
+    // as rung. For that, `next_at`'s answers have to be the same each
+    // time it's asked, which the stubs above aren't (any minute in range,
+    // each call), and `next_at` itself is too slow (its loops, a dozen
+    // times a check). So: `next_at` and `next_smart` each have a closed
+    // form with no loop, proven equal to them here, which then stands in
+    // for them.
+
+    // In 32 bits, which hold every minute the proofs cover with room to
+    // spare (`narrow` checks): CBMC builds a circuit for each division,
+    // and `due` asks a dozen times a check, so the 64 bits `alarm` works
+    // in cost four times as much here, for nothing.
+
+    const DAY32: i32 = 24 * 60;
+
+    /// A minute the proofs cover, in 32 bits.
+    fn narrow(minute: i64) -> i32 {
+        assert!(covered(minute));
+        minute as i32
+    }
+
+    /// 0 = Monday … 6 = Sunday, as `alarm::weekday`.
+    fn weekday(day: i32) -> u32 {
+        (day + 3).rem_euclid(7) as u32
+    }
+
+    /// `next_at` without its loop: today if `time` is still ahead, else
+    /// tomorrow; then on by as many days as it takes to reach one of
+    /// `days`, which is the zeros below the first of its bits at or
+    /// above that weekday (with the week's bits again above them, for
+    /// the days that wrap into next week).
+    fn next_at_closed(time: u16, days: u8, after: i64) -> i64 {
+        let after = narrow(after);
+        let today = after.div_euclid(DAY32);
+        let ahead = today * DAY32 + i32::from(time) > after;
+        let first = if ahead { today } else { today + 1 };
+        let week = u32::from(days) | u32::from(days) << 7;
+        let wait = if days == 0 {
+            0
+        } else {
+            (week >> weekday(first)).trailing_zeros()
+        };
+        i64::from((first + wait as i32) * DAY32 + i32::from(time))
+    }
+
+    /// `next_smart` without its loop: today's time if it's still ahead,
+    /// else tomorrow's (which always is: the third day it looks at is
+    /// never needed).
+    fn next_smart_closed(settings: &Settings, now: i64) -> i64 {
+        let at = |day: i32| {
+            let time = if weekday(day) < 5 {
+                settings.smart_weekday
+            } else {
+                settings.smart_weekend
+            };
+            day * DAY32 + i32::from(time)
+        };
+        let now = narrow(now);
+        let today = now.div_euclid(DAY32);
+        i64::from(if at(today) > now {
+            at(today)
+        } else {
+            at(today + 1)
+        })
+    }
+
+    /// Stands in for `next_at` below: its closed form, having checked
+    /// that it's asked only what [`next_at_is_its_closed_form`] covers
+    /// (the closed form checks the minute itself).
+    fn proven_next_at(time: u16, days: u8, after: i64) -> i64 {
+        assert!(time < 24 * 60 && days < 0x80);
+        next_at_closed(time, days, after)
+    }
+
+    /// As [`proven_next_at`], for `next_smart` (any settings; the
+    /// closed form checks the minute).
+    fn proven_next_smart(settings: &Settings, now: i64) -> i64 {
+        next_smart_closed(settings, now)
+    }
+
+    /// A time to check what's due at: as in
+    /// [`checking_what_is_due_never_panics`], far enough inside the
+    /// times the closed forms are proven for that `due` only asks about
+    /// those.
+    fn any_check() -> i64 {
+        let now = any_now();
+        kani::assume((3600 - 86_400..7_258_118_400 - 4 * 86_400).contains(&now));
+        now
+    }
+
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn next_at_is_its_closed_form() {
+        let time: u16 = kani::any();
+        kani::assume(time < 24 * 60);
+        let days: u8 = kani::any::<u8>() & 0x7F;
+        let after = any_now() / 60;
+        assert_eq!(
+            next_at(time, days, after),
+            next_at_closed(time, days, after)
+        );
+    }
+
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn next_smart_is_its_closed_form() {
+        let settings = any_settings();
+        let now = any_now() / 60;
+        assert_eq!(
+            next_smart(&settings, now),
+            next_smart_closed(&settings, now)
+        );
+    }
+
+    /// The first check after a reset, at any second of one week (that
+    /// of Monday 2026-11-09), with any settings and any two alarms from
+    /// the phone.
+    ///
+    /// (CBMC's limits: at any time from 1969 to 2200, it hadn't finished
+    /// in 20 minutes; nor with ten alarms, as the proof of no panics
+    /// above takes, or after any earlier check. One week has every
+    /// weekday and time of day, which is all `due` goes by; the alarms
+    /// are alike, and two can be at the same minute or apart; and what
+    /// an earlier check changes is which minutes this one looks at, not
+    /// what it does about an alarm in them. Arguments, though, where the
+    /// wider proof would have been one.)
+    ///
+    /// - Nothing rings: nothing changed.
+    /// - Something rings: all that changed is one-off alarms switching
+    ///   off (the watch's, and the phone's from `On` to `Rang`), and
+    ///   `phone_rang` says exactly whether any of the phone's did, which
+    ///   is what gets them saved (F4). What's said to ring was on, and if
+    ///   it's a one-off, is now off: it can't ring again tomorrow. The
+    ///   smart alarm has no switch of its own to turn off, but one-offs at
+    ///   its minute ring with it, as one wake-up, so they switch off as
+    ///   above.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    #[kani::stub(next_at, proven_next_at)]
+    #[kani::stub(next_smart, proven_next_smart)]
+    fn what_rings_is_switched_off_and_said_so() {
+        let (mut settings, mut phone) = (any_settings(), any_two_phone_alarms());
+        let mut state = State::default();
+        let (settings_before, phone_before) = (settings, phone);
+        let into_the_week: u32 = kani::any();
+        kani::assume(into_the_week < 7 * 86_400);
+        let now = 20_766 * 86_400 + i64::from(into_the_week);
+        let due = state.due(&mut settings, &mut phone, now, kani::any());
+        let Some(due) = due else {
+            assert!(settings == settings_before && phone == phone_before);
+            return;
+        };
+
+        // The settings: only switches, and only off.
+        let switched = Settings {
+            at: settings.at,
+            ..settings_before
+        };
+        assert_eq!(settings, switched);
+        assert!((0..ALARMS).all(|i| settings_before.at[i] || !settings.at[i]));
+        // The phone's: only one-offs that were on, to `Rang`.
+        assert_eq!(phone.alarms().len(), phone_before.alarms().len());
+        let mut phone_rang = false;
+        for (was, is) in phone_before.alarms().iter().zip(phone.alarms()) {
+            if was != is {
+                let rang = PhoneAlarm {
+                    switch: Switch::Rang,
+                    ..*was
+                };
+                assert!(was.on() && was.days == 0 && *is == rang);
+                phone_rang = true;
+            }
+        }
+        assert_eq!(due.phone_rang, phone_rang);
+
+        match due.kind {
+            Kind::At(i) => {
+                let i = usize::from(i);
+                assert!(settings_before.at[i] && !settings.at[i]);
+            }
+            Kind::Phone(i) => {
+                let i = usize::from(i);
+                let (was, is) = (phone_before.alarms()[i], phone.alarms()[i]);
+                assert!(was.on());
+                assert_eq!(is.on(), was.days != 0);
+            }
+            Kind::Smart => assert!(settings.smart),
+            // Durations are `elapsed`'s.
+            Kind::Timer(_) | Kind::Snooze => unreachable!(),
+        }
+    }
+
+    /// A timer or snooze that has run out rings once: `elapsed` disarms
+    /// what it returns, returns only what was armed and has run out, and
+    /// leaves the rest as it was; and says nothing only if nothing has.
+    #[kani::proof]
+    fn a_duration_that_ran_out_is_disarmed() {
+        let mut state = State::default();
+        for timer in 0..TIMERS {
+            if kani::any() {
+                state.start_timer(timer, &any_settings(), any_uptime());
+            }
+        }
+        if kani::any() {
+            state.snooze(any_uptime());
+        }
+        let before = state;
+        let uptime = any_uptime();
+        let out = |at: Option<i64>| at.is_some_and(|at| at <= uptime);
+
+        match state.elapsed(uptime) {
+            Some(Kind::Snooze) => {
+                assert!(out(before.snooze_at) && state.snooze_at.is_none());
+                assert_eq!(state.timers, before.timers);
+            }
+            Some(Kind::Timer(i)) => {
+                let i = usize::from(i);
+                assert!(out(before.timers[i]) && state.timers[i].is_none());
+                assert_eq!(state.timers[1 - i], before.timers[1 - i]);
+                assert_eq!(state.snooze_at, before.snooze_at);
+                // What's left of it shows as none, not as a negative time.
+                assert_eq!(state.remaining(i, uptime), None);
+            }
+            Some(_) => unreachable!(),
+            None => {
+                assert!(!out(before.snooze_at) && !before.timers.iter().any(|&t| out(t)));
+                assert_eq!(state.timers, before.timers);
+                assert_eq!(state.snooze_at, before.snooze_at);
+            }
+        }
+    }
 }
