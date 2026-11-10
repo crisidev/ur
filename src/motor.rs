@@ -32,50 +32,54 @@ pub struct Pattern {
 }
 
 impl Pattern {
-    pub const STOP: Self = Self {
-        steps: &[],
-        repeat_from: None,
-    };
+    /// A pattern, checked: every pattern below is a constant made by
+    /// this, so one that `motor_task` would play wrongly fails the build
+    /// rather than the wearer.
+    const fn new(steps: &'static [u16], repeat_from: Option<u8>) -> Self {
+        if let Some(start) = repeat_from {
+            let start = start as usize;
+            // The loop starts on an "on" that's there, and has an "off"
+            // for every "on": looping back from an "on" to an "on" would
+            // run the two together, with the motor on for both.
+            assert!(start.is_multiple_of(2) && start < steps.len());
+            assert!((steps.len() - start).is_multiple_of(2));
+            // And it takes time: one of no length would have `motor_task`
+            // go round it without ever waiting, and no other task would
+            // run again (until the watchdog's reset).
+            let mut ms = 0;
+            let mut i = start;
+            while i < steps.len() {
+                ms += steps[i] as u32;
+                i += 1;
+            }
+            assert!(ms > 0);
+        }
+        Self { steps, repeat_from }
+    }
+
+    pub const STOP: Self = Self::new(&[], None);
     /// A notification: noticeable, but brief.
-    pub const NOTIFY: Self = Self {
-        steps: &[60],
-        repeat_from: None,
-    };
+    pub const NOTIFY: Self = Self::new(&[60], None);
     /// The next turn is near (see [`crate::route`]): two taps, so it isn't
     /// taken for a notification.
-    pub const TURN: Self = Self {
-        steps: &[60, 120, 60],
-        repeat_from: None,
-    };
+    pub const TURN: Self = Self::new(&[60, 120, 60], None);
     /// Incoming call: rings until stopped.
-    pub const RING: Self = Self {
-        steps: &[400, 600],
-        repeat_from: Some(0),
-    };
+    pub const RING: Self = Self::new(&[400, 600], Some(0));
     /// Timers: two quick pulses and a pause, so it's not mistaken for a
     /// call; until stopped. At full strength from the start: a timer is
     /// set by someone awake, who wants to know it's done (the tea, the
     /// oven), perhaps across a noisy kitchen.
-    pub const TIMER: Self = Self {
-        steps: &FULL,
-        repeat_from: Some(0),
-    };
+    pub const TIMER: Self = Self::new(&FULL, Some(0));
     /// Alarms (snoozes too): from faint, sparse ticks to [`Pattern::TIMER`]'s
     /// full strength over [`ALARM_RAMP`], then that until stopped. Being
     /// shaken awake is unpleasant, and a gentle start is often enough to
     /// wake from light sleep.
-    pub const ALARM: Self = Self {
-        steps: &ALARM_STEPS,
-        repeat_from: Some(RAMP_LEN as u8),
-    };
+    pub const ALARM: Self = Self::new(&ALARM_STEPS, Some(RAMP_LEN as u8));
     /// "Find my watch": as loud as the motor gets, long pulses with short
     /// breaks, to rattle whatever the watch lies on, for someone looking
     /// for it rather than wearing it. (At 80 % on, it costs a few mAh over
     /// [`crate::ui`]'s two minutes of it, a percent or two of the battery.)
-    pub const FIND: Self = Self {
-        steps: &[800, 200],
-        repeat_from: Some(0),
-    };
+    pub const FIND: Self = Self::new(&[800, 200], Some(0));
 }
 
 /// Two quick pulses and a pause.
