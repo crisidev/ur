@@ -71,8 +71,6 @@ pub use crate::gesture::{Gesture, Touch};
 
 pub(crate) const ADDRESS: u8 = 0x15;
 /// First register of the touch report: gesture, finger count, X, Y.
-/// (`touch-probe` reads from 0x00 instead.)
-#[cfg(not(feature = "touch-probe"))]
 const REG_REPORT: u8 = 0x01;
 /// Interrupt control.
 const REG_IRQ_CTL: u8 = 0xFA;
@@ -250,18 +248,11 @@ pub async fn touch_task(
                 }
 
                 let mut report = [0u8; 6];
-                // With `touch-probe`, the same six bytes come out of a
-                // wider read, which it logs whole.
-                #[cfg(not(feature = "touch-probe"))]
                 let read = with_timeout(
                     I2C_TIMEOUT,
                     i2c.write_read(ADDRESS, &[REG_REPORT], &mut report),
                 )
                 .await;
-                #[cfg(feature = "touch-probe")]
-                let read =
-                    with_timeout(I2C_TIMEOUT, crate::touch_probe::read(&mut i2c, &mut report))
-                        .await;
                 if let Err(e) = crate::i2c::outcome(read) {
                     warn!("touch: read failed: {}", e);
                     crate::i2c::reset_controller().await;
@@ -360,9 +351,6 @@ async fn configure(i2c: &mut Device) -> bool {
                 warn!("touch: setting the long press time failed: {}", e);
                 crate::i2c::reset_controller().await;
             }
-            // While the chip still listens, as it only does now.
-            #[cfg(feature = "touch-probe")]
-            crate::touch_probe::dump_settings(i2c).await;
             true
         }
         Err(e) => {

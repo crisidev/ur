@@ -477,22 +477,6 @@ python3 scripts/flash-stress.py target/thumbv7em-none-eabihf/release/ur --minute
 below.) Its saves stay behind under a key of their own
 (`storage::key::STRESS`), harmless to a normal build.
 
-`scripts/touch_probe.py` looks for a touch controller register that
-tells a fingertip from a bigger contact (a knuckle, a palm, a forearm
-brushing the edge). A build with the `touch-probe` feature reads 0x00–0x0F
-and 0xB0–0xB3 on every touch report and logs them all (see
-`src/touch_probe.rs`). Capture its log while someone touches the dev kit
-as `guide` asks, then analyse it:
-
-```sh
-DEFMT_RTT_BUFFER_SIZE=2048 RTT_SECS=900 cargo run --release --features touch-probe 2>&1 | tee tmp/touch-probe.log
-python3 scripts/touch_probe.py guide    # in another terminal, with the screen on
-python3 scripts/touch_probe.py analyse tmp/touch-probe.log --csv tmp/touch-probe.csv
-```
-
-(The bigger RTT buffer, as a finger down logs ~100 lines a second;
-`analyse` counts the lines dropped anyway.)
-
 A build with the `wedge-i2c` feature checks that the sensors come back
 from a stuck bus by themselves, as they must when a reset (a probe's, a
 watchdog's, an update's) leaves one holding it: for its first 5 s, it
@@ -707,9 +691,9 @@ gh release download v0.9.0 --pattern sha256.sum --dir published
 ## CI
 
 - `check.yml`: rustfmt, clippy (both variants and the dev kit's
-  `compare`, `flash-stress` and `touch-probe` builds, with the pinned
-  toolchain and on beta; and the simulator), [shellcheck], and that the Python
-  scripts parse.
+  `compare` and `flash-stress` builds, with the pinned toolchain and on
+  beta; and the simulator), [shellcheck], and that the Python scripts
+  parse.
 - `test.yml`: the host tests (pinned and beta), the simulator's tests
   and screenshots (as the run's `screenshots` artifact), and a packaged
   build (by `release.sh`, so without `debug-input`) of every PR and

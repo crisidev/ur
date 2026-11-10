@@ -114,8 +114,6 @@ mod storage;
 mod system_off;
 mod temperature;
 mod touch;
-#[cfg(feature = "touch-probe")]
-mod touch_probe;
 mod ui;
 mod ui_loop;
 mod wake;
