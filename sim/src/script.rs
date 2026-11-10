@@ -109,6 +109,8 @@ Output:
                              clock face, for someone to read)
   expect steps N             fail unless today's steps are N, on the clock
                              face and the Today screen alike
+  expect theme NAME          fail unless the colour scheme the UI picks is
+                             NAME (in any case), dim or not
   settings                   what the flash holds (see --flash), as the
                              firmware decodes it
   store KEY HEX              save HEX under storage key KEY (see the
@@ -553,6 +555,13 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
         "stop" => {
             let recorded = crate::record::stop()?;
             watch.log(recorded);
+        }
+        "expect" if arg(0) == Some("theme") => {
+            let name = need(1, "NAME")?;
+            let shown = watch.app.theme().palette().name;
+            if !shown.eq_ignore_ascii_case(name) {
+                return Err(format!("expected theme {name}, not {shown}"));
+            }
         }
         "expect" if arg(0) == Some("steps") => {
             // Today's total, as the clock face shows it, and as the

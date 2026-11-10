@@ -109,11 +109,13 @@ jobs:
       - name: cargo test
         working-directory: sim
         run: cargo test --locked --no-default-features
-      # And every theme's own screenshots (src/themes/<name>/shots/), with
-      # every theme built in; the run above checked the default's.
-      - name: every theme's screenshots
+      # And all of them again with every theme built in: each theme's own
+      # screenshots (src/themes/<name>/shots/), which the run above only
+      # checked the default's of, and that nothing else assumes the
+      # default is the only theme (THEME's next scheme, say).
+      - name: cargo test, every theme
         working-directory: sim
-        run: cargo test --locked --no-default-features --features themes-all --test scripts every_themes_screenshots
+        run: cargo test --locked --no-default-features --features themes-all
       # What the tests drew, to look at (what this commit's UI looks like,
       # without a watch), and, when they failed on a difference, the
       # images of it: under each script's name, `rendered/` and

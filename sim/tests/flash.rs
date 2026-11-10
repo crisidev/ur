@@ -93,11 +93,24 @@ fn settings_survive_between_runs() {
     assert!(log.contains("alarms: not stored"), "{log}");
 }
 
+/// Where a run's THEME tap led: the scheme its `theme: NAME` line names.
+fn tapped_to(log: &str) -> &str {
+    let (_, rest) = log.rsplit_once("] theme: ").expect("THEME was tapped");
+    rest.lines().next().expect("a line")
+}
+
+/// Taps THEME on Settings (right of the clock, past the alarms), then
+/// lists the settings.
+const TAP_THEME: &str = "left\nleft\nwait 1s\ntap 40,20\nwait 1s\nexpect screen-on\nsettings\n";
+
+/// The same, by day in Oslo.
+const DAY: &str = "time 2026-06-21 12:00 +02:00\nlocation 59.91 10.75\nwait 2s\n";
+
 /// A watch upgraded from 0.10, which saved each side's theme as an index
 /// into retro's schemes (under keys 17 and 18), boots with the same
 /// schemes: TERMINAL at night and PARCHMENT by day, the second of each.
-/// Once the wearer picks another, it's saved by its ID, which boot then
-/// goes by.
+/// Once the wearer picks another (whichever comes next, with whatever
+/// themes are built in), it's saved by its ID, which boot then goes by.
 #[test]
 fn themes_saved_as_indices_carry_over() {
     let dir = dir("flash-theme-migration");
@@ -111,32 +124,38 @@ fn themes_saved_as_indices_carry_over() {
     );
     assert!(ok, "{log}");
 
-    // At night (the sun's unknown), THEME steps on from TERMINAL to
-    // ARCADE; from ARCADE, as boot would pick with nothing saved, it
-    // would be TERMINAL.
-    let settings_tap = "left\nleft\nwait 1s\ntap 40,20\nwait 1s\n";
-    let (ok, log) = run(&dir, "night.txt", settings_tap, &["--flash", flash]);
+    // At night (the sun's unknown), TERMINAL, as 0.10 had it.
+    let night = format!("expect theme terminal\n{TAP_THEME}");
+    let (ok, log) = run(&dir, "night.txt", &night, &["--flash", flash]);
     assert!(ok, "{log}");
-    assert!(log.contains("theme: ARCADE"), "{log}");
-    // By day in Oslo, from PARCHMENT to HANDHELD.
-    let day =
-        format!("time 2026-06-21 12:00 +02:00\nlocation 59.91 10.75\nwait 2s\n{settings_tap}");
+    let picked = tapped_to(&log);
+    assert_ne!(picked, "TERMINAL", "{log}");
+    let saved = settings(&log);
+    assert!(
+        saved
+            .iter()
+            .any(|s| s.starts_with(&format!("night theme: {picked} ("))),
+        "{log}"
+    );
+    // By day in Oslo, PARCHMENT.
+    let day = format!("{DAY}expect theme parchment\n{TAP_THEME}");
     let (ok, log) = run(&dir, "day.txt", &day, &["--flash", flash]);
     assert!(ok, "{log}");
-    assert!(log.contains("theme: HANDHELD"), "{log}");
+    let picked_by_day = tapped_to(&log).to_owned();
+    assert_ne!(picked_by_day, "PARCHMENT", "{log}");
 
     // Both now saved by ID, which boot goes by, over the old index.
     let (ok, log) = run(&dir, "after.txt", "settings\n", &["--flash", flash]);
     assert!(ok, "{log}");
     let saved = settings(&log);
     assert!(
-        saved.iter().any(|s| s.starts_with("night theme: ARCADE (")),
+        saved
+            .iter()
+            .any(|s| s.starts_with(&format!("night theme: {picked} ("))),
         "{log}"
     );
-    assert!(
-        saved.iter().any(|s| s.starts_with("day theme: HANDHELD (")),
-        "{log}"
-    );
+    let by_day = format!("day theme: {picked_by_day} (");
+    assert!(saved.iter().any(|s| s.starts_with(&by_day)), "{log}");
 }
 
 /// `palette::id`: a scheme's name's 32-bit FNV-1a hash.
@@ -157,20 +176,21 @@ fn id_hex(name: &str) -> String {
         .collect()
 }
 
-/// A watch that saved a scheme this build hasn't, as when a build with
-/// another theme (here "TOKYO NIGHT" and "TOKYO DAY", a theme of the
-/// future) is followed by one without it. Its IDs are written straight
-/// into storage, as that build would have saved them: boot can't tell
-/// them from any other scheme's not built in. Each side shows its first
-/// scheme then (ARCADE, HANDHELD); the IDs stay in flash, for that theme
-/// to find again if it comes back, until the wearer picks one for the
-/// side, which then saves its own; and nothing gets stuck on the way.
+/// A watch that saved a scheme this build hasn't, as when a build with a
+/// theme is followed by one without it. Its IDs are written straight into
+/// storage, as that build would have saved them, of names no scheme has
+/// (no such scheme is in the repository, as only retro is): boot can't
+/// tell them from any other scheme's not built in. Each side shows its
+/// first scheme then (retro's, first in `themes!`); the IDs stay in flash,
+/// for that theme to find again if it comes back, until the wearer picks
+/// one for the side, which then saves its own; and nothing gets stuck on
+/// the way.
 #[test]
 fn a_saved_scheme_not_built_in_shows_the_first_until_another_is_picked() {
     let dir = dir("flash-unknown-scheme");
     let flash = dir.join("flash.bin");
     let flash = flash.to_str().expect("UTF-8");
-    let (night, day) = (id_hex("TOKYO NIGHT"), id_hex("TOKYO DAY"));
+    let (night, day) = (id_hex("NO SUCH SCHEME"), id_hex("NOR THIS ONE"));
     let (ok, log) = run(
         &dir,
         "other.txt",
@@ -180,62 +200,47 @@ fn a_saved_scheme_not_built_in_shows_the_first_until_another_is_picked() {
     assert!(ok, "{log}");
 
     // Boots, falls back on both sides, and saves nothing over the IDs.
-    let (ok, log) = run(&dir, "boot.txt", "wait 1m\nsettings\n", &["--flash", flash]);
-    assert!(ok, "{log}");
-    let saved = settings(&log);
-    assert!(
-        saved
-            .iter()
-            .any(|s| s.starts_with("night theme: ARCADE (") && s.ends_with(", not built in)")),
-        "{log}"
-    );
-    assert!(
-        saved
-            .iter()
-            .any(|s| s.starts_with("day theme: HANDHELD (") && s.ends_with(", not built in)")),
-        "{log}"
-    );
-
-    // At night, THEME steps on from ARCADE, the first; and that, and only
-    // that side, is saved by its own ID.
-    let tap_theme = "left\nleft\nwait 1s\ntap 40,20\nwait 1s\nexpect screen-on\n";
     let (ok, log) = run(
         &dir,
-        "night.txt",
-        &format!("{tap_theme}settings\n"),
+        "boot.txt",
+        "expect theme arcade\nwait 1m\nsettings\n",
         &["--flash", flash],
     );
     assert!(ok, "{log}");
-    assert!(log.contains("theme: TERMINAL"), "{log}");
+    let saved = settings(&log);
+    let unknown = |side: &str, first: &str| {
+        let line = format!("{side} theme: {first} (");
+        saved
+            .iter()
+            .any(|s| s.starts_with(&line) && s.ends_with(", not built in)"))
+    };
+    assert!(unknown("night", "ARCADE"), "{log}");
+    assert!(unknown("day", "HANDHELD"), "{log}");
+
+    // At night, THEME steps on from ARCADE, the first; and that, and only
+    // that side, is saved by its own ID.
+    let (ok, log) = run(&dir, "night.txt", TAP_THEME, &["--flash", flash]);
+    assert!(ok, "{log}");
+    let picked = tapped_to(&log).to_owned();
     let saved = settings(&log);
     // As `settings` shows an ID: so this file's hash is the firmware's.
-    let terminal = format!("night theme: TERMINAL ({:#010x})", id("TERMINAL"));
-    assert!(saved.contains(&terminal.as_str()), "{log}");
-    assert!(
-        saved
-            .iter()
-            .any(|s| s.ends_with(", not built in)") && s.starts_with("day theme: HANDHELD")),
-        "{log}"
-    );
+    let line = format!("night theme: {picked} ({:#010x})", id(&picked));
+    assert!(saved.contains(&line.as_str()), "{log}");
+    let still = |s: &&str| s.starts_with("day theme: HANDHELD") && s.ends_with(", not built in)");
+    assert!(saved.iter().any(still), "{log}");
 
     // By day in Oslo, the same, from HANDHELD.
-    let day_tap = format!(
-        "time 2026-06-21 12:00 +02:00\nlocation 59.91 10.75\nwait 2s\n{tap_theme}settings\n"
-    );
+    let day_tap = format!("{DAY}expect theme handheld\n{TAP_THEME}");
     let (ok, log) = run(&dir, "day.txt", &day_tap, &["--flash", flash]);
     assert!(ok, "{log}");
-    assert!(log.contains("theme: PARCHMENT"), "{log}");
+    let picked_by_day = tapped_to(&log).to_owned();
     let saved = settings(&log);
+    let line = format!("day theme: {picked_by_day} ({:#010x})", id(&picked_by_day));
+    assert!(saved.contains(&line.as_str()), "{log}");
     assert!(
         saved
             .iter()
-            .any(|s| s.starts_with("day theme: PARCHMENT (") && !s.contains("not built in")),
-        "{log}"
-    );
-    assert!(
-        saved
-            .iter()
-            .any(|s| s.starts_with("night theme: TERMINAL (")),
+            .any(|s| s.starts_with(&format!("night theme: {picked} ("))),
         "{log}"
     );
 

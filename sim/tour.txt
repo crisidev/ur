@@ -78,7 +78,12 @@ shot 09-paused.png
 
 # Right of the alarms (and the phone's alarms), the settings: a finger
 # swiping left (through the touch task's recogniser), then two more.
-# Tapping THEME switches theme. Then the info screen, last on the right.
+# Tapping THEME switches to the next colour scheme for the time of day
+# (it's still light, at 15:42 in Oslo in November): PARCHMENT, whatever
+# else is built in, as it comes straight after HANDHELD. Then back to
+# HANDHELD by name (another tap could be another theme's, with every
+# theme built in), with the sun's say again. Then the info screen, last
+# on the right.
 press 60,40
 wait 50ms
 press 20,40
@@ -88,11 +93,14 @@ wait 1s
 left
 left
 wait 1s
+expect theme handheld
 shot 10-settings.png
 tap 40,20
 wait 1s
+expect theme parchment
 shot 11-settings-theme.png
-tap 40,20
+theme handheld
+theme auto
 wait 2s
 left
 wait 1s
