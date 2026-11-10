@@ -20,6 +20,7 @@ use crate::geo;
 use crate::gesture::{Gesture, Touch};
 use crate::heart_reading;
 use crate::route;
+use crate::themes::Theme as _;
 use crate::ui::{PhoneEvent, Unpaired};
 use crate::watch::{Watch, find_theme, local_second};
 use crate::{InputEvent, alarm, debug};
@@ -518,7 +519,8 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
                 }
                 (false, true) => crate::shot::save_mimicked(&path, watch.backlight)?,
                 (false, false) => {
-                    watch.screenshot(&path, arg(1).map(find_theme).transpose()?)?;
+                    let theme = arg(1).map(find_theme).transpose()?;
+                    watch.screenshot(&path, theme.map(|t| t.palette()))?;
                 }
             }
             watch.log(format!("screenshot: {}", path.display()));

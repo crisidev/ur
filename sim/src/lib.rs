@@ -124,6 +124,9 @@ mod storage;
 #[path = "../../src/temperature.rs"]
 #[allow(dead_code)]
 mod temperature;
+#[path = "../../src/themes/mod.rs"]
+mod themes;
+
 #[path = "../../src/ui.rs"]
 #[allow(dead_code)]
 mod ui;

@@ -6,8 +6,14 @@
 //! resolves them to RGB when pushing pixels, so switching palette is a
 //! matter of swapping it and repainting; nothing has to be re-rendered.
 //!
-//! The themes lean on classic constraints: few colours per theme, ramps of a
-//! single hue, and dithering (the transition) to fake in-between shades.
+//! Each theme's colour schemes have a palette, and one for the dim look
+//! (see `crate::themes`), and the theme draws the screens with these
+//! roles. Their names say what retro (`crate::themes::retro`), the first
+//! theme, uses each for; another theme may give its 16 slots meanings of
+//! its own.
+//!
+//! Pure data, with nothing of the firmware's but this: `host-tests/theme`
+//! includes it, with retro's schemes, to check their colours.
 
 /// A colour role: an index into the active palette.
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -64,6 +70,7 @@ const _: () = assert!(Color::COUNT <= 16, "the canvas holds 4-bit roles");
 /// half-tones after it).
 #[repr(C)]
 pub struct Palette {
+    /// What Settings' THEME row shows, for a scheme's palette.
     pub name: &'static str,
     /// Each role as the two bytes the panel expects: RGB565, big-endian.
     colors: [[u8; 2]; Color::COUNT],
@@ -81,8 +88,8 @@ impl Palette {
     /// both, unless the palette half-tones it, when the odd columns are the
     /// background. That's 1-pixel vertical stripes at the panel's own
     /// resolution, a third of a canvas pixel, too fine to see at ~0.1 mm:
-    /// they read as a grey, where the panel can't show one (see
-    /// [`GLANCE`]).
+    /// they read as a grey, where the panel can't show one (retro's dim
+    /// look, `themes::retro::GLANCE`, half-tones its grey so).
     ///
     /// Stripes rather than a checkerboard, for the panel's dot inversion
     /// (the polarity it drives each subpixel with alternates from one to
@@ -103,7 +110,7 @@ impl Palette {
 }
 
 /// Builds a palette from `0xRRGGBB` values listed in [`Color`] role order.
-const fn palette(name: &'static str, hex: [u32; Color::COUNT]) -> Palette {
+pub const fn palette(name: &'static str, hex: [u32; Color::COUNT]) -> Palette {
     let mut colors = [[0; 2]; Color::COUNT];
     let mut i = 0;
     while i < Color::COUNT {
@@ -124,96 +131,28 @@ const fn palette(name: &'static str, hex: [u32; Color::COUNT]) -> Palette {
     }
 }
 
-// Three themes survived trying six on the real panel (also tried: amber
-// terminal, '80s home-computer blue, and the original navy/teal); Terminal
-// was designed afterwards as a second dark theme. They are
-// grouped by whether they suit darkness or daylight; the UI picks the group
-// from sunrise/sunset and remembers a choice within each group.
-//
-// Statics, not consts: the canvas detects palette changes by address.
+impl Palette {
+    /// The same palette, with `roles` (a bit each, bit `n` for `Color(n)`)
+    /// half-toned with the background: see [`Palette::columns`].
+    pub const fn halftone(self, roles: u16) -> Self {
+        Self {
+            halftone: roles,
+            ..self
+        }
+    }
 
-/// Black cabinet, white-to-grey text, red shadows and accents.
-#[rustfmt::skip]
-pub static ARCADE: Palette = palette("ARCADE", [
-    0x101010, 0x5a1010, 0xe8e8e8, 0xa8a8a8, 0x606060, 0x303030, 0xd82828,
-    0xd82828, 0x101010, 0xd82828, 0xff9090, 0xffffff, 0xff5050, 0xffffff,
-    0xd82828, 0xa8a8a8,
-]);
-
-/// A hacker terminal: phosphor green on near-black, everything one hue at
-/// different intensities. The drop shadow is a dim green "glow" rather than
-/// a shadow, and only low battery breaks the monochrome (near-white). Sleep
-/// stages are intensities too: deep the hottest (almost white), REM full
-/// green, light dim.
-#[rustfmt::skip]
-pub static TERMINAL: Palette = palette("TERMINAL", [
-    0x020c04, 0x0b3d18, 0x4dff7a, 0x2aa84a, 0x146b2c, 0x0a2a12, 0xb8ffc8,
-    0x2aa84a, 0x020c04, 0x4dff7a, 0xe0ffe8, 0xb8ffc8, 0xf0fff0, 0xe0ffe8,
-    0x4dff7a, 0x2aa84a,
-]);
-
-/// Four shades of olive green, dark on light, like an early handheld LCD,
-/// plus one dash of red, like its power light: for the heart, low battery,
-/// an update's progress, and REM sleep. Nothing else.
-#[rustfmt::skip]
-pub static HANDHELD: Palette = palette("HANDHELD", [
-    0xc3cf8c, 0x8a9f3a, 0x1e2a14, 0x3c5428, 0x8a9f3a, 0x8a9f3a, 0x3c5428,
-    0x1e2a14, 0x8a9f3a, 0xb8342a, 0xe8836c, 0x3c5428, 0xb8342a, 0x1e2a14,
-    0xb8342a, 0x3c5428,
-]);
-
-/// Brown ink on cream, muted red: an old printed game manual.
-#[rustfmt::skip]
-pub static PARCHMENT: Palette = palette("PARCHMENT", [
-    0xe8dcb8, 0xc0a878, 0x3a2414, 0x6a4a2a, 0xa08860, 0xd0c098, 0xa02820,
-    0xa02820, 0xe8dcb8, 0xa02820, 0xe07060, 0x4a6a2a, 0xa02820, 0x3a2414,
-    0xa02820, 0x6a4a2a,
-]);
-
-/// The dim look (see `ui`: a glance, a notification on a dark screen, the
-/// quiet night): white on black, whatever the theme, with red for what
-/// comes second. Black pixels are the cheapest on this panel only in that
-/// the backlight is dimmed for it; mostly, it's what reads best at a
-/// glance.
-///
-/// Only black, white and red: the panel shows the dim look in idle mode
-/// (see `display::Display::set_idle`), which keeps just the top bit of
-/// each of red, green, and blue, so greys would come out white or black
-/// (faint text black, i.e. invisible), bar the one half-tone below.
-/// Pure red is one of the eight colours it can show, and the one that
-/// keeps the night's dark adaptation, as astronomers' and cockpits'
-/// lights do. So the text is white, and labels, titles, hints and
-/// accents (`TEXT_DIM`, `TEXT_FAINT`, `ACCENT`) are red: a
-/// notification's app and time, the clock's seconds and colon, the step
-/// blocks. That's the one step of hierarchy the dark themes get from
-/// their greys and their accent. The heart and a low battery are red, as in the
-/// other themes; shadows black.
-///
-/// Last night's stages are red, white and grey: deep white, the heaviest
-/// ink, as in every theme; REM red, the theme's red elsewhere too; and
-/// light sleep, the lightest, grey ([`Color::GREY`]): white half-toned
-/// with black, the panel's columns alternately lit (see
-/// [`Palette::columns`]), as idle mode has no grey of its own. Light sleep
-/// is usually the most of a night, so the bar is mostly a quiet grey,
-/// with the deep and REM spells standing out of it.
-///
-/// The track of bars and gauges (the step blocks not yet filled) is that
-/// grey too, white half-toned: black would leave the empty blocks
-/// invisible, and red would make one more red thing competing for
-/// attention.
-/// TODO: idle mode has five more colours (green, blue, and their pairs),
-/// if the dim look may ever have more colour than red.
-#[rustfmt::skip]
-pub static GLANCE: Palette = Palette {
-    halftone: 1 << Color::GREY.0 | 1 << Color::TRACK.0,
-    ..palette("GLANCE", [
-        0x000000, 0x000000, 0xffffff, 0xff0000, 0xff0000, 0xffffff, 0xff0000,
-        0x000000, 0x000000, 0xff0000, 0xffffff, 0xffffff, 0xff0000, 0xffffff,
-        0xff0000, 0xffffff,
-    ])
-};
-
-pub static DARK: [&Palette; 2] = [&ARCADE, &TERMINAL];
-
-/// Themes for daylight. Long press cycles within this list by day.
-pub static LIGHT: [&Palette; 2] = [&HANDHELD, &PARCHMENT];
+    /// Whether this is a dark palette: light ink on a darker background,
+    /// rather than dark ink on paper. By the background's lightness
+    /// against the text's (their RGB565 channels summed, green's six bits
+    /// counting as much as the five of red and of blue together), which
+    /// is all a drawing needs to pick its shading by (retro's grid
+    /// buttons do).
+    pub fn is_dark(&self) -> bool {
+        let lightness = |color| {
+            let rgb565 = u16::from_be_bytes(self.bytes(color));
+            let (r, g, b) = (rgb565 >> 11, (rgb565 >> 5) & 0x3F, rgb565 & 0x1F);
+            r + g + b
+        };
+        lightness(Color::BACKGROUND) < lightness(Color::TEXT)
+    }
+}

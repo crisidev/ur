@@ -359,7 +359,7 @@ pub async fn shut_down(
     if !panel_awake {
         display.wake().await;
     }
-    crate::ui::render_off(canvas, reason);
+    // The canvas holds why (see `ui::App::render_off`).
     canvas.flush(display).await;
     if !panel_awake {
         display.show().await;

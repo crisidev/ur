@@ -18,7 +18,7 @@ pub use self::marquee::{MARQUEE_FRAME, marquee_cycle, marquee_offset};
 
 use crate::display::Display;
 use crate::font;
-use crate::palette::{self, Palette};
+use crate::palette::Palette;
 use crate::qr;
 
 pub use crate::palette::Color;
@@ -70,12 +70,14 @@ pub struct Canvas {
 }
 
 impl Canvas {
-    pub const fn new() -> Self {
+    /// A canvas showing in `palette` until the UI sets one (see
+    /// [`Canvas::set_palette`]), which it does before the first frame.
+    pub const fn new(palette: &'static Palette) -> Self {
         Self {
             back: [0; BYTES],
             front: [0; BYTES],
             front_valid: false,
-            palette: &palette::ARCADE,
+            palette,
             qr: [0; 16],
             qr_wanted: false,
             qr_shown: false,

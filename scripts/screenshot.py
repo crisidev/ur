@@ -59,6 +59,7 @@ the day look at night): the canvas holds colour roles, not colours.
 """
 
 import argparse
+import re
 import struct
 import subprocess
 import sys
@@ -166,14 +167,17 @@ def png(path: Path, pixels: list[tuple[int, int, int]], width: int, height: int)
 
 
 def theme_symbol(elf: Path, name: str) -> int:
-    # `palette::NAME`, whatever the crate's mangling hash.
+    # A colour scheme: a static called NAME anywhere in a theme's modules,
+    # `themes::<theme>::…::NAME` (v0 mangling: `6themes<len><theme>`, any
+    # more modules, then `<len><NAME>`), whatever the crate's hash. Its
+    # static starts with its palette (retro's type is `repr(transparent)`).
     out = subprocess.run(["llvm-nm", str(elf)], capture_output=True, text=True, check=True)
-    suffix = f"7palette{len(name)}{name}"
+    scheme = re.compile(rf"6themes\d+[a-z0-9_]+(\d+[a-z0-9_]+)*?{len(name)}{re.escape(name)}$")
     for line in out.stdout.splitlines():
         parts = line.split()
-        if len(parts) == 3 and parts[2].endswith(suffix):
+        if len(parts) == 3 and scheme.search(parts[2]):
             return int(parts[0], 16)
-    sys.exit(f"no theme {name} in {elf}")
+    sys.exit(f"no colour scheme {name} in {elf}")
 
 
 def qr_matrix(key: bytes) -> list[int]:

@@ -41,6 +41,7 @@ use crate::gb::{self, Incoming, LineBuffer};
 use crate::gesture::{Gesture, Touch};
 use crate::script;
 use crate::shot;
+use crate::themes::Theme as _;
 use crate::ui::{App, PhoneEvent, Status, ThemeChoice, Unpaired};
 use crate::ui_loop::{Stored, UiLoop};
 use crate::{InputEvent, activity, debug, storage, time};
@@ -737,7 +738,7 @@ impl<'a> Follower<'a> {
             devkit,
             rig,
             app: boot_app(&boot),
-            canvas: Box::new(Canvas::new()),
+            canvas: Box::new(Canvas::new(crate::themes::get(false, 0).palette())),
             display: Display,
             replayed: 0,
             connected: false,

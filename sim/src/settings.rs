@@ -5,8 +5,9 @@
 //! saved, and the window then boots with it.
 
 use crate::storage::{self, key};
+use crate::themes::{self, Theme as _};
 use crate::watch::run;
-use crate::{alarm, brightness, buttons, geo, palette};
+use crate::{alarm, brightness, buttons, geo};
 
 /// The stored settings, a line each; what isn't stored says so (the UI
 /// then starts with its default).
@@ -19,14 +20,14 @@ async fn read() -> Vec<String> {
     let none = || "not stored".to_owned();
 
     let themes = [
-        ("light theme", key::THEME_LIGHT, &palette::LIGHT[..]),
-        ("dark theme", key::THEME_DARK, &palette::DARK[..]),
+        ("light theme", key::THEME_LIGHT, true),
+        ("dark theme", key::THEME_DARK, false),
     ];
-    for (what, key, group) in themes {
+    for (what, key, day) in themes {
         let value = storage::load::<1>(key).await.map_or_else(none, |[i]| {
             // As `App::new` picks one: out-of-range indices wrap around.
-            let theme = group[usize::from(i) % group.len()];
-            format!("{} ({i})", theme.name)
+            let theme = themes::get(day, usize::from(i));
+            format!("{} ({i})", theme.palette().name)
         });
         lines.push(format!("{what}: {value}"));
     }

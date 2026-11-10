@@ -44,7 +44,8 @@ pub mod key {
     /// Bluetooth bonds, one per slot.
     pub const BONDS: [u8; 2] = [1, 2];
     // 16: retired (a single theme index, before themes followed the sun).
-    /// The chosen theme within [`crate::palette::LIGHT`] and `DARK`.
+    /// The chosen scheme within those for daylight and for darkness (see
+    /// [`crate::themes`]), as an index.
     pub const THEME_LIGHT: u8 = 17;
     pub const THEME_DARK: u8 = 18;
     // 19: retired (sunrise/sunset from weather, before we computed them).

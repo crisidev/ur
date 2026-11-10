@@ -8,7 +8,7 @@
 //! - [`spi`] / [`spi_flash`]: the bus the LCD shares with the external flash.
 //! - [`ui`] / [`nav`]: screens, navigation, and screen power;
 //!   [`ui_loop`]: what the UI loop does each pass, which the simulator runs
-//!   too.
+//!   too; [`themes`]: how every screen is drawn, and in which colours.
 //! - [`buttons`] / [`bthome`]: the button grid, and its presses as
 //!   advertisements for Home Assistant.
 //! - [`brightness`]: how bright the backlight is.
@@ -113,6 +113,7 @@ mod step_counter;
 mod storage;
 mod system_off;
 mod temperature;
+mod themes;
 mod touch;
 mod ui;
 mod ui_loop;
@@ -140,6 +141,7 @@ use defmt_rtt as _;
 
 use crate::canvas::Canvas;
 use crate::display::Display;
+use crate::themes::Theme as _;
 use crate::ui_loop::{Board, Stored, UiLoop, Wake};
 
 bind_interrupts!(struct Irqs {
@@ -635,7 +637,7 @@ async fn main(spawner: Spawner) {
 
     // Static rather than on the stack: two 3.2 KB frame buffers.
     static CANVAS: StaticCell<Canvas> = StaticCell::new();
-    let canvas = CANVAS.init(Canvas::new());
+    let canvas = CANVAS.init(Canvas::new(themes::get(false, 0).palette()));
     debug::register_canvas(canvas);
     #[cfg(feature = "debug-input")]
     spawner.spawn(debug::input_task().expect("spawned once"));

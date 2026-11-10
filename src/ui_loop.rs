@@ -139,8 +139,8 @@ pub trait Board {
     ) -> impl Future<Output = bool>;
 
     /// Switches the watch off ([`crate::system_off::shut_down`]), showing
-    /// why. On the watch this never returns: the next thing that happens is
-    /// a boot.
+    /// why: what `canvas` holds, drawn by `App::render_off`. On the watch
+    /// this never returns: the next thing that happens is a boot.
     async fn switch_off(&mut self, reason: Reason, canvas: &mut Canvas, panel_awake: bool);
     /// Feeds the watchdog, unless the button is held: holding it long
     /// enough to starve the watchdog is the user's way back into the
@@ -412,6 +412,8 @@ impl UiLoop {
             None
         };
         if let Some(reason) = off {
+            // Why, drawn here, where the UI's chosen theme is known.
+            app.render_off(canvas, reason);
             board.switch_off(reason, canvas, self.panel_awake).await;
             return Some(reason);
         }

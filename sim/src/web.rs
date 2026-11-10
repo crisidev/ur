@@ -24,11 +24,12 @@ use std::path::PathBuf;
 
 use embassy_time::{Duration, Instant};
 
+use crate::InputEvent;
 use crate::case::{self, Case};
 use crate::display::PANEL;
 use crate::script::{self, Next, Output};
+use crate::themes::{self, Theme as _};
 use crate::watch::Watch;
-use crate::{InputEvent, palette};
 
 /// Window pixels a canvas pixel, as the window's default: a 320-pixel
 /// screen. The page scales it to fit.
@@ -581,10 +582,10 @@ pub extern "C" fn ur_status() {
 /// Prints the themes' names, for the page's picker (`theme NAME`).
 #[unsafe(no_mangle)]
 pub extern "C" fn ur_themes() {
-    let names: Vec<&str> = palette::DARK
-        .iter()
-        .chain(&palette::LIGHT)
-        .map(|theme| theme.name)
+    // Each built-in theme's own, so a one-sided build lists each once.
+    let names: Vec<&str> = (themes::THEMES.iter())
+        .flat_map(|theme| theme.night.iter().chain(theme.day))
+        .map(|scheme| scheme.palette().name)
         .collect();
     print(Text::Themes, &names.join("\n"));
 }

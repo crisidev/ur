@@ -796,7 +796,7 @@ pub const HEART_SHINE: [u8; 6] = [
 ];
 
 /// 5×7 Bluetooth rune, for "no phone" on the clock face, struck through
-/// (see `ui::render_clock`).
+/// (see retro's clock face, `themes::retro::clock`).
 pub const BLUETOOTH_W: u32 = 5;
 pub const BLUETOOTH: [u8; 7] = [
     0b00100, 0b00110, 0b10101, 0b01110, 0b10101, 0b00110, 0b00100,
