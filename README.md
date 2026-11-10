@@ -158,8 +158,8 @@ bar on an edge means there's more that way.
 - **Wake** the screen with the button, or a firm tap away from the edge
   (brushes don't count). During a quiet night, only the button wakes it.
 - **The button** goes back to the clock, or off from it. It also
-  silences a call or stops an alarm or "find my watch" (as does a tap),
-  and a double press ends a quiet night.
+  stops "find my watch" (as does a touch), and a double press ends a
+  quiet night.
 - **Long-press** (the watch buzzes once it's taken, at 0.6 s) switches
   an alarm or timer on or off, and on Info, offers storage mode.
 - **Media:** double-tap to play or pause, and tap, then tap and hold
@@ -168,10 +168,11 @@ bar on an edge means there's more that way.
   anywhere (for 3 s after a touch woke it, the hold only in the middle:
   a quarter of the screen away from the top and bottom, a fifth from the
   sides, clear of a folded arm). With the screen off or on a glance, the
-  hold always in the middle, and nothing at the edge; tap lightly first
-  to leave the screen off: a firm first tap wakes it, and the second
-  touch then does the same. Without a phone connected, a double tap
-  wakes a dark screen instead.
+  hold always in the middle, nothing at the edge, and nothing in a quiet
+  night; tap lightly first to leave the screen off: a firm first tap
+  wakes it, and the second touch then does the same. Without a phone
+  connected, a double tap wakes a dark screen instead.
+- **A call:** tap ANSWER or DECLINE, or press the button to silence it.
 - **A ringing alarm:** tap to snooze for 9 minutes; press the button to
   stop it.
 
