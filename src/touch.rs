@@ -24,9 +24,19 @@
 //! Hynitron's register declaration), which ends the touch: reports stop,
 //! and [`LIFT_TIMEOUT`] sends its release. So [`configure`] raises that
 //! to [`HOLD_LIMIT`], for a grid hold's release to come at the lift.
-//! TODO: confirm with a real finger, held 20 s on a dev kit (the
-//! simulated one never reaches the chip): `touch: lifted after` should
-//! read ~20000 ms, not ~10000.
+//! That seems to take: on the dev kit (2026-11-10, a real finger), holds
+//! of 13.3 s, 42 s and 54 s all kept the screen on and released at the
+//! lift, none at 10 s.
+//!
+//! But the chip doesn't keep a long, still finger for ever on its own:
+//! the 42 s and 54 s holds were meant to last ~70 s, and it reported a
+//! lift with the finger still down, likely its baseline tracking taking
+//! the finger in (a cold one, that day). And one 9.2 s hold "lifted",
+//! then pressed again 20 ms later, with no lift the wearer remembers: a
+//! second `hold_press` mid-hold. So [`HOLD_LIMIT`] wasn't reached there.
+//! TODO: find what drops the finger (`AutoReset`, 0xFB? the baseline's
+//! update rate?), and whether a re-press that soon after a lift, on the
+//! same spot, should continue the hold rather than start another.
 //!
 //! [`LONG_PRESS`]: crate::gesture::LONG_PRESS
 //! [`HOLD_LIMIT`]: crate::gesture::HOLD_LIMIT
