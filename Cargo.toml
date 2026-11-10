@@ -20,6 +20,7 @@ embassy-futures = "0.1.2"
 embassy-nrf = { version = "0.11.0", features = ["nrf52832", "time-driver-rtc1", "gpiote", "defmt", "rt", "nfc-pins-as-gpio", "unstable-pac"] }
 embassy-sync = { version = "0.8.0", features = ["defmt"] }
 embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-time-driver = "0.2.2"
 embedded-hal-async = "1"
 embedded-storage-async = "0.4.1"
 heapless = "0.9.3"

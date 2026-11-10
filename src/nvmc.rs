@@ -31,16 +31,26 @@
 //!
 //! A debugger can still make a slot overrun: probe-rs halts the core for
 //! ~20 ms each time a session (an `esprobe` command) starts and ends, and
-//! a halt in a slot outlasts it. A watch without a probe never halts.
+//! a halt in a slot outlasts it. The steps can't budget for that: the
+//! halt can come before the callback runs (MPSL resets TIMER0 as it
+//! signals the start, so a late start looks fresh) or after it returns.
+//! (On the dev kit, a 2-word write took 146 µs by TIMER0, and 152 µs in
+//! real time, with a probe attached, and still overstayed its 8.5 ms
+//! slot.) A watch without a
+//! probe never halts, but a dev kit driven through one (`ur-sim --devkit`,
+//! `screenshot.py --input`) did, every few taps: an injected input's save
+//! started while the `core write` that injected it was still attached,
+//! and its detach halted a slot. So erases and writes first wait for a
+//! probe's session to end (see [`probe_detached`]).
 //!
 //! TODO: go back to nrf-mpsl's driver once a release has the lock fix
 //! (on its `main` since alexmoon/nrf-sdc#124; release requested in
 //! alexmoon/nrf-sdc#92) and the nRF52832's erase time
-//! (alexmoon/nrf-sdc#126).
+//! (alexmoon/nrf-sdc#126), keeping the wait for a probe around it.
 
 use core::cell::{RefCell, UnsafeCell};
 use core::future::poll_fn;
-use core::sync::atomic::{AtomicI32, Ordering, compiler_fence};
+use core::sync::atomic::{AtomicI32, AtomicU32, Ordering, compiler_fence};
 use core::task::Poll;
 
 use defmt::{info, warn};
@@ -51,6 +61,7 @@ use embassy_nrf::peripherals::NVMC;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::waitqueue::WakerRegistration;
+use embassy_time::{Duration, Instant};
 use embedded_storage_async::nor_flash::{
     ErrorType, MultiwriteNorFlash, NorFlash, NorFlashError, NorFlashErrorKind, ReadNorFlash,
 };
@@ -143,6 +154,7 @@ impl Flash {
         if op.is_done() {
             return Ok(Step::default());
         }
+        probe_detached().await;
         // A cancelled operation's session closes in the background; wait
         // for it (see `Session`), as MPSL has room for only one.
         poll_fn(|cx| {
@@ -285,6 +297,66 @@ impl NorFlash for Flash {
 // The flash can write a word twice between erases, as long as the second
 // write only clears bits (which is all `sequential-storage` asks of it).
 impl MultiwriteNorFlash for Flash {}
+
+// ==============================================================================
+// Debug probes
+// ==============================================================================
+
+/// How long an erase or write waits for a probe's session to end, in ms.
+///
+/// The dev kit takes an injected input within 100 ms of its `esprobe core
+/// write` landing, and THEME's save then waited for that session to
+/// detach on a third of the taps, for up to 55 ms. A session that stays
+/// longer (`esprobe rtt`, as `cargo run` keeps open) doesn't halt the core
+/// until it ends, so there's no point waiting for it any longer.
+const PROBE_WAIT_MS: u32 = 1_000;
+
+/// When an erase or write first found the probe attached now (ms since
+/// boot), or 0 if it isn't. Once that's [`PROBE_WAIT_MS`] ago, the probe
+/// is staying, and erases and writes go ahead without waiting.
+///
+/// A static, not the future's own state, so the wait costs no RAM in the
+/// many futures a save is nested in (it was 112 B with a timer in each).
+static PROBE_SEEN_MS: AtomicU32 = AtomicU32::new(0);
+
+/// Waits, up to [`PROBE_WAIT_MS`], for a debug probe's session to end (see
+/// the module docs): probe-rs sets `C_DEBUGEN` as it attaches and clears
+/// it as it detaches, and a halt only comes with either. A sealed watch
+/// never has it set, so never waits.
+async fn probe_detached() {
+    poll_fn(|cx| {
+        if !probe_attached() {
+            PROBE_SEEN_MS.store(0, Ordering::Relaxed);
+            return Poll::Ready(());
+        }
+        let now = Instant::now();
+        // Never 0, which means "not attached".
+        let now_ms = (now.as_millis() as u32).max(1);
+        let seen = match PROBE_SEEN_MS.load(Ordering::Relaxed) {
+            0 => {
+                PROBE_SEEN_MS.store(now_ms, Ordering::Relaxed);
+                now_ms
+            }
+            seen => seen,
+        };
+        if now_ms.wrapping_sub(seen) >= PROBE_WAIT_MS {
+            return Poll::Ready(());
+        }
+        // Look again in 10 ms.
+        embassy_time_driver::schedule_wake(
+            (now + Duration::from_millis(10)).as_ticks(),
+            cx.waker(),
+        );
+        Poll::Pending
+    })
+    .await
+}
+
+/// Whether a debug probe has a session open (`C_DEBUGEN`).
+fn probe_attached() -> bool {
+    // SAFETY: Reading DHCSR is side-effect free.
+    unsafe { (*cortex_m::peripheral::DCB::PTR).dhcsr.read() & 1 != 0 }
+}
 
 // ==============================================================================
 // Inside the timeslots
@@ -456,8 +528,14 @@ unsafe extern "C" fn on_signal(
             core::ptr::null_mut()
         }
         // MPSL asserts right after this, whatever we return; this just
-        // says why.
-        raw::MPSL_TIMESLOT_SIGNAL_OVERSTAYED => panic!("flash: overstayed a timeslot"),
+        // says why. A probe's halt is the one cause seen so far (see the
+        // module docs), so say if one could have halted the core.
+        raw::MPSL_TIMESLOT_SIGNAL_OVERSTAYED => {
+            if probe_attached() {
+                panic!("flash: overstayed a timeslot, with a probe attached")
+            }
+            panic!("flash: overstayed a timeslot")
+        }
         _ => core::ptr::null_mut(),
     }
 }

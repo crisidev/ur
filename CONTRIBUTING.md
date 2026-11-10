@@ -372,8 +372,13 @@ MPSL resets the watch, so a dev kit that saves while being read that
 way can reset (a watch without a probe can't). So whatever reads
 often (`screenshot.py`, `ur-sim --devkit`, the stress script) reads
 with `esprobe fast-dump`, which doesn't halt; only their writes (an
-injected input) and resets still halt. The stress script's `--halting`
-reads with `core read`, to see it.
+injected input) and resets still halt. An injected input that saves
+something (a setting, say) used to reset the dev kit every few taps,
+as the save started before the `core write` had detached; the flash
+driver now waits for a probe's session to end first (`src/nvmc.rs`), so
+only a session that *starts* mid-save can still do it. (`esprobe
+dap-poke` doesn't help: it doesn't halt, but its writes don't land.)
+The stress script's `--halting` reads with `core read`, to see it.
 
 **With a different probe**, nothing in the repository needs to change.
 Write your own runner, doing what `scripts/run-esprobe.sh` does, and
