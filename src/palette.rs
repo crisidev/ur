@@ -1,15 +1,15 @@
-//! Colour themes.
+//! Colour palettes.
 //!
 //! Screens never name concrete colours; they paint with *roles*
-//! ([`Color::TEXT`], [`Color::ACCENT`], …), and the active [`Theme`] says what
-//! each role looks like. The canvas stores role indices and only resolves them
-//! to RGB when pushing pixels, so switching theme is a matter of swapping the
-//! palette and repainting; nothing has to be re-rendered.
+//! ([`Color::TEXT`], [`Color::ACCENT`], …), and the active [`Palette`] says
+//! what each role looks like. The canvas stores role indices and only
+//! resolves them to RGB when pushing pixels, so switching palette is a
+//! matter of swapping it and repainting; nothing has to be re-rendered.
 //!
 //! The themes lean on classic constraints: few colours per theme, ramps of a
 //! single hue, and dithering (the transition) to fake in-between shades.
 
-/// A colour role: an index into the active theme's palette.
+/// A colour role: an index into the active palette.
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct Color(pub(crate) u8);
 
@@ -46,7 +46,7 @@ impl Color {
     pub const REM: Self = Self(14);
     /// A grey between the text and the background, even in the dim look,
     /// whose panel mode has no greys: there, it's white half-toned with
-    /// black (see [`Theme::columns`]). Light sleep on Last night, and the
+    /// black (see [`Palette::columns`]). Light sleep on Last night, and the
     /// missing phone's rune in the dim look. Elsewhere it's the labels'
     /// colour ([`Color::TEXT_DIM`]); a role of its own only because
     /// that's red in the dim look.
@@ -63,22 +63,22 @@ const _: () = assert!(Color::COUNT <= 16, "the canvas holds 4-bit roles");
 /// `repr(C)`, so `scripts/screenshot.py` can find the palette (and the
 /// half-tones after it).
 #[repr(C)]
-pub struct Theme {
+pub struct Palette {
     pub name: &'static str,
     /// Each role as the two bytes the panel expects: RGB565, big-endian.
-    palette: [[u8; 2]; Color::COUNT],
+    colors: [[u8; 2]; Color::COUNT],
     /// The roles shown half-toned, a bit each (bit `n` for `Color(n)`):
-    /// see [`Theme::columns`].
+    /// see [`Palette::columns`].
     halftone: u16,
 }
 
-impl Theme {
+impl Palette {
     pub fn bytes(&self, color: Color) -> [u8; 2] {
-        self.palette[usize::from(color.0)]
+        self.colors[usize::from(color.0)]
     }
 
     /// A role's bytes for the panel's even and odd columns: its colour in
-    /// both, unless the theme half-tones it, when the odd columns are the
+    /// both, unless the palette half-tones it, when the odd columns are the
     /// background. That's 1-pixel vertical stripes at the panel's own
     /// resolution, a third of a canvas pixel, too fine to see at ~0.1 mm:
     /// they read as a grey, where the panel can't show one (see
@@ -102,9 +102,9 @@ impl Theme {
     }
 }
 
-/// Builds a theme from `0xRRGGBB` values listed in [`Color`] role order.
-const fn theme(name: &'static str, hex: [u32; Color::COUNT]) -> Theme {
-    let mut palette = [[0; 2]; Color::COUNT];
+/// Builds a palette from `0xRRGGBB` values listed in [`Color`] role order.
+const fn palette(name: &'static str, hex: [u32; Color::COUNT]) -> Palette {
+    let mut colors = [[0; 2]; Color::COUNT];
     let mut i = 0;
     while i < Color::COUNT {
         // Keep the top 5/6/5 bits of each 8-bit channel.
@@ -114,12 +114,12 @@ const fn theme(name: &'static str, hex: [u32; Color::COUNT]) -> Theme {
             (hex[i] >> 3) & 0x1F,
         );
         let rgb565 = ((r << 11) | (g << 5) | b) as u16;
-        palette[i] = rgb565.to_be_bytes();
+        colors[i] = rgb565.to_be_bytes();
         i += 1;
     }
-    Theme {
+    Palette {
         name,
-        palette,
+        colors,
         halftone: 0,
     }
 }
@@ -130,11 +130,11 @@ const fn theme(name: &'static str, hex: [u32; Color::COUNT]) -> Theme {
 // grouped by whether they suit darkness or daylight; the UI picks the group
 // from sunrise/sunset and remembers a choice within each group.
 //
-// Statics, not consts: the canvas detects theme changes by address.
+// Statics, not consts: the canvas detects palette changes by address.
 
 /// Black cabinet, white-to-grey text, red shadows and accents.
 #[rustfmt::skip]
-pub static ARCADE: Theme = theme("ARCADE", [
+pub static ARCADE: Palette = palette("ARCADE", [
     0x101010, 0x5a1010, 0xe8e8e8, 0xa8a8a8, 0x606060, 0x303030, 0xd82828,
     0xd82828, 0x101010, 0xd82828, 0xff9090, 0xffffff, 0xff5050, 0xffffff,
     0xd82828, 0xa8a8a8,
@@ -146,7 +146,7 @@ pub static ARCADE: Theme = theme("ARCADE", [
 /// stages are intensities too: deep the hottest (almost white), REM full
 /// green, light dim.
 #[rustfmt::skip]
-pub static TERMINAL: Theme = theme("TERMINAL", [
+pub static TERMINAL: Palette = palette("TERMINAL", [
     0x020c04, 0x0b3d18, 0x4dff7a, 0x2aa84a, 0x146b2c, 0x0a2a12, 0xb8ffc8,
     0x2aa84a, 0x020c04, 0x4dff7a, 0xe0ffe8, 0xb8ffc8, 0xf0fff0, 0xe0ffe8,
     0x4dff7a, 0x2aa84a,
@@ -156,7 +156,7 @@ pub static TERMINAL: Theme = theme("TERMINAL", [
 /// plus one dash of red, like its power light: for the heart, low battery,
 /// an update's progress, and REM sleep. Nothing else.
 #[rustfmt::skip]
-pub static HANDHELD: Theme = theme("HANDHELD", [
+pub static HANDHELD: Palette = palette("HANDHELD", [
     0xc3cf8c, 0x8a9f3a, 0x1e2a14, 0x3c5428, 0x8a9f3a, 0x8a9f3a, 0x3c5428,
     0x1e2a14, 0x8a9f3a, 0xb8342a, 0xe8836c, 0x3c5428, 0xb8342a, 0x1e2a14,
     0xb8342a, 0x3c5428,
@@ -164,7 +164,7 @@ pub static HANDHELD: Theme = theme("HANDHELD", [
 
 /// Brown ink on cream, muted red: an old printed game manual.
 #[rustfmt::skip]
-pub static PARCHMENT: Theme = theme("PARCHMENT", [
+pub static PARCHMENT: Palette = palette("PARCHMENT", [
     0xe8dcb8, 0xc0a878, 0x3a2414, 0x6a4a2a, 0xa08860, 0xd0c098, 0xa02820,
     0xa02820, 0xe8dcb8, 0xa02820, 0xe07060, 0x4a6a2a, 0xa02820, 0x3a2414,
     0xa02820, 0x6a4a2a,
@@ -193,7 +193,7 @@ pub static PARCHMENT: Theme = theme("PARCHMENT", [
 /// ink, as in every theme; REM red, the theme's red elsewhere too; and
 /// light sleep, the lightest, grey ([`Color::GREY`]): white half-toned
 /// with black, the panel's columns alternately lit (see
-/// [`Theme::columns`]), as idle mode has no grey of its own. Light sleep
+/// [`Palette::columns`]), as idle mode has no grey of its own. Light sleep
 /// is usually the most of a night, so the bar is mostly a quiet grey,
 /// with the deep and REM spells standing out of it.
 ///
@@ -204,16 +204,16 @@ pub static PARCHMENT: Theme = theme("PARCHMENT", [
 /// TODO: idle mode has five more colours (green, blue, and their pairs),
 /// if the dim look may ever have more colour than red.
 #[rustfmt::skip]
-pub static GLANCE: Theme = Theme {
+pub static GLANCE: Palette = Palette {
     halftone: 1 << Color::GREY.0 | 1 << Color::TRACK.0,
-    ..theme("GLANCE", [
+    ..palette("GLANCE", [
         0x000000, 0x000000, 0xffffff, 0xff0000, 0xff0000, 0xffffff, 0xff0000,
         0x000000, 0x000000, 0xff0000, 0xffffff, 0xffffff, 0xff0000, 0xffffff,
         0xff0000, 0xffffff,
     ])
 };
 
-pub static DARK: [&Theme; 2] = [&ARCADE, &TERMINAL];
+pub static DARK: [&Palette; 2] = [&ARCADE, &TERMINAL];
 
 /// Themes for daylight. Long press cycles within this list by day.
-pub static LIGHT: [&Theme; 2] = [&HANDHELD, &PARCHMENT];
+pub static LIGHT: [&Palette; 2] = [&HANDHELD, &PARCHMENT];

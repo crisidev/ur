@@ -1,7 +1,7 @@
 //! `ur-sim`: the watch's UI on a computer.
 //!
 //! This runs the firmware's own UI code (`src/ui.rs`, and the canvas,
-//! themes, fonts, alarms, clock, sunrise, and navigation logic it uses) on
+//! palettes, fonts, alarms, clock, sunrise, and navigation logic it uses) on
 //! the host, included here with `#[path]` as the host tests do. What needs
 //! hardware is replaced by a stand-in with the same interface: the panel
 //! ([`display`]) collects the pixels the canvas pushes, the accelerometer's
@@ -98,6 +98,9 @@ mod motor;
 mod nav;
 #[path = "../../src/on_time.rs"]
 mod on_time;
+#[path = "../../src/palette.rs"]
+#[allow(dead_code)]
+mod palette;
 #[path = "../../src/phone.rs"]
 mod phone;
 #[path = "../../src/qr.rs"]
@@ -121,9 +124,6 @@ mod storage;
 #[path = "../../src/temperature.rs"]
 #[allow(dead_code)]
 mod temperature;
-#[path = "../../src/theme.rs"]
-#[allow(dead_code)]
-mod theme;
 #[path = "../../src/ui.rs"]
 #[allow(dead_code)]
 mod ui;

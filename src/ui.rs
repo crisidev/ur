@@ -164,7 +164,7 @@
 //!   screen (dimly) as usual, and the second, rather than turning it off
 //!   again, brightens it.
 //! - Everything shows in the dim look (white, and red for what comes
-//!   second, on black; see [`theme::GLANCE`]), at the glance's low
+//!   second, on black; see [`palette::GLANCE`]), at the glance's low
 //!   backlight.
 //! - With the screen off, the touch controller sleeps (see
 //!   [`crate::touch::set_asleep`]).
@@ -215,11 +215,11 @@ use crate::motor::{self, Pattern};
 use crate::nav::{self, Place, Side};
 // Defined apart from the UI, so that `gb` (which decodes them) builds
 // without it, in host tests; see `phone`.
+use crate::palette::{self, Palette};
 use crate::phone::Text;
 pub use crate::phone::{PhoneEvent, Unpaired};
 use crate::route::{self, Route, Turn};
 use crate::sleep::{self, Change, Over};
-use crate::theme::{self, Theme};
 use crate::touch::Gesture;
 use crate::wake::{self, Action};
 
@@ -486,8 +486,8 @@ pub struct App {
     transition: Option<Sweep>,
     /// Whether it's daylight, which picks the light or dark theme group.
     daytime: bool,
-    /// The chosen theme within each group: indices into [`theme::LIGHT`] and
-    /// [`theme::DARK`]. Tapping THEME on the info screen advances the one
+    /// The chosen theme within each group: indices into [`palette::LIGHT`] and
+    /// [`palette::DARK`]. Tapping THEME on the info screen advances the one
     /// in use.
     pub themes: ThemeChoice,
     connected: bool,
@@ -846,9 +846,10 @@ impl App {
         }
     }
 
-    pub fn theme(&self) -> &'static Theme {
+    /// The palette the screen shows in.
+    pub fn palette(&self) -> &'static Palette {
         if self.dim() {
-            &theme::GLANCE
+            &palette::GLANCE
         } else {
             self.chosen_theme()
         }
@@ -856,11 +857,11 @@ impl App {
 
     /// The theme chosen for the time of day, whether or not it's showing
     /// (it isn't while dim).
-    fn chosen_theme(&self) -> &'static Theme {
-        let (group, choice): (&[&Theme], u8) = if self.daytime {
-            (&theme::LIGHT, self.themes.light)
+    fn chosen_theme(&self) -> &'static Palette {
+        let (group, choice): (&[&Palette], u8) = if self.daytime {
+            (&palette::LIGHT, self.themes.light)
         } else {
-            (&theme::DARK, self.themes.dark)
+            (&palette::DARK, self.themes.dark)
         };
         group[usize::from(choice) % group.len()]
     }
@@ -868,9 +869,9 @@ impl App {
     /// The next theme in the group currently in use.
     fn next_theme(&mut self) {
         let (choice, count) = if self.daytime {
-            (&mut self.themes.light, theme::LIGHT.len())
+            (&mut self.themes.light, palette::LIGHT.len())
         } else {
-            (&mut self.themes.dark, theme::DARK.len())
+            (&mut self.themes.dark, palette::DARK.len())
         };
         *choice = ((usize::from(*choice) + 1) % count) as u8;
     }
@@ -3511,7 +3512,7 @@ fn settings_row(y: i32, buttons: buttons::Setting) -> Option<Row> {
 
 fn render_settings(
     canvas: &mut Canvas,
-    theme: &Theme,
+    theme: &Palette,
     light: brightness::Setting,
     buttons: buttons::Setting,
     layout: buttons::Layout,

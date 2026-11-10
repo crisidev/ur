@@ -4,9 +4,9 @@
 //! how Last night once drew deep and REM sleep in the same red. `cargo
 //! test`.
 
-#[path = "../../../src/theme.rs"]
+#[path = "../../../src/palette.rs"]
 #[allow(dead_code)]
-mod theme;
+mod palette;
 
 // `Color` derives `defmt::Format`, whose binary log needs the firmware's
 // ELF to decode; nothing logs here, but the derive wants a logger to link.
@@ -29,7 +29,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use crate::theme::{self, Color, Theme};
+    use crate::palette::{self, Color, Palette};
 
     // ==============================================================================
     // Telling colours apart
@@ -39,10 +39,10 @@ mod tests {
     // RGB) is roughly even to the eye, so one threshold works for dark greens
     // and pale creams alike. About 2 is just noticeable side by side; 10 is
     // plainly different; 50 is red against green. The colours are measured as
-    // the panel gets them, RGB565, not as written in theme.rs.
+    // the panel gets them, RGB565, not as written in palette.rs.
 
     /// A role's colour in a theme, in CIELAB (L*, a*, b*), from its RGB565.
-    fn lab(theme: &Theme, color: Color) -> [f64; 3] {
+    fn lab(theme: &Palette, color: Color) -> [f64; 3] {
         let rgb565 = u16::from_be_bytes(theme.bytes(color));
         // Back to 8 bits a channel, as screenshot.py does.
         let (r, g, b) = (rgb565 >> 11, (rgb565 >> 5) & 0x3F, rgb565 & 0x1F);
@@ -70,7 +70,7 @@ mod tests {
         [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
     }
 
-    fn delta_e(theme: &Theme, a: Color, b: Color) -> f64 {
+    fn delta_e(theme: &Palette, a: Color, b: Color) -> f64 {
         let (a, b) = (lab(theme, a), lab(theme, b));
         a.iter()
             .zip(b)
@@ -80,10 +80,10 @@ mod tests {
     }
 
     /// The themes a screen can be in when it's not dim. The dim look
-    /// (`theme::GLANCE`) has only idle mode's colours, so distances mean
+    /// (`palette::GLANCE`) has only idle mode's colours, so distances mean
     /// little there: it has its own test below.
-    fn themes() -> impl Iterator<Item = &'static Theme> {
-        theme::DARK.iter().chain(&theme::LIGHT).copied()
+    fn themes() -> impl Iterator<Item = &'static Palette> {
+        palette::DARK.iter().chain(&palette::LIGHT).copied()
     }
 
     // ==============================================================================
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn sleep_stages_differ_in_the_dim_look() {
         let idle = |color| {
-            theme::GLANCE.columns(color).map(|bytes| {
+            palette::GLANCE.columns(color).map(|bytes| {
                 let rgb565 = u16::from_be_bytes(bytes);
                 // Grouped as RGB565's channels: 5, 6 and 5 bits.
                 #[allow(clippy::unusual_byte_groupings)]
@@ -196,9 +196,9 @@ mod tests {
     /// (accent and heart) are one red in Arcade, and the tests would say so.
     #[test]
     fn the_old_collision_fails() {
-        assert!(delta_e(&theme::ARCADE, Color::ACCENT, Color::HEART) < BETWEEN_STAGES);
+        assert!(delta_e(&palette::ARCADE, Color::ACCENT, Color::HEART) < BETWEEN_STAGES);
         // And a pair everyone can tell apart passes easily.
-        assert!(delta_e(&theme::ARCADE, Color::TEXT, Color::BACKGROUND) > 80.0);
+        assert!(delta_e(&palette::ARCADE, Color::TEXT, Color::BACKGROUND) > 80.0);
     }
 
     // ==============================================================================
@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn grid_buttons_have_visible_edges() {
-        for (group, pairs) in [(&theme::DARK, KEY_DARK), (&theme::LIGHT, KEY_LIGHT)] {
+        for (group, pairs) in [(&palette::DARK, KEY_DARK), (&palette::LIGHT, KEY_LIGHT)] {
             for theme in group.iter() {
                 for (what, a, b) in pairs {
                     let distance = delta_e(theme, a, b);
@@ -257,15 +257,15 @@ mod tests {
 /// the palette.
 #[cfg(kani)]
 mod proofs {
-    use crate::theme::{self, Color, Theme};
+    use crate::palette::{self, Color, Palette};
 
-    fn any_theme() -> &'static Theme {
+    fn any_theme() -> &'static Palette {
         match kani::any::<u8>() % 5 {
-            0 => &theme::ARCADE,
-            1 => &theme::TERMINAL,
-            2 => &theme::HANDHELD,
-            3 => &theme::PARCHMENT,
-            _ => &theme::GLANCE,
+            0 => &palette::ARCADE,
+            1 => &palette::TERMINAL,
+            2 => &palette::HANDHELD,
+            3 => &palette::PARCHMENT,
+            _ => &palette::GLANCE,
         }
     }
 
@@ -287,7 +287,7 @@ mod proofs {
         assert_eq!(even, theme.bytes(role));
         if odd != even {
             assert_eq!(odd, theme.bytes(Color::BACKGROUND));
-            assert!(core::ptr::eq(theme, &theme::GLANCE));
+            assert!(core::ptr::eq(theme, &palette::GLANCE));
             assert!(role == Color::GREY || role == Color::TRACK);
         }
     }
@@ -299,7 +299,7 @@ mod proofs {
     /// white and red, as the theme's docs promise.
     #[kani::proof]
     fn the_dim_look_is_black_white_and_red() {
-        let rgb565 = u16::from_be_bytes(theme::GLANCE.bytes(any_role()));
+        let rgb565 = u16::from_be_bytes(palette::GLANCE.bytes(any_role()));
         let (red, green, blue) = (rgb565 >> 11, (rgb565 >> 5) & 0x3F, rgb565 & 0x1F);
         assert!(red == 0 || red == 0x1F);
         assert!(green == 0 || green == 0x3F);

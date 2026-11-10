@@ -35,9 +35,9 @@ use crate::geo;
 use crate::gesture::Tracking;
 use crate::heart_reading;
 use crate::motor::{self, Pattern};
+use crate::palette::Palette;
 use crate::storage;
 use crate::system_off::Reason;
-use crate::theme::Theme;
 use crate::touch;
 use crate::ui::{self, App, Unpaired};
 use crate::ui_loop::{self, Board, Settings, Stored, UiLoop, Wake};
@@ -309,7 +309,7 @@ impl Watch {
         let buttons = self.app.buttons;
         self.handle(Wake::Input(event));
         if self.app.themes != themes {
-            self.log(format!("theme: {}", self.app.theme().name));
+            self.log(format!("theme: {}", self.app.palette().name));
         }
         if self.app.brightness != brightness {
             self.log(format!("brightness: {}", self.app.brightness.name()));
@@ -547,7 +547,7 @@ impl Watch {
     pub fn screenshot(
         &mut self,
         path: &std::path::Path,
-        palette: Option<&'static Theme>,
+        palette: Option<&'static Palette>,
     ) -> Result<(), String> {
         let Some(palette) = palette else {
             return crate::shot::save(path);
@@ -562,10 +562,10 @@ impl Watch {
         // The dev kit's script draws these from the canvas, rather than
         // the watch pushing them: they take none of the watch's time.
         crate::display::untimed(|| {
-            canvas.set_theme(palette);
+            canvas.set_palette(palette);
             run(canvas.flush(display), on_frame);
             let saved = crate::shot::save(path);
-            canvas.set_theme(app.theme());
+            canvas.set_palette(app.palette());
             run(canvas.flush(display), on_frame);
             saved
         })
@@ -575,11 +575,11 @@ impl Watch {
     /// dark) from now on, whatever the sun says, and that theme within it.
     pub fn choose_theme(&mut self, name: &str) -> Result<(), String> {
         let theme = find_theme(name)?;
-        let find = |group: &[&'static Theme]| group.iter().position(|t| core::ptr::eq(*t, theme));
-        if let Some(i) = find(&crate::theme::LIGHT) {
+        let find = |group: &[&'static Palette]| group.iter().position(|t| core::ptr::eq(*t, theme));
+        if let Some(i) = find(&crate::palette::LIGHT) {
             self.daytime = Some(true);
             self.change_settings(|app| app.themes.light = i as u8);
-        } else if let Some(i) = find(&crate::theme::DARK) {
+        } else if let Some(i) = find(&crate::palette::DARK) {
             self.daytime = Some(false);
             self.change_settings(|app| app.themes.dark = i as u8);
         }
@@ -802,8 +802,8 @@ pub fn log(message: impl AsRef<str>) {
 }
 
 /// A theme by name, in any case.
-pub fn find_theme(name: &str) -> Result<&'static Theme, String> {
-    let themes = || crate::theme::DARK.iter().chain(&crate::theme::LIGHT);
+pub fn find_theme(name: &str) -> Result<&'static Palette, String> {
+    let themes = || crate::palette::DARK.iter().chain(&crate::palette::LIGHT);
     themes()
         .find(|t| t.name.eq_ignore_ascii_case(name))
         .copied()

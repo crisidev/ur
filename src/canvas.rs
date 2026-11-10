@@ -1,4 +1,4 @@
-//! An 80×80 canvas of colour roles (see [`crate::theme`]), shown on the
+//! An 80×80 canvas of colour roles (see [`crate::palette`]), shown on the
 //! 240×240 panel at 3×.
 //!
 //! The low resolution *is* the pixel-art look: every UI element is drawn on
@@ -18,10 +18,10 @@ pub use self::marquee::{MARQUEE_FRAME, marquee_cycle, marquee_offset};
 
 use crate::display::Display;
 use crate::font;
+use crate::palette::{self, Palette};
 use crate::qr;
-use crate::theme::{self, Theme};
 
-pub use crate::theme::Color;
+pub use crate::palette::Color;
 
 pub const WIDTH: usize = 80;
 pub const HEIGHT: usize = 80;
@@ -44,7 +44,7 @@ const QR_MODULE: usize = 7;
 const QR_SIDE: usize = (qr::SIZE + 2 * 4) * QR_MODULE;
 const QR_ORIGIN: usize = (WIDTH * SCALE - QR_SIDE) / 2;
 
-/// `repr(C)`, so `scripts/screenshot.py` can find `front` and `theme` (see
+/// `repr(C)`, so `scripts/screenshot.py` can find `front` and `palette` (see
 /// [`crate::debug`]).
 #[repr(C)]
 pub struct Canvas {
@@ -52,11 +52,11 @@ pub struct Canvas {
     back: [u8; BYTES],
     /// What the panel is currently showing.
     front: [u8; BYTES],
-    /// False until the panel has received one full frame (or after a theme
+    /// False until the panel has received one full frame (or after a palette
     /// change); until then, `front` says nothing about the panel's contents.
     front_valid: bool,
     /// Resolves colour roles to pixel bytes when pushing.
-    theme: &'static Theme,
+    palette: &'static Palette,
     /// The bytes to show over the canvas as a QR code this frame (see
     /// [`Canvas::qr`]), if `qr_wanted`; and whether the panel shows it.
     /// Before `batch`, at a fixed place for `scripts/screenshot.py`.
@@ -75,7 +75,7 @@ impl Canvas {
             back: [0; BYTES],
             front: [0; BYTES],
             front_valid: false,
-            theme: &theme::ARCADE,
+            palette: &palette::ARCADE,
             qr: [0; 16],
             qr_wanted: false,
             qr_shown: false,
@@ -84,11 +84,12 @@ impl Canvas {
         }
     }
 
-    /// Switches theme. The canvas contents (roles) stay as they are, but every
-    /// pixel's colour changes, so the next flush repaints the whole panel.
-    pub fn set_theme(&mut self, theme: &'static Theme) {
-        if !core::ptr::eq(theme, self.theme) {
-            self.theme = theme;
+    /// Switches palette. The canvas contents (roles) stay as they are, but
+    /// every pixel's colour changes, so the next flush repaints the whole
+    /// panel.
+    pub fn set_palette(&mut self, palette: &'static Palette) {
+        if !core::ptr::eq(palette, self.palette) {
+            self.palette = palette;
             self.front_valid = false;
         }
     }
@@ -536,7 +537,7 @@ impl Canvas {
         let Self {
             back,
             front,
-            theme,
+            palette,
             batch,
             ..
         } = self;
@@ -544,12 +545,12 @@ impl Canvas {
             let i = row * WIDTH + x;
             let color = nibble(back, i);
             set_nibble(front, i, color);
-            theme.columns(Color(color))
+            palette.columns(Color(color))
         })
         .await;
     }
 
-    /// Fills a rectangle with a 1-canvas-pixel checkerboard of the theme's
+    /// Fills a rectangle with a 1-canvas-pixel checkerboard of the palette's
     /// two dither colours: the classic way to fake an in-between shade on a
     /// limited palette.
     async fn push_dither(
@@ -559,8 +560,8 @@ impl Canvas {
         columns: Range<usize>,
     ) {
         let (a, b) = (
-            self.theme.columns(Color::DITHER_A),
-            self.theme.columns(Color::DITHER_B),
+            self.palette.columns(Color::DITHER_A),
+            self.palette.columns(Color::DITHER_B),
         );
         stream(display, &mut self.batch, rows, columns, |row, x| {
             if (x + row).is_multiple_of(2) { a } else { b }
@@ -571,7 +572,7 @@ impl Canvas {
 
 /// Streams a canvas rectangle to the panel at [`SCALE`]×, with `color(row, x)`
 /// giving each canvas pixel's bytes on the panel's even and odd columns
-/// (see [`Theme::columns`]).
+/// (see [`Palette::columns`]).
 ///
 /// Rows are accumulated in `batch` and sent in as few DMA transfers as
 /// possible. Each transfer has a fixed cost (setup, the nRF52832 anomaly-109
@@ -652,7 +653,7 @@ fn nibble(buffer: &[u8; BYTES], i: usize) -> u8 {
 }
 
 fn set_nibble(buffer: &mut [u8; BYTES], i: usize, value: u8) {
-    // A colour role is 4 bits (`theme::Color::COUNT` is checked against
+    // A colour role is 4 bits (`palette::Color::COUNT` is checked against
     // that); more would spill into the pixel beside it.
     debug_assert!(value < 16, "a colour role over 4 bits");
     let byte = &mut buffer[i / 2];

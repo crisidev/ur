@@ -2,8 +2,8 @@
 //!
 //! This file is board bring-up and the main UI loop. The pieces:
 //!
-//! - [`canvas`] / [`font`] / [`theme`]: the 80×80 pixel-art canvas, its
-//!   glyphs, and colour themes.
+//! - [`canvas`] / [`font`] / [`palette`]: the 80×80 pixel-art canvas, its
+//!   glyphs, and colour palettes.
 //! - [`display`]: the async LCD driver the canvas pushes pixels through.
 //! - [`spi`] / [`spi_flash`]: the bus the LCD shares with the external flash.
 //! - [`ui`] / [`nav`]: screens, navigation, and screen power;
@@ -95,6 +95,7 @@ mod nav;
 mod nvmc;
 mod on_time;
 mod packet_pool;
+mod palette;
 mod phone;
 mod power;
 mod ppg;
@@ -112,7 +113,6 @@ mod step_counter;
 mod storage;
 mod system_off;
 mod temperature;
-mod theme;
 mod touch;
 #[cfg(feature = "touch-probe")]
 mod touch_probe;

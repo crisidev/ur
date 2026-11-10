@@ -28,7 +28,7 @@ use crate::case::{self, Case};
 use crate::display::PANEL;
 use crate::script::{self, Next, Output};
 use crate::watch::Watch;
-use crate::{InputEvent, theme};
+use crate::{InputEvent, palette};
 
 /// Window pixels a canvas pixel, as the window's default: a 320-pixel
 /// screen. The page scales it to fit.
@@ -581,9 +581,9 @@ pub extern "C" fn ur_status() {
 /// Prints the themes' names, for the page's picker (`theme NAME`).
 #[unsafe(no_mangle)]
 pub extern "C" fn ur_themes() {
-    let names: Vec<&str> = theme::DARK
+    let names: Vec<&str> = palette::DARK
         .iter()
-        .chain(&theme::LIGHT)
+        .chain(&palette::LIGHT)
         .map(|theme| theme.name)
         .collect();
     print(Text::Themes, &names.join("\n"));

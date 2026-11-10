@@ -70,7 +70,7 @@ from pathlib import Path
 TARGET = ["esprobe", "--target", "nRF52832_xxAA"]
 WIDTH = HEIGHT = 80
 BYTES = WIDTH * HEIGHT // 2
-# Colour roles in a theme's palette: `Color::COUNT` in src/theme.rs.
+# Colour roles in a palette: `Color::COUNT` in src/palette.rs.
 ROLES = 16
 SCALE = 3
 # `qr::SIZE`, and the panel pixels a module takes (see `Canvas::qr`).
@@ -166,9 +166,9 @@ def png(path: Path, pixels: list[tuple[int, int, int]], width: int, height: int)
 
 
 def theme_symbol(elf: Path, name: str) -> int:
-    # `theme::NAME`, whatever the crate's mangling hash.
+    # `palette::NAME`, whatever the crate's mangling hash.
     out = subprocess.run(["llvm-nm", str(elf)], capture_output=True, text=True, check=True)
-    suffix = f"5theme{len(name)}{name}"
+    suffix = f"7palette{len(name)}{name}"
     for line in out.stdout.splitlines():
         parts = line.split()
         if len(parts) == 3 and parts[2].endswith(suffix):
@@ -200,9 +200,9 @@ def screenshot(elf: Path, out: Path, theme_name: str | None = None) -> None:
     (theme,) = read_words(canvas + 2 * BYTES + 4, 1)
     if theme_name is not None:
         theme = theme_symbol(elf, theme_name.upper())
-    # `Theme` is repr(C): name (&str: pointer, length), then a big-endian
+    # `Palette` is repr(C): name (&str: pointer, length), then a big-endian
     # RGB565 colour per role, then the half-toned roles, a bit each (see
-    # `Theme::columns`): every other panel column of those is background.
+    # `Palette::columns`): every other panel column of those is background.
     theme_bytes = b"".join(
         struct.pack("<I", w) for w in read_words(theme + 8, (2 * ROLES + 2 + 3) // 4)
     )

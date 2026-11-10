@@ -493,7 +493,7 @@ impl UiLoop {
             if !self.panel_awake || relighting || !app.dim() {
                 board.set_idle(false).await;
             }
-            canvas.set_theme(app.theme());
+            canvas.set_palette(app.palette());
             // Nothing between this and the render may await: see
             // `compare::rendering`.
             #[cfg(feature = "compare")]

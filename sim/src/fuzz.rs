@@ -40,7 +40,7 @@ use std::path::Path;
 use crate::devkit::{self, Finding, Setup};
 use crate::flash::Flash;
 use crate::storage::{self, key};
-use crate::{alarm, gadgetbridge, theme};
+use crate::{alarm, gadgetbridge, palette};
 
 /// What `--fuzz` was asked for.
 pub struct Fuzz {
@@ -1182,8 +1182,8 @@ fn random_storage(original: &[u8], rng: &mut Rng, scratch: &Path) -> Result<Vec<
         }
     };
     for (key, valid) in [
-        (key::THEME_LIGHT, theme::LIGHT.len() as u64),
-        (key::THEME_DARK, theme::DARK.len() as u64),
+        (key::THEME_LIGHT, palette::LIGHT.len() as u64),
+        (key::THEME_DARK, palette::DARK.len() as u64),
         (key::BRIGHTNESS, 2),
         (key::BUTTONS, 4),
         (key::GRID, 4),

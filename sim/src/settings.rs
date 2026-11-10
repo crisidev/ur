@@ -6,7 +6,7 @@
 
 use crate::storage::{self, key};
 use crate::watch::run;
-use crate::{alarm, brightness, buttons, geo, theme};
+use crate::{alarm, brightness, buttons, geo, palette};
 
 /// The stored settings, a line each; what isn't stored says so (the UI
 /// then starts with its default).
@@ -19,8 +19,8 @@ async fn read() -> Vec<String> {
     let none = || "not stored".to_owned();
 
     let themes = [
-        ("light theme", key::THEME_LIGHT, &theme::LIGHT[..]),
-        ("dark theme", key::THEME_DARK, &theme::DARK[..]),
+        ("light theme", key::THEME_LIGHT, &palette::LIGHT[..]),
+        ("dark theme", key::THEME_DARK, &palette::DARK[..]),
     ];
     for (what, key, group) in themes {
         let value = storage::load::<1>(key).await.map_or_else(none, |[i]| {

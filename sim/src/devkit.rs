@@ -490,11 +490,11 @@ impl DevKit {
         {
             return Ok(palette.clone());
         }
-        // `Theme` is `repr(C)`: the name (`&str`: pointer, length), then
+        // `Palette` is `repr(C)`: the name (`&str`: pointer, length), then
         // a big-endian RGB565 colour per role, then the half-toned roles
         // (a bit each). (The dev kit's firmware has to be this tree's, for
         // the count to match.)
-        let count = crate::theme::Color::COUNT;
+        let count = crate::palette::Color::COUNT;
         let bytes = self.read_bytes(theme + 8, 2 * count + 2)?;
         let palette = Palette {
             colors: bytes[..2 * count]
@@ -646,7 +646,7 @@ struct Frame {
 }
 
 /// A theme's colours (RGB565, a role each), and which roles it half-tones
-/// (a bit each; see `Theme::columns`).
+/// (a bit each; see `Palette::columns`).
 #[derive(Clone)]
 struct Palette {
     colors: Vec<u16>,
@@ -1638,7 +1638,7 @@ impl<'a> Follower<'a> {
                 address: pass.bthome_address,
             }),
         };
-        self.canvas.set_theme(self.app.theme());
+        self.canvas.set_palette(self.app.palette());
         self.app.render(&mut self.canvas, &status, now);
         let Self {
             canvas, display, ..
