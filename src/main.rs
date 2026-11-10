@@ -25,7 +25,8 @@
 //!   the clock moves; [`day`]: the day's activity by the hour, for the UI.
 //! - [`heart`] / [`ppg`] / [`heart_schedule`]: heart rate from the optical
 //!   sensor, the signal processing behind it, and when to measure.
-//! - [`i2c`]: the shared sensor bus.
+//! - [`i2c`] / [`backoff`]: the shared sensor bus, and retrying a sensor's
+//!   setup until it works.
 //! - [`ble`] / [`gb`] / [`link`]: Bluetooth, speaking Gadgetbridge's Bangle.js
 //!   protocol, and keeping its link working.
 //! - [`clock`] / [`geo`]: wall-clock time and location, both from the phone,
@@ -53,6 +54,7 @@ mod activity;
 mod alarm;
 mod aranet;
 mod arrival;
+mod backoff;
 mod battery;
 mod ble;
 mod brightness;
@@ -372,7 +374,7 @@ async fn main(spawner: Spawner) {
     config.lfclk_source = embassy_nrf::config::LfclkSource::ExternalXtal;
     config.gpiote_interrupt_priority = APP_PRIORITY;
     config.time_interrupt_priority = APP_PRIORITY;
-    let mut p = embassy_nrf::init(config);
+    let p = embassy_nrf::init(config);
     info!("ur {=str} booting", env!("UR_VERSION"));
     clock::restore();
     field_log::report_last_reset();
@@ -458,7 +460,7 @@ async fn main(spawner: Spawner) {
     // Sensor bus and touch
     // ==========================================================================
 
-    i2c::recover_bus(p.P0_06.reborrow().into(), p.P0_07.reborrow().into()).await;
+    i2c::recover_bus().await;
     static TWIM_TX_BUFFER: StaticCell<[u8; 16]> = StaticCell::new();
     static I2C_BUS: StaticCell<Mutex<CriticalSectionRawMutex, twim::Twim<'static>>> =
         StaticCell::new();

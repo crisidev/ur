@@ -221,6 +221,9 @@ const LEVEL_CHECK_SAMPLES: u32 = 27;
 
 struct Hrs3300 {
     i2c: Device,
+    /// Whether to keep transfer failures out of the log: while setup is
+    /// retried slowly, only some attempts log (see [`crate::backoff`]).
+    quiet: bool,
 }
 
 impl Hrs3300 {
@@ -230,12 +233,16 @@ impl Hrs3300 {
         match with_timeout(I2C_TIMEOUT, self.i2c.write(ADDRESS, &[register, value])).await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => {
-                warn!("heart: write to {=u8:#04x} failed: {}", register, e);
+                if !self.quiet {
+                    warn!("heart: write to {=u8:#04x} failed: {}", register, e);
+                }
                 crate::i2c::reset_controller().await;
                 Err(())
             }
             Err(_) => {
-                warn!("heart: write to {=u8:#04x} timed out", register);
+                if !self.quiet {
+                    warn!("heart: write to {=u8:#04x} timed out", register);
+                }
                 crate::i2c::reset_controller().await;
                 Err(())
             }
@@ -251,12 +258,16 @@ impl Hrs3300 {
         {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => {
-                warn!("heart: read of {=u8:#04x} failed: {}", register, e);
+                if !self.quiet {
+                    warn!("heart: read of {=u8:#04x} failed: {}", register, e);
+                }
                 crate::i2c::reset_controller().await;
                 Err(())
             }
             Err(_) => {
-                warn!("heart: read of {=u8:#04x} timed out", register);
+                if !self.quiet {
+                    warn!("heart: read of {=u8:#04x} timed out", register);
+                }
                 crate::i2c::reset_controller().await;
                 Err(())
             }
@@ -341,17 +352,26 @@ pub async fn heart_task(i2c: Device) {
     // at boot, and the accelerometer's setup (from 200 ms) holds the bus
     // for about a third of a second.
     Timer::after_millis(1000).await;
-    let mut hrs = Hrs3300 { i2c };
-    let mut attempt = 0;
-    while hrs.init().await.is_err() {
-        attempt += 1;
-        if attempt == 5 {
-            warn!("heart: sensor setup failed; no heart rate");
-            return;
+    let mut hrs = Hrs3300 { i2c, quiet: false };
+    // For as long as it takes, ever more slowly: giving up would leave a
+    // sealed watch without heart rate until its next reboot (see
+    // `crate::backoff`).
+    let mut backoff = crate::backoff::Backoff::new();
+    loop {
+        hrs.quiet = !backoff.loud();
+        if hrs.init().await.is_ok() {
+            break;
         }
-        warn!("heart: sensor setup failed; retrying");
-        Timer::after_millis(100).await;
+        let retry = backoff.failed();
+        if retry.log {
+            warn!(
+                "heart: sensor setup failed ({=u16}x); retrying in {=u32} ms",
+                retry.failures, retry.wait_ms
+            );
+        }
+        Timer::after_millis(u64::from(retry.wait_ms)).await;
     }
+    hrs.quiet = false;
     info!("heart: sensor ready");
 
     // The level the last *successful* session ended at: the wrist (and the

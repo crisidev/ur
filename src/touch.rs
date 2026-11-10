@@ -96,6 +96,11 @@ const PANEL: i32 = 240;
 /// While a finger is down, the chip reports every ~10 ms. If reports stop for
 /// this long without a lift report, assume we missed the lift.
 const LIFT_TIMEOUT: Duration = Duration::from_millis(250);
+/// Far longer than any transfer here takes (a 6-byte report at 250 kHz:
+/// ~0.4 ms). Every transfer has one: one that never ended once held the
+/// shared bus, and with it the accelerometer and heart-rate sensor, for as
+/// long as the watch ran (see [`crate::i2c`]).
+const I2C_TIMEOUT: Duration = Duration::from_millis(50);
 
 /// A simulated finger's reports, from [`crate::debug`] (for testing long
 /// presses without a finger; only with `debug-input`): where it is, in
@@ -249,10 +254,16 @@ pub async fn touch_task(
                 // With `touch-probe`, the same six bytes come out of a
                 // wider read, which it logs whole.
                 #[cfg(not(feature = "touch-probe"))]
-                let read = i2c.write_read(ADDRESS, &[REG_REPORT], &mut report).await;
+                let read = with_timeout(
+                    I2C_TIMEOUT,
+                    i2c.write_read(ADDRESS, &[REG_REPORT], &mut report),
+                )
+                .await;
                 #[cfg(feature = "touch-probe")]
-                let read = crate::touch_probe::read(&mut i2c, &mut report).await;
-                if let Err(e) = read {
+                let read =
+                    with_timeout(I2C_TIMEOUT, crate::touch_probe::read(&mut i2c, &mut report))
+                        .await;
+                if let Err(e) = crate::i2c::outcome(read) {
                     warn!("touch: read failed: {}", e);
                     crate::i2c::reset_controller().await;
                     continue;
@@ -320,7 +331,8 @@ async fn reset_chip(reset: &mut Output<'static>) {
 /// accelerometer and heart rate sensor share can't be left wedged.
 async fn sleep(i2c: &mut Device, reset: &mut Output<'static>) {
     reset_chip(reset).await;
-    match i2c.write(ADDRESS, &[REG_POWER, DEEP_SLEEP]).await {
+    let write = with_timeout(I2C_TIMEOUT, i2c.write(ADDRESS, &[REG_POWER, DEEP_SLEEP])).await;
+    match crate::i2c::outcome(write) {
         Ok(()) => info!("touch: asleep"),
         Err(e) => {
             warn!("touch: sleeping failed: {}", e);
@@ -331,7 +343,8 @@ async fn sleep(i2c: &mut Device, reset: &mut Output<'static>) {
 
 /// Sets up the chip's interrupt behaviour; returns whether that worked.
 async fn configure(i2c: &mut Device) -> bool {
-    match i2c.write(ADDRESS, &[REG_IRQ_CTL, IRQ_CTL]).await {
+    let write = with_timeout(I2C_TIMEOUT, i2c.write(ADDRESS, &[REG_IRQ_CTL, IRQ_CTL])).await;
+    match crate::i2c::outcome(write) {
         Ok(()) => {
             // Not "never": a stuck contact (water, say) should still end,
             // as the chip's reset does. If this fails, holds end at the
@@ -347,6 +360,9 @@ async fn configure(i2c: &mut Device) -> bool {
         }
         Err(e) => {
             warn!("touch: configuring interrupts failed: {}", e);
+            // As after any failed transfer: a timed-out one leaves the
+            // controller busy, and the bus maybe held.
+            crate::i2c::reset_controller().await;
             false
         }
     }

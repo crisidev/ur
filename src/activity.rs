@@ -186,6 +186,9 @@ type Frames = heapless::Vec<[i16; 3], 36>;
 
 struct Bma421 {
     i2c: Device,
+    /// Whether to keep transfer failures out of the log: while setup is
+    /// retried slowly, only some attempts log (see [`crate::backoff`]).
+    quiet: bool,
 }
 
 impl Bma421 {
@@ -199,12 +202,16 @@ impl Bma421 {
         match with_timeout(I2C_TIMEOUT, self.i2c.write(ADDRESS, bytes)).await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => {
-                warn!("activity: write to {=u8:#04x} failed: {}", bytes[0], e);
+                if !self.quiet {
+                    warn!("activity: write to {=u8:#04x} failed: {}", bytes[0], e);
+                }
                 crate::i2c::reset_controller().await;
                 Err(())
             }
             Err(_) => {
-                warn!("activity: write to {=u8:#04x} timed out", bytes[0]);
+                if !self.quiet {
+                    warn!("activity: write to {=u8:#04x} timed out", bytes[0]);
+                }
                 crate::i2c::reset_controller().await;
                 Err(())
             }
@@ -220,12 +227,16 @@ impl Bma421 {
         {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => {
-                warn!("activity: read of {=u8:#04x} failed: {}", register, e);
+                if !self.quiet {
+                    warn!("activity: read of {=u8:#04x} failed: {}", register, e);
+                }
                 crate::i2c::reset_controller().await;
                 Err(())
             }
             Err(_) => {
-                warn!("activity: read of {=u8:#04x} timed out", register);
+                if !self.quiet {
+                    warn!("activity: read of {=u8:#04x} timed out", register);
+                }
                 crate::i2c::reset_controller().await;
                 Err(())
             }
@@ -916,7 +927,7 @@ const STILL_CHECK: Duration = Duration::from_secs(60);
 /// any-motion: no timer, no I2C, until something moves.
 #[embassy_executor::task]
 pub async fn motion_task(i2c: Device, mut interrupt: Input<'static>) {
-    let mut bma = Bma421 { i2c };
+    let mut bma = Bma421 { i2c, quiet: false };
     let mut detector = crate::glance::Detector::default();
     let mut screen_was_on = true;
     while !READY.load(Ordering::Relaxed) {
@@ -1145,26 +1156,38 @@ pub async fn activity_task(i2c: Device) {
     // moment after its reset, and our config upload holds the shared bus
     // for about a third of a second.
     Timer::after_millis(200).await;
-    let mut bma = Bma421 { i2c };
+    let mut bma = Bma421 { i2c, quiet: false };
     // Setup occasionally fails partway (a write to the feature window ends
     // early, or a transfer stalls), maybe two times in ten; a fresh attempt
-    // from soft reset has always worked.
+    // from soft reset has almost always worked. But a bus that stays stuck
+    // can take longer (or need recovering again; see `i2c`), so it's
+    // retried for as long as it takes, ever more slowly: giving up would
+    // leave a sealed watch without steps until its next reboot.
     // TODO: find the cause; it may be the nRF52832's TWIM errata, or the
     // touch controller on the same bus.
-    let mut attempt = 0;
-    while bma.init().await.is_err() {
-        attempt += 1;
-        if attempt == 5 {
-            warn!("activity: accelerometer setup failed; no steps or movement");
-            // Still there for what `system_off` needs done.
-            loop {
-                Timer::after_secs(POLL_SECONDS).await;
-                crate::system_off::serve().await;
-            }
+    let mut backoff = crate::backoff::Backoff::new();
+    loop {
+        bma.quiet = !backoff.loud();
+        if bma.init().await.is_ok() {
+            break;
         }
-        warn!("activity: accelerometer setup failed; retrying");
-        Timer::after_millis(100).await;
+        let retry = backoff.failed();
+        if retry.log {
+            warn!(
+                "activity: accelerometer setup failed ({=u16}x); retrying in {=u32} ms",
+                retry.failures, retry.wait_ms
+            );
+        }
+        // In pieces, still doing what `system_off` needs done meanwhile.
+        let mut wait_ms = retry.wait_ms;
+        while wait_ms > 0 {
+            let piece = wait_ms.min(POLL_SECONDS as u32 * 1000);
+            Timer::after_millis(u64::from(piece)).await;
+            crate::system_off::serve().await;
+            wait_ms -= piece;
+        }
     }
+    bma.quiet = false;
     info!("activity: accelerometer running");
     READY.store(true, Ordering::Relaxed);
 
