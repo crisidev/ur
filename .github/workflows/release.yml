@@ -10,7 +10,8 @@
 # - plan: checks the tag against Cargo.toml's version, and fails the
 #   release if they differ. A version with a prerelease part (0.9.0-rc.1)
 #   makes a GitHub prerelease.
-# - build: scripts/release.sh builds and packages both variants, as
+# - build: scripts/release.sh builds and packages both variants (and a
+#   package for each other theme), as
 #   `<version>+<commit>`, scripts/size.py checks they fit, then GitHub
 #   attests their build provenance (actions/attest): a signed statement
 #   that this workflow, at this commit, produced exactly these files.
@@ -68,7 +69,7 @@ jobs:
       - name: Install the pinned toolchain
         run: rustup toolchain install
       - name: build and package
-        run: scripts/release.sh dist
+        run: UR_THEME_LIST=themes.tsv scripts/release.sh dist
       # test.yml's size check, on exactly what's released: a package that
       # doesn't fit the watch must not ship.
       - name: size
@@ -87,6 +88,13 @@ jobs:
           name: release
           path: dist/
           if-no-files-found: error
+      # Which packages are of which theme, for the notes: not a file of
+      # the release.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # tag=v7.0.2
+        with:
+          name: themes
+          path: themes.tsv
+          if-no-files-found: error
   host:
     needs: [plan, build]
     runs-on: ubuntu-latest
@@ -98,6 +106,10 @@ jobs:
         with:
           name: release
           path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # tag=v8.0.2
+        with:
+          name: themes
+          path: themes
       - name: release notes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -120,6 +132,28 @@ jobs:
           Send \`ur-$VERSION-dfu.zip\` to the watch over Bluetooth, from a phone with Nordic's [nRF Device Firmware Update](https://play.google.com/store/apps/details?id=no.nordicsemi.android.dfu) app or from a computer with \`scripts/dfu.py\`. It installs over InfiniTime and updates ur alike; see the README's [Installing](https://github.com/$REPO#installing) section.
 
           \`ur-logging-$VERSION-dfu.zip\` is the same firmware keeping a log in the watch's flash, which \`scripts/fetch-log.py\` fetches over Bluetooth, for reporting problems. It writes to flash constantly and costs a little battery.
+          EOF
+          # A package of each other theme, if there are any: `ur` with
+          # that theme in place of the default (see scripts/release.sh).
+          # (themes.tsv: release.sh's list of them, a theme a line, its
+          # directory's name, its name as people read it, then the sides
+          # it has colour schemes for: both, night or day.) One with
+          # schemes of one side shows them by day and by night alike,
+          # which the notes say.
+          themes=()
+          while IFS=$'\t' read -r name display sides; do
+            entry="\`ur-$name-$VERSION-dfu.zip\` ([$display](https://github.com/$REPO/tree/$TAG/src/themes/$name))"
+            if [[ $sides != both ]]; then
+              entry+=", with $sides colour schemes only, which it shows by day and by night alike"
+            fi
+            themes+=("$entry")
+          done <themes/themes.tsv
+          if ((${#themes[@]} > 0)); then
+            list=$(printf '%s; ' "${themes[@]}")
+            echo >>notes.md
+            echo "Other looks: ${list%; }. Each is \`ur\` with only that theme in place of the default, Retro." >>notes.md
+          fi
+          cat >>notes.md <<EOF
 
           ## Files
 
@@ -130,7 +164,7 @@ jobs:
           - \`-slot.elf\`: the image as an ELF, for flashing a dev kit over SWD.
           - \`.elf\`: the firmware with symbols, which decodes the watch's logs (\`defmt-print -e\`).
 
-          \`sha256.sum\` has their checksums.
+          Another theme's package is its \`-dfu.zip\` alone. \`sha256.sum\` has their checksums.
 
           ## Verifying
 

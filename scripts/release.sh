@@ -30,6 +30,17 @@
 #   Bluetooth (`scripts/fetch-log.py`) from a sealed watch, with the heart
 #   rate's raw samples and the accelerometer's readings, for tuning. It
 #   costs flash writes and a little battery.
+# - `ur-<theme>`, for each theme (see src/themes/) other than the default:
+#   `ur` with only that theme in it, for wearers who'd rather have that
+#   look. One with colour schemes of one side only (night, say) shows them
+#   by day and by night alike; the release's notes say so. Only its
+#   `-dfu.zip`: the other files are for dev kits and for decoding logs,
+#   and a wearer who reports a problem can do so on `ur` or `ur-logging`.
+#   Its ELF is held to every size constraint first (`scripts/size.py
+#   check`), as CI holds the others.
+#
+# Both `ur` and `ur-logging` have the default themes (Cargo.toml's
+# `default`).
 #
 # The same commit gives the same files, byte for byte, wherever it's built:
 # rust-toolchain.toml pins the compiler, Cargo.lock (`--locked`) the
@@ -175,6 +186,57 @@ panics_only=embassy_executor=off,embassy_sync=off,embassy_time=off,embassy_nrf=o
 # doubles the log on a busy day, so it's not for releases: give it a
 # `--pre` of its own (`--pre accel`) to tell its packages apart.
 variant ur-logging "info,ur::heart=trace,ur::activity=${UR_ACTIVITY_LOG:-debug},$panics_only" --features field-log
+
+# ==============================================================================
+# A package for each other theme
+# ==============================================================================
+
+# The themes in the repository, and the default ones, from Cargo.toml's
+# features (`theme-<name>`).
+read -r -a all_themes < <(python3 -c 'import tomllib; print(" ".join(f.removeprefix("theme-") for f in tomllib.load(open("Cargo.toml", "rb"))["features"] if f.startswith("theme-")))')
+read -r -a default_themes < <(python3 -c 'import tomllib; print(" ".join(f.removeprefix("theme-") for f in tomllib.load(open("Cargo.toml", "rb"))["features"]["default"] if f.startswith("theme-")))')
+others=()
+for theme in "${all_themes[@]}"; do
+  if [[ " ${default_themes[*]} " != *" $theme "* ]]; then
+    others+=("$theme")
+  fi
+done
+# Which sides each has schemes for is the code's to say (each theme's
+# `BUILT_IN`), not a list here: the simulator, with every theme, prints
+# each with its night and day schemes' counts, and its name as people
+# read it. Only built when there's a theme to ask about, as it takes a
+# minute or two. With `UR_THEME_LIST` set, each package's theme goes in
+# that file, a line each, `<theme>\t<its name as people read it>\t<its
+# sides>` (`both`, `night` or `day`), for the release's notes.
+if [[ -n ${UR_THEME_LIST-} ]]; then
+  : >"$UR_THEME_LIST"
+fi
+if ((${#others[@]} > 0)); then
+  listing=$(cd sim && cargo run --quiet --locked --release --no-default-features --features themes-all -- --list-themes)
+  while IFS=$'\t' read -r theme night day name; do
+    if [[ " ${others[*]} " != *" $theme "* ]]; then
+      continue
+    fi
+    if ((night > 0 && day > 0)); then
+      sides=both
+    elif ((night > 0)); then
+      sides=night
+    else
+      sides=day
+    fi
+    # `ur-logging` is taken, and a name becomes part of file names.
+    if [[ ! $theme =~ ^[a-z0-9_]+$ || $theme == logging ]]; then
+      echo "a theme can't be called '$theme' here: lowercase letters, digits and underscores, not 'logging'" >&2
+      exit 1
+    fi
+    variant "ur-$theme" "info" --no-default-features --features "theme-$theme"
+    python3 scripts/size.py check "ur-$theme=$out/ur-$theme-$version.elf" >&2
+    rm "$out/ur-$theme-$version.img" "$out/ur-$theme-$version-slot.elf" "$out/ur-$theme-$version.elf"
+    if [[ -n ${UR_THEME_LIST-} ]]; then
+      printf '%s\t%s\t%s\n' "$theme" "$name" "$sides" >>"$UR_THEME_LIST"
+    fi
+  done <<<"$listing"
+fi
 
 (cd "$out" && sha256sum -- ur-*"$version"* >sha256.sum)
 echo "== built $UR_VERSION into $out" >&2

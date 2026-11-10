@@ -32,7 +32,13 @@ concurrency:
   cancel-in-progress: false
 name: pages
 jobs:
+  # That the simulator builds with every theme, as the page has them.
+  features:
+    uses: ./.github/workflows/features.yml
+    with:
+      firmware: false
   build:
+    needs: features
     runs-on: ubuntu-latest
     name: build
     steps:

@@ -24,7 +24,13 @@ concurrency:
   cancel-in-progress: true
 name: screenshots
 jobs:
+  # That the simulator builds with every theme, before drawing any.
+  features:
+    uses: ./.github/workflows/features.yml
+    with:
+      firmware: false
   render:
+    needs: features
     runs-on: ubuntu-latest
     name: render
     steps:
@@ -63,6 +69,8 @@ jobs:
       # Each checkout's simulator draws that checkout's scripts: the ones
       # the tests check (sim/tests/scripts.rs), each into a directory of
       # its own. A script the base doesn't have yet shows as all added.
+      # Each theme's (src/themes/<name>/shots.txt) with every theme built
+      # in, as a base from before themes has none.
       - name: render
         run: |
           mkdir -p "$GITHUB_WORKSPACE/shots/base" "$GITHUB_WORKSPACE/shots/head"
@@ -72,6 +80,13 @@ jobs:
               if [[ -f $script.txt ]]; then
                 cargo run --locked --no-default-features -- \
                   --out "$GITHUB_WORKSPACE/shots/$side/$script" "$script.txt"
+              fi
+            done
+            for script in ../src/themes/*/shots.txt; do
+              if [[ -f $script ]]; then
+                theme=$(basename "$(dirname "$script")")
+                cargo run --locked --no-default-features --features themes-all -- \
+                  --out "$GITHUB_WORKSPACE/shots/$side/theme-$theme" "$script"
               fi
             done
           done

@@ -1,0 +1,76 @@
+# That every theme builds, alone and with everything: a gate the heavier
+# jobs wait on (test.yml's simulator, web and firmware jobs, with the size
+# report; screenshots.yml's renderings; pages.yml's build), so a theme or a
+# feature that doesn't compile fails here, in a minute or so, rather than
+# in each of them. Called by those workflows (`workflow_call`), with
+# `firmware: false` where only the simulator is built after.
+#
+# What each check catches that nothing else does:
+#
+# - Each theme other than the default alone (`--no-default-features
+#   --features theme-<name>`), as scripts/release.sh builds its package,
+#   linted (clippy, `-D warnings`): a theme that leans on another's code,
+#   anything that assumes the default theme is there, and what only
+#   warns without it (the theme's own dead code: see src/main.rs).
+#   Nothing else builds a theme without the default. (The default alone
+#   is check.yml's clippy of `ur`.)
+# - `--all-features`: every theme and every feature together, as no other
+#   build has them (two themes' items clashing, say, or features that only
+#   break in company).
+# - The simulator with every feature: every theme, for their screenshots
+#   and the web page, and the window.
+#
+# Not each other feature on its own (field-log, compare, flash-stress, …):
+# check.yml's clippy matrix builds those that are built, and no code is
+# only there without another feature (no `cfg(not(feature = …))` but
+# field-log's and debug-input's, which the plain build has), so
+# `--all-features` covers the rest. Nor the build with no theme at all,
+# which fails by design (see src/themes/mod.rs).
+#
+# One job, one after the other: what takes the time is building the
+# dependencies (about a minute without a cache), which every check shares;
+# each check after the first only rebuilds the firmware crate, in seconds.
+# The themes are read from Cargo.toml (every `theme-*` feature), so a new
+# one needs nothing here. Each theme alone gets clippy, as nothing else
+# lints it so; the rest `cargo check`, as check.yml lints those builds.
+# (Clippy costs a check's time: it's the same compile, with lints.)
+permissions:
+  contents: read
+on:
+  workflow_call:
+    inputs:
+      firmware:
+        description: check the firmware's themes too, not only the simulator
+        type: boolean
+        default: true
+name: features
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    name: features
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
+        with:
+          workspaces: |
+            .
+            sim
+          key: features
+      # Release profile, as the packages are built (and as some code
+      # depends on the profile's cfgs).
+      - name: every theme alone, and everything together
+        if: inputs.firmware
+        run: |
+          read -r -a others < <(python3 -c 'import tomllib; f = tomllib.load(open("Cargo.toml", "rb"))["features"]; print(" ".join(t for t in f if t.startswith("theme-") and t not in f["default"]))')
+          for theme in "${others[@]}"; do
+            echo "::group::$theme alone"
+            cargo clippy --release --locked --no-default-features --features "$theme" -- -D warnings
+            echo "::endgroup::"
+          done
+          cargo check --release --locked --all-features
+      # With the window too, as check.yml's clippy: it builds without X11.
+      - name: the simulator, with everything
+        working-directory: sim
+        run: cargo check --locked --all-targets --all-features

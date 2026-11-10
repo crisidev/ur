@@ -70,8 +70,8 @@ after running any scripts, and takes commands typed into the terminal.
                the themes built in (see the firmware's Cargo.toml), a line
                each, tab-separated: its directory's name (its feature's,
                theme-NAME), how many colour schemes it has for night and
-               for day, and its name as people read it (scripts/release.sh
-               builds a package of each theme with both)
+               for day, and its name as people read it (for
+               scripts/release.sh's packages, and their notes)
   --help       this, and the commands
 ";
 
