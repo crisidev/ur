@@ -220,6 +220,52 @@ mod tests {
     }
 
     #[test]
+    fn a_pulse_keeps_a_still_wrist_on() {
+        // Asleep and perfectly still all night, a reading every 5 minutes.
+        let mut wear = Wear::new(0);
+        let mut at = 0;
+        let mut pulse = None;
+        while at < 8 * 60 * MIN {
+            at += MIN;
+            if at % (5 * MIN) == 0 {
+                pulse = Some(at);
+            }
+            wear.update(at, false, true, pulse);
+            assert_eq!(wear.worn(), pulse.is_some(), "at {at}");
+        }
+        assert_eq!(wear.worn_for(at), Some(at - 5 * MIN));
+
+        // Sessions that fail for a quarter of an hour make it look like a
+        // nightstand, but the next pulse in the same still spell puts it
+        // back on, since that pulse.
+        let mut wear = Wear::new(0);
+        wear.update(MIN, false, true, None);
+        wear.update(16 * MIN, false, true, None);
+        assert!(!wear.worn());
+        wear.update(20 * MIN, false, true, Some(19 * MIN));
+        assert_eq!(wear.worn_for(20 * MIN), Some(MIN));
+        wear.update(60 * MIN, false, true, Some(19 * MIN));
+        assert!(wear.worn());
+
+        // But no skin is off, pulse or not.
+        wear.update(61 * MIN, true, true, Some(19 * MIN));
+        assert!(!wear.worn());
+    }
+
+    #[test]
+    fn a_pulse_before_the_watch_was_laid_down_doesnt_keep_it_on() {
+        let mut wear = Wear::new(0);
+        wear.update(MIN, false, false, Some(MIN));
+        assert!(wear.worn());
+        // Taken off (which moves it) and laid on the nightstand.
+        wear.update(2 * MIN, false, true, Some(MIN));
+        wear.update(16 * MIN, false, true, Some(MIN));
+        assert!(wear.worn());
+        wear.update(17 * MIN, false, true, Some(MIN));
+        assert!(!wear.worn());
+    }
+
+    #[test]
     fn the_prior_alone_takes_off_the_skin() {
         let calibration = Calibration::new();
         // 27.5 °C on a wrist is a 21.5 °C room; each degree of die is 1.6
@@ -543,8 +589,12 @@ mod proofs {
     ///
     /// - It starts off the wrist, and is on it only since a pulse: one
     ///   later than the last sign of it being off (no skin, or lying
-    ///   still for a quarter of an hour).
+    ///   still for a quarter of an hour with no pulse since it went
+    ///   still).
     /// - Either sign takes it off at once.
+    /// - A pulse newer than the last sign of being off, and from no
+    ///   earlier than the still spell (if there is one), keeps it on
+    ///   however long the spell lasts: a wrist asleep, not a nightstand.
     /// - With neither, a newer pulse puts it on, since that pulse, and
     ///   once on it stays on, since the same pulse.
     ///
@@ -568,7 +618,8 @@ mod proofs {
             wear.update(now, no_skin, still, pulse);
 
             still_since = still.then_some(still_since.unwrap_or(now));
-            let lying = still_since.is_some_and(|since| now - since >= LYING);
+            let lying = still_since
+                .is_some_and(|since| now - since >= LYING && pulse.is_none_or(|at| at < since));
             let worn_for = wear.worn_for(now);
             assert_eq!(wear.worn(), worn_for.is_some());
             if no_skin || lying {
@@ -581,6 +632,11 @@ mod proofs {
                 assert_eq!(worn_for, newer.map(|at| now - at));
             }
             assert!(worn_for.is_none_or(|worn| worn < now - off));
+            if !no_skin
+                && pulse.is_some_and(|at| at > off && still_since.is_none_or(|since| at >= since))
+            {
+                assert!(wear.worn());
+            }
             last = now;
         }
     }

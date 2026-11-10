@@ -142,9 +142,12 @@ pub fn pick(sensor: Option<i32>, worn: bool, die: i32, calibration: &Calibration
 // On the wrist or not
 // ==============================================================================
 
-/// After this long perfectly still, the watch is taken to be lying
-/// somewhere. A wrist, even at a desk, is never that still while awake:
-/// a day's log at a desk had its longest still spell at 18 s.
+/// After this long perfectly still, with no pulse since it went still,
+/// the watch is taken to be lying somewhere. A wrist awake, even at a
+/// desk, is never that still (a day's log at a desk had its longest
+/// still spell at 18 s); asleep it can be, for much longer, but then the
+/// night's heart sessions (every 5 minutes, nearly all with a reading)
+/// find a pulse in it.
 const STILL_OFF: u64 = 15 * MINUTE;
 
 /// Whether the watch is on a wrist, as far as can be told.
@@ -154,11 +157,13 @@ const STILL_OFF: u64 = 15 * MINUTE;
 /// busy wrist, or lying on a desk (which reflects its LED like skin),
 /// a session ends without a verdict. So a heart reading (a pulse means
 /// skin) says "on", while "off" comes from the sensor seeing nothing, or
-/// from the watch keeping perfectly still for [`STILL_OFF`]. Each stands
-/// until the other says otherwise. It starts off: worn takes a pulse,
-/// and until one, the die's own temperature is the safer thing to show (an
-/// estimate applied to a watch on a desk would read many degrees too
-/// cold).
+/// from the watch keeping perfectly still for [`STILL_OFF`] without a
+/// pulse. Each stands until the other says otherwise; a pulse during a
+/// still spell says it's a wrist asleep, not a nightstand, so the spell
+/// doesn't count against it (taking the watch off moves it, which starts
+/// a new spell). It starts off: worn takes a pulse, and until one, the
+/// die's own temperature is the safer thing to show (an estimate applied
+/// to a watch on a desk would read many degrees too cold).
 #[derive(Clone, Copy, Debug)]
 pub struct Wear {
     /// The latest sign of being off the wrist, ms since boot.
@@ -189,9 +194,9 @@ impl Wear {
         } else {
             None
         };
-        let lying = self
-            .still_since
-            .is_some_and(|since| now.saturating_sub(since) >= STILL_OFF);
+        let lying = self.still_since.is_some_and(|since| {
+            now.saturating_sub(since) >= STILL_OFF && pulse.is_none_or(|at| at < since)
+        });
         if no_skin || lying {
             self.off = now;
             self.worn_since = None;
