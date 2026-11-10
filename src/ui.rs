@@ -115,7 +115,9 @@
 //!   long-press to switch it on or off (or start/stop the timer).
 //! - In the editor: swipe up/down on the left half for hours, the right
 //!   half for minutes; tap the bottom left to switch it on/off, the bottom
-//!   right for the next page or done. The button also means done.
+//!   right for the next page or done. The button also means done, as
+//!   does the screen going off: each change takes effect, and is saved,
+//!   as it's made, so there's nothing to keep or throw away.
 //! - The phone's alarms (see [`alarm::Phone`]) have a screen of their own,
 //!   read-only: they're set in Gadgetbridge.
 //! - Ringing takes over the screen: tap to snooze, button to stop. Alarms
@@ -673,8 +675,15 @@ impl App {
         // banner, the screen would stay on until the battery's empty.
         if self.brief_wake {
             debug_assert!(self.awake, "a brief wake with the screen off");
-            debug_assert!(self.banner.is_some(), "a brief wake with no banner");
             debug_assert!(self.screen == Screen::Clock, "a brief wake elsewhere");
+            // And the banner's time has started: it's on screen, as
+            // nothing covers a brief wake (whatever would, ends it). One
+            // waiting to be seen would hold the screen on until an input,
+            // as the brief wake's end is the banner's.
+            debug_assert!(
+                self.banner.as_ref().is_some_and(|b| b.until != UNSEEN),
+                "a brief wake with no banner, or one with no end"
+            );
         }
         // What rings has the screen, lit, until it's dealt with: each
         // turns the screen on as it starts, and holds it on from then
@@ -682,16 +691,17 @@ impl App {
         // (it couldn't be opened under one: the ringing takes the touch).
         debug_assert!(!self.ringing_any() || self.awake, "ringing in the dark");
         debug_assert!(self.ringing.is_none() || self.editing.is_none());
-        // TODO: the editor should imply the screen on, on Alarms (it's
-        // only opened there): `self.editing.is_none() || (self.awake &&
-        // self.screen == Screen::Alarms)`. It doesn't hold yet: the
-        // screen timing out leaves the editor open, so the next wake
-        // shows it over the clock the wake went to (with
-        // `showing_clock` true, so the heart rate is measured for a clock
-        // face nobody sees), and a banner waiting to be seen under it
-        // never starts its time, which can hold the screen on for good
-        // (a brief wake whose banner the quiet night made wait). Assert
-        // it once the screen going off closes the editor.
+        // The editor is only open with the screen on, over Alarms, where
+        // it opens: the screen going off closes it (`screen_off`), and
+        // nothing moves to another screen under it, as it takes every
+        // touch. Otherwise a wake shows it over the clock face it went to
+        // (with `showing_clock` true, so the heart rate is measured for a
+        // clock face nobody sees), and a banner waiting under it never
+        // starts its time (see below).
+        if self.editing.is_some() {
+            debug_assert!(self.awake, "the alarm editor with the screen off");
+            debug_assert!(self.screen == Screen::Alarms, "the alarm editor off Alarms");
+        }
 
         // The screen showing is one that's there: on the clock, or in a
         // line (`place` takes anything else for the clock, and `render`
@@ -1313,7 +1323,7 @@ impl App {
             InputEvent::Attention => {}
             InputEvent::Button => match nav::home(self.place()) {
                 Some(towards) => self.go_to(Screen::Clock, sweep(towards)),
-                None => self.awake = false,
+                None => self.screen_off(),
             },
             InputEvent::Touch(touch) => match (touch.gesture, self.screen) {
                 // Storage mode needs a long press, then a tap: hard to do by
@@ -1646,6 +1656,20 @@ impl App {
         };
     }
 
+    /// Turns the screen off, closing the alarm editor if it's open. The
+    /// editor is the one screen that isn't `screen` (it opens over Alarms),
+    /// so the wake to the clock face that every wake is wouldn't close it:
+    /// left open, it came back over the clock face (which `showing_clock`
+    /// then took it for), and a banner waiting to be seen under it never
+    /// started its time. Nothing is lost by closing it: each edit takes
+    /// effect, and is saved, as it's made, so this is what DONE does, and
+    /// what the other screens that change settings (Settings, the grid's
+    /// layout) amount to when a wake takes the wearer off them.
+    fn screen_off(&mut self) {
+        self.awake = false;
+        self.editing = None;
+    }
+
     fn stop_ringing(&mut self) {
         self.ringing = None;
         self.buzz_for_screen();
@@ -1874,11 +1898,18 @@ impl App {
         }
         // In the quiet night, it makes no sound or light: it waits until
         // the screen is properly on (see `on_tick`), even if that's now.
+        // Unless the screen is on only for the banner it replaces (which
+        // came before the night started): then it's on screen already, and
+        // its time starts now, as the wake's end is the banner's. Left to
+        // `on_tick`, anything that kept it from starting there (as the
+        // alarm editor once could) would hold the screen on all night.
         if self.night.quiet() {
-            self.banner = Some(Banner {
-                shows,
-                until: UNSEEN,
-            });
+            let until = if self.brief_wake {
+                now + BANNER_TIME
+            } else {
+                UNSEEN
+            };
+            self.banner = Some(Banner { shows, until });
             return;
         }
         if self.glance_until.take().is_some() {
@@ -2018,7 +2049,7 @@ impl App {
         if let Some(until) = self.glance_until {
             if now >= until {
                 self.glance_until = None;
-                self.awake = false;
+                self.screen_off();
             }
             return;
         }
@@ -2042,7 +2073,7 @@ impl App {
         if self.banner.as_ref().is_some_and(|b| now >= b.until) {
             self.banner = None;
             if self.brief_wake {
-                self.awake = false;
+                self.screen_off();
                 self.brief_wake = false;
             }
         }
@@ -2064,7 +2095,7 @@ impl App {
         // editor, say) isn't showing.
         let banner_showing = self.banner.as_ref().is_some_and(|b| b.until != UNSEEN);
         if self.awake && !banner_showing && now - self.last_input >= self.screen_timeout() {
-            self.awake = false;
+            self.screen_off();
         }
     }
 

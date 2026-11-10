@@ -938,3 +938,52 @@ fn steps_today_follow_a_new_time_zone() {
     let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
     assert!(ok, "{log}");
 }
+
+/// The screen going off closes the alarm editor, keeping what was edited
+/// (it was saved as it changed): the next wake is to the clock face, as
+/// every wake is, where the button turns the screen off again. The
+/// editor used to survive under the dark screen and come back over the
+/// clock face the wake went to, which the UI took for the clock face
+/// (measuring the heart rate for it), and where the button only closed
+/// the editor.
+#[test]
+fn the_screen_going_off_closes_the_alarm_editor() {
+    let dir = out("editor-sleep");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    std::fs::write(
+        &script,
+        "time 2026-11-10 12:00 +01:00\nalarm 1 06:45 on\nleft\nwait 1s\n\
+         # ALARM 1's editor, an hour later.\n\
+         tap 20,40\nup 20,40\nwait 15s\nexpect not screen-on\n\
+         button\nwait 1s\nexpect clock\nsettings\n\
+         button\nwait 1s\nexpect not screen-on\n",
+    )
+    .expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+    assert!(log.contains("alarms: 07:45 on"), "{log}");
+}
+
+/// A notification's own wake ends with its banner, whatever came in
+/// between. Here, a second notification arrived once the quiet night had
+/// started, while the first's banner showed, under an alarm editor left
+/// open in the dark: it waited to be seen, which under the editor never
+/// came, so the screen stayed on (dimly) until the next input, all night.
+#[test]
+fn a_notification_wake_always_ends() {
+    let dir = out("brief-wake-ends");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    std::fs::write(
+        &script,
+        "time 2026-11-10 23:00 +01:00\nconnect\nwait 1s\nleft\nwait 1s\n\
+         tap 20,40\nwait 15s\nexpect not screen-on\n\
+         notify Signal Kari\nwait 1s\nexpect screen-on\n\
+         asleep on\nwait 1s\nexpect quiet-night\n\
+         notify Signal Ola\nwait 5s\nexpect not screen-on\n",
+    )
+    .expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+}
