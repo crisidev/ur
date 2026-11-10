@@ -859,6 +859,10 @@ impl Outgoing {
                 kind,
             } => write!(
                 line,
+                // Always with `mov`: Gadgetbridge merges a sample into one it
+                // already has, and one without `mov` overwrites the stored
+                // intensity with -1
+                // (<https://codeberg.org/Freeyourgadget/Gadgetbridge/issues/7297>).
                 r#"{{"t":"act","ts":{},"stp":{},"mov":{},"hrm":{}"#,
                 timestamp_ms, steps, movement, heart_rate
             )

@@ -16,6 +16,14 @@
 //! Everything after that minute waits, steps and heart rates too, since
 //! they're the same samples (and a sleeping wearer barely steps).
 //!
+//! TODO: once Gadgetbridge updates a stored sample's kind
+//! (<https://codeberg.org/Freeyourgadget/Gadgetbridge/issues/7296>), the
+//! hold could go, and a night be sent as it goes, revisions and all: a
+//! re-sent bucket would correct the kind. That includes sleep revised to
+//! awake, as an awake bucket leaves out `act` (see
+//! `sleep::Kind::gadgetbridge_name`), which Gadgetbridge reads as its
+//! default, `ACTIVITY`.
+//!
 //! **When a kind is settled**, from how `crate::activity` revises them
 //! every minute:
 //!

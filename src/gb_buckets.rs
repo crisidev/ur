@@ -88,6 +88,12 @@
 /// Minutes per bucket. Must be over 2 (see the module docs), and divide a
 /// day, so buckets line up with midnight in every time zone (whose UTC
 /// offsets are all whole quarter hours).
+///
+/// TODO: go back to one sample a minute (or at least shorter buckets) once
+/// Gadgetbridge merges only samples much closer than 2 minutes apart:
+/// <https://codeberg.org/Freeyourgadget/Gadgetbridge/issues/7295> (its
+/// comments propose ~30 s). Sent a minute apart, two samples in three had
+/// their steps overwritten: 4,206 of 10,346 steps reached Gadgetbridge.
 pub const MINUTES: i64 = 5;
 
 const _: () = assert!(MINUTES > 2 && 15 % MINUTES == 0);
