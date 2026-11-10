@@ -88,7 +88,11 @@ on top:
 
 **Caveats:** ur is experimental and personal: it's tested on two
 watches, and heart rate and sleep are still being tuned against a
-Garmin, so treat sleep stages as a rough guide. It needs an Android phone
+Garmin, so treat sleep stages as a rough guide. Steps come from the
+accelerometer's own counter, which skips walks of under about 8 steps
+and much stop-and-go walking indoors: a day around the house reads
+lower than a phone or a Garmin, though long walks count within a few
+percent. It needs an Android phone
 with Gadgetbridge, which can't install updates on a Bangle.js, so those
 go through another app or a computer. Once it has switched off (a flat
 battery, or storage mode), the watch doesn't know the time, or ring
