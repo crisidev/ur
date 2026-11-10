@@ -69,7 +69,8 @@ at once (after 0.6 s, finger still down), and lifting the finger then
 sends a **release**, for what should last while you hold, like dimming a
 light. Held on, to 1.5 s, it's a **long press** too, sent then, finger
 still down (the button shows LONG, and buzzes again), before the
-release: a third thing a hold can do. A hold lifted sooner has none. The
+release: a third thing a hold can do. In between, the button stays
+pressed until you let go. A hold lifted sooner has none. The
 screen stays on while you hold, quiet night or not, and every hold gets
 its release when you let go. Past a minute, the watch takes it for
 something resting on the screen (bedding, a sleeve): the screen goes

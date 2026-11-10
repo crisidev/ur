@@ -164,6 +164,25 @@ mod tests {
     }
 
     #[test]
+    fn a_held_button_shows_until_the_lift() {
+        let mut run = Run::codes();
+        assert_eq!(run.grid.held(), None);
+        run.hold(7, 1000);
+        assert_eq!(run.grid.held(), Some(7));
+        // Through its long press, too.
+        run.held(5000);
+        assert_eq!(run.grid.held(), Some(7));
+        run.lift(5000);
+        assert_eq!(run.grid.held(), None);
+        // A sequence's hold: its second button, the one under the finger.
+        run.tap(4, 6000).hold(7, 6300);
+        assert_eq!(run.grid.held(), Some(7));
+        assert_eq!(run.grid.waiting(), (None, None));
+        run.lift(7000);
+        assert_eq!(run.grid.held(), None);
+    }
+
+    #[test]
     fn a_hold_lifted_before_long_hold_is_no_long_press() {
         let mut run = Run::six();
         let end = 1000 + LONG_HOLD.as_millis() - 1;

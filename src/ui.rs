@@ -70,7 +70,9 @@
 //!   code, in the "good" colour (or "bad", if the phone was all it could
 //!   go to, and it wasn't connected, or it couldn't go to Home Assistant,
 //!   which a banner adds, "SEE FAQ B05"), with a buzz. A hold held on
-//!   is a long press too, shown and buzzed the same, as "LONG". A swipe,
+//!   is a long press too, shown and buzzed the same, as "LONG"; between
+//!   and after what it sends, the held button shows pressed, until the
+//!   finger lifts. A swipe,
 //!   or the button, cancels what's waiting.
 //! - Screens that take over (the alarm editor, a ringing alarm, a call,
 //!   "find my watch", pairing, an update, the storage prompt) get every
@@ -1331,20 +1333,23 @@ impl App {
 
     /// When [`App::on_timer`] next has something to do: the grid's wait
     /// running out, or its last press to stop showing. While a finger is
-    /// down (`finger_down`), only a hold becoming a long press: anything
-    /// else waits for that touch, whose event wakes the loop.
+    /// down (`finger_down`), only a hold becoming a long press, or what
+    /// it sent to stop showing (the held button then shows pressed):
+    /// anything else waits for that touch, whose event wakes the loop.
     ///
     /// The hold's only while the grid's still showing: left with the
     /// finger down (the button pressed meanwhile, say), `on_timer` won't
     /// make it a long press, so its time would stay due, and the loop would
     /// spin until the finger lifted. The hold itself stays, for its
-    /// release.
+    /// release. (What was sent is no such worry: `on_timer` forgets it
+    /// once its time is up, wherever the screen is.)
     pub fn deadline(&self, finger_down: bool) -> Option<Instant> {
+        let shown = self.sent.map(|(_, until, _)| until);
         if finger_down {
             let on_grid = self.awake && self.screen == Screen::Buttons;
-            return self.grid.long_at().filter(|_| on_grid);
+            let long = self.grid.long_at().filter(|_| on_grid);
+            return long.into_iter().chain(shown).min();
         }
-        let shown = self.sent.map(|(_, until, _)| until);
         self.grid.deadline().into_iter().chain(shown).min()
     }
 
@@ -3450,7 +3455,8 @@ fn render_ha_key(canvas: &mut Canvas, identity: Option<&Identity>) {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Key {
     Up,
-    /// Held down: a sequence's first button, while its second waits.
+    /// Held down: a sequence's first button, while its second waits; or
+    /// a hold's, while the finger's still on it.
     Down,
     /// Held down and lit: what's waiting to see whether more follows.
     Lit,
@@ -3471,6 +3477,7 @@ fn render_buttons(
 ) {
     canvas.clear(BACKGROUND);
     let (first, second) = grid.waiting();
+    let held = grid.held();
     // How many, and where the first row's top is: two rows (49 px)
     // centred in the 80.
     let (count, top) = match layout {
@@ -3482,6 +3489,9 @@ fn render_buttons(
         let y = top + 27 * i32::from((button - 1) / 3);
         let key = match (sent, first, second) {
             (Some((press, ok)), ..) if press.last() == button => Key::Sent(press, ok),
+            // A hold, once what it sent has shown: pressed for as long as
+            // the finger's on it, up again at the lift.
+            _ if held == Some(button) => Key::Down,
             (_, _, Some(second)) if second == button => Key::Lit,
             (_, Some(first), Some(_)) if first == button => Key::Down,
             (_, Some(first), None) if first == button => Key::Lit,

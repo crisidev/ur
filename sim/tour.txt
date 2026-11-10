@@ -119,12 +119,16 @@ tap 40,20
 expect buzzing
 wait 100ms
 shot 11e-grid-sent.png
-# 5 held: at once.
-wait 2s
-long 40,60
+# 5 held: at once; then pressed for as long as the finger's on it.
+wait 650ms
+press 40,60
+wait 610ms
 expect buzzing
-wait 100ms
+wait 90ms
 shot 11f-grid-held.png
+wait 750ms
+shot 11fa-grid-holding.png
+lift
 # With both Bluetooth connections in use (the phone and a computer,
 # say), nothing can advertise 3 for Home Assistant: it turns red, with a
 # banner pointing to FAQ B05.
@@ -351,3 +355,16 @@ right
 wait 1s
 expect dim
 shot 23-quiet-last-night.png
+
+# A grid hold, in the dim look: pressed until the finger lifts, the
+# screen on all the while, past its usual timeout.
+button
+wait 1s
+buttons bthome
+up
+wait 1s
+press 40,60
+wait 12s
+expect screen-on
+shot 24-quiet-grid-held.png
+lift

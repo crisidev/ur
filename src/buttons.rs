@@ -414,6 +414,15 @@ impl Grid {
         }
     }
 
+    /// The button a hold is held on, finger still down (until its
+    /// release; see [`Grid::lift`]), for the screen.
+    pub fn held(&self) -> Option<u8> {
+        match self.state {
+            State::Held { code, .. } => Some(code % 10),
+            _ => None,
+        }
+    }
+
     /// What's waiting, completed as it stands.
     fn flush(&mut self) -> Option<Press> {
         let press = match self.state {
