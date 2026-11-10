@@ -69,7 +69,9 @@ at once (after 0.6 s, finger still down), and lifting the finger then
 sends a **release**, for what should last while you hold, like dimming a
 light. Held on, to 1.5 s, it's a **long press** too, sent then, finger
 still down (the button shows LONG, and buzzes again), before the
-release: a third thing a hold can do. A hold lifted sooner has none. To cancel a tap that's waiting, swipe away or press the button.
+release: a third thing a hold can do. A hold lifted sooner has none. Every
+hold gets its release, though in the quiet night a hold kept on past the
+screen going off (10 s) gets it then, as the screen stops seeing touches. To cancel a tap that's waiting, swipe away or press the button.
 Two buzzes, and the code in red, mean it had nowhere to go (only the
 app, on a phone that isn't connected), or it couldn't go to Home
 Assistant: then **BTHOME NOT SENT** shows too, even if the phone had
