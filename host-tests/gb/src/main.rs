@@ -13,6 +13,9 @@ mod decimal;
 #[path = "../../../src/gb.rs"]
 #[allow(dead_code)]
 mod gb;
+#[path = "../../../src/gb_buckets.rs"]
+#[allow(dead_code)]
+mod gb_buckets;
 #[path = "../../../src/phone.rs"]
 #[allow(dead_code)]
 mod phone;
@@ -39,6 +42,13 @@ defmt::timestamp!("");
 fn main() {
     println!("run `cargo test`");
 }
+
+// The watch against `gbmock`, a model of Gadgetbridge: tests and Bolero
+// harnesses, and Kani proofs.
+#[cfg(test)]
+mod mock;
+#[cfg(kani)]
+mod mock_proofs;
 
 #[cfg(test)]
 mod tests {

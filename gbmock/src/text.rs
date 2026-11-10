@@ -64,7 +64,7 @@ const SIMPLE_EMOJI: &[(&str, &str)] = &[
 ];
 
 /// A few of the aliases the emoji library Gadgetbridge uses
-/// (`EmojiManager`, `EmojiParserKt`) gives: `convertAdvancedEmojiToAscii`
+/// (`com.github.wax911.android-emojify` 1.9.7) gives: `convertAdvancedEmojiToAscii`
 /// (`util/EmojiConverter.java:119-126`) writes every emoji the library
 /// knows as `:alias:`.
 ///

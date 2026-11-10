@@ -185,11 +185,16 @@ version = "0.1.0"
 dependencies = [
  "bolero",
  "defmt",
+ "gbmock",
  "heapless",
  "libm",
  "quickcheck",
  "serde_json",
 ]
+
+[[package]]
+name = "gbmock"
+version = "0.1.0"
 
 [[package]]
 name = "getrandom"
