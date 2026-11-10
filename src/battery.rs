@@ -232,6 +232,8 @@ impl Battery {
         power_present: bool,
         uptime_secs: u32,
     ) {
+        // What was shown, and on what power, to check the step below.
+        let shown_before = self.shown;
         // Single-ended samples can dip slightly negative from noise.
         let sample_mv = u32::from(raw_sample.max(0).unsigned_abs()) * 3600 * 2 / 4096;
         let old = u32::from(self.eighths);
@@ -275,6 +277,28 @@ impl Battery {
                 self.step_tick = tick;
             }
         }
+        // The rules above, as the wearer sees them: a percentage is one,
+        // and once there is one, an update moves it by a point at most,
+        // and never the wrong way: down on the charger (the drop this
+        // replaced), or up on battery. (`measured` can be told any
+        // percentage, for the simulator; from over 100 it only comes down.)
+        debug_assert!(
+            self.shown == NOT_YET
+                || self.shown <= 100
+                || (shown_before != NOT_YET && self.shown <= shown_before),
+            "{} % after {shown_before} %",
+            self.shown
+        );
+        debug_assert!(
+            shown_before == NOT_YET
+                || if charging || power_present {
+                    self.shown == shown_before || self.shown == shown_before + 1
+                } else {
+                    self.shown == shown_before || self.shown + 1 == shown_before
+                },
+            "{} % after {shown_before} %, charging {charging}, power {power_present}",
+            self.shown
+        );
     }
 
     /// Charging (or charged), how high the percentage may go, and how many
