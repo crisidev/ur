@@ -95,7 +95,7 @@ mod tests {
     /// octal for the lowest control characters, raw Latin-1 for the rest;
     /// or, when that's longer than base64, `atob("…")` of the Latin-1
     /// bytes.
-    fn gadgetbridge_string(text: &str) -> Vec<u8> {
+    pub(super) fn gadgetbridge_string(text: &str) -> Vec<u8> {
         let units: Vec<u16> = text.encode_utf16().collect();
         let mut json = b"\"".to_vec();
         let mut has_unicode = false;
@@ -235,6 +235,450 @@ mod tests {
             lines.push(line.to_vec())
         });
         assert_eq!(lines, [br#"GB({"t":"is_gps_active"})"#.to_vec()]);
+    }
+
+    // ==========================================================================
+    // Lines: what the buffer leaves out, so that long ones fit
+    // ==========================================================================
+
+    /// `line` as Gadgetbridge sends it (`\x10`, the line, `\n`, in writes
+    /// of 20 bytes), as the buffer hands it over: `None` if it doesn't.
+    fn received(line: &[u8]) -> Option<Vec<u8>> {
+        let sent = [b"\x10", line, b"\n"].concat();
+        let mut buffer = LineBuffer::new();
+        let mut lines: Vec<Vec<u8>> = Vec::new();
+        for piece in sent.chunks(20) {
+            buffer.push(piece, |line| lines.push(line.to_vec()));
+        }
+        assert!(lines.len() <= 1, "one line in, {} out", lines.len());
+        let line = lines.pop()?;
+        assert!(line.len() <= gb::MAX_LINE);
+        Some(line)
+    }
+
+    /// The UI event `line` becomes once it's through the buffer.
+    fn event_received(line: &[u8]) -> PhoneEvent {
+        let kept = received(line).unwrap_or_else(|| {
+            panic!(
+                "dropped ({} bytes): {}",
+                line.len(),
+                String::from_utf8_lossy(line)
+            )
+        });
+        event(&kept)
+    }
+
+    /// Gadgetbridge's `cropToLength`: at most `len` UTF-16 units, the last
+    /// three of them `...` where it's cut. (A surrogate pair it cuts in
+    /// half goes out as one `\uXXXX`, which Rust's strings can't hold: a
+    /// U+FFFD here, the same length on the wire.)
+    fn crop(text: &str, len: usize) -> String {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        if units.len() <= len {
+            return text.into();
+        }
+        String::from_utf16_lossy(&units[..len - 3]) + "..."
+    }
+
+    /// A notification as Gadgetbridge's `onNotification` sends it, every
+    /// field, cropped and spelled as it does them.
+    #[derive(Clone, Debug, Default)]
+    struct Notification {
+        src: String,
+        title: String,
+        subject: String,
+        body: String,
+        sender: String,
+        tel: Option<String>,
+        actions: Vec<String>,
+    }
+
+    impl Notification {
+        fn line(&self) -> Vec<u8> {
+            let mut line = br#"GB({"t":"notify","id":-2147483648,"src":"#.to_vec();
+            line.extend(gadgetbridge_string(&self.src));
+            for (key, text, len) in [
+                ("title", &self.title, 80),
+                ("subject", &self.subject, 80),
+                ("body", &self.body, 400),
+                ("sender", &self.sender, 40),
+            ] {
+                line.extend(format!(r#","{key}":"#).bytes());
+                line.extend(gadgetbridge_string(&crop(text, len)));
+            }
+            if let Some(tel) = &self.tel {
+                line.extend(br#","tel":"#);
+                line.extend(gadgetbridge_string(tel));
+            }
+            line.extend(br#","reply":true"#);
+            if !self.actions.is_empty() {
+                line.extend(br#","actions":["#);
+                for (i, action) in self.actions.iter().enumerate() {
+                    if i > 0 {
+                        line.push(b',');
+                    }
+                    line.extend(br#"{"title":"#);
+                    line.extend(gadgetbridge_string(&crop(action, 40)));
+                    line.push(b'}');
+                }
+                line.push(b']');
+            }
+            line.extend(b"})");
+            line
+        }
+    }
+
+    /// Bug G1: Gadgetbridge sends each character beyond Latin-1 as
+    /// `\uXXXX`, 6 bytes, and crops a body at 400 characters, so a
+    /// notification line reaches ~3,700 bytes; one past 1024 used to be
+    /// dropped whole, never shown nor buzzed. Now its body (which is never
+    /// shown) is left out as it arrives, and it fits.
+    #[test]
+    fn a_long_notification_beyond_latin1_arrives() {
+        let notification = |body: String| Notification {
+            src: "Signal".into(),
+            title: "Анна".into(),
+            body,
+            ..Default::default()
+        };
+        let anna = PhoneEvent::Notification {
+            app: t("Signal"),
+            who: t("Анна"),
+        };
+        // 140 characters arrived before too...
+        let short = notification("Привет ".repeat(20));
+        assert!(short.line().len() <= gb::MAX_LINE);
+        assert_eq!(event_received(&short.line()), anna);
+        // ...180 didn't, nor 400 of CJK...
+        for body in ["Привет".repeat(30), "你好世界".repeat(100)] {
+            let long = notification(body);
+            assert!(long.line().len() > gb::MAX_LINE, "{}", long.line().len());
+            assert_eq!(event_received(&long.line()), anna);
+        }
+        // ...and in Latin-1, even the longest fits: base64 takes over.
+        let latin = notification("blåbærsyltetøy ".repeat(40));
+        assert!(gadgetbridge_string(&crop(&latin.body, 400)).starts_with(b"atob("));
+        assert_eq!(event_received(&latin.line()), anna);
+    }
+
+    /// The longest title Gadgetbridge sends, 80 Cyrillic letters (480
+    /// bytes), is cut at `MAX_STRING`, past the 40 characters a
+    /// notification shows, so it shows as it would whole: the letters
+    /// the font lacks as `?`, and an ellipsis where it doesn't fit.
+    #[test]
+    fn the_longest_title_shows_as_it_would_whole() {
+        let title = "Ж".repeat(80);
+        let line = Notification {
+            src: "Telegram".into(),
+            title: title.clone(),
+            subject: "Тема".repeat(20),
+            body: "Ж".repeat(400),
+            ..Default::default()
+        }
+        .line();
+        let PhoneEvent::Notification { app, who } = event_received(&line) else {
+            panic!("a notification");
+        };
+        assert_eq!(app, t("Telegram"));
+        assert_eq!(who, t(&title));
+        assert_eq!(who.to_string(), "?".repeat(39) + "\u{2026}");
+    }
+
+    /// What's left out is followed through every escape Gadgetbridge
+    /// writes, so that a quote, bracket or comma in the text doesn't end
+    /// it early, nor one escaped `\\` before a quote late; in an escaped
+    /// string and in base64; and in the `actions` array of objects.
+    #[test]
+    fn what_is_left_out_ends_where_it_ends() {
+        let tricky = [
+            r#"He said "}), "sender":"Eve", {"body": \"#.to_string(),
+            "back\\slash\\\" \u{1F389} \\u0041 \u{10}5 \t\n\r end \\".into(),
+            "Привет, \"Анна\"! ".repeat(30),
+            "æøå \"}\\ ".repeat(60),
+        ];
+        for text in &tricky {
+            let line = Notification {
+                src: "Mail".into(),
+                title: "Kari".into(),
+                subject: text.clone(),
+                body: text.clone(),
+                sender: "Ola Nordmann".into(),
+                tel: Some(text.clone()),
+                actions: vec![text.clone(), "Mark \"read\"".into(), text.clone()],
+            }
+            .line();
+            let kept = received(&line).expect("it fits");
+            assert_eq!(
+                kept,
+                br#"GB({"t":"notify","id":-2147483648,"src":"Mail","title":"Kari","subject":"","body":"","sender":"Ola Nordmann","tel":"","reply":true,"actions":""})"#,
+                "{text:?}"
+            );
+        }
+    }
+
+    /// Other lines, and whatever isn't a member's value, are kept as they
+    /// come: `setTime`, nested objects, numbers, and keys we do read that
+    /// only look like the ones we don't.
+    #[test]
+    fn what_we_read_is_kept() {
+        for line in [
+            set_time_line(1794150000, "5.75"),
+            br#"GB({"t":"alarm","d":[{"h":6,"m":45,"rep":31,"on":true},{"h":9,"m":0,"rep":96,"on":false}]})"#.to_vec(),
+            br#"GB({"t":"notify","id":5,"src":"SMS Message","title":"body","sender":"\"subject\"","x":{"body":"in an object"},"y":["body"]})"#.to_vec(),
+            br#"GB( { "t" : "find" , "n" : true } )"#.to_vec(),
+            // Not a message: kept whole, however it looks.
+            br#"setTime({"body":"x"})"#.to_vec(),
+        ] {
+            assert_eq!(received(&line), Some(line.clone()), "{}", String::from_utf8_lossy(&line));
+        }
+        // Any kind of value, and spaced out: `""` in its place.
+        assert_eq!(
+            received(br#"GB({"t":"notify" , "body" : [1,{"a":"]"}] , "tel":null,"subject":atob("SGk="),"title":"Kari"})"#),
+            Some(br#"GB({"t":"notify" , "body" :"", "tel":"","subject":"","title":"Kari"})"#.to_vec())
+        );
+    }
+
+    /// A string longer than `MAX_STRING` is cut between characters, never
+    /// into an escape, nor between a surrogate pair's halves, and ends in
+    /// `…` (`…`); in base64, without.
+    #[test]
+    fn long_strings_are_cut_between_characters() {
+        let max = gb::MAX_STRING;
+        let cut = |spelled: &[u8]| -> Vec<u8> {
+            let mut line = br#"GB({"t":"call","cmd":"incoming","name":"#.to_vec();
+            line.extend(spelled);
+            line.extend(b"})");
+            let kept = received(&line).expect("it fits");
+            kept[br#"GB({"t":"call","cmd":"incoming","name":"#.len()..kept.len() - 2].to_vec()
+        };
+        let quoted = |inner: &str| format!("\"{inner}\"").into_bytes();
+        // Up to `MAX_STRING`, whole.
+        let whole = "a".repeat(max);
+        assert_eq!(cut(&quoted(&whole)), quoted(&whole));
+        // One more, cut.
+        assert_eq!(
+            cut(&quoted(&"a".repeat(max + 1))),
+            quoted(&format!("{whole}\\u2026"))
+        );
+        // An escape started before the cut is kept whole.
+        let escaped = format!("{}\\u0416{}", "a".repeat(max - 1), "a".repeat(9));
+        assert_eq!(
+            cut(&quoted(&escaped)),
+            quoted(&format!("{}\\u0416\\u2026", "a".repeat(max - 1)))
+        );
+        // Octal, which runs for as many digits as follow (up to three).
+        let octal = format!("{}\\205{}", "a".repeat(max - 2), "a".repeat(9));
+        assert_eq!(
+            cut(&quoted(&octal)),
+            quoted(&format!("{}\\205\\u2026", "a".repeat(max - 2)))
+        );
+        // A high surrogate before the cut goes, rather than take the
+        // ellipsis for its low half.
+        let pair = format!("{}\\ud83c\\udf89bb", "a".repeat(max - 6));
+        assert_eq!(
+            cut(&quoted(&pair)),
+            quoted(&format!("{}\\u2026", "a".repeat(max - 6)))
+        );
+        // A quote after an escape's `\` doesn't end the string; a quote
+        // where an escape's digits should be does (as the reader has it).
+        let quote = format!("{}\\\"{}", "a".repeat(max - 1), "a".repeat(9));
+        assert_eq!(
+            cut(&quoted(&quote)),
+            quoted(&format!("{}\\\"\\u2026", "a".repeat(max - 1)))
+        );
+        // Base64: just cut.
+        let base64 = "QUJD".repeat(max);
+        assert_eq!(
+            cut(format!("atob(\"{base64}\")").as_bytes()),
+            format!("atob(\"{}\")", &base64[..max]).into_bytes()
+        );
+    }
+
+    /// Strings we show are cut rather than lost: a caller, a track and
+    /// artist, a street, a title with "Text as Bitmaps" images in it; and
+    /// emoji, which show as nothing, still end in an ellipsis once cut.
+    #[test]
+    fn long_text_we_show_is_cut_rather_than_lost() {
+        let long = "Чайковский".repeat(30);
+        let long = String::from_utf8(gadgetbridge_string(&long)).expect("escapes are ASCII");
+        let line =
+            format!(r#"GB({{"t":"call","cmd":"incoming","name":{long},"number":"+4799999999"}})"#);
+        assert_eq!(
+            event_received(line.as_bytes()),
+            PhoneEvent::IncomingCall {
+                // 40 bytes: 20 Cyrillic letters.
+                caller: s(&"Чайковский".repeat(2))
+            }
+        );
+        let line = format!(
+            r#"GB({{"t":"musicinfo","artist":{long},"album":{long},"track":{long},"dur":1234,"c":12,"n":3}})"#
+        );
+        let PhoneEvent::MusicInfo { artist, track } = event_received(line.as_bytes()) else {
+            panic!("music");
+        };
+        assert_eq!((artist.chars().count(), track.chars().count()), (20, 20));
+        let line = format!(
+            r#"GB({{"t":"nav","instr":{long},"distance":{long},"action":"left","eta":{long}}})"#
+        );
+        assert!(matches!(
+            event_received(line.as_bytes()),
+            PhoneEvent::Route(Some(_))
+        ));
+
+        // Images: big ones, as they are, in the title.
+        // (Gadgetbridge crops text before it draws it.)
+        let image = as_bitmaps(&[Ok("Mamma "), Err((60, 24, 3)), Err((60, 24, 3))]);
+        let image = String::from_utf8(gadgetbridge_string(&image)).expect("escapes are ASCII");
+        let line = format!(r#"GB({{"t":"notify","src":"Signal","title":{image},"sender":""}})"#);
+        let line = line.as_bytes();
+        assert!(line.len() > gb::MAX_LINE);
+        let kept = received(line).expect("it fits");
+        let (PhoneEvent::Notification { who, .. }, true) = with_bitmaps(&kept) else {
+            panic!("a notification with images");
+        };
+        assert_eq!(who.to_string(), "Mamma ?");
+
+        // Emoji (12 bytes each), past `MAX_STRING`, before a name.
+        let title = format!("{}Kari", "\u{1F389}".repeat(30));
+        let line = Notification {
+            src: "Signal".into(),
+            title,
+            ..Default::default()
+        }
+        .line();
+        let PhoneEvent::Notification { who, .. } = event_received(&line) else {
+            panic!("a notification");
+        };
+        assert_eq!(who.to_string(), "\u{2026}");
+    }
+
+    /// The most a notification can bring of what we keep: an app name
+    /// as long as any (Gadgetbridge doesn't crop it), each field we show
+    /// at its longest in the longest spelling (`\uXXXX`), and the rest
+    /// as long as Gadgetbridge sends them. It fits, with the room
+    /// `MAX_STRING` leaves.
+    #[test]
+    fn the_longest_notification_fits() {
+        let line = Notification {
+            src: "Ж".repeat(1000),
+            title: "Ж".repeat(1000),
+            subject: "Ж".repeat(1000),
+            body: "Ж".repeat(1000),
+            sender: "Ж".repeat(1000),
+            tel: Some("Ж".repeat(1000)),
+            actions: vec!["Ж".repeat(1000); 10],
+        }
+        .line();
+        let kept = received(&line).expect("it fits");
+        let PhoneEvent::Notification { app, who } = event(&kept) else {
+            panic!("a notification");
+        };
+        assert_eq!(app.to_string(), "?".repeat(23) + "\u{2026}");
+        // `src` and `title` cut, `sender` whole at Gadgetbridge's 40.
+        assert_eq!(who.to_string(), "?".repeat(37) + "...");
+        assert!(
+            kept.len() <= gb::MAX_LINE - 100,
+            "{} bytes: little room to spare",
+            kept.len()
+        );
+    }
+
+    /// Any notification Gadgetbridge could send (any text, cropped as it
+    /// crops it) arrives, through the buffer, and shows the app and who
+    /// it's from as `TextBuilder` makes of them; or, where a string was
+    /// longer than `MAX_STRING` (an app's name, or a title of emoji), as
+    /// much of that as was kept, and an ellipsis.
+    #[test]
+    fn any_notification_arrives() {
+        /// Whether `shown` is what `TextBuilder` makes of `text`, given
+        /// how the buffer cuts it.
+        fn shows<const N: usize>(shown: &Text<N>, text: &str) -> bool {
+            let whole = t::<N>(text);
+            let spelled = gadgetbridge_string(text);
+            let base64 = spelled.starts_with(b"atob(");
+            let contents = spelled.len() - if base64 { 8 } else { 2 };
+            if contents <= gb::MAX_STRING {
+                return *shown == whole;
+            }
+            let shown = shown.to_string();
+            let whole = whole.to_string();
+            let core = match shown.strip_suffix('\u{2026}') {
+                Some(core) => core,
+                // Only base64 is cut without an ellipsis.
+                None if base64 => &shown,
+                None => return false,
+            };
+            whole
+                .strip_suffix('\u{2026}')
+                .unwrap_or(&whole)
+                .starts_with(core.trim_end())
+        }
+        fn property(
+            src: String,
+            (title, subject, body, sender): (String, String, String, String),
+            tel: Option<String>,
+            actions: Vec<String>,
+        ) -> TestResult {
+            let notification = Notification {
+                src,
+                title,
+                subject,
+                body,
+                sender,
+                tel,
+                // A notification's buttons are few.
+                actions: actions.into_iter().take(5).collect(),
+            };
+            // As in `any_text_survives_the_trip`: images, and
+            // Gadgetbridge's own bug with DLE before a digit.
+            let fine = |t: &str| {
+                !t.contains('\0')
+                    && !t
+                        .chars()
+                        .zip(t.chars().skip(1))
+                        .any(|(a, b)| a == '\u{10}' && ('0'..='7').contains(&b))
+            };
+            if ![&notification.src, &notification.title, &notification.sender]
+                .iter()
+                .all(|t| fine(t))
+            {
+                return TestResult::discard();
+            }
+            let line = notification.line();
+            let Some(kept) = received(&line) else {
+                return TestResult::error(format!("dropped: {}", String::from_utf8_lossy(&line)));
+            };
+            let Some(Incoming::Phone {
+                event: PhoneEvent::Notification { app, who },
+                text_as_bitmaps: false,
+            }) = parse(&kept)
+            else {
+                return TestResult::error(format!("not read: {}", String::from_utf8_lossy(&kept)));
+            };
+            let title = crop(&notification.title, 80);
+            let sender = crop(&notification.sender, 40);
+            let mut from_sender = TextBuilder::<40>::new();
+            sender.chars().for_each(|c| from_sender.push(c));
+            let from = if from_sender.is_empty() {
+                title
+            } else {
+                sender
+            };
+            TestResult::from_bool(shows(&app, &notification.src) && shows(&who, &from))
+        }
+        // Strings of up to 400 characters, for the body.
+        QuickCheck::new()
+            .tests(3000)
+            .rng(quickcheck::Gen::new(400))
+            .quickcheck(
+                property
+                    as fn(
+                        String,
+                        (String, String, String, String),
+                        Option<String>,
+                        Vec<String>,
+                    ) -> TestResult,
+            );
     }
 
     // ==========================================================================
@@ -1183,10 +1627,12 @@ mod tests {
         assert_eq!(with_bitmaps(&notify_line("Signal", "", "Mamma")).1, false);
     }
 
-    /// Images are noticed wherever Gadgetbridge puts them: in what's
-    /// shown, in a notification's title, subject, and body (which aren't
-    /// shown), in `sender` (which is), past what fits, and in
-    /// calls, music, and directions.
+    /// Images are noticed wherever Gadgetbridge puts them in text we
+    /// read: in a notification's title (which is read, if not always
+    /// shown), in `sender` and `src`, past what fits, and in calls,
+    /// music, and directions. Not in a subject or body, which the buffer
+    /// leaves out: those images used to matter for making the line too
+    /// long to keep, which they no longer do.
     #[test]
     fn text_as_bitmaps_anywhere() {
         let image = as_bitmaps(&[Err((24, 21, 1))]);
@@ -1195,8 +1641,6 @@ mod tests {
         let long = String::from_utf8(gadgetbridge_string(&long)).expect("escapes are ASCII");
         let lines = [
             format!(r#"GB({{"t":"notify","src":"Signal","title":{image},"sender":"Kari"}})"#),
-            format!(r#"GB({{"t":"notify","src":"Mail","subject":{image},"sender":"Kari"}})"#),
-            format!(r#"GB({{"t":"notify","src":"Signal","body":{image},"sender":"Kari"}})"#),
             format!(r#"GB({{"t":"notify","src":{image},"sender":"Kari"}})"#),
             format!(r#"GB({{"t":"notify","src":"Signal","sender":{long}}})"#),
             format!(r#"GB({{"t":"call","cmd":"incoming","name":{image},"number":"+4799999999"}})"#),
@@ -1205,6 +1649,27 @@ mod tests {
         ];
         for line in lines {
             assert!(with_bitmaps(line.as_bytes()).1, "{line}");
+        }
+        for line in [
+            format!(r#"GB({{"t":"notify","src":"Mail","subject":{image},"sender":"Kari"}})"#),
+            format!(r#"GB({{"t":"notify","src":"Signal","body":{image},"sender":"Kari"}})"#),
+        ] {
+            let kept = received(line.as_bytes()).expect("it fits");
+            assert_eq!(
+                with_bitmaps(&kept),
+                (
+                    PhoneEvent::Notification {
+                        app: t(if line.contains("Mail") {
+                            "Mail"
+                        } else {
+                            "Signal"
+                        }),
+                        who: t("Kari")
+                    },
+                    false
+                ),
+                "{line}"
+            );
         }
         let (event, _) = with_bitmaps(
             format!(r#"GB({{"t":"call","cmd":"incoming","name":{image},"number":"+4799999999"}})"#)
@@ -1492,6 +1957,7 @@ mod fuzz {
     use super::alarm::PHONE_ALARMS;
     use super::gb::{self, CallAction, Incoming, LineBuffer, MusicCommand, Outgoing};
     use super::phone::PhoneEvent;
+    use super::tests::gadgetbridge_string;
 
     /// What a fuzzed line starts with, and ends with, picked by its first
     /// byte: nothing, or a message of each kind up to where its fields
@@ -1615,11 +2081,13 @@ mod fuzz {
             }
 
             // Now as bytes on the air, if it's a line that can be sent:
-            // `\n` ends one, and the buffer strips what frames it.
+            // `\n` ends one, and the buffer strips what frames it. A
+            // message may come out with less in it (see `LineBuffer`), but
+            // for one where nothing's left out, what's read is the same;
+            // and for any, what's read is still something the UI can take.
             let sendable = !line.contains(&b'\n')
                 && line.first() != Some(&b'\x10')
-                && line.last() != Some(&b'\r')
-                && line.len() <= 1024 - 2;
+                && line.last() != Some(&b'\r');
             if sendable {
                 let sent = [b"\x10", &line[..], b"\r\n"].concat();
                 // Cut anywhere, by the frame byte's other bits.
@@ -1628,12 +2096,25 @@ mod fuzz {
                 let mut lines = 0;
                 let mut receive = |received: &[u8]| {
                     lines += 1;
-                    assert_eq!(received, &line[..]);
-                    assert_eq!(gb::parse(received), parsed);
+                    let read = gb::parse(received);
+                    if received == &line[..] {
+                        assert_eq!(read, parsed);
+                    } else {
+                        assert!(line.starts_with(b"GB({"), "only messages change");
+                    }
+                    if let Some(read) = &read {
+                        check(read, received);
+                    }
                 };
                 buffer.push(&sent[..cut], &mut receive);
                 buffer.push(&sent[cut..], &mut receive);
-                assert_eq!(lines, 1);
+                // A message may fit only once what's left out is, or
+                // (with more `""`s than what they stand for) not.
+                if line.starts_with(b"GB({") {
+                    assert!(lines <= 1);
+                } else {
+                    assert_eq!(lines, usize::from(line.len() <= 1024 - 2));
+                }
             }
         });
     }
@@ -1642,7 +2123,8 @@ mod fuzz {
     /// hands over the lines a reading of its docs would: what's between
     /// the `\n`s, less the `\x10`s in front and one `\r` behind, but for
     /// lines longer than it holds (1024 bytes), dropped whole, and the
-    /// unfinished line at the end, kept for more.
+    /// unfinished line at the end, kept for more. Bar `GB({…})` messages,
+    /// which it may keep less of: see [`any_message_keeps_its_shape`].
     #[test]
     fn any_bytes_come_out_as_their_lines() {
         bolero::check!()
@@ -1655,6 +2137,16 @@ mod fuzz {
                 let bytes = bytes.repeat(1 + usize::from(times) % 40);
 
                 let mut expected: Vec<&[u8]> = bytes.split(|&b| b == b'\n').collect();
+                let message = |line: &&[u8]| {
+                    let mut line = *line;
+                    while let Some(rest) = line.strip_prefix(b"\x10") {
+                        line = rest;
+                    }
+                    line.starts_with(b"GB({")
+                };
+                if expected.iter().any(message) {
+                    return;
+                }
                 expected.pop(); // unfinished
                 let expected: Vec<&[u8]> = expected
                     .into_iter()
@@ -1677,6 +2169,110 @@ mod fuzz {
                 }
                 buffer.push(rest, |line| lines.push(line.to_vec()));
                 assert_eq!(lines, expected);
+            });
+    }
+
+    /// Whatever follows `GB({` (Gadgetbridge's lines, made of the
+    /// fuzzer's strings, or any bytes), what the [`LineBuffer`] keeps of
+    /// it:
+    ///
+    /// - is the same however it was cut up on the way;
+    /// - fits, if Gadgetbridge sent it, and reads as a message the UI can
+    ///   take (see `check`);
+    /// - is kept as it is if the buffer takes it in again: what's left
+    ///   out stays out, and what's cut is cut at the same place, so the
+    ///   strings left end where they did, and nothing more goes.
+    #[test]
+    fn any_message_keeps_its_shape() {
+        bolero::check!()
+            .with_type::<(u8, Vec<u8>, Vec<u16>, Vec<u16>)>()
+            .for_each(|(how, bytes, text, cuts)| {
+                // A Gadgetbridge message, with `text` (as UTF-16 units, as
+                // Java has them; lone surrogates as U+FFFD) in the fields
+                // we read and those we don't, as long as `how` says:
+                // or any bytes.
+                let text = String::from_utf16_lossy(&text[..text.len().min(500)]);
+                let text = text.repeat(1 + usize::from(how >> 4));
+                let spelled = |len: usize| {
+                    let text: String = text.chars().take(len).collect();
+                    String::from_utf8_lossy(&gadgetbridge_string(&text)).into_owned()
+                };
+                let line = match how % 5 {
+                    0 => format!(
+                        r#"GB({{"t":"notify","id":17,"src":{},"title":{},"subject":{},"body":{},"sender":{},"tel":{},"reply":true,"actions":[{{"title":{}}}]}})"#,
+                        spelled(usize::MAX),
+                        spelled(80),
+                        spelled(80),
+                        spelled(400),
+                        spelled(40),
+                        spelled(usize::MAX),
+                        spelled(40),
+                    )
+                    .into_bytes(),
+                    1 => format!(
+                        r#"GB({{"t":"musicinfo","artist":{},"album":{},"track":{},"dur":1,"c":2,"n":3}})"#,
+                        spelled(usize::MAX),
+                        spelled(usize::MAX),
+                        spelled(usize::MAX),
+                    )
+                    .into_bytes(),
+                    2 => format!(
+                        r#"GB({{"t":"call","cmd":"incoming","name":{},"number":{}}})"#,
+                        spelled(usize::MAX),
+                        spelled(usize::MAX),
+                    )
+                    .into_bytes(),
+                    3 => format!(
+                        r#"GB({{"t":"nav","instr":{},"distance":{},"action":"left","eta":{}}})"#,
+                        spelled(usize::MAX),
+                        spelled(usize::MAX),
+                        spelled(usize::MAX),
+                    )
+                    .into_bytes(),
+                    _ => [b"GB({", &bytes[..]].concat(),
+                };
+                let from_gadgetbridge = how % 5 != 4;
+                if line.contains(&b'\n') {
+                    return;
+                }
+                let sent = [b"\x10", &line[..], b"\n"].concat();
+
+                let through = |pieces: &mut dyn Iterator<Item = &[u8]>| {
+                    let mut buffer = LineBuffer::new();
+                    let mut lines: Vec<Vec<u8>> = Vec::new();
+                    for piece in pieces {
+                        buffer.push(piece, |line| lines.push(line.to_vec()));
+                    }
+                    assert!(lines.len() <= 1);
+                    lines.pop()
+                };
+                let whole = through(&mut core::iter::once(&sent[..]));
+                let mut rest = &sent[..];
+                let mut pieces = Vec::new();
+                for &cut in cuts {
+                    let (now, later) = rest.split_at(usize::from(cut).min(rest.len()));
+                    pieces.push(now);
+                    rest = later;
+                }
+                pieces.push(rest);
+                assert_eq!(through(&mut pieces.into_iter()), whole);
+
+                let Some(kept) = whole else {
+                    assert!(!from_gadgetbridge, "dropped: {}", String::from_utf8_lossy(&line));
+                    return;
+                };
+                assert!(kept.len() <= gb::MAX_LINE);
+                let read = gb::parse(&kept);
+                if let Some(read) = &read {
+                    check(read, &kept);
+                }
+                if from_gadgetbridge {
+                    assert!(matches!(read, Some(Incoming::Phone { .. })), "{read:?}");
+                }
+                // (With the `\r` the buffer took off its end, if any.)
+                let resent = [b"\x10", &kept[..], b"\r\n"].concat();
+                let again = through(&mut core::iter::once(&resent[..]));
+                assert_eq!(again.as_deref(), Some(&kept[..]), "{}", String::from_utf8_lossy(&kept));
             });
     }
 

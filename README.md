@@ -430,8 +430,7 @@ either, double-press the button.
 ### N02: The watch says "TEXT AS BITMAPS"
 
 Gadgetbridge's "Text as Bitmaps" is on: it sends what the watch's font
-can't show as pictures, which ur shows as `?` (and long messages full of
-them never arrive). Switch it off in the watch's settings in
+can't show as pictures, which ur shows as `?`. Switch it off in the watch's settings in
 Gadgetbridge, under Notifications.
 
 ### P01: How do I put the watch away for a while?

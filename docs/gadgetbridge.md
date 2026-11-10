@@ -28,7 +28,7 @@ own, from its main menu.
 | Request low power | Watch settings → Connection (the screen, near the end) | Off | ur asks for its own idle link 30 s after the last traffic: 100–125 ms, skipping up to 7 events in 8, about one radio event a second. Android's low-power priority skips at most 2 in 3: when ur asked for that, field logs showed about three times the idle radio events. So it gains nothing, and makes Gadgetbridge wait 45 s rather than 5 s before giving up on a stuck connection attempt. |
 | Only use network to determine location | Watch settings → Location | Off | With it on, no location ever arrived in testing ([C03]). |
 | GPS data update interval | Watch settings → Location | 1000 ms | The watch stops the phone's GPS itself once it has a good fix. |
-| Text as Bitmaps | Watch settings → Notifications | Off | ur shows each picture as `?`, and long messages full of them never arrive ([N02]). |
+| Text as Bitmaps | Watch settings → Notifications | Off | ur shows each picture as `?` ([N02]). |
 | Transliteration | Watch settings → Notifications | None | ur shows ASCII and Latin-1's letters (æøå, é, ü, ß…). Add only languages written outside them (Russian, Greek, Polish…), which otherwise show as `?`; Scandinavian, German or French would only turn letters ur can show into ASCII (å → aa). |
 | Allow high MTU | Watch settings → Connection (the heading) | On | Bigger pieces: faster fetches. |
 | Auto reconnect to device, Connect on connection from device | Watch settings → Connection (the screen) | On | Gadgetbridge reconnects by itself when the watch comes back in range. |

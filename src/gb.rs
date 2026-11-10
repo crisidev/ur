@@ -24,7 +24,8 @@
 //! drops the character before each `\n`, expecting a `\r`.)
 //!
 //! This module is the whole protocol, and hardware-free: [`LineBuffer`]
-//! reassembles lines from what the UART receives, [`parse`] says what each
+//! reassembles lines from what the UART receives (leaving out what we never
+//! read, so that a line fits however long its text), [`parse`] says what each
 //! means ([`Incoming`]: a request for [`crate::ble`] to act on, or a
 //! [`PhoneEvent`] for the UI), and [`Outgoing`] renders our replies.
 //! `ble` only moves the bytes. So the host tests (`host-tests/gb`) can
@@ -43,17 +44,117 @@ use crate::{alarm, route};
 // Incoming: line assembly
 // ==============================================================================
 
-/// Longest line we accept. Gadgetbridge caps notification fields at 80
-/// (title, subject), 40 (sender), and 400 (body) characters, so a notification
-/// line stays under ~700 bytes. Longer lines are dropped whole.
-const MAX_LINE: usize = 1024;
+/// Longest line we keep, after [`LineBuffer`] has left out what we never
+/// read (see there). Longer lines are dropped whole.
+pub const MAX_LINE: usize = 1024;
+
+/// Longest a string's contents are kept, in bytes as sent: past this,
+/// [`LineBuffer`] cuts it. Enough for 43 characters beyond Latin-1
+/// (`\uXXXX`, 6 bytes each), so that a `TextBuilder<40>` still sees more
+/// than fits, and ends what it shows in an ellipsis, as it would have
+/// for the whole string; and few enough that a notification's three
+/// strings we show (`src`, `title`, `sender`) fit [`MAX_LINE`] at once,
+/// cut and all (see `the_longest_notification_fits` in the host tests).
+pub const MAX_STRING: usize = 256;
+
+/// The members of Gadgetbridge's messages we never read, in any message,
+/// as their quoted keys: [`LineBuffer`] leaves their values out as they
+/// arrive. All a notification's: what it says (`subject`, `body`; the
+/// owner's rule is that notifications show who from, never what), its
+/// phone number (`tel`), and its buttons (`actions`, each up to 40
+/// characters). Before these went, a notification's line, at up to 400
+/// characters of body in `\uXXXX`, outgrew [`MAX_LINE`] and was lost.
+///
+/// No message we do read has a member by any of these names (see
+/// [`phone_event`]): one that did would read as empty.
+const UNREAD: [&[u8]; 4] = [b"\"subject\"", b"\"body\"", b"\"tel\"", b"\"actions\""];
+
+/// A string cut at [`MAX_STRING`] ends in `…`, as a character of its own,
+/// so that text cut short never passes for whole, even where what comes
+/// before shows as less than fits (emoji, which `TextBuilder` leaves out).
+///
+/// TODO: a title of 21 emoji or more before the name (12 bytes each)
+/// shows as `…` alone; cutting at what `TextBuilder` keeps, rather than
+/// at bytes, would show the name, at the cost of a decoder in here.
+const CUT: &[u8] = b"\\u2026";
 
 /// Reassembles lines from the arbitrary chunks Gadgetbridge writes (it splits
-/// lines at its idea of the MTU).
+/// lines at its idea of the MTU), keeping of each `GB(…)` message only what
+/// we might read, so that a line fits [`MAX_LINE`] whatever the text in it:
+///
+/// - The values of [`UNREAD`] members are left out, as `""`.
+/// - Strings are cut at [`MAX_STRING`] (see there and [`CUT`]).
+///
+/// Both happen as the bytes arrive: there's no RAM for a buffer that
+/// holds the longest line whole (~4 KB). That takes knowing where each
+/// string starts and ends: [`Scan`] follows the line as [`take_value`]
+/// will read it.
+///
+/// Gadgetbridge frames each line as `\x10`, the line, `\n`, and escapes
+/// every line break and DLE in its strings (`\n`, `\20`; base64 has none),
+/// so a `\n` ends a line wherever it is.
 pub struct LineBuffer {
     buffer: heapless::Vec<u8, MAX_LINE>,
     /// Set when the current line outgrew the buffer: skip to its end.
     overflowed: bool,
+    scan: Scan,
+}
+
+/// Where [`LineBuffer`] is in the current line's JSON. Positions are in
+/// its buffer (which [`MAX_LINE`] keeps within a `u16`).
+#[derive(Clone, Copy)]
+struct Scan {
+    /// Whether the line is a `GB(…)` message, decided at its first `{`:
+    /// other lines (`setTime(…)`) are kept as they come.
+    message: bool,
+    /// Brackets open, outside strings: 1 inside the message's object.
+    depth: u8,
+    /// Inside a string.
+    string: Option<Str>,
+    /// Where the last string was, quotes and all: at a `:` in the
+    /// object, its key.
+    last_string: (u16, u16),
+    /// Leaving out an [`UNREAD`] member's value: the brackets open in it.
+    unread: Option<u8>,
+}
+
+#[derive(Clone, Copy)]
+struct Str {
+    /// Where its contents start.
+    start: u16,
+    /// Where the last character started (an escape's `\`).
+    last_char: u16,
+    escape: Escape,
+    /// Inside `atob("…")`: base64, which ends without [`CUT`].
+    base64: bool,
+    /// Cut at [`MAX_STRING`]: the rest is left out.
+    cut: bool,
+}
+
+/// How far into an escape a string is, for where a character starts: a
+/// string is only ever cut between characters, never into an escape that
+/// would then swallow what follows. As [`Value::decode`] reads them.
+#[derive(Clone, Copy, PartialEq)]
+enum Escape {
+    None,
+    /// After the `\`.
+    Started,
+    /// `\x` or `\u`: this many hex digits to come.
+    Hex(u8),
+    /// `\N`: up to this many more octal digits.
+    Octal(u8),
+}
+
+impl Scan {
+    const fn new() -> Self {
+        Self {
+            message: false,
+            depth: 0,
+            string: None,
+            last_string: (0, 0),
+            unread: None,
+        }
+    }
 }
 
 impl LineBuffer {
@@ -61,6 +162,7 @@ impl LineBuffer {
         Self {
             buffer: heapless::Vec::new(),
             overflowed: false,
+            scan: Scan::new(),
         }
     }
 
@@ -68,6 +170,7 @@ impl LineBuffer {
     pub fn clear(&mut self) {
         self.buffer.clear();
         self.overflowed = false;
+        self.scan = Scan::new();
     }
 
     /// Adds received bytes, calling `on_line` for each completed line
@@ -87,11 +190,182 @@ impl LineBuffer {
                 } else {
                     warn!("gb: dropped a line longer than {} bytes", MAX_LINE);
                 }
-                self.buffer.clear();
-                self.overflowed = false;
-            } else if self.buffer.push(byte).is_err() {
-                self.overflowed = true;
+                self.clear();
+            } else {
+                self.take(byte);
             }
+        }
+    }
+
+    fn keep(&mut self, bytes: &[u8]) {
+        if self.buffer.extend_from_slice(bytes).is_err() {
+            self.overflowed = true;
+        }
+    }
+
+    /// Where the next byte goes.
+    fn here(&self) -> u16 {
+        self.buffer.len() as u16
+    }
+
+    /// One byte of a line, kept, or not (see [`LineBuffer`]).
+    fn take(&mut self, byte: u8) {
+        let mut scan = self.scan;
+        self.step(&mut scan, byte);
+        self.scan = scan;
+    }
+
+    fn step(&mut self, scan: &mut Scan, byte: u8) {
+        if !scan.message {
+            // `GB(` and the object's `{`, after any `\x10`s.
+            let mut line = &self.buffer[..];
+            while let [b'\x10', rest @ ..] = line {
+                line = rest;
+            }
+            if byte != b'{' || line != b"GB(" {
+                return self.keep(&[byte]);
+            }
+            scan.message = true;
+        }
+
+        if let Some(mut string) = scan.string {
+            // An unread value's strings are followed only for where they
+            // end; a cut one's rest, for that and for its `CUT`.
+            let leaving_out = string.cut || scan.unread.is_some();
+            // Within an escape, a byte is part of the character it began,
+            // so neither ends the string (but for a `"` after its `\`, a
+            // `"` does, as `take_value` reads it) nor starts a character.
+            let escaped = match (string.escape, byte) {
+                (Escape::Started, _) => {
+                    string.escape = match byte {
+                        b'x' => Escape::Hex(2),
+                        b'u' => Escape::Hex(4),
+                        b'0'..=b'7' => Escape::Octal(2),
+                        _ => Escape::None,
+                    };
+                    true
+                }
+                (Escape::Hex(left), _) if byte != b'"' => {
+                    string.escape = Escape::Hex(left - 1);
+                    true
+                }
+                (Escape::Octal(left), b'0'..=b'7') => {
+                    string.escape = Escape::Octal(left - 1);
+                    true
+                }
+                _ => {
+                    string.escape = Escape::None;
+                    false
+                }
+            };
+            if matches!(string.escape, Escape::Hex(0) | Escape::Octal(0)) {
+                string.escape = Escape::None;
+            }
+            if escaped {
+                scan.string = Some(string);
+                if !leaving_out {
+                    self.keep(&[byte]);
+                }
+                return;
+            }
+
+            if byte == b'"' {
+                scan.string = None;
+                if scan.unread.is_some() {
+                    return;
+                }
+                if string.cut && !string.base64 {
+                    self.keep(CUT);
+                }
+                self.keep(b"\"");
+                scan.last_string.1 = self.here();
+                return;
+            }
+            // A character starts here: past `MAX_STRING`, the string is
+            // cut before it, and the rest left out. A UTF-16 high
+            // surrogate before the cut goes too, as the decoder would
+            // take `CUT` for its other half.
+            let length = usize::from(self.here().saturating_sub(string.start));
+            if !leaving_out && length >= MAX_STRING {
+                string.cut = true;
+                let last = usize::from(string.last_char);
+                if self.buffer.get(last..).is_some_and(high_surrogate) {
+                    self.buffer.truncate(last);
+                }
+            }
+            if byte == b'\\' {
+                string.escape = Escape::Started;
+            }
+            string.last_char = self.here();
+            scan.string = Some(string);
+            if !string.cut && scan.unread.is_none() {
+                self.keep(&[byte]);
+            }
+            return;
+        }
+
+        // An unread member's value, up to the `,` or `}` after it, with
+        // any objects, arrays and strings in it; then `""` in its place.
+        if let Some(depth) = scan.unread {
+            match byte {
+                b'"' => scan.string = Some(Str::new(0, false)),
+                b'{' | b'[' => scan.unread = Some(depth.saturating_add(1)),
+                b'}' | b']' if depth > 0 => scan.unread = Some(depth - 1),
+                b',' | b'}' | b']' if depth == 0 => {
+                    scan.unread = None;
+                    self.keep(b"\"\"");
+                    return self.step(scan, byte);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        match byte {
+            b'"' => {
+                scan.last_string.0 = self.here();
+                let base64 = self.buffer.ends_with(b"atob(");
+                scan.string = Some(Str::new(self.here() + 1, base64));
+            }
+            b'{' | b'[' => scan.depth = scan.depth.saturating_add(1),
+            b'}' | b']' => scan.depth = scan.depth.saturating_sub(1),
+            b':' if scan.depth == 1 => {
+                let (start, end) = scan.last_string;
+                let key = self.buffer.get(usize::from(start)..usize::from(end));
+                if key.is_some_and(|key| UNREAD.contains(&key)) {
+                    scan.unread = Some(0);
+                }
+            }
+            _ => {}
+        }
+        self.keep(&[byte]);
+    }
+}
+
+/// Whether `escape` is `\uD800` to `\uDBFF`: the first half of a
+/// character beyond U+FFFF (an emoji, mostly), as Java's UTF-16 has it.
+fn high_surrogate(escape: &[u8]) -> bool {
+    matches!(
+        escape,
+        [
+            b'\\',
+            b'u',
+            b'd' | b'D',
+            b'8'..=b'9' | b'a'..=b'b' | b'A'..=b'B',
+            _,
+            _,
+        ]
+    )
+}
+
+impl Str {
+    const fn new(start: u16, base64: bool) -> Self {
+        Self {
+            start,
+            last_char: start,
+            escape: Escape::None,
+            base64,
+            cut: false,
         }
     }
 }
@@ -203,10 +477,9 @@ pub fn parse(line: &[u8]) -> Option<Incoming<'_>> {
 }
 
 /// Translates the phone's notification, call, music, find-my-watch, alarm,
-/// and navigation messages for the UI. Only the fields we show are copied; in
-/// particular a notification's body never leaves this function. Sets
-/// `bitmaps` if any of its text, shown or not, had images in it (see
-/// [`Images`]).
+/// and navigation messages for the UI. Only the fields we show are copied; a
+/// notification's subject and body aren't even kept (see [`UNREAD`]). Sets
+/// `bitmaps` if any text it reads had images in it (see [`Images`]).
 fn phone_event(kind: &str, object: Object<'_>, bitmaps: &mut bool) -> Option<PhoneEvent> {
     fn text<const N: usize>(object: Object<'_>, key: &str, bitmaps: &mut bool) -> String<N> {
         let mut out = String::new();
@@ -226,13 +499,11 @@ fn phone_event(kind: &str, object: Object<'_>, bitmaps: &mut bool) -> Option<Pho
     }
     Some(match kind {
         "notify" => {
-            // What isn't shown is still read, for images: Gadgetbridge
-            // renders the subject and body the same way as the title.
-            for key in ["subject", "body"] {
-                if let Some(value) = object.get(key) {
-                    *bitmaps |= value.decode(&mut |_| {});
-                }
-            }
+            // The subject and body aren't read, not even for images:
+            // `LineBuffer` leaves them out (see `UNREAD`). Images there
+            // used to matter as they made the line too long to keep;
+            // now they cost nothing.
+            //
             // Gadgetbridge's `sender`, as the owner prefers: who it's
             // from, where an app says so apart from what it's about (an
             // SMS's number, a mail's sender). Messaging apps mostly leave
