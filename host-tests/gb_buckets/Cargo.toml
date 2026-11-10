@@ -18,3 +18,7 @@ overflow-checks = true
 
 [dev-dependencies]
 quickcheck = { version = "1.1.0", default-features = false }
+
+# `cargo kani` builds with `--cfg kani`, for the proofs in `src/main.rs`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

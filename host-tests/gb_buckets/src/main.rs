@@ -1430,3 +1430,149 @@ mod tests {
             .quickcheck(property as fn(Night, Vec<(u16, u8, bool)>) -> bool);
     }
 }
+
+/// Proofs, for `cargo kani`: what the tests above check for the histories
+/// quickcheck makes, for every history of a few minutes, wherever a fetch
+/// starts and ends.
+///
+/// Minutes are within ±2^40 of 1970 (two million years): the bucket
+/// arithmetic adds a bucket's length unchecked, and would overflow at the
+/// ends of an `i64`.
+#[cfg(kani)]
+mod proofs {
+    use super::gb_buckets::{Fetch, MINUTES, Minute, start_of};
+
+    fn any_minute() -> i64 {
+        let minute: i64 = kani::any();
+        kani::assume((-(1 << 40)..1 << 40).contains(&minute));
+        minute
+    }
+
+    /// For every minute, before 1970 too: its bucket starts on a
+    /// multiple of the bucket's length, and holds it.
+    #[kani::proof]
+    fn a_minute_is_in_its_bucket() {
+        let minute = any_minute();
+        let start = start_of(minute);
+        assert!(start.rem_euclid(MINUTES) == 0);
+        assert!(start <= minute && minute < start + MINUTES);
+    }
+
+    /// For every fetch (asked from any minute, of a history from any
+    /// minute, at any time, with or without minutes held back): it
+    /// starts at a bucket's start, no earlier than the bucket asked for,
+    /// nor than the history's oldest minute (so never at a bucket the
+    /// history has only the end of); and it ends at a bucket's start,
+    /// no later than now, nor than the first minute held back.
+    #[kani::proof]
+    fn a_fetch_is_of_whole_buckets() {
+        let (since, oldest, now) = (any_minute(), any_minute(), any_minute());
+        let mut fetch = Fetch::new(since, oldest, now);
+        assert!(fetch.from().rem_euclid(MINUTES) == 0);
+        assert!(fetch.from() >= start_of(since) && fetch.from() >= oldest);
+        assert!(fetch.from() < since.max(oldest) + MINUTES);
+        assert_eq!(fetch.sent_until(), start_of(now));
+        if kani::any() {
+            let hold = any_minute();
+            fetch.hold(hold);
+            assert!(fetch.sent_until().rem_euclid(MINUTES) == 0);
+            assert!(fetch.sent_until() <= hold && fetch.sent_until() <= now);
+            assert!(fetch.sent_until() > hold.min(now) - MINUTES);
+        }
+    }
+
+    /// 2026-11-09 12:00 UTC, in minutes since 1970: a bucket's start.
+    const NOON: i64 = 29_903_760;
+    const _: () = assert!(NOON % MINUTES == 0);
+
+    /// The minutes with data that the next proof's history has, after
+    /// [`NOON`]: most of one bucket (its first minute missing, and one
+    /// in the middle), and the start of the next, after a gap.
+    const HISTORY: [i64; 6] = [1, 2, 4, 5, 6, 8];
+
+    /// For a history of those minutes, each with any steps, movement,
+    /// heart rate and one of three kinds, and every fetch that starts
+    /// and ends within the quarter of an hour around them: the next
+    /// bucket never panics (each minute's place in the bucket is within
+    /// it), and
+    ///
+    /// - it's the bucket of the first minute from where the fetch has
+    ///   got to, whole (on a bucket's start, over before the fetch's
+    ///   end), and the fetch moves on to the bucket after;
+    /// - its steps are the sum of its minutes', its heart rate the last
+    ///   one measured, its movement the mean over the minutes the
+    ///   accelerometer recorded, rounded up, and its kind one that most
+    ///   of its minutes have;
+    /// - there's none only when the history has no minute left in a
+    ///   bucket that's over.
+    ///
+    /// The minutes' times are fixed, and the fetch's within a few
+    /// buckets of them: with every time free, CBMC went past 7 GB (the
+    /// bucket arithmetic for any minute is the two proofs above; the
+    /// tests' quickcheck varies the history's shape).
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn a_bucket_is_its_minutes() {
+        let minutes = HISTORY.map(|after| {
+            let sample = Minute {
+                steps: kani::any(),
+                movement: kani::any(),
+                heart_rate: kani::any(),
+                seen: kani::any(),
+                kind: kani::any::<u8>(),
+            };
+            kani::assume(sample.kind < 3);
+            (NOON + after, sample)
+        });
+        // Asked from, and at, any minute from a bucket before the
+        // history to two after it; the history reaches back a day.
+        let (since, now): (i8, i8) = kani::any();
+        kani::assume((-5..15).contains(&since) && (-5..15).contains(&now));
+        let mut fetch = Fetch::new(
+            NOON + i64::from(since),
+            NOON - 24 * 60,
+            NOON + i64::from(now),
+        );
+        let (from, end) = (fetch.from(), fetch.sent_until());
+        let first = minutes.iter().find(|(minute, _)| *minute >= from);
+
+        let Some(bucket) = fetch.next(minutes) else {
+            assert!(first.is_none_or(|(minute, _)| start_of(*minute) >= end));
+            return;
+        };
+        let Some((first, _)) = first else {
+            unreachable!("a bucket has a minute");
+        };
+        assert_eq!(bucket.start, start_of(*first));
+        assert!(bucket.start >= from && bucket.start + MINUTES <= end);
+        assert_eq!(fetch.from(), bucket.start + MINUTES);
+
+        let within = |minute: i64| bucket.start <= minute && minute < bucket.start + MINUTES;
+        let (mut steps, mut heart_rate, mut movement, mut seen) = (0u32, 0u8, 0u32, 0u32);
+        let mut votes = [0u8; 3];
+        for (minute, sample) in minutes {
+            if !within(minute) {
+                continue;
+            }
+            steps += u32::from(sample.steps);
+            if sample.heart_rate != 0 {
+                heart_rate = sample.heart_rate;
+            }
+            if sample.seen {
+                movement += u32::from(sample.movement);
+                seen += 1;
+            }
+            votes[usize::from(sample.kind)] += 1;
+        }
+        assert_eq!(bucket.steps, steps);
+        assert_eq!(bucket.heart_rate, heart_rate);
+        let mean = if seen == 0 {
+            0
+        } else {
+            movement.div_ceil(seen)
+        };
+        assert_eq!(u32::from(bucket.movement), mean);
+        let most = votes[usize::from(bucket.kind)];
+        assert!(most > 0 && votes.iter().all(|&votes| votes <= most));
+    }
+}
