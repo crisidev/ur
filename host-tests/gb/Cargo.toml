@@ -23,6 +23,8 @@ serde_json = "1.0.154"
 # that a line that would wrap a number round fails a test here.
 [profile.release]
 overflow-checks = true
+# And the modules' own `debug_assert!`s, which a release build drops.
+debug-assertions = true
 
 # What `cargo bolero test` builds with (see `fuzz` in `src/main.rs`): fast,
 # as a fuzzer is only as good as the lines it gets through, but with the

@@ -646,7 +646,14 @@ impl Images {
                 }
             }
             Image::Pixels { transparent, .. } if *transparent => *transparent = false,
-            Image::Pixels { left, .. } => *left -= 1,
+            Image::Pixels { left, .. } => {
+                // An image with no pixels (and no transparent colour left
+                // to read) is over as its header ends, or as that colour
+                // is read (below): were one left here, the count would
+                // wrap round, and swallow the rest of the text as pixels.
+                debug_assert!(*left > 0, "an image with pixels still to come");
+                *left -= 1;
+            }
         }
         if let Image::Pixels {
             left: 0,

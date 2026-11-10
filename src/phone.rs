@@ -283,6 +283,26 @@ impl<const N: usize> TextBuilder<N> {
     }
 
     pub fn finish(self) -> Text<N> {
+        // What `Text` relies on to need no length, and what the builder
+        // promises of what's shown: no 0 before the text's end (and only
+        // 0s after), no space at either end, nor two in a row, and no
+        // control character but the one that stands for an ellipsis.
+        debug_assert!(
+            {
+                let text = &self.text.0;
+                let end = text.iter().position(|&b| b == 0).unwrap_or(N);
+                let shown = &text[..end];
+                text[end..].iter().all(|&b| b == 0)
+                    && shown.first() != Some(&b' ')
+                    && shown.last() != Some(&b' ')
+                    && !shown.windows(2).any(|pair| pair == b"  ")
+                    && shown
+                        .iter()
+                        .all(|&b| b == ELLIPSIS || !char::from(b).is_control())
+                    && (end == 0) == self.is_empty()
+            },
+            "text as `Text` keeps it"
+        );
         self.text
     }
 }
