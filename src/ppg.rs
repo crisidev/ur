@@ -385,6 +385,19 @@ pub struct Ppg {
 const BLOCKS: usize = WINDOW / ESTIMATE_EVERY;
 const _: () = assert!(WINDOW == BLOCKS * ESTIMATE_EVERY);
 
+// What `Ppg::estimate` takes for granted of the parameters above, which
+// are tuned by hand now and then:
+// - a lag's peak is judged against the lags either side of it, the first
+//   of them `MIN_LAG - 1`;
+// - every lag correlates at least half the window with the other half
+//   (at the longest, 40 BPM, 6 s of the 8);
+// - the median part is the mean of the middle two, and the parts left
+//   after masking aren't none (their mean divides by their length).
+const _: () = assert!(MIN_LAG >= 2 && MIN_LAG < MAX_LAG);
+const _: () = assert!(2 * MAX_LAG <= WINDOW);
+const _: () = assert!(PARTS.is_multiple_of(2) && PARTS <= WINDOW);
+const _: () = assert!(MIN_QUIET_PARTS >= 1 && MIN_QUIET_PARTS <= PARTS);
+
 impl Default for Ppg {
     fn default() -> Self {
         Self::new()
@@ -578,6 +591,16 @@ impl Ppg {
                 bpm: f32::NAN,
             });
         };
+        // A peak lies within half a lag of a lag that was searched, and a
+        // correlation is at most 1 (`peak` caps what its parabola makes of
+        // it). Not NaN, in particular: as a rate, that would compare false
+        // with both ends of the range below, and with every threshold
+        // after it.
+        debug_assert!(
+            (MIN_LAG as f32 - 0.5..=MAX_LAG as f32 - 0.5).contains(&period),
+            "a period of {period} samples"
+        );
+        debug_assert!(quality <= 1.0, "a correlation of {quality}");
         let estimate = Estimate {
             period,
             quality,
@@ -732,6 +755,13 @@ impl Conversions {
     /// `emit` with each conversion it completes, oldest first.
     pub fn poll(&mut self, raw: u32, now_us: u64, mut emit: impl FnMut(u32)) {
         let previous_poll = core::mem::replace(&mut self.last_poll_us, now_us);
+        // Polls come in order, on a monotonic clock: every interval below
+        // is taken between two of them. (A restart forgets the last poll,
+        // so the first after one has nothing to be later than.)
+        debug_assert!(
+            previous_poll <= now_us,
+            "polled at {now_us}, after {previous_poll}"
+        );
         let Some((value, since)) = self.current else {
             self.current = Some((raw, now_us));
             return;
@@ -899,6 +929,10 @@ impl Consensus {
     /// (and not too fast, see [`MAX_CALM_BPM`]) and agree, make a reading
     /// (their mean).
     fn pair(&mut self, bpm: f32, calm: bool) -> Option<u8> {
+        // A window's rate: NaN stands for "no calm window before" below,
+        // and would read as 0 BPM (as would a negative rate), which the
+        // history takes for "not measured".
+        debug_assert!(bpm > 0.0 && bpm.is_finite(), "a rate of {bpm} BPM");
         let calm = calm && bpm <= MAX_CALM_BPM;
         let previous = core::mem::replace(&mut self.calm, if calm { bpm } else { f32::NAN });
         // NaN (no calm window before) never agrees.
