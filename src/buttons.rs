@@ -182,7 +182,9 @@ pub fn at(layout: Layout, x: i32, y: i32) -> u8 {
         Layout::Six => (y.clamp(0, 79) / 40) as u8,
         Layout::TwoLayers => third(y),
     };
-    row * 3 + third(x) + 1
+    let button = row * 3 + third(x) + 1;
+    debug_assert!((1..=layout.buttons()).contains(&button));
+    button
 }
 
 /// What a touch on a button was, for [`Grid::touch`].
@@ -248,6 +250,16 @@ impl Grid {
         started: Instant,
         now: Instant,
     ) -> [Option<Press>; 2] {
+        // One of the layout's buttons, as `at` gives: a press's code is
+        // its buttons as decimal places, so a 0 or a 10 would send (and
+        // show) the code of some other press.
+        debug_assert!(
+            (1..=layout.buttons()).contains(&button),
+            "not one of the grid's buttons"
+        );
+        // A touch can't end before it starts. (Its start is worked out
+        // from how long it lasted, saturating: see `ui::App::on_grid`.)
+        debug_assert!(started <= now, "a touch from the future");
         let mut done = [None, None];
         // A hold's finger lifts before the next touch can start, so its
         // release has gone (see `touch::finish`); in case it hadn't, this
@@ -295,7 +307,8 @@ impl Grid {
             ),
             // With six buttons, the same button again (anything else was
             // flushed above): a double tap.
-            (State::First { .. }, Touch::Tap) if layout == Layout::Six => {
+            (State::First { button: first, .. }, Touch::Tap) if layout == Layout::Six => {
+                debug_assert_eq!(first, button, "a double tap across two buttons");
                 (State::Idle, Some(Press::single(button, Gesture::DoubleTap)))
             }
             (State::First { button: first, .. }, Touch::Tap) => (
@@ -315,10 +328,23 @@ impl Grid {
                 Some(Press::sequence(first, button, Gesture::Hold)),
             ),
             // The same button again (the rest was flushed above).
-            (State::Second { first, .. }, _) => (
-                State::Idle,
-                Some(Press::sequence(first, button, Gesture::DoubleTap)),
-            ),
+            (
+                State::Second {
+                    first,
+                    button: second,
+                    ..
+                },
+                _,
+            ) => {
+                debug_assert!(
+                    touch == Touch::Tap && second == button,
+                    "a double tap that's a hold, or across two buttons"
+                );
+                (
+                    State::Idle,
+                    Some(Press::sequence(first, button, Gesture::DoubleTap)),
+                )
+            }
         };
         self.state = state;
         done[1] = press;
@@ -471,6 +497,14 @@ impl Layout {
         match self {
             Self::Six => Self::TwoLayers,
             Self::TwoLayers => Self::Six,
+        }
+    }
+
+    /// How many buttons it has, numbered from 1 (see [`at`]).
+    fn buttons(self) -> u8 {
+        match self {
+            Self::Six => 6,
+            Self::TwoLayers => 9,
         }
     }
 
