@@ -14,7 +14,7 @@ own, from its main menu.
 |---|---|---|---|---|
 | Pair | The "Pair with Bangle.js ur?" prompt when adding the watch | — | **Pair**, then type the passkey the watch shows | ur talks only to paired phones; with "Don't Pair" it says NOT PAIRED ([C01]). |
 | [Auto fetch activity data][auto-fetch] | Settings → Automations → Auto fetch activity data | Off | On | Steps, heart rate and sleep reach Gadgetbridge only when it fetches them, and the watch keeps the last 24 hours. Without this, a day you don't fetch by hand (the Sync icon under the watch on the home screen, or pull down on the device list) is lost. It fetches each time you unlock the phone, so it only works with a screen lock set. Bluetooth only: no mobile data, and no noticeable phone battery. |
-| Minimum time between fetches | Below Auto fetch activity data | 0 (each unlock) | 60 minutes (a suggestion) | Each fetch resends the last ~2¾ hours (sleep stages are revised after the fact), about 4 KB over the watch's radio; hourly is plenty against a 24-hour history. |
+| Minimum time between fetches | Below Auto fetch activity data | 0 (each unlock) | 60 minutes (a suggestion) | Each fetch resends the last ~2¾ hours (sleep stages are revised after the fact), about 2.5 KB over the watch's radio; hourly is plenty against a 24-hour history. |
 | Use phone GPS data | Watch settings → Location | Off | On | The watch's only source of location: without it, themes and brightness follow the sun in Oslo, and the watch keeps looking for room sensors after you've left them ([C03]). Costs the phone's GPS for up to 2 minutes, or until a fix good to 75 m, when the watch asks: on connecting (at most hourly), on a time zone change, and on losing a room sensor (at most four times a day). |
 | Keep location updated | Settings → General settings → Location | Shown as on, but off until that screen has been opened once | On: open the screen, and check it's on | Without it, Gadgetbridge drops the phone's fixes before they reach the watch ([C03]). Free in itself: it only lets the fixes above through. |
 | Location permission | Android's app settings for Gadgetbridge → Permissions → Location | Asked when needed | Allow all the time | The watch asks while Gadgetbridge is in the background ([C03]). |
@@ -51,20 +51,21 @@ own, from its main menu.
 ## What Gadgetbridge gets
 
 The watch keeps a sample a minute, but sends Gadgetbridge one per
-3 minutes: Gadgetbridge's Bangle.js support merges samples less than
+5 minutes: Gadgetbridge's Bangle.js support merges samples less than
 2 minutes apart, keeping only the last one's steps, which lost about 60% of
-them. In each 3 minutes:
+them. In each 5 minutes:
 
 - **Steps**: all of them.
-- **Heart rate**: the last reading. Earlier ones in the same 3 minutes are
-  dropped; the watch rarely measures that often, except while you look at
-  the clock face or Gadgetbridge's live activity.
+- **Heart rate**: the last reading. Earlier ones in the same 5 minutes are
+  dropped: a few while you're active (the watch measures every 2–4 minutes
+  then), and most while you look at the clock face or Gadgetbridge's live
+  activity, which measure continuously.
 - **Sleep stage, or awake**: the one most of its minutes had. Sleep in
-  Gadgetbridge and Health Connect is to the nearest 3 minutes.
+  Gadgetbridge and Health Connect is to the nearest 5 minutes.
 
-Each sample is stamped with the last second of its 3 minutes, so steps land
+Each sample is stamped with the last second of its 5 minutes, so steps land
 in Health Connect in those minutes (they used to land a minute early), and
-the 3 minutes under way wait for the next fetch.
+the 5 minutes under way wait for the next fetch.
 
 Gadgetbridge keeps the first sleep stage (or awake) it gets for each
 sample, but the watch revises the last couple of hours' as the night goes

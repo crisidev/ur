@@ -685,8 +685,7 @@ fn activity_fetch(watch: &mut Watch, since_ms: i64) {
     };
     send(Outgoing::ActivityFetch { done: false });
     let now = clock::now_utc_seconds();
-    let since =
-        gb::fetch_from(since_ms, now).div_euclid(60_000) - crate::stages::REVISED as i64;
+    let since = gb::fetch_from(since_ms, now).div_euclid(60_000) - crate::stages::REVISED as i64;
     if let Some(now) = now {
         let mut fetch = crate::gb_buckets::Fetch::new(since, i64::MIN / 2, now.div_euclid(60));
         while let Some(bucket) = fetch.next(activity::history_since(fetch.from()).into_iter().map(

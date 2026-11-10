@@ -1,4 +1,4 @@
-//! The activity history as Gadgetbridge gets it: in 3-minute buckets.
+//! The activity history as Gadgetbridge gets it: in 5-minute buckets.
 //!
 //! The watch keeps a sample a minute (see [`crate::activity`]), but
 //! Gadgetbridge's Bangle.js support can't store samples that close
@@ -12,15 +12,18 @@
 //! as 4,206. (The Bangle.js it was written for sends 10-minute records.)
 //!
 //! So a fetch sends one sample per UTC-aligned bucket of [`MINUTES`]
-//! minutes: 3 is the shortest that leaves no other bucket within ±2
-//! minutes of any one, so each lands on its own, and sums lose nothing.
-//! Longer buckets would lose more for nothing: on a field day's log, 3
-//! kept all 123 background heart rate readings and 5 lost 5 of them (the
-//! schedule measures every 2–4 minutes while active, see
-//! [`crate::heart_schedule`]); and on a night's minute-level sleep stages,
-//! 3 changed 2–6% of minutes and 5 changed 6–7% (stage totals within a
-//! couple of minutes either way). It's 480 samples a day, a third of the
-//! minutes.
+//! minutes, more than 2 apart, so that each lands on its own and sums lose
+//! nothing. 3 is the shortest that does, and loses least: on a field day's
+//! log, 3-minute buckets kept all 123 background heart rate readings and
+//! 5-minute ones lost 5 of them (the schedule measures every 2–4 minutes
+//! while active, see [`crate::heart_schedule`]); and on a night's
+//! minute-level sleep stages, 3 changed 2–6% of minutes and 5 changed
+//! 6–7% (stage totals within a couple of minutes either way). The user
+//! chose 5 all the same (2026-11-10): rounder times, 288 samples a day
+//! (a fifth of the minutes) rather than 480, and a reading every
+//! 5 minutes is what the schedule takes asleep
+//! ([`crate::heart_schedule::ASLEEP_INTERVAL`]), so nearly all of a
+//! night's readings fit. Back to 3 is this constant alone.
 //!
 //! Per bucket:
 //!
@@ -28,25 +31,24 @@
 //! - **Heart rate**: the bucket's latest reading. A real reading, never an
 //!   average of several; the latest is the one nearest the bucket's
 //!   timestamp (its end, below). Earlier readings in the same bucket are
-//!   dropped: readings less than 3 minutes apart, which the background
-//!   schedule rarely takes (none of a field day's 123), but measuring
-//!   continuously does (while the clock face is looked at, or
+//!   dropped: readings less than 5 minutes apart, which the background
+//!   schedule takes while active (5 of a field day's 123 were lost), and
+//!   measuring continuously does (while the clock face is looked at, or
 //!   Gadgetbridge's live activity is open). Both Gadgetbridge's charts and
-//!   Health Connect then get a reading every 3 minutes, which is as often
-//!   as the schedule measures anyway.
+//!   Health Connect then get at most a reading every 5 minutes.
 //! - **Kind** (activity, or a sleep stage; see
 //!   [`crate::sleep::Kind::gadgetbridge_name`]): the one most of its
 //!   minutes have, ties going to the later minute's. Sleep sessions and
-//!   stages in Gadgetbridge (and so in Health Connect) are then at 3-minute
-//!   resolution, which is finer than the stages themselves (deep and REM
+//!   stages in Gadgetbridge (and so in Health Connect) are then at 5-minute
+//!   resolution, a little finer than the stages themselves (deep and REM
 //!   bouts last at least 8 minutes, see [`crate::stages::MIN_BOUT`]); a
-//!   lone restless minute among asleep ones is lost.
+//!   restless minute or two among asleep ones is lost.
 //! - **Movement** (`mov`, Gadgetbridge's intensity, which only its charts
 //!   use): the mean over the minutes the accelerometer recorded, rounded up
 //!   so that any movement stays non-zero.
 //!
-//! **The timestamp** is the bucket's last second (`hh:m2:59` for a bucket
-//! from `hh:m0`). Gadgetbridge takes a sample as the end of the time it
+//! **The timestamp** is the bucket's last second (`hh:04:59` for a bucket
+//! from `hh:00`). Gadgetbridge takes a sample as the end of the time it
 //! describes: its time-in-each-activity tallies count from the previous
 //! sample to it (`ActivityAnalysis`), its sleep stages run from the
 //! previous sample to it (`SleepSessionSegmenter`), and its Health Connect
@@ -68,7 +70,7 @@
 //! - The bucket still under way isn't sent: it would go out partial, and
 //!   while the next fetch's whole count would overwrite its steps,
 //!   Gadgetbridge never overwrites a sample's kind. It goes out with the
-//!   first fetch after it ends. So Gadgetbridge lags the watch by up to 3
+//!   first fetch after it ends. So Gadgetbridge lags the watch by up to 5
 //!   minutes.
 //! - Nor is a bucket whose first minutes the history has already dropped
 //!   (it keeps 24 hours): Gadgetbridge may have it whole.
@@ -83,7 +85,7 @@
 /// Minutes per bucket. Must be over 2 (see the module docs), and divide a
 /// day, so buckets line up with midnight in every time zone (whose UTC
 /// offsets are all whole quarter hours).
-pub const MINUTES: i64 = 3;
+pub const MINUTES: i64 = 5;
 
 const _: () = assert!(MINUTES > 2 && 15 % MINUTES == 0);
 

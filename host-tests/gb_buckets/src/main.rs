@@ -1,5 +1,5 @@
 //! Host tests for the firmware's `gb_buckets` module: the activity history
-//! in 3-minute buckets, as Gadgetbridge gets it. Against a reference
+//! in 5-minute buckets, as Gadgetbridge gets it. Against a reference
 //! bucket built straight from the history, and a model of Gadgetbridge's
 //! Bangle.js sample store (`BangleJSSampleProvider.upsertSample`), which
 //! is what the buckets are for. `cargo test` runs them.
@@ -304,8 +304,8 @@ mod tests {
     // What the buckets look like
     // ==========================================================================
 
-    /// Each bucket starts on a multiple of 3 minutes, and is stamped with
-    /// its last second; so each is at least 3 minutes from the next, more
+    /// Each bucket starts on a multiple of 5 minutes, and is stamped with
+    /// its last second; so each is at least 5 minutes from the next, more
     /// than the 2 minutes either side within which Gadgetbridge merges
     /// samples. And each is the whole bucket, as built straight from all
     /// its minutes: never part of one, wherever the fetch started.
@@ -317,7 +317,7 @@ mod tests {
             let buckets = run(Fetch::new(since, i64::MIN / 2, now), &history, i64::MIN / 2);
             let apart = buckets
                 .windows(2)
-                .all(|w| w[1].timestamp_ms() - w[0].timestamp_ms() >= 180_000);
+                .all(|w| w[1].timestamp_ms() - w[0].timestamp_ms() >= MINUTES * 60_000);
             let stamped = buckets.iter().all(|b| {
                 b.start % MINUTES == 0 && b.timestamp_ms() == (b.start + MINUTES) * 60_000 - 1_000
             });
@@ -334,7 +334,7 @@ mod tests {
         quickcheck().quickcheck(property as fn(Minutes, u16, u16) -> bool);
     }
 
-    /// A bucket from 12:00 UTC is stamped 12:02:59.
+    /// A bucket from 12:00 UTC is stamped 12:04:59.
     #[test]
     fn stamped_with_its_last_second() {
         let bucket: Bucket<Kind> = Bucket {
@@ -344,7 +344,7 @@ mod tests {
             heart_rate: 0,
             kind: None,
         };
-        assert_eq!(bucket.timestamp_ms(), NOON * 60_000 + 179_000);
+        assert_eq!(bucket.timestamp_ms(), NOON * 60_000 + 299_000);
     }
 
     #[test]
@@ -354,7 +354,7 @@ mod tests {
             (NOON + 1, minute(10, 75, None)),
             (NOON + 2, minute(10, 0, None)),
         ]);
-        let buckets = run(Fetch::new(NOON, NOON, NOON + 3), &history, NOON);
+        let buckets = run(Fetch::new(NOON, NOON, NOON + MINUTES), &history, NOON);
         assert_eq!(buckets[0].heart_rate, 75);
         assert_eq!(buckets[0].steps, 30);
     }
@@ -370,13 +370,16 @@ mod tests {
                 .enumerate()
                 .map(|(i, &kind)| (NOON + i as i64, minute(0, 0, kind)))
                 .collect();
-            run(Fetch::new(NOON, NOON, NOON + 3), &history, NOON)[0].kind
+            run(Fetch::new(NOON, NOON, NOON + MINUTES), &history, NOON)[0].kind
         };
         assert_eq!(bucket(&[None, light, light]), light);
         assert_eq!(bucket(&[light, None, light]), light);
         assert_eq!(bucket(&[deep, deep, light]), deep);
         assert_eq!(bucket(&[None, light, deep]), deep);
         assert_eq!(bucket(&[light, None]), None);
+        assert_eq!(bucket(&[deep, light, light, None, deep]), deep);
+        assert_eq!(bucket(&[deep, deep, light, light, None]), light);
+        assert_eq!(bucket(&[light, deep, deep, deep, light]), deep);
     }
 
     /// The mean of the minutes the accelerometer recorded, rounded up.
@@ -394,8 +397,9 @@ mod tests {
                 },
             ),
         ]);
-        let movement =
-            |history: &History| run(Fetch::new(NOON, NOON, NOON + 3), history, NOON)[0].movement;
+        let movement = |history: &History| {
+            run(Fetch::new(NOON, NOON, NOON + MINUTES), history, NOON)[0].movement
+        };
         assert_eq!(movement(&history), 1);
         history.get_mut(&NOON).expect("there").movement = 4;
         assert_eq!(movement(&history), 3);
@@ -409,12 +413,12 @@ mod tests {
     /// sends the bucket whole, as before.
     #[test]
     fn a_fetch_from_mid_bucket_sends_the_whole_bucket() {
-        let history: History = (0..6).map(|i| (NOON + i, minute(10, 0, None))).collect();
-        let first = run(Fetch::new(NOON, NOON, NOON + 6), &history, NOON);
-        let again = run(Fetch::new(NOON + 2, NOON, NOON + 6), &history, NOON);
+        let history: History = (0..10).map(|i| (NOON + i, minute(10, 0, None))).collect();
+        let first = run(Fetch::new(NOON, NOON, NOON + 10), &history, NOON);
+        let again = run(Fetch::new(NOON + 2, NOON, NOON + 10), &history, NOON);
         assert_eq!(first.len(), 2);
         assert_eq!(again, first);
-        assert_eq!(again[0].steps, 30);
+        assert_eq!(again[0].steps, 50);
     }
 
     /// The bucket under way isn't sent, even its finished minutes, and even
@@ -423,13 +427,11 @@ mod tests {
     fn the_bucket_under_way_waits() {
         let history = History::from([(NOON, minute(0, 0, None)), (NOON + 1, minute(0, 0, None))]);
         assert_eq!(run(Fetch::new(NOON, NOON, NOON + 2), &history, NOON), []);
-        let history = History::from([
-            (NOON, minute(0, 0, None)),
-            (NOON + 1, minute(0, 0, None)),
-            (NOON + 2, minute(40, 0, None)),
-        ]);
-        let fetch = Fetch::new(NOON, NOON, NOON + 3);
-        assert_eq!(fetch.sent_until(), NOON + 3);
+        let history: History = (0..5)
+            .map(|i| (NOON + i, minute(if i == 4 { 40 } else { 0 }, 0, None)))
+            .collect();
+        let fetch = Fetch::new(NOON, NOON, NOON + 5);
+        assert_eq!(fetch.sent_until(), NOON + 5);
         assert_eq!(run(fetch, &history, NOON)[0].steps, 40);
     }
 
@@ -437,13 +439,13 @@ mod tests {
     /// day) isn't sent: the phone may have it whole.
     #[test]
     fn a_bucket_partly_dropped_isnt_sent() {
-        let history: History = (0..6).map(|i| (NOON + i, minute(10, 0, None))).collect();
+        let history: History = (0..10).map(|i| (NOON + i, minute(10, 0, None))).collect();
         let oldest = NOON + 1;
-        let fetch = Fetch::new(0, oldest, NOON + 6);
-        assert_eq!(fetch.from(), NOON + 3);
+        let fetch = Fetch::new(0, oldest, NOON + 10);
+        assert_eq!(fetch.from(), NOON + 5);
         let buckets = run(fetch, &history, oldest);
         assert_eq!(buckets.len(), 1);
-        assert_eq!(buckets[0].start, NOON + 3);
+        assert_eq!(buckets[0].start, NOON + 5);
     }
 
     /// Two fetches, the second later and from anywhere, with the minutes in

@@ -708,12 +708,13 @@ fn live_activity() {
     );
 }
 
-/// An activity fetch (`gb_buckets`): a sample per 3-minute bucket, stamped
+/// An activity fetch (`gb_buckets`): a sample per 5-minute bucket, stamped
 /// with its last second and carrying its steps, the bucket under way left
 /// for later. Then, with the clock put forward 3 hours (as
 /// `tmp/gbbuckets/check.py` does to a dev kit: a fetch starts 164
 /// minutes before what Gadgetbridge asks for), a fetch from mid-bucket
-/// sends that bucket whole again, and the ones since.
+/// sends that bucket whole again, and the ones since. The same steps as
+/// that check.
 #[test]
 fn activity_fetch_in_buckets() {
     let dir = out("activity-fetch");
@@ -721,21 +722,36 @@ fn activity_fetch_in_buckets() {
     std::fs::create_dir_all(&dir).expect("the target dir is writable");
     // 2026-11-10 16:00 local, 15:00 UTC: a bucket's start.
     let t0: i64 = 1_794_150_000;
-    let text = format!(
-        "gb setTime({t0});E.setTimeZone(1.0)\n\
-         wait 10s\nsteps 11\nheart 64\nwait 1m\n\
-         wait 1m\nsteps 23\nheart 70\nwait 1m\n\
-         steps 37\nwait 1m\nwait 30s\n\
-         echo first fetch\n\
-         gb GB({{\"t\":\"actfetch\",\"ts\":{first}}})\n\
-         wait 30s\nsteps 41\nwait 1m\nsteps 53\nwait 1m\nsteps 7\nwait 1m\nwait 1m\n\
-         echo second fetch\n\
+    // Steps in each minute from t0: buckets of 71, 120 and 34.
+    let steps = [11, 0, 23, 37, 0, 41, 53, 7, 0, 19, 5, 0, 0, 29, 0];
+    let mut text = format!("gb setTime({t0});E.setTimeZone(1.0)\nwait 10s\n");
+    for (minute, steps) in steps.into_iter().enumerate() {
+        if steps > 0 {
+            text += &format!("steps {steps}\n");
+        }
+        match minute {
+            2 => text += "heart 64\n",
+            3 => text += "heart 70\n",
+            _ => {}
+        }
+        if minute == 7 {
+            // Mid-way through the second bucket.
+            text += &format!(
+                "wait 20s\necho first fetch\n\
+                 gb GB({{\"t\":\"actfetch\",\"ts\":{}}})\nwait 40s\n",
+                (t0 - 600) * 1000
+            );
+        } else {
+            text += "wait 1m\n";
+        }
+    }
+    text += &format!(
+        "echo second fetch\n\
          gb setTime({forward});E.setTimeZone(1.0)\n\
          gb GB({{\"t\":\"actfetch\",\"ts\":{second}}})\n",
-        first = (t0 - 600) * 1000,
-        forward = t0 + 9 * 60 + 10 + 3 * 60 * 60,
-        // Less the 164 minutes revised: a minute into the first bucket.
-        second = ((t0 / 60 + 1 + 164) * 60 + 30) * 1000,
+        forward = t0 + 15 * 60 + 10 + 3 * 60 * 60,
+        // Less the 164 minutes revised: two minutes into the first bucket.
+        second = ((t0 / 60 + 2 + 164) * 60 + 30) * 1000,
     );
     std::fs::write(&script, text).expect("the target dir is writable");
     let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
@@ -750,15 +766,15 @@ fn activity_fetch_in_buckets() {
     let (first, second) = log.split_once("second fetch").expect("both fetch");
     assert_eq!(
         samples(first),
-        [r#"{"t":"act","ts":1794150179000,"stp":34,"mov":0,"hrm":70}"#],
+        [r#"{"t":"act","ts":1794150299000,"stp":71,"mov":0,"hrm":70}"#],
         "{log}"
     );
     assert_eq!(
         samples(second),
         [
-            r#"{"t":"act","ts":1794150179000,"stp":34,"mov":0,"hrm":70}"#,
-            r#"{"t":"act","ts":1794150359000,"stp":78,"mov":0,"hrm":0}"#,
-            r#"{"t":"act","ts":1794150539000,"stp":60,"mov":0,"hrm":0}"#,
+            r#"{"t":"act","ts":1794150299000,"stp":71,"mov":0,"hrm":70}"#,
+            r#"{"t":"act","ts":1794150599000,"stp":120,"mov":0,"hrm":0}"#,
+            r#"{"t":"act","ts":1794150899000,"stp":34,"mov":0,"hrm":0}"#,
         ],
         "{log}"
     );
