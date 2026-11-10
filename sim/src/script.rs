@@ -1050,10 +1050,18 @@ fn last_night(args: &[&str]) -> Result<activity::Sleep, String> {
             _ => return Err(format!("last-night: {key}?")),
         }
     }
+    // As the watch's own sleep is: its time asleep is the sum of its
+    // stages (`stages::Stages::asleep`), so deep and REM sleep are at most
+    // all of it. More than that (which the fuzzer's `deep=` and `rem=`
+    // ask for) is cut to what's left, rather than refused: Last night's
+    // bar relies on it, and would run off the screen.
+    let asleep = (length - awake).clamp(0, i64::from(u16::MAX));
+    let deep = deep.clamp(0, asleep);
+    let rem = rem.clamp(0, asleep - deep);
     Ok(activity::Sleep {
         start_utc_minute: start_local - offset,
         end_utc_minute: end_local - offset,
-        asleep_minutes: (length - awake).clamp(0, i64::from(u16::MAX)) as u16,
+        asleep_minutes: asleep as u16,
         deep_minutes: deep as u16,
         rem_minutes: rem as u16,
     })
