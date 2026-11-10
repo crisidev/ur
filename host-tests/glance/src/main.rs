@@ -1,7 +1,11 @@
 //! Host tests for the firmware's `glance` module, on poses read from the
 //! sealed watch's field log (sensor axes, 1024 per g). `cargo test`.
 
+// The poses and helpers are the tests'; `cargo build` has no use for them.
+#![cfg_attr(not(test), allow(dead_code))]
+
 #[path = "../../../src/glance.rs"]
+#[allow(dead_code)]
 mod glance;
 
 use glance::{Detector, from_sensor};
@@ -103,3 +107,6 @@ fn a_pause_while_readable_doesnt_glance_again() {
 fn swinging_says_nothing() {
     assert_eq!(run(&[SWING; 20]), Vec::<usize>::new());
 }
+
+#[cfg(test)]
+mod fuzz;
