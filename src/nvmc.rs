@@ -252,7 +252,11 @@ impl NorFlash for Flash {
     const ERASE_SIZE: usize = PAGE as usize;
 
     async fn erase(&mut self, from: u32, to: u32) -> Result<(), Error> {
-        if from > to || to > SIZE {
+        // Only the settings map erases internal flash, and only its own
+        // pages: anything below them is the bootloader or the running
+        // firmware, and erasing that leaves a sealed watch with nothing
+        // to boot. A bug elsewhere must not be able to.
+        if from > to || to > SIZE || from < crate::storage::RANGE.start {
             return Err(Error::OutOfBounds);
         }
         if !from.is_multiple_of(PAGE) || !to.is_multiple_of(PAGE) {
