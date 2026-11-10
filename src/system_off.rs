@@ -114,8 +114,10 @@ const RESTORED: u8 = 1;
 const RETIRING: u8 = 2;
 
 /// The newest minute (UTC minutes since 1970) the phone has fetched since
-/// boot, or 0 if it hasn't: where the next save can start (see
-/// [`snapshot::unsynced_from`]).
+/// boot (or, until it has, the minute before the restored record), or 0
+/// if it hasn't: where the next save can start (see
+/// [`snapshot::unsynced_from`]), and the next fetch at the latest (see
+/// [`synced_through`]).
 static SYNCED: AtomicU32 = AtomicU32::new(0);
 
 // ==============================================================================
@@ -126,10 +128,7 @@ static SYNCED: AtomicU32 = AtomicU32::new(0);
 /// next fetch would start. Failures are logged; there's nothing else to do
 /// about them with the battery running out.
 async fn save() {
-    let synced = match SYNCED.load(Ordering::Relaxed) {
-        0 => None,
-        minute => Some(i64::from(minute)),
-    };
+    let synced = synced_through();
     // From a bucket's start, so that the history restored from it holds
     // whole buckets: one cut short would go to the phone as less than it
     // has (see `gb_buckets`).
@@ -226,6 +225,15 @@ pub async fn restore() {
             let day = (header.day != snapshot::UNKNOWN_DAY).then_some(i64::from(header.day));
             activity::restore_steps(day, header.steps);
             RECORD_STATE.store(RESTORED, Ordering::Relaxed);
+            // The phone may lack all of it: the record started where the
+            // phone's copy ended, less what may have been revised, and a
+            // fetch held back since then (see `sleep_hold`) may have left
+            // the phone asking from much later than that. So, to the
+            // watch, the phone has what's before it, and nothing since.
+            SYNCED.store(
+                (first - 1).clamp(0, i64::from(u32::MAX)) as u32,
+                Ordering::Relaxed,
+            );
             info!(
                 "snapshot: restored {} minutes of activity from minute {}, and {} steps",
                 header.minutes, first, header.steps
@@ -247,6 +255,19 @@ pub fn on_synced(through_minute: i64) {
         Ordering::Relaxed,
     );
     let _ = RECORD_STATE.compare_exchange(RESTORED, RETIRING, Ordering::Relaxed, Ordering::Relaxed);
+}
+
+/// Where the phone's copy of the history ends, as far as the watch knows:
+/// the newest minute of the last fetch it completed since boot, or the
+/// minute before the restored record; `None` if neither. A fetch sends
+/// from there at the latest, so that what an earlier one held back (see
+/// `sleep_hold`) goes out even though the phone asks from when it last
+/// fetched.
+pub fn synced_through() -> Option<i64> {
+    match SYNCED.load(Ordering::Relaxed) {
+        0 => None,
+        minute => Some(i64::from(minute)),
+    }
 }
 
 /// The flash work asked of the activity task: retiring a restored record

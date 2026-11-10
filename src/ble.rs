@@ -1391,8 +1391,16 @@ async fn update_location(location: Location, precise: bool) {
 /// and with auto-fetch on that's every few minutes, so the export lags
 /// the watch by up to this much instead. Nothing is lost by skipping one:
 /// the export picks up from where its last run stopped. The first fetch
-/// after a boot always sends it.
+/// after a boot always sends it, and so does the first that sends a sleep
+/// held back until its stages settled (see [`SLEEP_HELD`]).
 const HEALTH_CONNECT_EVERY: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// Whether the last fetch completed held back a sleep (see
+/// [`crate::sleep_hold`]). The first after it that doesn't sends the
+/// night, which should reach Health Connect then, not up to
+/// [`HEALTH_CONNECT_EVERY`] later: by then, the empty track list has likely
+/// gone out in the night, with nothing new to export.
+static SLEEP_HELD: AtomicBool = AtomicBool::new(false);
 
 /// When the empty track list last went out: uptime in seconds plus one,
 /// 0 if not since boot. Shared by both connection slots, since it's the
@@ -1412,8 +1420,12 @@ async fn send_activity(server: &Server<'_>, conn: &GattConnection<'_, '_, Pool>,
     // revised since the last sync (sleep is only recognised after the fact,
     // and stages need the hour after), and Gadgetbridge overwrites samples
     // it already has. (Their steps, heart rate and movement, that is: it
-    // keeps the kind it first got. TODO: revised sleep reaches Gadgetbridge
-    // only once its `upsertSample` replaces a sample sent again whole.)
+    // keeps the kind it first got, which is why the minutes whose kind
+    // may still change aren't sent at all; see `sleep_hold`.)
+    //
+    // And from where the watch last stopped sending, if that's earlier:
+    // Gadgetbridge asks from when it last fetched, which is past what the
+    // watch held back then.
     //
     // Without the time there's nothing to send, as the history is filed by
     // it; the phone sets it before fetching.
@@ -1421,11 +1433,17 @@ async fn send_activity(server: &Server<'_>, conn: &GattConnection<'_, '_, Pool>,
     // The history's oldest minutes drop out as new ones come in, which may
     // happen while the fetch goes on: so it's as if a few more had already.
     let since = from.div_euclid(60_000) - crate::stages::REVISED as i64;
+    let since = crate::system_off::synced_through().map_or(since, |synced| since.min(synced + 1));
+    let hold = activity::gadgetbridge_hold();
     let mut fetch = now.map(|now| {
         let oldest = activity::newest_minute().map_or(i64::MIN / 2, |newest| {
             newest - activity::HISTORY_MINUTES as i64 + 1 + gb_buckets::MINUTES
         });
-        gb_buckets::Fetch::new(since, oldest, now.div_euclid(60))
+        let mut fetch = gb_buckets::Fetch::new(since, oldest, now.div_euclid(60));
+        if let Some(hold) = hold {
+            fetch.hold(hold.from);
+        }
+        fetch
     });
     let mut sent = 0;
     // Whether every sample went out (as far as we can tell: notifications
@@ -1461,20 +1479,33 @@ async fn send_activity(server: &Server<'_>, conn: &GattConnection<'_, '_, Pool>,
     }
     // The end, and the empty track list that gets Gadgetbridge to pass
     // the samples on to Health Connect (see `gb::FETCH_END`), at most
-    // every `HEALTH_CONNECT_EVERY`. Only the end counts towards
-    // `complete`: without the list, the phone still has every sample.
+    // every `HEALTH_CONNECT_EVERY`, or when a held-back sleep went out.
+    // Only the end counts towards `complete`: without the list, the phone
+    // still has every sample.
     let [end, no_tracks] = gb::FETCH_END;
     complete &= send(server, conn, end).await;
+    let held_sleep = hold.is_some_and(|hold| hold.sleep);
+    let released = complete && !held_sleep && SLEEP_HELD.load(Ordering::Relaxed);
+    if complete {
+        SLEEP_HELD.store(held_sleep, Ordering::Relaxed);
+    }
     // Uptime in seconds, plus one so that 0 means "not since boot".
     let uptime = Instant::now().as_secs() as u32 + 1;
     let last = LAST_NO_TRACKS.load(Ordering::Relaxed);
-    if last == 0 || uptime - last >= HEALTH_CONNECT_EVERY.as_secs() as u32 {
+    if released || last == 0 || uptime - last >= HEALTH_CONNECT_EVERY.as_secs() as u32 {
         send(server, conn, no_tracks).await;
         LAST_NO_TRACKS.store(uptime, Ordering::Relaxed);
     }
-    info!("ble: sent {} buckets of activity", sent);
+    match hold {
+        Some(hold) if held_sleep => info!(
+            "ble: sent {} buckets of activity; sleep held from minute {}",
+            sent, hold.from
+        ),
+        _ => info!("ble: sent {} buckets of activity", sent),
+    }
     if let Some(fetch) = fetch.filter(|_| complete) {
-        // The phone now has everything before the bucket under way.
+        // The phone now has everything before the bucket under way, or the
+        // first one held back.
         crate::system_off::on_synced(fetch.sent_until() - 1);
     }
 }

@@ -76,6 +76,9 @@
 //!   (it keeps 24 hours): Gadgetbridge may have it whole.
 //! - What the watch saves before switching off starts at a bucket's start
 //!   too (see `system_off`), so a restored history holds whole buckets.
+//! - Nor is a bucket any of whose minutes' kinds may still change: a fetch
+//!   in the night stops at the night's start, and the morning's sends it
+//!   whole (see [`crate::sleep_hold`] and [`Fetch::hold`]).
 //!
 //! TODO: a clock set back by the phone drops the history's minutes after
 //! the new time (see [`crate::minute_ring`]); a bucket sent before that and
@@ -148,13 +151,20 @@ impl Fetch {
         }
     }
 
+    /// Holds back the minutes from `from` on (see [`crate::sleep_hold`]):
+    /// the fetch ends at the start of the bucket `from` is in, if that's
+    /// sooner, so that a bucket is sent whole once all of it is settled.
+    pub fn hold(&mut self, from: i64) {
+        self.end = self.end.min(start_of(from));
+    }
+
     /// Where to read the history from for [`Fetch::next`].
     pub fn from(&self) -> i64 {
         self.next
     }
 
     /// Up to where the phone has everything once all the buckets are sent:
-    /// the start of the bucket under way.
+    /// the start of the bucket under way, or of the first one held back.
     pub fn sent_until(&self) -> i64 {
         self.end
     }

@@ -48,7 +48,7 @@ use embassy_time::{Duration, Timer, with_timeout};
 use embedded_hal_async::i2c::I2c;
 
 use crate::i2c::Device;
-use crate::{clock, minute_ring, sleep, stages};
+use crate::{clock, minute_ring, sleep, sleep_hold, stages};
 
 // ==============================================================================
 // The BMA421
@@ -737,6 +737,29 @@ static ASLEEP: AtomicBool = AtomicBool::new(false);
 /// minute.
 pub fn last_sleep() -> Option<Sleep> {
     LAST_SLEEP.lock(Cell::get)
+}
+
+/// What a Gadgetbridge fetch holds back now, if anything: the minutes
+/// whose kind may still change (see [`sleep_hold`]). As of the last
+/// classification: the newest minute and its classification change
+/// together, with no `await` in between.
+pub fn gadgetbridge_hold() -> Option<sleep_hold::Hold> {
+    HISTORY.lock(|history| {
+        let history = history.borrow();
+        let newest = history.newest?;
+        let sample = |minute: i64| {
+            if minute > newest || newest - minute >= HISTORY_MINUTES as i64 {
+                Sample::default()
+            } else {
+                history.samples[History::slot(minute)]
+            }
+        };
+        sleep_hold::hold(
+            newest,
+            |minute| sample(minute).sleep(),
+            |minute| sample(minute).evidence(),
+        )
+    })
 }
 
 struct Today {

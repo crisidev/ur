@@ -2,12 +2,25 @@
 //! in 5-minute buckets, as Gadgetbridge gets it. Against a reference
 //! bucket built straight from the history, and a model of Gadgetbridge's
 //! Bangle.js sample store (`BangleJSSampleProvider.upsertSample`), which
-//! is what the buckets are for. `cargo test` runs them.
+//! is what the buckets are for. And its `sleep_hold` module, which holds
+//! back the minutes whose sleep stages may still change: against a model
+//! of the watch classifying and staging a night minute by minute (with the
+//! real `sleep` and `stages`), fetched from on any schedule. `cargo test`
+//! runs them.
 
 // Used by the tests only.
 #[path = "../../../src/gb_buckets.rs"]
 #[allow(dead_code)]
 mod gb_buckets;
+#[path = "../../../src/sleep.rs"]
+#[allow(dead_code)]
+mod sleep;
+#[path = "../../../src/sleep_hold.rs"]
+#[allow(dead_code)]
+mod sleep_hold;
+#[path = "../../../src/stages.rs"]
+#[allow(dead_code)]
+mod stages;
 
 fn main() {
     println!("run `cargo test`");
@@ -175,8 +188,8 @@ mod tests {
     /// lines 90–126), as `handleActivity` calls it for each non-live `act`
     /// sample: if it has samples within ±2 minutes (inclusive), it
     /// overwrites the "nearest" one's steps, heart rate and intensity, each
-    /// only if the new one's is non-zero, and keeps its kind; else it adds
-    /// the new one. "Nearest" as its loop picks it, which compares each
+    /// only if the new one's is non-zero, and never its kind (`rawKind`),
+    /// which stays the first it got; else it adds the new one. "Nearest" as its loop picks it, which compares each
     /// candidate's distance to the new sample with its distance to the
     /// nearest so far (not the new sample's).
     fn upsert(store: &mut BTreeMap<i64, Stored>, timestamp: i64, sample: Stored) {
@@ -537,5 +550,581 @@ mod tests {
             exact && store.values().map(|s| s.steps).sum::<u32>() == steps_in(&full, from, to)
         }
         quickcheck().quickcheck(property as fn(Minutes, Vec<(u16, u8, bool)>) -> bool);
+    }
+
+    /// Gadgetbridge keeps the first kind it gets for a sample: a sample
+    /// sent again with a revised kind changes its steps, not its kind.
+    #[test]
+    fn the_kind_is_never_updated() {
+        let mut store = BTreeMap::new();
+        let sample = |steps, kind| Stored {
+            steps,
+            heart_rate: 0,
+            intensity: 0,
+            kind,
+        };
+        upsert(&mut store, NOON * 60, sample(5, None));
+        upsert(&mut store, NOON * 60, sample(7, Some("LIGHT_SLEEP")));
+        assert_eq!(store[&(NOON * 60)], sample(7, None));
+    }
+
+    // ==========================================================================
+    // Holding back what may still change
+    // ==========================================================================
+
+    use super::sleep::{self, Kind as Class};
+    use super::sleep_hold::{CAP, Hold, hold};
+    use super::stages;
+
+    const ACTIVE: sleep::Minute = sleep::Minute {
+        seen: true,
+        movement: 800,
+        steps: 30,
+        worn: Some(true),
+    };
+    const STILL: sleep::Minute = sleep::Minute {
+        seen: true,
+        movement: 30,
+        steps: 0,
+        worn: Some(true),
+    };
+    /// How long after a sleep's end it's settled.
+    const SETTLED: i64 = (sleep::WINDOW + sleep::SAME_NIGHT_GAP) as i64;
+
+    /// [`hold`] at `newest`, with the last sleep from `sleep.0` until
+    /// `sleep.1` (light, as are the minutes `extra` covers), active up to
+    /// `still` and the evidence `rest` from then on.
+    fn hold_at(
+        newest: i64,
+        last_sleep: Option<(i64, i64)>,
+        extra: std::ops::Range<i64>,
+        still: i64,
+        rest: sleep::Minute,
+    ) -> Option<Hold> {
+        let asleep = |minute: i64| {
+            last_sleep.is_some_and(|(start, end)| (start..end).contains(&minute))
+                || extra.contains(&minute)
+        };
+        hold(
+            newest,
+            |minute| {
+                if asleep(minute) {
+                    Class::Light
+                } else {
+                    Class::Awake
+                }
+            },
+            |minute| if minute < still { ACTIVE } else { rest },
+        )
+    }
+
+    /// An active wearer, with no sleep in the last 90 minutes: nothing is
+    /// held back.
+    #[test]
+    fn by_day_nothing_is_held() {
+        let newest = NOON + 500;
+        assert_eq!(hold_at(newest, None, 0..0, newest + 1, STILL), None);
+        // A sleep that ended 135 minutes ago is settled.
+        let night = Some((NOON, newest - SETTLED));
+        assert_eq!(hold_at(newest, night, 0..0, newest + 1, STILL), None);
+    }
+
+    /// A sleep is held back from its start while the classifier's window
+    /// could still find sleep that would join it, and no longer: until
+    /// its last minute asleep is 135 minutes back.
+    #[test]
+    fn a_sleep_is_held_until_135_minutes_after_it() {
+        let night = Some((NOON, NOON + 400));
+        let held = Some(Hold {
+            from: NOON,
+            sleep: true,
+        });
+        for newest in [NOON + 30, NOON + 399, NOON + 400, NOON + 400 + SETTLED - 1] {
+            assert_eq!(hold_at(newest, night, 0..0, i64::MAX, STILL), held);
+        }
+        assert_eq!(
+            hold_at(NOON + 400 + SETTLED, night, 0..0, i64::MAX, STILL),
+            None
+        );
+    }
+
+    /// An earlier sleep whose end is still in the window is held back too,
+    /// all of it, though the watch no longer stages it: the classifier
+    /// still rewrites its end, and should the later sleep turn out not to
+    /// be one, the watch stages it again.
+    #[test]
+    fn an_earlier_sleep_in_the_window_is_held() {
+        let newest = NOON + 430;
+        let nap = Some((NOON + 400, NOON + 420));
+        let held = hold_at(newest, nap, NOON + 300..NOON + 360, i64::MAX, STILL);
+        assert_eq!(
+            held,
+            Some(Hold {
+                from: NOON + 300,
+                sleep: true,
+            })
+        );
+    }
+
+    /// A wearer gone still may be falling asleep: the stillness is held
+    /// back (as from where it's still to the classifier, whose smoothing
+    /// takes a minute's neighbours in), but it's not a sleep. Unless the
+    /// watch isn't worn, which can't fall asleep.
+    #[test]
+    fn a_stillness_is_held() {
+        let newest = NOON + 500;
+        assert_eq!(
+            hold_at(newest, None, 0..0, newest - 9, STILL),
+            Some(Hold {
+                from: newest - 8,
+                sleep: false,
+            })
+        );
+        let off = sleep::Minute {
+            worn: Some(false),
+            ..STILL
+        };
+        assert_eq!(hold_at(newest, None, 0..0, newest - 9, off), None);
+        // The minute under way may yet turn out still, if the wrist stays
+        // so for the rest of it; the one before it then too, but not one
+        // with steps.
+        assert_eq!(
+            hold_at(newest, None, 0..0, newest - 1, STILL),
+            Some(Hold {
+                from: newest,
+                sleep: false,
+            })
+        );
+    }
+
+    /// A sleep that never ends is held back at most [`CAP`] minutes.
+    #[test]
+    fn a_hold_is_capped() {
+        let newest = NOON + 20 * 60;
+        let night = Some((NOON, newest + 1));
+        assert_eq!(
+            hold_at(newest, night, 0..0, i64::MAX, STILL),
+            Some(Hold {
+                from: newest - CAP + 1,
+                sleep: true,
+            })
+        );
+    }
+
+    /// A fetch held back ends at the start of the held minute's bucket.
+    #[test]
+    fn a_held_fetch_ends_at_a_bucket() {
+        let history: History = (0..30).map(|i| (NOON + i, minute(10, 0, None))).collect();
+        let mut fetch = Fetch::new(NOON, NOON, NOON + 30);
+        fetch.hold(NOON + 10);
+        assert_eq!(fetch.sent_until(), NOON + 9);
+        let buckets = run(fetch, &history, NOON);
+        assert_eq!(buckets.len(), 3);
+        assert_eq!(buckets.last().map(|b| b.start), Some(NOON + 6));
+    }
+
+    // ==========================================================================
+    // A night, as the watch revises it and Gadgetbridge fetches it
+    // ==========================================================================
+
+    /// xorshift64*, for each minute's evidence from a night's seed.
+    struct Rng(u64);
+
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
+        }
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+        fn range(&mut self, low: u16, high: u16) -> u16 {
+            low + (self.next() % u64::from(high - low + 1)) as u16
+        }
+        fn chance(&mut self, percent: u64) -> bool {
+            self.next() % 100 < percent
+        }
+    }
+
+    /// What the wearer is doing (as in `host-tests/sleep`).
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Truth {
+        Active,
+        /// Still-ish, with fidgets: may or may not pass for sleep.
+        Lounging,
+        Asleep,
+        DeepAsleep,
+        Rem,
+        /// Up in the night.
+        Up,
+        OffWrist,
+        /// The watch switched off: minutes it never saw.
+        Off,
+    }
+
+    /// A day and night: what the wearer does, in spans of minutes, and a
+    /// seed for the evidence. Always ends with five hours up and about,
+    /// so that the night is settled by the end.
+    #[derive(Clone, Debug)]
+    struct Night {
+        spans: Vec<(Truth, usize)>,
+        seed: u64,
+    }
+
+    impl Arbitrary for Night {
+        fn arbitrary(g: &mut Gen) -> Self {
+            let length =
+                |g: &mut Gen, low: usize, high: usize| low + usize::arbitrary(g) % (high - low + 1);
+            // The evening: up and about, then maybe on the sofa.
+            let mut spans = vec![
+                (Truth::Active, length(g, 30, 230)),
+                (Truth::Lounging, length(g, 0, 150)),
+            ];
+            // The night: stages, now and then interrupted by getting up,
+            // taking the watch off, or the watch switching off.
+            for _ in 0..length(g, 1, 10) {
+                let stage = *g
+                    .choose(&[Truth::Asleep, Truth::DeepAsleep, Truth::Rem])
+                    .expect("not empty");
+                spans.push((stage, length(g, 5, 90)));
+                if u8::arbitrary(g) % 4 == 0 {
+                    let interruption = *g
+                        .choose(&[Truth::Up, Truth::OffWrist, Truth::Off])
+                        .expect("not empty");
+                    spans.push((interruption, length(g, 1, 80)));
+                }
+            }
+            // The morning: maybe lying in for a while, then up for the day,
+            // long enough for the night to settle.
+            spans.push((Truth::Lounging, length(g, 0, 60)));
+            spans.push((Truth::Active, 300));
+            spans.retain(|&(_, length)| length > 0);
+            Self {
+                spans,
+                seed: u64::arbitrary(g),
+            }
+        }
+    }
+
+    impl Night {
+        /// Each minute's evidence and heart rate (0 if none).
+        fn minutes(&self) -> Vec<(sleep::Minute, u8)> {
+            let mut rng = Rng::new(self.seed);
+            let mut minutes = Vec::new();
+            for &(truth, length) in &self.spans {
+                for _ in 0..length {
+                    let (movement, steps) = match truth {
+                        Truth::Active => (
+                            rng.range(300, 2000),
+                            if rng.chance(50) {
+                                rng.range(20, 110)
+                            } else {
+                                0
+                            },
+                        ),
+                        Truth::Lounging => (
+                            if rng.chance(15) {
+                                rng.range(250, 600)
+                            } else {
+                                rng.range(60, 200)
+                            },
+                            0,
+                        ),
+                        Truth::Asleep | Truth::Rem => (
+                            if rng.chance(4) {
+                                rng.range(200, 700)
+                            } else {
+                                rng.range(25, 145)
+                            },
+                            0,
+                        ),
+                        Truth::DeepAsleep => (rng.range(15, 45), 0),
+                        Truth::Up => (rng.range(400, 1500), rng.range(0, 40)),
+                        Truth::OffWrist | Truth::Off => (rng.range(18, 30), 0),
+                    };
+                    let bpm = match truth {
+                        Truth::Active | Truth::Up => rng.range(75, 95),
+                        Truth::Lounging => rng.range(60, 72),
+                        Truth::Asleep => rng.range(52, 58),
+                        Truth::DeepAsleep => rng.range(48, 52),
+                        Truth::Rem => rng.range(58, 66),
+                        Truth::OffWrist | Truth::Off => 0,
+                    };
+                    let measured = rng.chance(20);
+                    minutes.push((
+                        sleep::Minute {
+                            seen: truth != Truth::Off,
+                            movement,
+                            steps,
+                            worn: Some(truth != Truth::OffWrist),
+                        },
+                        if measured { bpm as u8 } else { 0 },
+                    ));
+                }
+            }
+            minutes
+        }
+    }
+
+    /// The watch's history, as `activity` keeps and revises it every
+    /// minute: each minute's evidence and heart rate, and its kind, which
+    /// the classifier and the staging rewrite. Minute `i` is UTC minute
+    /// `NOON + i`.
+    struct Watch {
+        truth: Vec<(sleep::Minute, u8)>,
+        kinds: Vec<Class>,
+        /// The minute under way.
+        newest: usize,
+        last_sleep: Option<(i64, i64)>,
+    }
+
+    impl Watch {
+        fn new(truth: Vec<(sleep::Minute, u8)>) -> Self {
+            let kinds = vec![Class::Unknown; truth.len()];
+            Self {
+                truth,
+                kinds,
+                newest: 0,
+                last_sleep: None,
+            }
+        }
+
+        /// Minute `t`'s evidence: half of it so far for the minute under
+        /// way, as at its first poll, when the watch classifies.
+        fn evidence(&self, t: usize) -> sleep::Minute {
+            let (minute, _) = self.truth[t];
+            if t == self.newest {
+                sleep::Minute {
+                    movement: minute.movement / 2,
+                    steps: minute.steps / 2,
+                    ..minute
+                }
+            } else {
+                minute
+            }
+        }
+
+        /// The next minute starts: `activity_task`'s once-a-minute pass
+        /// (`History::classify_sleep`, then `History::last_sleep`).
+        fn tick(&mut self, now: usize) {
+            self.newest = now;
+            let window = (now + 1).saturating_sub(sleep::WINDOW);
+            let start = window.saturating_sub(sleep::CONTEXT);
+            let before = if start == 0 {
+                Class::Unknown
+            } else {
+                self.kinds[start - 1]
+            };
+            let evidence: Vec<_> = (start..=now).map(|t| self.evidence(t)).collect();
+            let mut out = vec![Class::Unknown; evidence.len()];
+            sleep::classify(before, &evidence, &mut out);
+            self.kinds[window..=now].copy_from_slice(&out[window - start..]);
+
+            let oldest = (now + 1).saturating_sub(DAY as usize);
+            self.last_sleep = sleep::last_sleep(now + 1 - oldest, |i| self.kinds[oldest + i])
+                .map(|(start, end, _)| (oldest + start, oldest + end))
+                .map(|(start, end)| {
+                    if now < end + sleep::WINDOW {
+                        stages::stage(self, start as i64, end as i64);
+                    }
+                    (NOON + start as i64, NOON + end as i64)
+                });
+        }
+
+        /// `activity::gadgetbridge_hold`.
+        fn hold(&self) -> Option<Hold> {
+            let newest = self.newest as i64;
+            let inside = |minute: i64| (0..=newest).contains(&(minute - NOON));
+            hold(
+                NOON + newest,
+                |minute| {
+                    if inside(minute) {
+                        self.kinds[(minute - NOON) as usize]
+                    } else {
+                        Class::Unknown
+                    }
+                },
+                |minute| {
+                    if inside(minute) {
+                        self.evidence((minute - NOON) as usize)
+                    } else {
+                        sleep::Minute::default()
+                    }
+                },
+            )
+        }
+
+        /// The history as a fetch reads it (`activity::History::since`):
+        /// the minutes with data, the one under way as far as it's got.
+        fn history(&self) -> History {
+            self.minutes((0..=self.newest).map(|t| (t, self.evidence(t))))
+        }
+
+        /// The history as recorded in the end: every minute whole.
+        fn recorded(&self) -> History {
+            self.minutes(self.truth.iter().enumerate().map(|(t, &(m, _))| (t, m)))
+        }
+
+        /// Those of `minutes` with data, as a fetch reads them.
+        fn minutes(&self, minutes: impl Iterator<Item = (usize, sleep::Minute)>) -> History {
+            minutes
+                .map(|(t, m)| (t, m, self.truth[t].1))
+                .filter(|&(_, m, bpm)| m.seen || bpm != 0)
+                .map(|(t, m, bpm)| {
+                    let minute = Minute {
+                        steps: m.steps,
+                        movement: m.movement,
+                        heart_rate: bpm,
+                        seen: m.seen,
+                        kind: self.kinds[t].gadgetbridge_name(),
+                    };
+                    (NOON + t as i64, minute)
+                })
+                .collect()
+        }
+    }
+
+    /// Staging works on the model's history in place, as on the watch's.
+    impl stages::Record for Watch {
+        fn minute(&self, minute: i64) -> (Class, Option<u16>, u8) {
+            let Ok(t) = usize::try_from(minute) else {
+                return (Class::Unknown, None, 0);
+            };
+            if t > self.newest {
+                return (Class::Unknown, None, 0);
+            }
+            let m = self.evidence(t);
+            (self.kinds[t], m.seen.then_some(m.movement), self.truth[t].1)
+        }
+
+        fn newest(&self) -> i64 {
+            self.newest as i64
+        }
+
+        fn set_stage(&mut self, minute: i64, kind: Class) {
+            self.kinds[minute as usize] = kind;
+        }
+    }
+
+    /// What came of a night fetched from on a schedule.
+    struct Fetched {
+        watch: Watch,
+        store: BTreeMap<i64, Stored>,
+        /// Where the first fetch started, and the last one ended.
+        from: i64,
+        to: i64,
+        /// Whether the last fetch held back a sleep.
+        last_held_sleep: bool,
+    }
+
+    /// `night`, with Gadgetbridge fetching as in [`fetches`] (`gaps`
+    /// apart, mostly a few minutes, now and then hours) as `ble` answers:
+    /// from what it asks less [`REVISED`], or from where the last fetch
+    /// stopped if that's earlier (`system_off::synced_through`), and
+    /// holding back what `sleep_hold` says. Then one more fetch at the
+    /// end, and the watch runs on for another window, so that what it has
+    /// then is final.
+    fn fetch_night(night: &Night, gaps: &[(u16, u8, bool)]) -> Fetched {
+        let mut watch = Watch::new(night.minutes());
+        let length = watch.truth.len();
+        let mut store = BTreeMap::new();
+        let mut last_sync_seconds = None::<i64>;
+        let mut synced = None::<i64>;
+        let (mut first, mut to) = (None, i64::MIN);
+        let mut last_held_sleep = false;
+        // Fetch times, in seconds from the first minute.
+        let mut at = Vec::new();
+        let mut seconds = 0;
+        for &(gap, second, everything) in gaps {
+            let minutes = match gap % 8 {
+                0 => i64::from(gap % 400),
+                _ => 1 + i64::from(gap % 30),
+            };
+            seconds += minutes * 60 + i64::from(second % 60);
+            at.push((seconds, everything));
+        }
+        let end = (length - sleep::WINDOW - sleep::CONTEXT - 1) as i64;
+        at.retain(|&(seconds, _)| seconds.div_euclid(60) < end);
+        at.push((end * 60 + 30, false));
+        let mut at = at.into_iter().peekable();
+        for now in 0..length {
+            watch.tick(now);
+            while let Some((seconds, everything)) =
+                at.next_if(|&(s, _)| s.div_euclid(60) == now as i64)
+            {
+                let now_minute = NOON + now as i64;
+                let asked = match last_sync_seconds {
+                    Some(synced) if !everything => (synced - 60).div_euclid(60) - REVISED,
+                    _ => 0,
+                };
+                let since = synced.map_or(asked, |synced| asked.min(synced + 1));
+                let hold = watch.hold();
+                let mut fetch = Fetch::new(since, now_minute - DAY + 1, now_minute);
+                if let Some(hold) = hold {
+                    fetch.hold(hold.from);
+                }
+                first.get_or_insert(fetch.from());
+                to = fetch.sent_until();
+                synced = Some(fetch.sent_until() - 1);
+                let history = watch.history();
+                for bucket in run(fetch, &history, now_minute - DAY + 1) {
+                    send(&mut store, &bucket);
+                }
+                last_held_sleep = hold.is_some_and(|hold| hold.sleep);
+                last_sync_seconds = Some(NOON * 60 + seconds);
+            }
+        }
+        Fetched {
+            watch,
+            store,
+            from: first.unwrap_or(0),
+            to,
+            last_held_sleep,
+        }
+    }
+
+    /// The property the hold is for: whenever Gadgetbridge fetches, over a
+    /// day and a night, what it ends up with is the night as the watch
+    /// settles it. Each stored sample's kind (which Gadgetbridge never
+    /// updates) is the watch's final one, as are its steps, heart rate and
+    /// movement; and it has every step from where the first fetch started
+    /// to where the last ended, the night included.
+    #[test]
+    fn gadgetbridge_gets_the_settled_night() {
+        fn property(night: Night, gaps: Vec<(u16, u8, bool)>) -> bool {
+            let fetched = fetch_night(&night, &gaps);
+            let full = fetched.watch.recorded();
+            let wrong: Vec<_> = fetched
+                .store
+                .iter()
+                .filter(|&(&timestamp, stored)| {
+                    let start = start_of(timestamp.div_euclid(60));
+                    reference(&full, start).is_none_or(|b| {
+                        b.timestamp_ms() / 1000 != timestamp
+                            || stored.steps != b.steps
+                            || stored.heart_rate != b.heart_rate
+                            || stored.intensity != b.movement
+                            || stored.kind != b.kind
+                    })
+                })
+                .collect();
+            let steps = fetched.store.values().map(|s| s.steps).sum::<u32>();
+            let expected = steps_in(&full, fetched.from, fetched.to);
+            if !wrong.is_empty() || steps != expected || fetched.last_held_sleep {
+                eprintln!(
+                    "{night:?}\n{gaps:?}\n{} wrong, e.g. {:?}; {steps} steps of {expected}; held at the end: {}",
+                    wrong.len(),
+                    wrong.first(),
+                    fetched.last_held_sleep,
+                );
+                return false;
+            }
+            true
+        }
+        QuickCheck::new()
+            .tests(1_000)
+            .quickcheck(property as fn(Night, Vec<(u16, u8, bool)>) -> bool);
     }
 }

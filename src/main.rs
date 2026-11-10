@@ -97,6 +97,7 @@ mod ppg;
 mod qr;
 mod route;
 mod sleep;
+mod sleep_hold;
 mod snapshot;
 mod spi;
 mod spi_flash;

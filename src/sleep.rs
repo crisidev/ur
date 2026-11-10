@@ -151,16 +151,7 @@ pub fn classify(before: Kind, minutes: &[Minute], out: &mut [Kind]) {
     assert_eq!(minutes.len(), out.len(), "one class per minute");
     let n = minutes.len();
 
-    // Movement averaged with each neighbour, so one twitchy minute in the
-    // middle of stillness (or one still minute while active) doesn't flip
-    // the verdict.
-    let smoothed = |t: usize| -> u16 {
-        let range = t.saturating_sub(1)..(t + 2).min(n);
-        let seen = minutes[range].iter().filter(|m| m.seen);
-        let (sum, count) = seen.fold((0u32, 0u32), |(s, c), m| (s + u32::from(m.movement), c + 1));
-        (sum / count.max(1)) as u16
-    };
-    let still = |t: usize| minutes[t].seen && minutes[t].steps == 0 && smoothed(t) < STILL_LIMIT;
+    let still = |t: usize| is_still(minutes, t);
     // The length of the run of minutes from `t` for which `f` holds.
     let run = |t: usize, f: &dyn Fn(usize) -> bool| (t..n).take_while(|&u| f(u)).count();
     // The length of the stillness from `t`, bridging stirs of up to `STIR`
@@ -250,6 +241,82 @@ pub fn classify(before: Kind, minutes: &[Minute], out: &mut [Kind]) {
         out[t..t + moving].fill(kind);
         t += moving;
     }
+}
+
+/// Whether minute `t` of `minutes` is still: seen, stepless, and with its
+/// movement averaged with each neighbour's below [`STILL_LIMIT`], so one
+/// twitchy minute in the middle of stillness (or one still minute while
+/// active) doesn't flip the verdict.
+fn is_still(minutes: &[Minute], t: usize) -> bool {
+    let range = t.saturating_sub(1)..(t + 2).min(minutes.len());
+    let seen = minutes[range].iter().filter(|m| m.seen);
+    let (sum, count) = seen.fold((0u32, 0u32), |(s, c), m| (s + u32::from(m.movement), c + 1));
+    let smoothed = (sum / count.max(1)) as u16;
+    minutes[t].seen && minutes[t].steps == 0 && smoothed < STILL_LIMIT
+}
+
+/// How many of the newest minutes [`unsettled_onset`] needs: a stillness
+/// [`ONSET`] minutes long is sleep already, so one that may yet become
+/// sleep is shorter, and followed by at most a stir of up to [`STIR`]
+/// minutes and the minute under way; with a minute to spare, and the
+/// oldest only as its newer neighbour's (for the smoothing).
+pub const ONSET_SPAN: usize = ONSET + STIR + 2 + 1;
+
+/// Where, among the newest of `minutes` (oldest first; the newest still
+/// under way, as at a classification: [`ONSET_SPAN`] of them are enough),
+/// a sleep may yet be found to have started that [`classify`] doesn't see
+/// yet: the first minute of the stillness they end with, which becomes
+/// sleep, dated from its start, once it has lasted [`ONSET`] minutes (or
+/// [`RESUME`]). Bridges stirs of up to [`STIR`] minutes, and a trailing
+/// one that may yet turn out to be a stir. A minute not worn can't fall
+/// asleep, but stays in the stillness of the ones before it, as in
+/// [`classify`]. `None` if the newest minutes aren't still, or not worn.
+///
+/// The newest minute is under way, so its own and its predecessor's
+/// smoothed movement aren't final: they count as still if they may yet
+/// turn out so, should the wrist not move for the rest of the minute.
+/// (Its steps so far can only grow.)
+///
+/// Sleep that has started is a sleep's to settle (see `crate::sleep_hold`).
+pub fn unsettled_onset(minutes: &[Minute]) -> Option<usize> {
+    let n = minutes.len();
+    // The newest three, the newest without movement from here on.
+    let tail = n.saturating_sub(3);
+    let mut ending = [Minute::default(); 3];
+    let ending = &mut ending[..n - tail];
+    ending.copy_from_slice(&minutes[tail..]);
+    if let Some(newest) = ending.last_mut() {
+        newest.movement = 0;
+    }
+    let still = |t: usize| {
+        if t + 2 >= n {
+            is_still(ending, t - tail)
+        } else {
+            is_still(minutes, t)
+        }
+    };
+
+    let mut from = None;
+    // Moving minutes in a row, back from the last still one.
+    let mut moving = 0;
+    // From the second-oldest: the oldest is only its neighbour.
+    for t in (1..n).rev() {
+        if !minutes[t].seen {
+            break;
+        }
+        if still(t) {
+            moving = 0;
+            if minutes[t].worn != Some(false) {
+                from = Some(t);
+            }
+        } else {
+            moving += 1;
+            if moving > STIR {
+                break;
+            }
+        }
+    }
+    from
 }
 
 // ==============================================================================
