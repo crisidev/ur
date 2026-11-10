@@ -240,7 +240,7 @@ drew them (kept for 7 days).
 
 ## Finding bugs
 
-Beyond the tests, four tools look for what nobody thought to test. All
+Beyond the tests, five tools look for what nobody thought to test. All
 but the dev kit's run on the computer; the heavy ones can take a lot of
 memory, so run them in a capped scope (`systemd-run --user --scope -p
 MemoryMax=6G --quiet …`): on a machine without much swap, an
@@ -297,6 +297,26 @@ them; `--harness NAME` one (and one at a time). They need tight
 loops (one unbounded alarm proof took 18 GB). `gb` and `day` also have
 [Bolero] property tests, which `cargo test` runs briefly with random
 inputs, and `cargo bolero test NAME` fuzzes for as long as you like.
+
+### Fuzzing the host tests
+
+Many host test crates have [Bolero] harnesses: properties of what the
+module promises, for any input, where the tests try a few. They're in
+`src/fuzz.rs` (in `src/main.rs` for `gb`, and `day`'s `properties`), in
+`aranet` (Bluetooth adverts from any device nearby), `gb`
+(Gadgetbridge's lines), `mcuboot` (firmware updates), `route`, `nav`,
+`snapshot`, `font`, `qr`, `sleep`, `ppg`, `glance`, `arrival` and
+`day`. `cargo test` runs each for a second of random inputs; to fuzz
+one properly, with [cargo-bolero] and nightly (for the sanitizer), in
+the crate:
+
+```sh
+cargo +nightly bolero test fuzz::bthome_objects_read_as_the_spec_says --engine libfuzzer -T 10min
+```
+
+`cargo bolero list` names them. What a run finds is kept in
+`src/__fuzz__/` (ignored by git), which `cargo test` replays too: an
+input worth keeping becomes a test.
 
 ### cargo-careful and Miri
 
@@ -687,3 +707,4 @@ toolchain quarterly.
 [shellcheck]: https://www.shellcheck.net
 [Kani]: https://model-checking.github.io/kani/
 [Bolero]: https://camshaft.github.io/bolero/
+[cargo-bolero]: https://crates.io/crates/cargo-bolero
