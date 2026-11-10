@@ -87,6 +87,13 @@ impl AsMut<[u8]> for Packet {
 
 impl Drop for Packet {
     fn drop(&mut self) {
-        USED.lock(|used| used[self.index].set(false));
+        USED.lock(|used| {
+            // A packet is the only holder of its index (it's neither
+            // `Clone` nor `Copy`), so its buffer is still marked. Were it
+            // not, it had been handed to a second packet already, and
+            // the two would write over each other.
+            debug_assert!(used[self.index].get(), "a packet's buffer is in use");
+            used[self.index].set(false);
+        });
     }
 }

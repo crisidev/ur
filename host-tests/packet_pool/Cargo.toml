@@ -1,0 +1,24 @@
+[package]
+name = "packet-pool-test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Host-side tests for `src/packet_pool.rs` (included via `#[path]`): the
+# Bluetooth host's packet buffers. Not part of the firmware workspace: run
+# `cargo test` from this directory.
+[workspace]
+
+[dependencies]
+# For the lock the pool takes: on the host, a global mutex.
+critical-section = { version = "1.2.0", features = ["std"] }
+embassy-sync = "0.8.0"
+# The pool's trait, and its size: with the features that size it as the
+# firmware's does (see the root Cargo.toml; 16 buffers is the default).
+trouble-host = { version = "0.8.0", default-features = false, features = ["peripheral", "default-packet-pool-mtu-251"] }
+
+# CI runs the host tests with `--release`; keep the arithmetic checks and
+# the pool's own `debug_assert!`s.
+[profile.release]
+overflow-checks = true
+debug-assertions = true
