@@ -330,7 +330,9 @@ Two ways to aim the runs:
 `fuzz/` fuzzes the simulator with libFuzzer, guided by branch coverage,
 with no dev kit: each input's bytes are a storage image's settings and a
 script of steps, as `--fuzz` makes from a seed (the same generator, with
-the bytes as its choices). It fails on a panic (overflow checks and
+the bytes as its choices, and steps only the simulator can take besides:
+sensor readings, last night's sleep, pairing and updates; for a dev kit,
+those are comments). It fails on a panic (overflow checks and
 `debug_assert!`s on), on a step that never ends (the UI spinning: the
 timeout), and when the settings the UI has, two seconds on, aren't the
 ones it would boot with from its storage:

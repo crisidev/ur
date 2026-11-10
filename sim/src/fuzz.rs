@@ -136,7 +136,7 @@ pub fn run(elf: &Path, out: &Path, setup: &Setup, fuzz: &Fuzz) -> Result<(), Str
                         .map_err(|e| format!("reading {}: {e}", input.display()))?;
                     let mut rng = Rng::from_bytes(&bytes);
                     let storage = random_storage(&base, &mut rng, &out.join("scratch"))?;
-                    (storage, generate(&mut rng, HOST_STEPS, true))
+                    (storage, generate(&mut rng, HOST_STEPS, true, false))
                 }
                 None => recipe.make(
                     &bases,
@@ -290,7 +290,7 @@ impl Recipe {
         let count = self.from.last().copied().unwrap_or(0) + steps;
         Ok((
             storage,
-            generate_spliced(&mut first, &mut then, count, phone),
+            generate_spliced(&mut first, &mut then, count, phone, false),
         ))
     }
 
@@ -737,7 +737,7 @@ fn dry(out: &Path, setup: &Setup, fuzz: &Fuzz) -> Result<(), String> {
         let seed = fuzz.seed.wrapping_add(n);
         let mut rng = Rng::new(seed);
         let storage = random_storage(Flash::erased().bytes(), &mut rng, &out.join("scratch"))?;
-        let steps = generate(&mut rng, fuzz.steps, setup.peer.is_some());
+        let steps = generate(&mut rng, fuzz.steps, setup.peer.is_some(), false);
         let dir = out.join(format!("run-{seed}"));
         save_repro(&dir, seed, &steps, &storage, &[])?;
         let flash = Flash::from_bytes(storage).ok_or("a storage image of the wrong size")?;
@@ -780,7 +780,7 @@ pub fn host_one(bytes: &[u8], scratch: &Path) {
     let mut rng = Rng::from_bytes(bytes);
     let storage = random_storage(Flash::erased().bytes(), &mut rng, scratch)
         .expect("the scratch directory is writable");
-    let steps = generate(&mut rng, HOST_STEPS, true);
+    let steps = generate(&mut rng, HOST_STEPS, true, true);
     // In a file, so what the firmware saves can be read back below.
     let path = scratch.join("watch-storage.bin");
     write(&path, &storage).expect("the scratch directory is writable");
@@ -844,7 +844,7 @@ pub fn host_repro(input: &Path, base: Option<&Path>, out: &Path) -> Result<(), S
     };
     let mut rng = Rng::from_bytes(&bytes);
     let storage = random_storage(&base, &mut rng, &out.join("scratch"))?;
-    let steps = generate(&mut rng, HOST_STEPS, true);
+    let steps = generate(&mut rng, HOST_STEPS, true, true);
     save_script(
         out,
         &format!("input {}", input.display()),
@@ -864,7 +864,7 @@ pub fn host_repro(input: &Path, base: Option<&Path>, out: &Path) -> Result<(), S
 pub fn host_script(bytes: &[u8], scratch: &Path) -> String {
     let mut rng = Rng::from_bytes(bytes);
     let _ = random_storage(Flash::erased().bytes(), &mut rng, scratch);
-    generate(&mut rng, HOST_STEPS, true)
+    generate(&mut rng, HOST_STEPS, true, true)
         .iter()
         .flatten()
         .map(|line| line.clone() + "\n")
@@ -1068,6 +1068,11 @@ fn random_alarms(rng: &mut Rng) -> alarm::Settings {
 struct Context {
     /// This computer can be its phone.
     phone: bool,
+    /// For the simulator alone: what only it can be told (sensor readings,
+    /// last night's sleep, Bluetooth's states) goes in as is; for a dev
+    /// kit, as a comment. Chosen alike either way, so the same choices
+    /// make the same script but for those lines (see `host_only`).
+    host: bool,
     connected: bool,
     advertising: bool,
     /// A call ringing, to end.
@@ -1080,8 +1085,8 @@ struct Context {
 
 /// `count` random steps; with `phone`, this computer is the dev kit's
 /// phone, so they include Bluetooth.
-fn generate(rng: &mut Rng, count: usize, phone: bool) -> Vec<Step> {
-    generate_spliced(rng, &mut [], count, phone)
+fn generate(rng: &mut Rng, count: usize, phone: bool, host: bool) -> Vec<Step> {
+    generate_spliced(rng, &mut [], count, phone, host)
 }
 
 /// [`generate`], its choices from `first` until the first of `then`'s
@@ -1093,10 +1098,12 @@ fn generate_spliced(
     then: &mut [(usize, Rng)],
     count: usize,
     phone: bool,
+    host: bool,
 ) -> Vec<Step> {
     let rng = first;
     let mut context = Context {
         phone,
+        host,
         connected: false,
         advertising: false,
         calling: false,
@@ -1139,6 +1146,17 @@ fn generate_spliced(
     steps
 }
 
+/// A step only the simulator can take (a sensor's reading, say): as is
+/// for it, and as a comment for a dev kit, where the choices that made it
+/// still count, so the steps after it are the same either way.
+fn host_only(context: &Context, line: String) -> Step {
+    if context.host {
+        vec![line]
+    } else {
+        vec![format!("# host only: {line}")]
+    }
+}
+
 /// One random action.
 fn action(rng: &mut Rng, context: &mut Context) -> Step {
     let point = |rng: &mut Rng| format!("{},{}", rng.below(80), rng.below(80));
@@ -1175,6 +1193,16 @@ fn action(rng: &mut Rng, context: &mut Context) -> Step {
         (if connected { 2 } else { 0 }, 27), // navigation
         (if connected { 1 } else { 0 }, 28), // weather, location
         (if phone { 2 } else { 0 }, 29),     // thermometer
+        // What only the simulator can be told (see `host_only`).
+        (2, 30), // steps
+        (2, 31), // a heart rate
+        (2, 32), // sleep tracking: asleep, movement
+        (1, 33), // the watch's temperature
+        (2, 34), // an Aranet4
+        (1, 35), // last night's sleep, or a day's history
+        (1, 36), // a GPS fix
+        (2, 37), // pairing, an update, both connections in use
+        (1, 38), // a timer's length, the smart alarm
     ];
     let total: u64 = choices.iter().map(|(w, _)| w).sum();
     let mut pick = rng.below(total);
@@ -1425,6 +1453,108 @@ fn action(rng: &mut Rng, context: &mut Context) -> Step {
                 ))
             }
         }
+        30 => host_only(context, format!("steps {}", rng.range(0, 30_000))),
+        31 => host_only(
+            context,
+            if rng.chance(0.2) {
+                "heart off".into()
+            } else {
+                format!("heart {}", rng.range(35, 210))
+            },
+        ),
+        32 => host_only(
+            context,
+            if rng.chance(0.5) {
+                format!("asleep {}", if rng.chance(0.5) { "on" } else { "off" })
+            } else {
+                format!("movement {}", rng.below(4000))
+            },
+        ),
+        33 => host_only(
+            context,
+            format!("temperature {}", rng.range(0, 60) as i64 - 10),
+        ),
+        34 => host_only(
+            context,
+            if rng.chance(0.15) {
+                "aranet off".into()
+            } else {
+                format!(
+                    "aranet {} {:.1} {} {} {} {}m",
+                    rng.range(350, 5000),
+                    rng.range(0, 400) as f64 / 10.0,
+                    rng.below(101),
+                    rng.range(950, 1050),
+                    rng.below(101),
+                    rng.below(30)
+                )
+            },
+        ),
+        // Both need the time of day, which the watch loses when it
+        // switches off (a tap on the storage prompt, say): the phone sets
+        // it first.
+        35 => {
+            let time = format!(
+                "time 2026-10-{:02} {:02}:{:02} +00:00",
+                rng.range(1, 31),
+                rng.below(24),
+                rng.below(60)
+            );
+            let what = if rng.chance(0.3) {
+                "demo-day".into()
+            } else {
+                format!(
+                    "last-night {:02}:{:02} {:02}:{:02} deep={} rem={} awake={}",
+                    rng.range(20, 23),
+                    rng.below(60),
+                    rng.range(4, 10),
+                    rng.below(60),
+                    rng.below(180),
+                    rng.below(150),
+                    rng.below(90)
+                )
+            };
+            let mut step = host_only(context, time);
+            step.extend(host_only(context, what));
+            step
+        }
+        36 => host_only(
+            context,
+            format!(
+                "location {:.4} {:.4}",
+                rng.range(0, 140_000) as f64 / 1000.0 - 70.0,
+                rng.range(0, 360_000) as f64 / 1000.0 - 180.0
+            ),
+        ),
+        37 => host_only(
+            context,
+            match rng.below(8) {
+                0 => "unpaired not-paired".into(),
+                1 => "unpaired pairing-lost".into(),
+                2 => "unpaired off".into(),
+                3 => format!("passkey {:06}", rng.below(1_000_000)),
+                4 => "passkey off".into(),
+                5 => format!("update {}", rng.below(101)),
+                6 => (*rng.pick(&["update off", "update refused"])).into(),
+                _ => (*rng.pick(&["slots full", "slots free"])).into(),
+            },
+        ),
+        38 => host_only(
+            context,
+            if rng.chance(0.5) {
+                format!("timer {} {}", rng.range(1, 2), rng.range(1, 960))
+            } else if rng.chance(0.3) {
+                "smart off".into()
+            } else {
+                format!(
+                    "smart on {:02}:{:02} {:02}:{:02}",
+                    rng.below(24),
+                    rng.below(60),
+                    rng.below(24),
+                    rng.below(60)
+                )
+            },
+        ),
         29 => {
             context.advertising = !context.advertising;
             if context.advertising {
@@ -1619,7 +1749,7 @@ mod tests {
     /// see it again.
     #[test]
     fn a_seed_makes_the_same_script() {
-        let script = |seed| generate(&mut Rng::new(seed), 40, true);
+        let script = |seed| generate(&mut Rng::new(seed), 40, true, false);
         assert_eq!(script(7), script(7));
         assert_ne!(script(7), script(8));
     }
