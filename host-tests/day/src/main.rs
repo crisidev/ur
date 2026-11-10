@@ -639,4 +639,29 @@ mod proofs {
         day.add(0, 0, rate);
         assert_eq!(day.resting(), Some(rate));
     }
+
+    /// At any minute the clock can read (1969 to 2200), any number of
+    /// minutes from UTC (a whole `i16`: time zones stop at 18 hours, but
+    /// nothing here needs them to): local midnight is no later than
+    /// now and less than a day ago, on the same local date, and the
+    /// minute before it is the date before. Nothing overflows.
+    ///
+    /// So a minute's place in its day, which `activity` passes to
+    /// `Day::add` and reads its history by (`minute - midnight`, as a
+    /// `usize`), is always one of the day's 1440; and the date changes
+    /// exactly at midnight, which is when today's steps start over.
+    #[kani::proof]
+    fn midnight_begins_the_local_day() {
+        let utc_minute: i64 = kani::any();
+        kani::assume((-366 * 1440..121_000_000).contains(&utc_minute));
+        let offset: i16 = kani::any();
+
+        let midnight = midnight(utc_minute, offset);
+        let into_the_day = utc_minute - midnight;
+        assert!((0..(HOURS * 60) as i64).contains(&into_the_day));
+        assert_eq!(date(midnight, offset), date(utc_minute, offset));
+        assert_eq!(date(midnight - 1, offset), date(utc_minute, offset) - 1);
+        // Midnight is its own.
+        assert_eq!(super::day::midnight(midnight, offset), midnight);
+    }
 }
