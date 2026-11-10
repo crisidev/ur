@@ -80,6 +80,14 @@ pub mod key {
 /// to flash word alignment.
 const BUFFER: usize = 64;
 
+// The map's pages are the flash's (4 KiB), and it needs two at least: one
+// to move the live items to while it erases another.
+const _: () = assert!(
+    RANGE.start.is_multiple_of(4096)
+        && RANGE.end.is_multiple_of(4096)
+        && RANGE.end - RANGE.start >= 2 * 4096
+);
+
 type Map = MapStorage<u8, Flash, Cache<Uncached, Uncached, Uncached, u8>>;
 
 /// The map, made storable in a `static`.
@@ -123,6 +131,13 @@ pub async fn load<const N: usize>(key: u8) -> Option<[u8; N]> {
 /// (reading the flash, or a corrupt page) isn't this item's fault, and
 /// removing it then could lose a good value.
 async fn load_into(key: u8, value: &mut [u8]) -> bool {
+    // The map reads the key and the value into `buffer`: a value that
+    // doesn't fit beside its key could never be loaded (nor saved; see
+    // `save`), and the setting would read as "nothing stored" for good.
+    debug_assert!(
+        value.len() < BUFFER,
+        "an item fits the buffer, with its key"
+    );
     let mut buffer = [0u8; BUFFER];
     let mut store = STORE.lock().await;
     let Store(store) = store.as_mut().expect("storage::init runs at boot");
@@ -160,12 +175,34 @@ async fn load_into(key: u8, value: &mut [u8]) -> bool {
 /// logged). A slice, not an array, so there's one copy of this whatever
 /// the size.
 pub async fn save(key: u8, value: &[u8]) -> bool {
+    // The map writes the key and the value from `buffer`: a value that
+    // doesn't fit beside its key is refused, every time, with only a
+    // warning in the log to say the setting isn't kept. Every item is of
+    // a fixed size, so one save in a test (or the simulator) checks it.
+    debug_assert!(
+        value.len() < BUFFER,
+        "an item fits the buffer, with its key"
+    );
     let mut buffer = [0u8; BUFFER];
     let mut store = STORE.lock().await;
     let Store(store) = store.as_mut().expect("storage::init runs at boot");
     let result = store.store_item(&mut buffer, &key, &value).await;
     if let Err(e) = &result {
         warn!("storage: saving key {} failed: {}", key, e);
+    }
+    // What was saved is what a load now gives: the one thing the map is
+    // for. Checked where debug assertions are on (the simulator, and its
+    // fuzzer, over a model of the flash that only clears bits, as the
+    // chip does), not on the watch, where it would be a second pass over
+    // the flash for every save.
+    #[cfg(debug_assertions)]
+    if result.is_ok() {
+        let mut buffer = [0u8; BUFFER];
+        let read_back = store.fetch_item::<&[u8]>(&mut buffer, &key).await;
+        debug_assert!(
+            matches!(read_back, Ok(Some(stored)) if stored == value),
+            "a saved item reads back as it was saved"
+        );
     }
     result.is_ok()
 }
