@@ -146,3 +146,35 @@ mod tests {
 
 #[cfg(test)]
 mod fuzz;
+
+/// Proofs, for every distance the watch can be sent, where the tests and
+/// the fuzzing try some. `cargo kani` runs them (see CONTRIBUTING.md).
+#[cfg(kani)]
+mod proofs {
+    use super::route::*;
+
+    /// Any distance a [`Step`] can hold (any [`DISTANCE_LEN`] bytes or
+    /// fewer; the phone's, so anything) reads without a panic or an
+    /// overflow, and as a distance or not at all. And what it reads as
+    /// leaves room for the 30 m of slack `Route::update` adds to it,
+    /// unchecked, when it compares one update's distance with the last:
+    /// the furthest eight bytes can say is "999999mi", 1.6 million km,
+    /// well short of a `u32`'s metres.
+    ///
+    /// The bytes needn't be UTF-8 for this: `metres` only looks at them
+    /// one at a time, and treats any it doesn't know as a unit's letter.
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn any_distance_a_step_holds_reads_safely() {
+        let bytes: [u8; DISTANCE_LEN] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= DISTANCE_LEN);
+        // SAFETY: `metres` reads the bytes, never as characters.
+        let distance = unsafe { core::str::from_utf8_unchecked(&bytes[..len]) };
+        if let Some(metres) = metres(distance) {
+            assert!(u64::from(metres) <= 1_609_344 * 999_999 / 1000);
+            assert!(metres.checked_add(30).is_some());
+        }
+        kani::cover!(metres(distance) == Some(1_609_342_390), "999999mi");
+    }
+}
