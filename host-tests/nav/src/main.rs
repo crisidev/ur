@@ -139,3 +139,112 @@ mod tests {
 
 #[cfg(test)]
 mod fuzz;
+
+/// Proofs, for every place, swipe and length of every line at once, where
+/// the tests try a layout and the fuzzing some thousands. `cargo kani`
+/// runs them (see CONTRIBUTING.md).
+#[cfg(kani)]
+mod proofs {
+    use super::nav::*;
+
+    fn any_side() -> Side {
+        Side::ALL[usize::from(kani::any::<u8>() % 4)]
+    }
+
+    fn any_swipe() -> Swipe {
+        [Swipe::Left, Swipe::Right, Swipe::Up, Swipe::Down][usize::from(kani::any::<u8>() % 4)]
+    }
+
+    /// Wherever the UI is (even past its line's end, a screen having
+    /// just gone), whatever the lines hold, a swipe that goes anywhere
+    /// goes to the clock or to a screen that's there: `ui::App::navigate`
+    /// indexes the line with what it gets, and an index past the end
+    /// would be a panic on the watch. It goes the way the swipe says,
+    /// and only along the line it's on.
+    ///
+    /// The one bound: an index short of `usize::MAX`, as `index + 1`
+    /// would overflow there. The UI's are positions in a line of four
+    /// screens at most.
+    #[kani::proof]
+    fn a_swipe_lands_on_a_screen_thats_there() {
+        let lens: [usize; 4] = kani::any();
+        let len = |side: Side| lens[side as usize];
+        let place = if kani::any() {
+            Place::Clock
+        } else {
+            let index: usize = kani::any();
+            kani::assume(index < usize::MAX);
+            Place::Line {
+                side: any_side(),
+                index,
+            }
+        };
+        let swipe_ = any_swipe();
+        let Some((to, towards)) = swipe(place, swipe_, len) else {
+            return;
+        };
+        assert_eq!(towards, swipe_.towards());
+        match (place, to) {
+            (_, Place::Line { side, index }) => {
+                assert!(index < len(side), "a screen that isn't there");
+                match place {
+                    // From the clock, the nearest screen on that side.
+                    Place::Clock => assert!(side == towards && index == 0),
+                    // Along its own line: one further out, or one back
+                    // (from past the end: to the end).
+                    Place::Line {
+                        side: from,
+                        index: was,
+                    } => {
+                        assert_eq!(side, from);
+                        if towards == side {
+                            assert_eq!(index, was + 1);
+                        } else {
+                            assert!(index < was);
+                            assert!(index + 1 == was || index + 1 == len(side));
+                        }
+                    }
+                }
+            }
+            // Only back from the nearest screen (or an emptied line)
+            // reaches the clock.
+            (Place::Line { side, index }, Place::Clock) => {
+                assert_eq!(towards, side.opposite());
+                assert!(index == 0 || len(side) == 0);
+            }
+            (Place::Clock, Place::Clock) => panic!("a swipe from the clock to itself"),
+        }
+    }
+
+    /// From a screen that's there, a swipe that goes anywhere is undone
+    /// by the opposite swipe: the way back is always the reverse. (Not
+    /// from the clock into a line and back, which the first assertion
+    /// covers too: that returns to the clock.)
+    #[kani::proof]
+    fn the_reverse_swipe_goes_back() {
+        let lens: [usize; 4] = kani::any();
+        let len = |side: Side| lens[side as usize];
+        let place = if kani::any() {
+            Place::Clock
+        } else {
+            let (side, index) = (any_side(), kani::any());
+            kani::assume(index < len(side));
+            Place::Line { side, index }
+        };
+        let swipe_ = any_swipe();
+        if let Some((to, towards)) = swipe(place, swipe_, len) {
+            let reverse = match swipe_ {
+                Swipe::Left => Swipe::Right,
+                Swipe::Right => Swipe::Left,
+                Swipe::Up => Swipe::Down,
+                Swipe::Down => Swipe::Up,
+            };
+            assert_eq!(swipe(to, reverse, len), Some((place, towards.opposite())));
+        }
+        // And home is the clock's side of wherever it is.
+        match place {
+            Place::Clock => assert_eq!(home(place), None),
+            Place::Line { side, .. } => assert_eq!(home(place), Some(side.opposite())),
+        }
+    }
+}
