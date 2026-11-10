@@ -1532,6 +1532,46 @@ mod tests {
         assert_eq!(c.push(72.0, false), Some(71));
     }
 
+    /// What's read should be a rate `ppg` says it reports, 40 to 200 BPM,
+    /// whatever the sensor's oscillator: pulses just outside that, on
+    /// sensors within the 5% these tests give them.
+    ///
+    /// TODO: it isn't, so this is ignored (a repro, not a regression test
+    /// yet). `Ppg::estimate` holds a window's rate to 40-200 BPM as if
+    /// samples came `NOMINAL_PERIOD_US` apart (`Estimate::bpm`), while
+    /// `heart` (and `run` here) reads it at the measured period
+    /// (`Estimate::bpm_at`). So the range that's read moves with the
+    /// oscillator: on one 4% fast, a pulse of 206 BPM reads as 206 (and one
+    /// of 41 is out of range, and never reads); on one 4% slow, 39 reads as
+    /// 39 (and 195 never does). `Conversions` believes periods from 0.75
+    /// to 1.33 of the nominal, so at worst that's 30 to 267 BPM, the top of
+    /// it saturating the reading's `u8` at 255. The readings here are
+    /// right, as it happens (they're the pulses' rates): what's wrong is
+    /// that the range isn't the documented one, nor the same on every
+    /// watch. Checking the range on `bpm_at`'s rate, in `heart` or by
+    /// passing the period to `Ppg`, would fix it.
+    #[test]
+    #[ignore = "a known bug: see the comment"]
+    fn readings_are_within_the_reported_range_on_any_oscillator() {
+        for bpm in [39.0, 206.0] {
+            for seed in 0..40 {
+                let scenario = Scenario {
+                    seed,
+                    hrv: 0.01,
+                    ..Scenario::pulse(bpm, 10)
+                };
+                let outcome = run(&generate(&scenario), no_gate, true);
+                for &(_, reading) in &outcome.readings {
+                    assert!(
+                        (40..=200).contains(&reading),
+                        "{reading} BPM read from a pulse of {bpm}, at {} µs a sample",
+                        outcome.period_us
+                    );
+                }
+            }
+        }
+    }
+
     /// On a calm wrist, two windows in a row make a reading if they agree
     /// closely, faint or not; anything else between them, or a busy wrist
     /// through either, and they don't.
@@ -1596,3 +1636,116 @@ mod tests {
 
 #[cfg(test)]
 mod fuzz;
+
+/// Kani proofs (`cargo kani` here, one at a time with `--harness`: CBMC
+/// takes memory) of the part of `ppg` that's small enough for them: what
+/// [`Consensus`] makes a reading of, for every rate, where the tests try
+/// a few.
+///
+/// The estimator itself (`Ppg`) is out of reach: a verdict takes 226
+/// samples through three biquads and an autocorrelation over 34 lags of a
+/// 212-sample window, in `f32`, which is far more floating-point
+/// arithmetic than CBMC can turn into a formula; and `Conversions` loops
+/// once per missed conversion, as many times as its clock says. `fuzz`
+/// covers both.
+#[cfg(kani)]
+mod proofs {
+    use super::ppg::{Consensus, slow_while_busy};
+
+    /// A window's rate, as `heart` may pass one: `Ppg` accepts 40 to 200
+    /// BPM at the nominal sample period, and `Conversions` believes a
+    /// period down to 0.75 of it and up to 1.33, so 30 to 267 BPM.
+    fn any_rate() -> f32 {
+        let bpm: f32 = kani::any();
+        kani::assume((30.0..=267.0).contains(&bpm));
+        bpm
+    }
+
+    /// Through any four windows, accepted or faint (on any wrist, asleep
+    /// or not) or rejected: a reading comes only of windows that agree,
+    /// and lies among them. Either the last three accepted windows are
+    /// within 6 BPM of each other, and the reading is between the lowest
+    /// and the highest of them; or this window and the one just before
+    /// were both calm, neither over 120 BPM, within 3 BPM of each other,
+    /// and the reading is between the two (and if this one is faint, not
+    /// under 50 BPM unless asleep). Rounded to the nearest whole BPM, and
+    /// saturating at 255, which a pair can't reach and three windows only
+    /// from over 254.5.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn a_reading_comes_of_windows_that_agree_and_lies_among_them() {
+        let mut consensus = Consensus::new();
+        // What the consensus should be going by, kept alongside: the
+        // accepted rates so far, and the last window's rate if it could
+        // be half of a calm pair.
+        let mut accepted = [0.0f32; 4];
+        let mut count = 0;
+        let mut calm_before: Option<f32> = None;
+        for _ in 0..4 {
+            let (bpm, calm, asleep) = (any_rate(), kani::any::<bool>(), kani::any::<bool>());
+            // The reading, whether this window can be half of a calm pair,
+            // and whether it was accepted.
+            let (reading, pairs, pushed) = match kani::any::<u8>() % 3 {
+                0 => {
+                    accepted[count] = bpm;
+                    count += 1;
+                    (consensus.push(bpm, calm), calm && bpm <= 120.0, true)
+                }
+                1 => {
+                    let counts = calm && (asleep || bpm >= 50.0);
+                    let reading = consensus.push_faint(bpm, calm, asleep);
+                    (reading, counts && bpm <= 120.0, false)
+                }
+                _ => {
+                    consensus.reject();
+                    (None, false, false)
+                }
+            };
+            let pair = calm_before.filter(|&before| pairs && (bpm - before).abs() <= 3.0);
+            // The last three accepted windows, this one the last, if
+            // they agree: their lowest and highest.
+            let three = (pushed && count >= 3)
+                .then(|| {
+                    let [a, b] = [accepted[count - 3], accepted[count - 2]];
+                    (a.min(b).min(bpm), a.max(b).max(bpm))
+                })
+                .filter(|(low, high)| high - low <= 6.0);
+            match (reading, pair, three) {
+                (None, None, None) => {}
+                (None, ..) => unreachable!("windows that agree make a reading"),
+                (Some(_), None, None) => unreachable!("a reading of windows that don't agree"),
+                // Three that agree go before a pair: their median.
+                (Some(reading), _, Some((low, high))) => {
+                    let reading = f32::from(reading);
+                    assert!(low.min(255.0) - 0.5 <= reading && reading <= high + 0.5);
+                }
+                (Some(reading), Some(before), None) => {
+                    let (low, high) = (bpm.min(before), bpm.max(before));
+                    let reading = f32::from(reading);
+                    assert!(low - 0.5 <= reading && reading <= high + 0.5);
+                }
+            }
+            calm_before = pairs.then_some(bpm);
+        }
+    }
+
+    /// For any eight movement readings (or fewer) through a window: it's
+    /// slow while busy only under 50 BPM, awake, with at least half of
+    /// the readings (and there are some) above the calm limit.
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn slow_while_busy_takes_a_slow_rate_awake_on_a_busy_wrist() {
+        let movement: [u16; 8] = kani::any();
+        let n: usize = kani::any();
+        kani::assume(n <= 8);
+        let (bpm, calm, asleep): (f32, u16, bool) = (any_rate(), kani::any(), kani::any());
+        let mut busy = 0;
+        for &m in &movement[..n] {
+            busy += usize::from(m > calm);
+        }
+        assert_eq!(
+            slow_while_busy(bpm, &movement[..n], calm, asleep),
+            bpm < 50.0 && !asleep && n > 0 && 2 * busy >= n
+        );
+    }
+}
