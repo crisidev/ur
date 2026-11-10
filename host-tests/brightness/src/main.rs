@@ -314,3 +314,139 @@ mod tests {
         assert_eq!(Setting::from_byte(200), Setting::Auto);
     }
 }
+
+/// Kani proofs (`cargo kani` here, one at a time with `--harness`): what
+/// the tests above check for chosen bytes, times and moments of a ramp,
+/// for every one. Nothing panics or overflows; a setting survives its
+/// byte; the small hours start at midnight and end at noon whichever way
+/// the clock went; and the backlight is always on at a real level, which
+/// a ringing alarm only ever raises.
+///
+/// The clock reads anything from 1969 to 2200, as in `host-tests/alarm`:
+/// `small_hours` takes half a day off it, which would overflow within
+/// half a day of the start of an `i64` of seconds.
+#[cfg(kani)]
+mod proofs {
+    use super::brightness::*;
+
+    const DAY: i64 = 24 * 60 * 60;
+
+    /// Local seconds the clock can read: from a day before 1970 (zones
+    /// west of UTC) to 2200.
+    fn any_now() -> i64 {
+        let now: i64 = kani::any();
+        kani::assume((-DAY..7_258_118_400).contains(&now));
+        now
+    }
+
+    fn any_setting() -> Setting {
+        if kani::any() {
+            Setting::Auto
+        } else {
+            Setting::Soft
+        }
+    }
+
+    /// Where a level falls from dimmest to brightest. It must be one that
+    /// is on: `BY_CURRENT` has every one of those.
+    fn rank(level: Level) -> usize {
+        BY_CURRENT
+            .iter()
+            .position(|&l| l == level)
+            .expect("the backlight is on")
+    }
+
+    /// Every setting comes back from the byte it's stored as, and every
+    /// byte reads as a setting that's stored as that byte, or else as
+    /// the default. A tap goes round all the settings and back.
+    #[kani::proof]
+    fn a_setting_survives_its_byte() {
+        let setting = any_setting();
+        assert_eq!(Setting::from_byte(setting.to_byte()), setting);
+        assert!(setting.next() != setting && setting.next().next() == setting);
+
+        let byte: u8 = kani::any();
+        let read = Setting::from_byte(byte);
+        assert!(read.to_byte() == byte || read == Setting::default());
+    }
+
+    /// For every pair of times, a second apart or years, forwards or
+    /// back: getting up ends the small hours; without the time, or when
+    /// the clock didn't move on into another half of a day (midnight to
+    /// noon, noon to midnight), they're as they were; and when it did,
+    /// they're on if that half is a morning, however many midnights and
+    /// noons went by at once.
+    ///
+    /// The time now is made of its day and its second of the day, so
+    /// that the proof can say which half it's in without dividing: CBMC
+    /// then has only `small_hours`' own divisions to work through, where
+    /// with the proof's beside them it hadn't finished in eight minutes.
+    #[kani::proof]
+    fn the_small_hours_are_the_mornings_until_getting_up() {
+        let (current, got_up): (bool, bool) = kani::any();
+        let (day, second): (i64, i64) = kani::any();
+        // The days `any_now` covers: the one before 1970, to 2200.
+        kani::assume((-1..7_258_118_400 / DAY).contains(&day));
+        kani::assume((0..DAY).contains(&second));
+        let (before, now) = (any_now(), day * DAY + second);
+
+        let small = small_hours(current, Some((before, now)), got_up);
+        assert_eq!(small_hours(current, None, got_up), current && !got_up);
+        if got_up {
+            assert!(!small);
+            return;
+        }
+        // When the half of the day that it now is began.
+        let morning = second < DAY / 2;
+        let began = day * DAY + if morning { 0 } else { DAY / 2 };
+        if before >= began {
+            assert_eq!(small, current);
+        } else {
+            assert_eq!(small, morning);
+        }
+    }
+
+    /// Whatever the setting, the sun, the hour and the screen's look: the
+    /// backlight is at a level that's on. The dim look is low; the soft
+    /// setting is never brighter than the automatic one, the small hours
+    /// never brighter than the evening, nor the night than the day.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn the_backlight_is_on_and_no_brighter_than_asked() {
+        let (daytime, small, dim): (bool, bool, bool) = kani::any();
+        let auto = level(Setting::Auto, daytime, small, dim, None);
+        let soft = level(Setting::Soft, daytime, small, dim, None);
+        assert!(rank(soft) <= rank(auto));
+        assert!(!dim || (auto == Level::LOW && soft == Level::LOW));
+
+        let setting = any_setting();
+        let at = |daytime, small| rank(level(setting, daytime, small, dim, None));
+        assert!(at(daytime, true) <= at(daytime, false));
+        assert!(at(false, small) <= at(true, small));
+    }
+
+    /// For every two moments of a ringing wake alarm, however long it's
+    /// rung: the backlight starts at low, is never dimmer later than
+    /// earlier, and from `RAMP` on is at the normal level, or at low and
+    /// mid together if that's brighter. (But the dim look stays low.)
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn a_ringing_alarm_only_brightens() {
+        let setting = any_setting();
+        let (daytime, small, dim): (bool, bool, bool) = kani::any();
+        let (earlier, later): (u64, u64) = kani::any();
+        kani::assume(earlier <= later);
+        let at = |waking| rank(level(setting, daytime, small, dim, waking));
+
+        let low_and_mid = 2;
+        assert!(BY_CURRENT[low_and_mid].drivers() == [true, true, false]);
+        let top = if dim {
+            rank(Level::LOW)
+        } else {
+            at(None).max(low_and_mid)
+        };
+        assert!(dim || at(Some(0)) == rank(Level::LOW));
+        assert!(at(Some(earlier)) <= at(Some(later)) && at(Some(later)) <= top);
+        assert!(later < RAMP || at(Some(later)) == top);
+    }
+}
