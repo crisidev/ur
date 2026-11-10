@@ -183,3 +183,84 @@ mod tests {
 
 #[cfg(test)]
 mod fuzz;
+
+/// Proofs, for `cargo kani`: what the fuzzer tries for some headers, for
+/// every one. The record is all that carries a day's activity across
+/// System OFF, so what's written must read back: a header that didn't
+/// would lose the day at the next boot, with nothing to say why.
+#[cfg(kani)]
+mod proofs {
+    use super::snapshot::*;
+
+    /// For every header a record can have (any first minute, date, steps
+    /// and checksum, and up to a day of minutes): it reads back from its
+    /// 32 bytes exactly as it was written, as a fresh record.
+    #[kani::proof]
+    fn every_header_reads_back_as_written() {
+        let header = Header {
+            first_minute: kani::any(),
+            minutes: kani::any(),
+            day: kani::any(),
+            steps: kani::any(),
+            checksum: kani::any(),
+        };
+        kani::assume(usize::from(header.minutes) <= MAX_MINUTES);
+        assert_eq!(Header::from_bytes(&header.to_bytes()), Some(header));
+    }
+
+    /// For any 32 bytes of flash (erased, a consumed record, half a
+    /// write, anything): they read as a header only with the magic and
+    /// an erased consumed word, and then one with no more minutes than a
+    /// record holds, so `system_off::restore` never reads samples past
+    /// the record's sectors; and writing that header gives the same
+    /// bytes back, bar the reserved ones.
+    #[kani::proof]
+    fn only_a_fresh_record_within_bounds_is_read() {
+        let bytes: [u8; HEADER_BYTES] = kani::any();
+        let fresh = bytes[..4] == *b"urH1" && bytes[24..28] == [0xFF; 4];
+        match Header::from_bytes(&bytes) {
+            Some(header) => {
+                assert!(fresh);
+                assert!(usize::from(header.minutes) <= MAX_MINUTES);
+                assert!(HEADER_BYTES + usize::from(header.minutes) * SAMPLE_BYTES <= MAX_BYTES);
+                let again = header.to_bytes();
+                assert_eq!(again[..10], bytes[..10]);
+                assert_eq!(again[12..28], bytes[12..28]);
+            }
+            None => {
+                let minutes = u16::from_le_bytes([bytes[8], bytes[9]]);
+                assert!(!fresh || usize::from(minutes) > MAX_MINUTES);
+            }
+        }
+    }
+
+    /// For any newest minute (to the year 6000), any minute the phone
+    /// has fetched through (or none), and any revision window up to a
+    /// day: the record starts within the history (the day up to the
+    /// newest minute), so it never holds more minutes than a record can,
+    /// which `from_bytes` would refuse at the next boot. It starts where
+    /// the phone's next fetch will (the revision window before what it
+    /// has) when that's in the history, and holds the whole history when
+    /// it's before it, or the phone has nothing, or has "fetched" a
+    /// minute the history hasn't reached (the clock went back since).
+    #[kani::proof]
+    fn the_record_starts_within_the_history() {
+        let (newest, resend): (i64, i64) = kani::any();
+        kani::assume((0..1 << 31).contains(&newest));
+        kani::assume((0..=MAX_MINUTES as i64).contains(&resend));
+        let synced: Option<i64> = kani::any();
+        if let Some(synced) = synced {
+            kani::assume((0..1 << 32).contains(&synced));
+        }
+        let from = unsynced_from(newest, synced, resend);
+        let minutes = newest - from + 1;
+        assert!(1 <= minutes && minutes <= MAX_MINUTES as i64);
+        let oldest = newest - MAX_MINUTES as i64 + 1;
+        match synced {
+            Some(synced) if synced <= newest && synced - resend >= oldest => {
+                assert_eq!(from, synced - resend)
+            }
+            _ => assert_eq!(from, oldest),
+        }
+    }
+}
