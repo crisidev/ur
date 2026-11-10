@@ -78,6 +78,10 @@ The wearer and the watch:
   demo-day                   fill today's history so far with a typical day
   alarm 1|2 HH:MM [on|off] | smart on|off [HH:MM [HH:MM]] | timer 1|2 MIN
   theme NAME|auto            pick a theme, and its time of day (auto: the sun's)
+  version VERSION            show VERSION (and its build, after a +) on the
+                             Info screen, as a build of it would, rather
+                             than this one's (for screenshots that don't
+                             change with every release)
   buttons off|bthome|app|both
                              the button grid, and where its presses go (as
                              the Settings screen's BUTTONS row)
@@ -586,6 +590,11 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
             for line in crate::settings::describe() {
                 watch.log(line);
             }
+        }
+        "version" => {
+            let version: &'static str = need(0, "VERSION")?.to_owned().leak();
+            crate::version::set(version.split_once('+').unwrap_or((version, "")));
+            watch.refresh();
         }
         "store" => {
             let key = need(0, "KEY HEX")?;

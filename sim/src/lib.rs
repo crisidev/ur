@@ -210,6 +210,26 @@ mod debug {
     }
 }
 
+/// `src/version.rs`: the version the Info screen shows, which the
+/// `version` command can set, so that screenshots don't change with each
+/// release (the tour and the themes' pin one); build.rs's otherwise.
+mod version {
+    use std::sync::Mutex;
+
+    static SHOWN: Mutex<Option<(&'static str, &'static str)>> = Mutex::new(None);
+
+    pub fn shown() -> (&'static str, &'static str) {
+        SHOWN
+            .lock()
+            .expect("nothing panics holding it")
+            .unwrap_or((env!("UR_RELEASE"), env!("UR_BUILD")))
+    }
+
+    pub fn set(version: (&'static str, &'static str)) {
+        *SHOWN.lock().expect("nothing panics holding it") = Some(version);
+    }
+}
+
 /// `src/system_off.rs`: only why the watch switches off, for its last
 /// screen. Switching off itself is [`watch`]'s.
 mod system_off {

@@ -8,6 +8,9 @@
 # A day on the wrist
 # ==============================================================================
 
+# A version of its own on the Info screen, so a release's doesn't change
+# the screenshot.
+version 1.0.0+1a2b3c4
 battery 3990
 time 2026-11-09 15:42:10 +01:00
 location 59.91 10.75

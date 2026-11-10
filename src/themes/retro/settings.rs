@@ -19,8 +19,10 @@ const INFO_LINE: i32 = 8;
 pub(super) fn render_info(canvas: &mut Canvas, status: &Status) {
     canvas.clear(BACKGROUND);
     // The version without its build metadata (`0.9.0-pr.12`); the commit
-    // goes in the BUILD row (see `build.rs`).
-    canvas.text(4, 3, concat!("UR ", env!("UR_RELEASE")), Color::ACCENT);
+    // goes in the BUILD row.
+    let (release, build) = crate::version::shown();
+    let end = canvas.text(4, 3, "UR ", Color::ACCENT);
+    canvas.text(end, 3, release, Color::ACCENT);
 
     let battery = status.battery;
     let mv = battery.millivolts();
@@ -56,7 +58,7 @@ pub(super) fn render_info(canvas: &mut Canvas, status: &Status) {
     };
     // Which commit this build is from, for bug reports: "DEV" for a local
     // `cargo build`, which doesn't know.
-    let build = match env!("UR_BUILD") {
+    let build = match build {
         "" => "DEV",
         build => build,
     };

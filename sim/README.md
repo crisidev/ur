@@ -112,7 +112,9 @@ tap                               # snooze
   starts over from it, as after a reboot), `steps`,
   `heart`, `temperature`, `asleep`, `movement`, `last-night`,
   `demo-day` (a day of steps and heart rates so far), `alarm`, `smart`,
-  `timer`, `theme`.
+  `timer`, `theme`, and `version` (what the Info screen says the
+  version is: the tour and each theme's screenshots pin one, so a
+  release's doesn't change them).
 - **Time:** `wait 1.5s`, `until HH:MM`.
 - **Output:** `shot FILE.png [THEME]` (with a theme: in its colours, as
   `screenshot.py --theme`; with `--watch`, the whole watch, as the window
@@ -166,8 +168,8 @@ UPDATE_SHOTS=1 cargo test
 That makes each approved directory exactly what its script drew: it
 adds new screenshots, rewrites changed ones, and deletes those no longer
 taken. The Info screen shows the version, from Cargo.toml (`0.9.0-dev`
-here), so a release's new version needs approving too (the tour's, and
-each theme's). The README's
+here) unless a script says otherwise: the tour and each theme's script
+pin one with `version`, so a release changes none of them. The README's
 `info.png` is the exception: it shows a release's version and commit
 (`UR_VERSION`; see `readme-screenshots.txt`), which the tests' build
 never does, so they neither check nor update it, and the tour's

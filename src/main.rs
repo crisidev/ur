@@ -132,6 +132,7 @@ mod themes;
 mod touch;
 mod ui;
 mod ui_loop;
+mod version;
 mod wake;
 
 use core::sync::atomic::{AtomicBool, Ordering};

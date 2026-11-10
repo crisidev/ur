@@ -650,10 +650,9 @@ Cargo.toml's version is the source of truth. To release:
    commits since the last tag), then move its entries under a heading
    for the new version and update the compare links at the bottom.
 2. Set the version in Cargo.toml, and run any cargo build without
-   `--locked` (e.g. `cargo check`) to update Cargo.lock to match. The
-   simulator's Info screen shows the version too, so approve its new
-   screenshots (`cd sim && UPDATE_SHOTS=1 cargo test`; see
-   [Approved screenshots](#approved-screenshots)).
+   `--locked` (e.g. `cargo check`) to update Cargo.lock to match. (The
+   approved screenshots don't show it: their scripts pin a version of
+   their own.)
 3. Commit, then tag (annotated, with a very brief summary of what changed
    since the last release: the key user-facing effects, naming new
    concepts as the README does, and any particularly impactful change
