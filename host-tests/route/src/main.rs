@@ -2,6 +2,7 @@
 //! from Gadgetbridge's `nav` messages. `cargo test` runs them.
 
 #[path = "../../../src/route.rs"]
+#[allow(dead_code)]
 mod route;
 
 fn main() {
@@ -142,3 +143,6 @@ mod tests {
         assert!(!Route::expire(&mut route, u64::MAX));
     }
 }
+
+#[cfg(test)]
+mod fuzz;

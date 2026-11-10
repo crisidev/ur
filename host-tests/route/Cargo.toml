@@ -10,3 +10,19 @@ publish = false
 
 [dependencies]
 heapless = "0.9.3"
+
+[dev-dependencies]
+bolero = "0.13.7"
+
+# CI runs the host tests with `--release`; keep the arithmetic checks.
+[profile.release]
+overflow-checks = true
+
+# What `cargo bolero test` builds with (see `src/fuzz.rs`): fast, but
+# with the arithmetic checks, as above.
+[profile.fuzz]
+inherits = "dev"
+opt-level = 3
+incremental = false
+codegen-units = 1
+overflow-checks = true
