@@ -143,7 +143,7 @@ watch comes off; 0% is where it switches itself off.
 **Notifications** show the app and who it's from (the sender, or the
 title without one), never what it says, and without emoji. One that
 comes with the screen on shows along the bottom for 4 seconds; with the
-screen off, it gets the whole screen, dimly, the name large and centred
+screen off, it gets the whole screen, dimly, the name centred, and large
 if it's short.
 
 **Screens:** swipe right for Today (steps and heart rate by the hour),
