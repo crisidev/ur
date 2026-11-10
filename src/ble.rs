@@ -1411,35 +1411,29 @@ static LAST_NO_TRACKS: AtomicU32 = AtomicU32::new(0);
 /// (see [`gb_buckets`]: a sample a minute, Gadgetbridge would merge).
 async fn send_activity(server: &Server<'_>, conn: &GattConnection<'_, '_, Pool>, since_ms: i64) {
     let now = clock::now_utc_seconds();
-    let from = gb::fetch_from(since_ms, now);
-    if from != since_ms {
-        info!("ble: fetch from the phone's future; sending all");
+    if now.is_some_and(|now| since_ms > now * 1000) {
+        info!("ble: fetch from the phone's future");
     }
     send(server, conn, Outgoing::ActivityFetch { done: false }).await;
-    // Start early: the recent past's sleep classes and stages may have been
-    // revised since the last sync (sleep is only recognised after the fact,
-    // and stages need the hour after), and Gadgetbridge overwrites samples
-    // it already has. (Their steps, heart rate and movement, that is: it
-    // keeps the kind it first got, which is why the minutes whose kind
-    // may still change aren't sent at all; see `sleep_hold`.)
-    //
-    // And from where the watch last stopped sending, if that's earlier:
-    // Gadgetbridge asks from when it last fetched, which is past what the
-    // watch held back then.
+    // From where the watch last stopped sending, which is before what the
+    // phone asks for when a fetch held something back, or else from after
+    // all the phone may have: never over samples it already has, which
+    // may be a sample a minute from an older build (see `gb_buckets`).
     //
     // Without the time there's nothing to send, as the history is filed by
     // it; the phone sets it before fetching.
     //
     // The history's oldest minutes drop out as new ones come in, which may
     // happen while the fetch goes on: so it's as if a few more had already.
-    let since = from.div_euclid(60_000) - crate::stages::REVISED as i64;
-    let since = crate::system_off::synced_through().map_or(since, |synced| since.min(synced + 1));
+    let synced = crate::system_off::synced_through();
     let hold = activity::gadgetbridge_hold();
     let mut fetch = now.map(|now| {
+        let now = now.div_euclid(60);
         let oldest = activity::newest_minute().map_or(i64::MIN / 2, |newest| {
             newest - activity::HISTORY_MINUTES as i64 + 1 + gb_buckets::MINUTES
         });
-        let mut fetch = gb_buckets::Fetch::new(since, oldest, now.div_euclid(60));
+        let since = gb_buckets::start(since_ms, synced, now);
+        let mut fetch = gb_buckets::Fetch::new(since, oldest, now);
         if let Some(hold) = hold {
             fetch.hold(hold.from);
         }
@@ -1506,7 +1500,7 @@ async fn send_activity(server: &Server<'_>, conn: &GattConnection<'_, '_, Pool>,
     if let Some(fetch) = fetch.filter(|_| complete) {
         // The phone now has everything before the bucket under way, or the
         // first one held back.
-        crate::system_off::on_synced(fetch.sent_until() - 1);
+        crate::system_off::on_synced(fetch.synced_through());
     }
 }
 

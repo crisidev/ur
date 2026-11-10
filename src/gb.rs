@@ -791,22 +791,6 @@ pub enum Outgoing {
 /// [`handleActTrksList`]: https://codeberg.org/Freeyourgadget/Gadgetbridge/src/tag/2026.11.1/app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/banglejs/BangleJSActivityTrack.java#L70-L84
 pub const FETCH_END: [Outgoing; 2] = [Outgoing::ActivityFetch { done: true }, Outgoing::NoTracks];
 
-/// Where to send a fetch's activity samples from (UTC milliseconds), at
-/// `now` (UTC seconds, by the watch's clock, which the phone sets):
-/// where Gadgetbridge asked, which is its own clock a minute before its
-/// last fetch ended (`saveLastSyncTimestamp`), unless that's still to
-/// come. Then the phone's clock was ahead at its last fetch, and has been
-/// put right since; from there, it would never get the samples recorded
-/// in between, and after the next fetch it asks from its clock again. So
-/// a fetch from the future gets everything, as a first one does
-/// (Gadgetbridge overwrites what it already has).
-pub fn fetch_from(since_ms: i64, now: Option<i64>) -> i64 {
-    match now {
-        Some(now) if since_ms > now * 1000 => 0,
-        _ => since_ms,
-    }
-}
-
 #[derive(Clone, Copy, Format)]
 pub enum CallAction {
     Accept,

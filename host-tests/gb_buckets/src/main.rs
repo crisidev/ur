@@ -32,7 +32,7 @@ mod tests {
 
     use quickcheck::{Arbitrary, Gen, QuickCheck};
 
-    use super::gb_buckets::{Bucket, Fetch, MINUTES, Minute, start_of};
+    use super::gb_buckets::{Bucket, Fetch, MINUTES, Minute, REACH, start, start_of};
 
     /// What `ble` buckets by: Gadgetbridge's `ActivityKind` name, `None`
     /// for plain activity.
@@ -48,9 +48,6 @@ mod tests {
     const NOON: i64 = 29_903_760;
     /// The history's length (`activity::HISTORY_MINUTES`).
     const DAY: i64 = 24 * 60;
-    /// How far before the phone's last fetch a fetch starts
-    /// (`stages::REVISED`).
-    const REVISED: i64 = 164;
 
     // ==========================================================================
     // Histories
@@ -233,44 +230,80 @@ mod tests {
         );
     }
 
+    /// What Gadgetbridge asks a fetch from (`ts`, UTC milliseconds), at
+    /// `now_seconds`: its clock a minute before its last fetch ended
+    /// (`saveLastSyncTimestamp`, `last_sync_seconds`), or before any, a
+    /// day back (`getLastSuccessfulSyncTime`); or, with `ahead`, from its
+    /// future (its clock was ahead at the last fetch, and has been put
+    /// right since).
+    fn asked_ms(last_sync_seconds: Option<i64>, now_seconds: i64, ahead: bool) -> i64 {
+        match last_sync_seconds {
+            _ if ahead => (now_seconds + 86_400) * 1000,
+            Some(synced) => (synced - 60) * 1000,
+            None => (now_seconds - 86_400) * 1000,
+        }
+    }
+
+    /// The watch's history at `now` (a UTC minute): what `full` holds of
+    /// its 24 hours, and the current minute's steps so far (half).
+    fn history_at(full: &History, now: i64) -> History {
+        let oldest = now - DAY + 1;
+        let mut history: History = full.range(oldest..now).map(|(&m, &s)| (m, s)).collect();
+        if let Some(&current) = full.get(&now) {
+            history.insert(
+                now,
+                Minute {
+                    steps: current.steps / 2,
+                    ..current
+                },
+            );
+        }
+        history
+    }
+
+    /// The buckets of one fetch at `now_seconds`, as `ble` answers it: from
+    /// [`start`], given what Gadgetbridge asked and where the watch's last
+    /// fetch stopped (`synced`, which it updates), sent to `store`.
+    /// Returns where the fetch started, and up to where the phone then has
+    /// everything.
+    fn fetch(
+        store: &mut BTreeMap<i64, Stored>,
+        history: &History,
+        asked_ms: i64,
+        synced: &mut Option<i64>,
+        now_seconds: i64,
+    ) -> (i64, i64) {
+        let now = now_seconds.div_euclid(60);
+        let oldest = now - DAY + 1;
+        let fetch = Fetch::new(start(asked_ms, *synced, now), oldest, now);
+        let from = fetch.from();
+        *synced = Some(fetch.synced_through());
+        for bucket in run(fetch, history, oldest) {
+            send(store, &bucket);
+        }
+        (from, synced.expect("just set") + 1)
+    }
+
     /// A day of fetches, as Gadgetbridge makes them: each `gaps[i]`
     /// minutes (and `seconds[i]` seconds) after the last, asking from a
-    /// minute before the last one ended (`saveLastSyncTimestamp`), less
-    /// [`REVISED`], as `ble` asks for it; or, now and then, for everything
-    /// (`gb::fetch_from`'s fetch from the phone's future). The watch's
-    /// history at each is what `full` holds up to then: its 24 hours, and
-    /// the current minute's steps so far. Returns the store, and where the
-    /// first fetch started and the last ended.
+    /// minute before the last one ended (`saveLastSyncTimestamp`); or,
+    /// now and then, from its future (see [`asked_ms`]). The watch's
+    /// history at each is what `full` holds up to then (see
+    /// [`history_at`]). Returns the store, and where the first fetch
+    /// started and the last ended.
     fn fetches(full: &History, gaps: &[(u16, u8, bool)]) -> (BTreeMap<i64, Stored>, i64, i64) {
         let mut store = BTreeMap::new();
         let mut now_seconds = (full.keys().next().copied().unwrap_or(NOON) - 30) * 60;
         let mut last_sync_seconds = None::<i64>;
+        let mut synced = None;
         let (mut first, mut last) = (None, i64::MIN);
-        for &(gap, seconds, everything) in gaps {
+        for &(gap, seconds, ahead) in gaps {
             now_seconds += i64::from(gap % 400) * 60 + i64::from(seconds % 60);
-            let now = now_seconds.div_euclid(60);
-            let oldest = now - DAY + 1;
-            // The current minute is under way: half its steps so far.
-            let mut history: History = full.range(oldest..now).map(|(&m, &s)| (m, s)).collect();
-            if let Some(&current) = full.get(&now) {
-                history.insert(
-                    now,
-                    Minute {
-                        steps: current.steps / 2,
-                        ..current
-                    },
-                );
-            }
-            let since = match last_sync_seconds {
-                Some(synced) if !everything => (synced - 60).div_euclid(60) - REVISED,
-                _ => 0,
-            };
-            let fetch = Fetch::new(since, oldest, now);
-            first.get_or_insert(fetch.from());
-            last = fetch.sent_until();
-            for bucket in run(fetch, &history, oldest) {
-                send(&mut store, &bucket);
-            }
+            let history = history_at(full, now_seconds.div_euclid(60));
+            let asked = asked_ms(last_sync_seconds, now_seconds, ahead);
+            let (from, to) = fetch(&mut store, &history, asked, &mut synced, now_seconds);
+            first.get_or_insert(from);
+            last = to;
             last_sync_seconds = Some(now_seconds);
         }
         (store, first.unwrap_or(0), last)
@@ -283,19 +316,20 @@ mod tests {
     /// Whatever the history, and wherever a fetch starts and ends, its
     /// buckets hold exactly the steps of the minutes from where it starts
     /// (a bucket's start) to where it ends (the start of the bucket under
-    /// way).
+    /// way), after which the phone's copy ends (or where it started, if
+    /// that's later).
     #[test]
     fn a_fetch_keeps_every_step() {
         fn property(Minutes(history): Minutes, since: u16, now: u16) -> bool {
             let since = NOON + i64::from(since % 4000) - 500;
             let now = NOON + i64::from(now % 4000);
             let fetch = Fetch::new(since, i64::MIN / 2, now);
-            let (from, to) = (fetch.from(), fetch.sent_until());
+            let (from, synced) = (fetch.from(), fetch.synced_through());
             let buckets = run(fetch, &history, i64::MIN / 2);
-            buckets.iter().map(|b| b.steps).sum::<u32>() == steps_in(&history, from, to)
+            buckets.iter().map(|b| b.steps).sum::<u32>() == steps_in(&history, from, start_of(now))
                 && from == start_of(since)
                 && from <= since
-                && to == start_of(now)
+                && synced + 1 == start_of(now).max(from)
         }
         quickcheck().quickcheck(property as fn(Minutes, u16, u16) -> bool);
     }
@@ -444,7 +478,7 @@ mod tests {
             .map(|i| (NOON + i, minute(if i == 4 { 40 } else { 0 }, 0, None)))
             .collect();
         let fetch = Fetch::new(NOON, NOON, NOON + 5);
-        assert_eq!(fetch.sent_until(), NOON + 5);
+        assert_eq!(fetch.synced_through(), NOON + 4);
         assert_eq!(run(fetch, &history, NOON)[0].steps, 40);
     }
 
@@ -525,7 +559,7 @@ mod tests {
     }
 
     /// Fetches as Gadgetbridge makes them (each from just before the last
-    /// ended, less what's revised; sometimes for everything), on a history
+    /// ended; sometimes from its future), on a history
     /// that grows in between and drops what's a day old: Gadgetbridge ends
     /// up with every step from where the first fetch started to where the
     /// last ended, and each bucket exactly as the watch has it, kind and
@@ -566,6 +600,275 @@ mod tests {
         upsert(&mut store, NOON * 60, sample(5, None));
         upsert(&mut store, NOON * 60, sample(7, Some("LIGHT_SLEEP")));
         assert_eq!(store[&(NOON * 60)], sample(7, None));
+    }
+
+    // ==========================================================================
+    // Where a fetch starts
+    // ==========================================================================
+
+    /// Knowing where the phone's copy ends, a fetch starts there, however
+    /// much later the phone asks (a hold kept the rest back), or from its
+    /// future.
+    #[test]
+    fn a_fetch_starts_where_the_last_stopped() {
+        let now = NOON + 600;
+        let synced = Some(NOON + 99);
+        assert_eq!(start((now - 2) * 60_000, synced, now), NOON + 100);
+        assert_eq!(start((now + DAY) * 60_000, synced, now), NOON + 100);
+    }
+
+    /// Without that, or if the phone asks from earlier than the watch
+    /// thinks it has, from the first bucket after the minute it asked
+    /// from, plus [`REACH`]: what its last fetch may have sent.
+    #[test]
+    fn otherwise_after_all_the_phone_may_have() {
+        let now = NOON + 600;
+        // Asked from 12:06:30: may have up to 12:08.
+        let asked = (NOON + 6) * 60_000 + 30_000;
+        assert_eq!(REACH, 2);
+        assert_eq!(start(asked, None, now), NOON + 10);
+        assert_eq!(start(asked, Some(NOON + 99), now), NOON + 10);
+        // Asked from 12:07: may have up to 12:09, the bucket's last minute.
+        assert_eq!(start((NOON + 7) * 60_000, None, now), NOON + 10);
+        // From 12:08: up to 12:10, the next bucket's first.
+        assert_eq!(start((NOON + 8) * 60_000, None, now), NOON + 15);
+    }
+
+    /// From its future, without knowing where its copy ends: the phone may
+    /// have anything up to now, so nothing from before the bucket after
+    /// the one under way.
+    #[test]
+    fn from_the_future_without_knowing_nothing_before_now() {
+        let now = NOON + 602;
+        assert_eq!(start((now + DAY) * 60_000, None, now), NOON + 605);
+        let history: History = (0..610).map(|i| (NOON + i, minute(10, 0, None))).collect();
+        let fetch = Fetch::new(start((now + DAY) * 60_000, None, now), NOON, now);
+        assert_eq!(fetch.synced_through(), NOON + 604);
+        assert_eq!(run(fetch, &history, NOON), []);
+    }
+
+    // ==========================================================================
+    // After an update from a build that sent a sample a minute
+    // ==========================================================================
+
+    /// How far before what the phone asked the builds that sent a sample a
+    /// minute (0.9.x, 0.10.0-rc.1 to rc.3) started a fetch (their
+    /// `stages::REVISED`).
+    const OLD_REVISED: i64 = 164;
+
+    /// What came of an older build's fetches, an update, and the new
+    /// build's fetches.
+    struct Updated {
+        /// Gadgetbridge's samples at the update, and in the end.
+        before: BTreeMap<i64, Stored>,
+        after: BTreeMap<i64, Stored>,
+        /// The newest minute the older build sent: the minute under way at
+        /// its last fetch, by the watch's clock.
+        newest_old: i64,
+        /// The history the new build had (restored, and recorded since).
+        history: History,
+        /// Where the new build's first fetch started, the oldest minute its
+        /// history held then, and up to where its last left the phone
+        /// everything.
+        from: i64,
+        oldest: i64,
+        to: i64,
+    }
+
+    /// Gadgetbridge fetching from an older build, `before` apart (as in
+    /// [`fetches`]), with the watch's clock `skew` seconds ahead of the
+    /// phone's (under a minute): each fetch sends a sample a minute,
+    /// stamped at its start, from [`OLD_REVISED`] before what the phone
+    /// asks through the minute under way (its steps so far), filed through
+    /// [`upsert`] as Gadgetbridge files them. Then `update.0` minutes after
+    /// the last fetch, the watch restarts into the new build, `update.1`
+    /// minutes later; the older build saves what the phone hadn't fetched
+    /// (from [`OLD_REVISED`] before the last minute it sent), for the new
+    /// build to restore, if `update.2`. Without knowing what the phone
+    /// has (the record doesn't say), the new build answers fetches `after`
+    /// apart as in [`fetches`], the first asking from just before the
+    /// older build's last fetch ended.
+    fn update(
+        full: &History,
+        before: &[(u16, u8)],
+        skew: u8,
+        update: (u16, u16, bool),
+        after: &[(u16, u8, bool)],
+    ) -> Updated {
+        let skew = i64::from(skew % 60);
+        let mut store = BTreeMap::new();
+        let mut now_seconds = (full.keys().next().copied().unwrap_or(NOON) - 30) * 60;
+        let mut last_sync_seconds = None::<i64>;
+        let (mut newest_old, mut synced_old) = (i64::MIN, i64::MIN);
+        for &(gap, seconds) in before {
+            now_seconds += i64::from(gap % 400) * 60 + i64::from(seconds % 60);
+            let watch_now = (now_seconds + skew).div_euclid(60);
+            let asked = asked_ms(last_sync_seconds, now_seconds, false).div_euclid(60_000);
+            let history = history_at(full, watch_now);
+            let mut last = None;
+            for (&minute, sample) in history.range(asked - OLD_REVISED..) {
+                let stored = Stored {
+                    steps: u32::from(sample.steps),
+                    heart_rate: sample.heart_rate,
+                    intensity: sample.movement,
+                    kind: sample.kind,
+                };
+                upsert(&mut store, minute * 60, stored);
+                last = Some(minute);
+            }
+            newest_old = watch_now;
+            // As those builds' `system_off::on_synced` was told.
+            synced_old = last.unwrap_or(i64::MIN).max(asked);
+            last_sync_seconds = Some(now_seconds);
+        }
+        let before_update = store.clone();
+
+        // The update: the older build saves, from its own `unsynced_from`
+        // (a day at most), the history to the minute it restarts in.
+        let (to_update, off, record) = update;
+        // Mostly soon after a fetch (an update comes through Gadgetbridge),
+        // now and then much later.
+        now_seconds += i64::from(match to_update % 4 {
+            0 => to_update % 2000,
+            _ => to_update % 30,
+        }) * 60
+            + i64::from(to_update % 60);
+        let restart = (now_seconds + skew).div_euclid(60);
+        let mut history: History = if record {
+            let first = (synced_old - OLD_REVISED).max(restart - DAY + 1);
+            full.range(first..restart).map(|(&m, &s)| (m, s)).collect()
+        } else {
+            History::new()
+        };
+        // The new build starts `off` minutes later, recording from then on.
+        // Mostly an update's restart; now and then hours off (a switch-off).
+        let boot = restart
+            + 1
+            + i64::from(match off % 8 {
+                0 => off % 600,
+                _ => off % 3,
+            });
+        history.extend(full.range(boot..).map(|(&m, &s)| (m, s)));
+        now_seconds = now_seconds.max(boot * 60 - skew);
+
+        let mut synced = None;
+        let (mut first, mut oldest, mut to) = (None, 0, i64::MIN);
+        for (i, &(gap, seconds, ahead)) in after.iter().enumerate() {
+            now_seconds += i64::from(gap % 400) * 60 + i64::from(seconds % 60);
+            let watch_seconds = now_seconds + skew;
+            let watch_now = watch_seconds.div_euclid(60);
+            // A first fetch from the phone's future is the case the module
+            // docs give up on: see `from_the_future_without_knowing`.
+            let asked = asked_ms(last_sync_seconds, now_seconds, ahead && i > 0);
+            let at = history_at(&history, watch_now);
+            let (from, end) = fetch(&mut store, &at, asked, &mut synced, watch_seconds);
+            if first.is_none() {
+                first = Some(from);
+                oldest = watch_now - DAY + 1;
+            }
+            to = end;
+            last_sync_seconds = Some(now_seconds);
+        }
+        Updated {
+            before: before_update,
+            after: store,
+            newest_old,
+            history,
+            from: first.unwrap_or(i64::MAX),
+            oldest,
+            to,
+        }
+    }
+
+    /// The bug this is for, in the model: a walk Gadgetbridge has as an
+    /// older build's samples a minute apart, sent again as buckets (as the
+    /// first fetch after the update to rc.4 did, from 164 minutes back),
+    /// counts steps twice.
+    #[test]
+    fn buckets_over_minute_samples_count_twice() {
+        let full: History = (0..30).map(|i| (NOON + i, minute(10, 0, None))).collect();
+        let mut store = BTreeMap::new();
+        for (&minute, sample) in &full {
+            let stored = Stored {
+                steps: u32::from(sample.steps),
+                heart_rate: 0,
+                intensity: sample.movement,
+                kind: None,
+            };
+            upsert(&mut store, minute * 60, stored);
+        }
+        let had: u32 = store.values().map(|s| s.steps).sum();
+        assert_eq!(had, 100);
+        for bucket in run(Fetch::new(NOON, NOON, NOON + 30), &full, NOON) {
+            send(&mut store, &bucket);
+        }
+        let has: u32 = store.values().map(|s| s.steps).sum();
+        assert!(has > 300, "{had} then {has} of the watch's 300");
+    }
+
+    /// The property [`start`] is for: whenever the update comes, and
+    /// however Gadgetbridge fetches before and after it, the new build
+    /// never touches a sample the older one sent (so never counts its
+    /// steps twice), and sends every step from the first bucket after the
+    /// older build's last minute, but for at most the 5 minutes before it:
+    /// each bucket whole, as the watch has it.
+    #[test]
+    fn an_update_from_minute_samples_counts_no_step_twice() {
+        fn property(
+            Minutes(full): Minutes,
+            before: Vec<(u16, u8)>,
+            skew: u8,
+            updating: (u16, u16, bool),
+            after: Vec<(u16, u8, bool)>,
+        ) -> bool {
+            if before.is_empty() || after.is_empty() {
+                return true;
+            }
+            let updated = update(&full, &before, skew, updating, &after);
+            let Updated {
+                before: ref had,
+                after: ref has,
+                newest_old,
+                ref history,
+                from,
+                oldest,
+                to,
+            } = updated;
+            let untouched = had.iter().all(|(t, s)| has.get(t) == Some(s));
+            let exact = has
+                .iter()
+                .filter(|(t, _)| !had.contains_key(t))
+                .all(|(&t, stored)| {
+                    let start = start_of(t.div_euclid(60));
+                    reference(history, start).is_some_and(|b| {
+                        b.timestamp_ms() / 1000 == t
+                            && stored.steps == b.steps
+                            && stored.heart_rate == b.heart_rate
+                            && stored.intensity == b.movement
+                            && stored.kind == b.kind
+                    })
+                });
+            let sum = |store: &BTreeMap<i64, Stored>| store.values().map(|s| s.steps).sum::<u32>();
+            let gained = sum(has) - sum(had);
+            let all = steps_in(history, from, to) == gained;
+            // Lost: the minutes between, at most 5, or those the history
+            // had already dropped.
+            let after_old = from > newest_old;
+            let boundary = from <= (newest_old + 1 + MINUTES).max(start_of(oldest + MINUTES - 1));
+            if !(untouched && exact && all && after_old && boundary) {
+                eprintln!(
+                    "untouched {untouched}, exact {exact}, gained {gained} of {}, \
+                     newest old {newest_old}, from {from} (oldest {oldest}), to {to}",
+                    steps_in(history, from, to)
+                );
+                return false;
+            }
+            true
+        }
+        quickcheck().quickcheck(
+            property
+                as fn(Minutes, Vec<(u16, u8)>, u8, (u16, u16, bool), Vec<(u16, u8, bool)>) -> bool,
+        );
     }
 
     // ==========================================================================
@@ -717,7 +1020,7 @@ mod tests {
         let history: History = (0..30).map(|i| (NOON + i, minute(10, 0, None))).collect();
         let mut fetch = Fetch::new(NOON, NOON, NOON + 30);
         fetch.hold(NOON + 12);
-        assert_eq!(fetch.sent_until(), NOON + 10);
+        assert_eq!(fetch.synced_through(), NOON + 9);
         let buckets = run(fetch, &history, NOON);
         assert_eq!(buckets.len(), 2);
         assert_eq!(buckets.last().map(|b| b.start), Some(NOON + 5));
@@ -1021,9 +1324,9 @@ mod tests {
 
     /// `night`, with Gadgetbridge fetching as in [`fetches`] (`gaps`
     /// apart, mostly a few minutes, now and then hours) as `ble` answers:
-    /// from what it asks less [`REVISED`], or from where the last fetch
-    /// stopped if that's earlier (`system_off::synced_through`), and
-    /// holding back what `sleep_hold` says. Then one more fetch at the
+    /// from where the last fetch stopped (`system_off::synced_through`), or
+    /// after what it asks if that's earlier (see [`start`]), and holding
+    /// back what `sleep_hold` says. Then one more fetch at the
     /// end, and the watch runs on for another window, so that what it has
     /// then is final.
     fn fetch_night(night: &Night, gaps: &[(u16, u8, bool)]) -> Fetched {
@@ -1037,13 +1340,13 @@ mod tests {
         // Fetch times, in seconds from the first minute.
         let mut at = Vec::new();
         let mut seconds = 0;
-        for &(gap, second, everything) in gaps {
+        for &(gap, second, ahead) in gaps {
             let minutes = match gap % 8 {
                 0 => i64::from(gap % 400),
                 _ => 1 + i64::from(gap % 30),
             };
             seconds += minutes * 60 + i64::from(second % 60);
-            at.push((seconds, everything));
+            at.push((seconds, ahead));
         }
         let end = (length - sleep::WINDOW - sleep::CONTEXT - 1) as i64;
         at.retain(|&(seconds, _)| seconds.div_euclid(60) < end);
@@ -1051,23 +1354,22 @@ mod tests {
         let mut at = at.into_iter().peekable();
         for now in 0..length {
             watch.tick(now);
-            while let Some((seconds, everything)) =
-                at.next_if(|&(s, _)| s.div_euclid(60) == now as i64)
+            while let Some((seconds, ahead)) = at.next_if(|&(s, _)| s.div_euclid(60) == now as i64)
             {
                 let now_minute = NOON + now as i64;
-                let asked = match last_sync_seconds {
-                    Some(synced) if !everything => (synced - 60).div_euclid(60) - REVISED,
-                    _ => 0,
-                };
-                let since = synced.map_or(asked, |synced| asked.min(synced + 1));
+                let asked = asked_ms(last_sync_seconds, NOON * 60 + seconds, ahead);
                 let hold = watch.hold();
-                let mut fetch = Fetch::new(since, now_minute - DAY + 1, now_minute);
+                let mut fetch = Fetch::new(
+                    start(asked, synced, now_minute),
+                    now_minute - DAY + 1,
+                    now_minute,
+                );
                 if let Some(hold) = hold {
                     fetch.hold(hold.from);
                 }
                 first.get_or_insert(fetch.from());
-                to = fetch.sent_until();
-                synced = Some(fetch.sent_until() - 1);
+                synced = Some(fetch.synced_through());
+                to = fetch.synced_through() + 1;
                 let history = watch.history();
                 for bucket in run(fetch, &history, now_minute - DAY + 1) {
                     send(&mut store, &bucket);

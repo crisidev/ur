@@ -61,10 +61,54 @@
 //! replaced were stamped at their start, so their steps landed a minute
 //! early in Health Connect.)
 //!
+//! **Where a fetch starts** ([`start`]): where the watch's last fetch
+//! stopped, as the watch knows it ([`Fetch::synced_through`], kept across
+//! a switch-off by `system_off`), so that what a hold kept back goes out;
+//! and without that, after what Gadgetbridge may already have. Nothing it
+//! has is sent again (except when it asks from earlier than the watch
+//! thinks it has, which a fetch it never saw the end of can do: then from
+//! there, in whole buckets as before).
+//!
+//! That matters because of what Gadgetbridge may hold: the sample a minute
+//! that builds before 0.10.0-rc.4 sent, stamped at the minute's start,
+//! about 3 minutes apart after its merging. A bucket sent over those would
+//! overwrite the nearest one's steps with its own 5 minutes' total, while
+//! the others in the same minutes keep theirs: counted twice (the first
+//! fetch after the update to rc.4 resent ~2¾ hours over them, and Health
+//! Connect showed 106 steps for the 64 the watch counted). Neither the
+//! watch nor the fetch can tell whether Gadgetbridge holds those or
+//! buckets, so the rule is safe for both:
+//!
+//! - Gadgetbridge asks from its own clock a minute before its last fetch
+//!   ended, and that fetch sent at most the minute under way then: the one
+//!   after the minute asked from, or with the watch's clock a little
+//!   ahead of the phone's, the next ([`REACH`]). With no fetch of its own
+//!   to go by, the watch starts at the first bucket after that, so no
+//!   bucket shares a minute with a sample Gadgetbridge already has, nor
+//!   lands within its 2 minutes (the nearest is 6 minutes off). That loses
+//!   the minutes in between, up to 5, once: after an update from those
+//!   builds, or after the watch restarts within a few minutes of a fetch
+//!   (a crash; a switch-off keeps where it stopped).
+//! - A fetch of its own since then says exactly where Gadgetbridge's copy
+//!   ends, and that's never earlier than the first such fetch started, so
+//!   never among the old samples.
+//! - A phone that asks from its future (its clock was ahead at its last
+//!   fetch, and has been put right since) says nothing of what it has. The
+//!   watch sends from where it last stopped, if it knows; if not, nothing
+//!   from before the bucket under way. That loses whatever it hadn't sent,
+//!   once, but this takes the phone's clock being wrong at the last fetch
+//!   before an update or a crash, and counting a day's steps twice would
+//!   be worse.
+//!
+//! TODO: a phone whose last fetch never ended, as far as it's concerned
+//! (the connection dropped before the end), asks from its fetch before
+//! that, though it may have samples from it. Only a problem for the first
+//! fetch after an update from the minute-sample builds; the watch can't
+//! tell.
+//!
 //! **Re-fetching.** A bucket is only ever sent whole, so that sending it
-//! again (every fetch resends the recent past; see
-//! [`crate::stages::REVISED`]) overwrites Gadgetbridge's copy with the same
-//! or a revised value, never a smaller part of it:
+//! again overwrites Gadgetbridge's copy with the same value, never a
+//! smaller part of it:
 //!
 //! - A fetch starts at a bucket's start, not mid-bucket ([`Fetch::new`]).
 //! - The bucket still under way isn't sent: it would go out partial, and
@@ -103,6 +147,25 @@ pub fn start_of(minute: i64) -> i64 {
     minute.div_euclid(MINUTES) * MINUTES
 }
 
+/// How many minutes past the one the phone asks from its copy may reach:
+/// it asks from a minute before its last fetch ended (by its clock), which
+/// sent up to the minute under way then (by the watch's), so the next
+/// minute, or with the watch's clock up to a minute ahead, the one after.
+pub const REACH: i64 = 2;
+
+/// Where a fetch starts (see the module docs), at `now`, for a phone that
+/// asked from `asked_ms` (UTC milliseconds, its `ts`), given where its
+/// copy ends as far as the watch knows (`synced`, the last minute of it,
+/// from [`Fetch::synced_through`]; minutes are UTC minutes since 1970):
+/// where that ends, or if the phone asks from earlier (or the watch
+/// doesn't know), the first bucket after all the phone may have.
+pub fn start(asked_ms: i64, synced: Option<i64>, now: i64) -> i64 {
+    // A phone asking from its future may have anything up to now.
+    let reached = asked_ms.div_euclid(60_000).saturating_add(REACH).min(now);
+    let after = start_of(reached) + MINUTES;
+    synced.map_or(after, |synced| after.min(synced + 1))
+}
+
 /// One minute of the history, as a bucket takes it in.
 #[derive(Clone, Copy, Debug)]
 pub struct Minute<K> {
@@ -138,6 +201,8 @@ impl<K> Bucket<K> {
 
 /// The buckets one fetch sends, in order.
 pub struct Fetch {
+    /// Where it starts.
+    start: i64,
     /// Where the next bucket starts, at the earliest.
     next: i64,
     /// The start of the bucket under way: none from here on.
@@ -145,14 +210,16 @@ pub struct Fetch {
 }
 
 impl Fetch {
-    /// A fetch of the minutes from `since` on (as the phone asked, less
-    /// what's been revised since), at `now`, of a history whose oldest
-    /// minute is `oldest` (all UTC minutes since 1970): from the start of
-    /// `since`'s bucket, or of the first bucket the history has whole if
-    /// that's later, to the end of the last bucket that's over.
+    /// A fetch of the minutes from `since` on (see [`start`]), at `now`,
+    /// of a history whose oldest minute is `oldest` (all UTC minutes since
+    /// 1970): from the start of `since`'s bucket, or of the first bucket
+    /// the history has whole if that's later, to the end of the last
+    /// bucket that's over.
     pub fn new(since: i64, oldest: i64, now: i64) -> Self {
+        let start = start_of(since).max(start_of(oldest + MINUTES - 1));
         Self {
-            next: start_of(since).max(start_of(oldest + MINUTES - 1)),
+            start,
+            next: start,
             end: start_of(now),
         }
     }
@@ -169,10 +236,15 @@ impl Fetch {
         self.next
     }
 
-    /// Up to where the phone has everything once all the buckets are sent:
-    /// the start of the bucket under way, or of the first one held back.
-    pub fn sent_until(&self) -> i64 {
-        self.end
+    /// The last minute of the phone's copy once all the buckets are sent,
+    /// for the next fetch's [`start`]: the minute before the bucket under
+    /// way, or the first one held back, or where the fetch started, if
+    /// that's later. What's before the start the phone has (or, after an
+    /// update from minute samples, may have; see the module docs), even if
+    /// a hold ends the fetch before it: a hold from earlier only holds back
+    /// what went out before it began.
+    pub fn synced_through(&self) -> i64 {
+        self.end.max(self.start) - 1
     }
 
     /// The next bucket, from `minutes`: the history from [`Fetch::from`]

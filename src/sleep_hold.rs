@@ -19,7 +19,11 @@
 //! TODO: once Gadgetbridge updates a stored sample's kind
 //! (<https://codeberg.org/Freeyourgadget/Gadgetbridge/issues/7296>), the
 //! hold could go, and a night be sent as it goes, revisions and all: a
-//! re-sent bucket would correct the kind. That includes sleep revised to
+//! re-sent bucket would correct the kind. (Fetches would then resend the
+//! minutes that may have been revised, as they did before the hold: the
+//! classifier's window, the stages' hour before it and a bout, 164
+//! minutes; but never back over a phone's samples from builds that sent
+//! one a minute, see `gb_buckets`.) That includes sleep revised to
 //! awake, as an awake bucket leaves out `act` (see
 //! `sleep::Kind::gadgetbridge_name`), which Gadgetbridge reads as its
 //! default, `ACTIVITY`.

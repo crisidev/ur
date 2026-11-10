@@ -708,21 +708,12 @@ fn live_activity() {
     );
 }
 
-/// An activity fetch (`gb_buckets`): a sample per 5-minute bucket, stamped
-/// with its last second and carrying its steps, the bucket under way left
-/// for later. Then, with the clock put forward 3 hours (as
-/// `tmp/gbbuckets/check.py` does to a dev kit: a fetch starts 164
-/// minutes before what Gadgetbridge asks for), a fetch from mid-bucket
-/// sends that bucket whole again, and the ones since. The same steps as
-/// that check.
-#[test]
-fn activity_fetch_in_buckets() {
-    let dir = out("activity-fetch");
-    let script = dir.join("script.txt");
-    std::fs::create_dir_all(&dir).expect("the target dir is writable");
-    // 2026-11-10 16:00 local, 15:00 UTC: a bucket's start.
-    let t0: i64 = 1_794_150_000;
-    // Steps in each minute from t0: buckets of 71, 120 and 34.
+/// The script for [`activity_fetch_in_buckets`] and
+/// [`activity_fetch_after_minute_samples`]: steps in each of 15 minutes
+/// from `t0` (2026-11-10 15:00 UTC, a bucket's start), buckets of 71, 120
+/// and 34, with heart rates in the first; a fetch at 15:07:20 if `first`
+/// asks from somewhere, and one at 15:15:10 asking from `second`.
+fn activity_fetches(t0: i64, first: Option<i64>, second: i64) -> String {
     let steps = [11, 0, 23, 37, 0, 41, 53, 7, 0, 19, 5, 0, 0, 29, 0];
     let mut text = format!("gb setTime({t0});E.setTimeZone(1.0)\nwait 10s\n");
     for (minute, steps) in steps.into_iter().enumerate() {
@@ -734,45 +725,60 @@ fn activity_fetch_in_buckets() {
             3 => text += "heart 70\n",
             _ => {}
         }
-        if minute == 7 {
+        match first.filter(|_| minute == 7) {
             // Mid-way through the second bucket.
-            text += &format!(
-                "wait 20s\necho first fetch\n\
-                 gb GB({{\"t\":\"actfetch\",\"ts\":{}}})\nwait 40s\n",
-                (t0 - 600) * 1000
-            );
-        } else {
-            text += "wait 1m\n";
+            Some(first) => {
+                text += &format!(
+                    "wait 20s\necho first fetch\n\
+                     gb GB({{\"t\":\"actfetch\",\"ts\":{first}}})\nwait 40s\n"
+                )
+            }
+            None => text += "wait 1m\n",
         }
     }
-    text += &format!(
-        "echo second fetch\n\
-         gb setTime({forward});E.setTimeZone(1.0)\n\
-         gb GB({{\"t\":\"actfetch\",\"ts\":{second}}})\n",
-        forward = t0 + 15 * 60 + 10 + 3 * 60 * 60,
-        // Less the 164 minutes revised: two minutes into the first bucket.
-        second = ((t0 / 60 + 2 + 164) * 60 + 30) * 1000,
+    text + &format!("echo second fetch\ngb GB({{\"t\":\"actfetch\",\"ts\":{second}}})\n")
+}
+
+/// The `act` samples a fetch's part of the log sent.
+fn activity_samples(part: &str) -> Vec<String> {
+    part.lines()
+        .filter_map(|line| line.split_once("to the phone: "))
+        .map(|(_, json)| json.to_owned())
+        .filter(|json| json.starts_with(r#"{"t":"act","#))
+        .collect()
+}
+
+/// An activity fetch (`gb_buckets`): a sample per 5-minute bucket, stamped
+/// with its last second and carrying its steps, the bucket under way left
+/// for later. The next fetch, which Gadgetbridge asks from mid-way through
+/// that bucket (a minute before the first ended), starts where the first
+/// stopped: that bucket whole, and the ones since, and nothing it already
+/// has. The same steps as `tmp/gbbuckets/check.py`'s on a dev kit.
+#[test]
+fn activity_fetch_in_buckets() {
+    let dir = out("activity-fetch");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    let t0: i64 = 1_794_150_000;
+    let text = activity_fetches(
+        t0,
+        // Ten minutes before, by an earlier fetch.
+        Some((t0 - 600) * 1000),
+        // As Gadgetbridge saves it: a minute before the first ended.
+        (t0 + 7 * 60) * 1000,
     );
     std::fs::write(&script, text).expect("the target dir is writable");
     let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
     assert!(ok, "{log}");
-    let samples = |part: &str| {
-        part.lines()
-            .filter_map(|line| line.split_once("to the phone: "))
-            .map(|(_, json)| json.to_owned())
-            .filter(|json| json.starts_with(r#"{"t":"act","#))
-            .collect::<Vec<_>>()
-    };
     let (first, second) = log.split_once("second fetch").expect("both fetch");
     assert_eq!(
-        samples(first),
+        activity_samples(first),
         [r#"{"t":"act","ts":1794150299000,"stp":71,"mov":0,"hrm":70}"#],
         "{log}"
     );
     assert_eq!(
-        samples(second),
+        activity_samples(second),
         [
-            r#"{"t":"act","ts":1794150299000,"stp":71,"mov":0,"hrm":70}"#,
             r#"{"t":"act","ts":1794150599000,"stp":120,"mov":0,"hrm":0}"#,
             r#"{"t":"act","ts":1794150899000,"stp":34,"mov":0,"hrm":0}"#,
         ],
@@ -780,11 +786,35 @@ fn activity_fetch_in_buckets() {
     );
 }
 
+/// The first fetch a watch answers (since it started, or was updated from
+/// a build that sent a sample a minute) starts at the first bucket after
+/// all the phone may have: Gadgetbridge asks from 15:06:30, a minute before
+/// its last fetch ended, which may have sent up to 15:08 (the minute after,
+/// and one more for the clocks). A bucket over minutes it has as samples a
+/// minute apart would count their steps twice; so 15:05 to 15:10 isn't
+/// sent, and minute 15:09's 19 steps are lost, once.
+#[test]
+fn activity_fetch_after_minute_samples() {
+    let dir = out("activity-fetch-upgrade");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    let t0: i64 = 1_794_150_000;
+    let text = activity_fetches(t0, None, (t0 + 6 * 60 + 30) * 1000);
+    std::fs::write(&script, text).expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+    assert_eq!(
+        activity_samples(&log),
+        [r#"{"t":"act","ts":1794150899000,"stp":34,"mov":0,"hrm":0}"#],
+        "{log}"
+    );
+}
+
 /// A night held back (`sleep_hold`): a fetch at 07:00, half an hour after
 /// waking, sends nothing from the night's start on; one at 09:00, past
 /// 06:30 plus the 135 minutes its stages may still change in, sends the
-/// whole night, from its start (though Gadgetbridge asks from 07:00, less
-/// what's revised), as light sleep, and the morning's steps after it.
+/// whole night, from its start (though Gadgetbridge asks from 07:00), as
+/// light sleep, and the morning's steps after it.
 #[test]
 fn activity_fetch_holds_back_the_night() {
     let dir = out("activity-fetch-night");
@@ -801,8 +831,10 @@ fn activity_fetch_holds_back_the_night() {
          wait 2h\n\
          echo later fetch\n\
          gb GB({{\"t\":\"actfetch\",\"ts\":{morning}}})\n",
-        // 22:00 the evening before.
-        evening = (t0 - 9 * 60 * 60) * 1000,
+        // 21:50 the evening before: the first fetch a watch answers starts
+        // a few minutes after (see `activity_fetch_after_minute_samples`),
+        // before the night.
+        evening = (t0 - 9 * 60 * 60 - 10 * 60) * 1000,
         // As Gadgetbridge saves it: a minute before its last fetch.
         morning = t0 * 1000,
     );

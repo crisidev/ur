@@ -672,9 +672,9 @@ fn gadgetbridge(watch: &mut Watch, line: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// As `ble::send_activity` does: the history since what Gadgetbridge asked
-/// for, less what's revised since, or since where the last fetch stopped
-/// if that's earlier, in buckets (see `gb_buckets`), the bucket under way
+/// As `ble::send_activity` does: the history since where the last fetch
+/// stopped, or without one, since after what Gadgetbridge asked for (see
+/// `gb_buckets::start`), in buckets (see `gb_buckets`), the bucket under way
 /// left for later, and the last sleep held back until its stages settle
 /// (see `sleep_hold`). Straight to the log rather than through
 /// `ble::OUTBOX`, which holds a handful: a fetch is hundreds of lines.
@@ -692,10 +692,9 @@ fn activity_fetch(watch: &mut Watch, since_ms: i64) {
     };
     send(Outgoing::ActivityFetch { done: false });
     let now = clock::now_utc_seconds();
-    let since = gb::fetch_from(since_ms, now).div_euclid(60_000) - crate::stages::REVISED as i64;
     let mut synced = SYNCED.lock().expect("nothing panics while holding it");
-    let since = synced.map_or(since, |synced| since.min(synced + 1));
     if let Some(now) = now {
+        let since = crate::gb_buckets::start(since_ms, *synced, now.div_euclid(60));
         let night = activity::last_sleep()
             .map(|sleep| sleep.start_utc_minute..sleep.end_utc_minute)
             .unwrap_or_default();
@@ -740,7 +739,7 @@ fn activity_fetch(watch: &mut Watch, since_ms: i64) {
                 kind: bucket.kind,
             });
         }
-        *synced = Some(fetch.sent_until() - 1);
+        *synced = Some(fetch.synced_through());
     }
     // The empty track list too: the simulator doesn't keep `ble`'s pace
     // for it.
