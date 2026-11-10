@@ -17,6 +17,7 @@
 //! ```
 
 #[path = "../../../src/mcuboot.rs"]
+#[allow(dead_code)]
 mod mcuboot;
 
 // `mcuboot` derives defmt's `Format`, whose binary log needs the
@@ -452,3 +453,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod fuzz;
