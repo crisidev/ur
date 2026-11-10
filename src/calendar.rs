@@ -29,6 +29,12 @@ impl DateTime {
     pub fn from_epoch_seconds(seconds: i64) -> Self {
         let (days, second_of_day) = (seconds.div_euclid(86_400), seconds.rem_euclid(86_400));
         let (year, month, day) = civil_from_days(days);
+        // A year that fits: the casts below keep it whole. The clock is
+        // only ever set to this century (`gb`'s `SANE_UTC_SECONDS`), at
+        // most 18 hours either side of UTC. A time before the year 0, or
+        // after 65535, would come out as some other year's, and whatever
+        // draws or stores the date would be handed nonsense.
+        debug_assert!(u16::try_from(year).is_ok());
         Self {
             year: year as u16,
             month: month as u8,
