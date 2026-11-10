@@ -1,7 +1,9 @@
 //! Host tests for the firmware's `minute_ring` module: which minutes the
 //! activity history keeps as the clock moves. `cargo test` runs them.
 
+// Used only by the tests (and the proofs).
 #[path = "../../../src/minute_ring.rs"]
+#[allow(dead_code)]
 mod minute_ring;
 
 fn main() {
@@ -190,5 +192,75 @@ mod tests {
                 assert_eq!(now, kept);
             }
         }
+    }
+}
+
+/// Kani proofs (`cargo kani` here, one at a time with `--harness`): what
+/// the tests above check for chosen jumps of the clock, for every jump,
+/// on or back, by a minute or by centuries. Nothing panics or overflows;
+/// there are never more slots to empty than the ring has; and after
+/// filing, the ring holds exactly the minutes it should: the ones it had
+/// that are no later than the new minute and within a ring's length of
+/// it.
+///
+/// Minutes are within ±2^40 of 1970 (two million years): `file` adds and
+/// subtracts a ring's length unchecked, and would overflow at the ends of
+/// an `i64`.
+#[cfg(kani)]
+mod proofs {
+    use super::minute_ring::file;
+
+    /// A day of minutes, as the firmware's ring has.
+    const DAY: i64 = 24 * 60;
+
+    fn any_minute() -> i64 {
+        let minute: i64 = kani::any();
+        kani::assume((-(1 << 40)..1 << 40).contains(&minute));
+        minute
+    }
+
+    /// For a ring of any length up to a million minutes, with or without
+    /// a newest minute: the minutes to empty are a range (not backwards)
+    /// of no more than the ring's length, so emptying them takes one
+    /// pass over the ring at most; and the newest minute after is the one
+    /// filed, wherever the clock went. An empty ring empties just the
+    /// slot it files into.
+    #[kani::proof]
+    fn the_stale_minutes_are_at_most_the_ring() {
+        let (newest, minute) = (kani::any::<bool>().then(any_minute), any_minute());
+        let len: i64 = kani::any();
+        kani::assume((1..=1 << 20).contains(&len));
+        let (stale, after) = file(newest, minute, len);
+        assert!(stale.start <= stale.end && stale.end - stale.start <= len);
+        assert_eq!(after, minute);
+        match newest {
+            None => assert_eq!(stale, (minute..minute + 1)),
+            Some(newest) if newest == minute => assert!(stale.is_empty()),
+            Some(_) => {}
+        }
+    }
+
+    /// For the firmware's ring, any newest minute, and any minute to
+    /// file: take any minute the ring held before (one of the `DAY` up
+    /// to the newest). Its slot is emptied exactly when it no longer
+    /// belongs: when it's after the minute filed (the clock went back,
+    /// and it's now in the future), or a day or more before it (the clock
+    /// went on past it). So nothing in the future survives, nothing is
+    /// filed on top of another day's sample, and nothing else is lost.
+    ///
+    /// The ring empties by slot (`minute % DAY`), as `activity` does, not
+    /// by minute: a stale minute's slot is emptied as that of whichever
+    /// minute in the range shares it.
+    #[kani::proof]
+    fn a_slot_is_emptied_exactly_when_its_minute_no_longer_belongs() {
+        let (newest, minute, held) = (any_minute(), any_minute(), any_minute());
+        kani::assume(newest - DAY < held && held <= newest);
+        let (stale, _) = file(Some(newest), minute, DAY);
+
+        // The first minute from the range's start in the same slot.
+        let shares = stale.start + (held - stale.start).rem_euclid(DAY);
+        let emptied = shares < stale.end;
+        let belongs = minute - DAY < held && held <= minute;
+        assert_eq!(emptied, !belongs);
     }
 }
