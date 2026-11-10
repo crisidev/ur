@@ -12,6 +12,8 @@ mod bthome_sensor;
 
 #[cfg(test)]
 mod bthome;
+#[cfg(test)]
+mod fuzz;
 
 fn main() {
     println!("run `cargo test`");
