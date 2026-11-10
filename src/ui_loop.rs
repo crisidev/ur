@@ -719,6 +719,15 @@ impl UiLoop {
                 #[cfg(feature = "compare")]
                 crate::compare::timer(at, finger_down);
                 app.on_timer(at, finger_down);
+                // Whatever was due is done, or no longer waits: were it
+                // still due, the loop's timer would fire again at once,
+                // and again, spinning (and starving every other task)
+                // for as long as that lasted. See `App::deadline` for
+                // the cases that could.
+                debug_assert!(
+                    app.deadline(finger_down).is_none_or(|due| due > at),
+                    "a timer that's still due once handled"
+                );
             }
             Wake::Tick => {
                 // A stir after stillness: what a smart alarm waits for.
