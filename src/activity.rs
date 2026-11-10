@@ -260,6 +260,16 @@ impl Bma421 {
         // zeroes the step counter; today's total survives in RAM instead.)
         self.write(REG_CMD, 0xB6).await?;
         Timer::after_millis(5).await;
+        // The reset can leave the I2C controller wedged: the next transfer, the
+        // write to `REG_POWER_CONF` below, then hangs. That was nearly every
+        // setup failure in the field and dev kit logs that the bus itself
+        // didn't cause (always that write, ~5 ms after the reset, and a fresh
+        // attempt usually worked). InfiniTime resets its TWI master after this
+        // chip's soft reset for the same reason ("the motion sensor chip most
+        // probably crashed it"). So reset ours now, as after a failed transfer,
+        // which also frees SDA should the chip have come out of its reset
+        // holding it (and says so).
+        crate::i2c::reset_controller().await;
 
         // Upload the feature engine's program: advanced power save off
         // (the chip can't take writes this fast otherwise), loading off,
@@ -1157,14 +1167,13 @@ pub async fn activity_task(i2c: Device) {
     // for about a third of a second.
     Timer::after_millis(200).await;
     let mut bma = Bma421 { i2c, quiet: false };
-    // Setup occasionally fails partway (a write to the feature window ends
-    // early, or a transfer stalls), maybe two times in ten; a fresh attempt
-    // from soft reset has almost always worked. But a bus that stays stuck
-    // can take longer (or need recovering again; see `i2c`), so it's
-    // retried for as long as it takes, ever more slowly: giving up would
-    // leave a sealed watch without steps until its next reboot.
-    // TODO: find the cause; it may be the nRF52832's TWIM errata, or the
-    // touch controller on the same bus.
+    // Setup used to fail partway maybe two times in ten, nearly always with
+    // the first write after the chip's soft reset hanging (see `init`, which
+    // now resets the controller there); a fresh attempt from soft reset
+    // almost always worked. But a bus that stays stuck can take longer (or
+    // need recovering again; see `i2c`), so it's retried for as long as it
+    // takes, ever more slowly: giving up would leave a sealed watch without
+    // steps until its next reboot.
     let mut backoff = crate::backoff::Backoff::new();
     loop {
         bma.quiet = !backoff.loud();

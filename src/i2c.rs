@@ -104,9 +104,10 @@ pub async fn reset_controller() {
     r.errorsrc().write_value(twim::regs::Errorsrc(0x7));
     r.enable()
         .write(|w| w.set_enable(twim::vals::Enable::from_bits(6)));
-    // The driver whose transfer failed has just said so: this adds nothing
-    // to a field log.
-    debug!("i2c: reset the controller after a failed transfer");
+    // The driver whose transfer failed has just said so (or it's the
+    // accelerometer's routine reset after its soft reset): this adds
+    // nothing to a field log.
+    debug!("i2c: reset the controller");
 }
 
 /// Frees the bus if a sensor is stuck mid-transfer, before the controller
