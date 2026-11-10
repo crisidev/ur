@@ -189,6 +189,13 @@ impl Wear {
     /// sensor's last look found nothing against it (`no_skin`), whether
     /// the watch is still, and when the latest heart rate was measured.
     pub fn update(&mut self, now: u64, no_skin: bool, still: bool, pulse: Option<u64>) {
+        // The uptime only moves on. Were `now` to go back (a wall clock
+        // passed by mistake), a pulse from before the watch was taken off
+        // could come "after" `off`, and count as worn.
+        debug_assert!(
+            self.off <= now && self.still_since.is_none_or(|since| since <= now),
+            "now {now}: {self:?}"
+        );
         self.still_since = if still {
             Some(self.still_since.unwrap_or(now))
         } else {
@@ -205,6 +212,14 @@ impl Wear {
         {
             self.worn_since = Some(at);
         }
+        // Worn is since a pulse after the last sign of being off, so a
+        // sign of being off always ends it: `worn_for` never counts time
+        // from before the watch was last put on, which calibration would
+        // take for a wrist long settled.
+        debug_assert!(
+            self.worn_since.is_none_or(|since| since > self.off),
+            "{self:?}"
+        );
     }
 
     pub fn worn(&self) -> bool {
@@ -337,6 +352,17 @@ impl Calibration {
         let air = air
             .max(die_c + CORRECTION_RANGE.0)
             .min(die_c + CORRECTION_RANGE.1);
+        // Whatever the sums (a `from_bytes` of anything finite, say, whose
+        // line may be nonsense, or NaN): `max` and `min` return their
+        // other operand for a NaN, so this is a number within the
+        // correction's range of the die. (For a die temperature an `f32`
+        // holds to the quarter degree, which the sensor's all are.)
+        debug_assert!(
+            die.unsigned_abs() > 1 << 20
+                || (4 * CORRECTION_RANGE.0 as i32..=4 * CORRECTION_RANGE.1 as i32)
+                    .contains(&(libm::roundf(air * 4.0) as i32 - die)),
+            "{air} C from a die at {die_c} C"
+        );
         libm::roundf(air * 4.0) as i32
     }
 
