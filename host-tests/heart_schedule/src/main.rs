@@ -1560,4 +1560,237 @@ mod proofs {
         let (busy, checks): (u8, u8) = kani::any();
         assert_eq!(calm_throughout(busy, checks), busy <= checks / 4);
     }
+
+    // ==========================================================================
+    // From any state
+    // ==========================================================================
+    //
+    // The proofs above start from a boot, so they say what holds after a
+    // few sessions. These start from any schedule whose fields agree with
+    // each other (`Schedule::consistent`), and the first shows that every
+    // session leaves it so: by induction, what the others prove holds
+    // after any number of sessions, on any day.
+
+    /// A schedule in any consistent state, told of nothing later than
+    /// `UPTIME`.
+    fn any_consistent() -> Schedule {
+        let schedule = Schedule::any(|| kani::any());
+        kani::assume(schedule.consistent() && schedule.as_of() < UPTIME);
+        schedule
+    }
+
+    /// Any session's end, at `now`: its outcome, whether the schedule
+    /// started it, and what the wrist had been doing.
+    fn any_end() -> (Outcome, bool, Before) {
+        let outcome = match kani::any::<u8>() & 3 {
+            0 => Outcome::Reading(kani::any()),
+            1 => Outcome::NoReading,
+            2 => Outcome::CalmNoReading,
+            _ => Outcome::OffWrist,
+        };
+        let before = Before {
+            active_polls: kani::any(),
+            stepless_polls: kani::any(),
+            asleep: kani::any(),
+        };
+        (outcome, kani::any(), before)
+    }
+
+    /// A boot is consistent, and from any consistent state, any session
+    /// (begun first, if it's the schedule's) leaves the schedule
+    /// consistent, and told of nothing later than its end: the induction
+    /// step for everything below. (`ended` asserts as much itself, with
+    /// debug assertions; this says so when they're off, too.)
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn every_session_leaves_the_schedule_consistent() {
+        assert!(Schedule::new().consistent());
+        assert_eq!(Schedule::new().as_of(), 0);
+
+        let mut schedule = any_consistent();
+        let (now, led_seconds): (u32, u32) = kani::any();
+        kani::assume(schedule.as_of() <= now && now < UPTIME);
+        let (outcome, background, before) = any_end();
+        if background {
+            let _ = schedule.begin(before.asleep);
+            assert!(schedule.consistent());
+        }
+        schedule.ended(now, led_seconds, outcome, background, before);
+        assert!(schedule.consistent());
+        assert!(schedule.as_of() <= now);
+    }
+
+    /// From any consistent state, after any counted session (a background
+    /// one, or one with a reading), whatever the wrist does next: the
+    /// next session is due at least `MIN_INTERVAL` after it, and, unless
+    /// the budget holds it back, at most `MAX_FAILED_INTERVAL` after; the
+    /// budget holds a session's worth by then, and holds it back no longer
+    /// than it takes to earn one; and the reason is what the session and
+    /// the wrist make it (as `why_a_session_is_due_is_what_happened` has
+    /// it, but for what only the history knows: the resting estimate, and
+    /// when the last reading came, if this session had none).
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn after_any_session_the_next_is_two_minutes_to_an_hour_on() {
+        let mut schedule = any_consistent();
+        let (now, led_seconds): (u32, u32) = kani::any();
+        kani::assume(schedule.as_of() <= now && now < UPTIME);
+        let (outcome, background, before) = any_end();
+        let read = matches!(outcome, Outcome::Reading(_));
+        kani::assume(background || read);
+        schedule.ended(now, led_seconds, outcome, background, before);
+
+        let (active_polls, asleep): (u8, bool) = kani::any();
+        let (at, why) = schedule.due(active_polls, asleep);
+        let moved = !asleep && active_polls >= MOVED_POLLS;
+        assert!(at >= now + MIN_INTERVAL);
+        assert!(schedule.budget(at) >= SESSION_RESERVE);
+        match why {
+            Why::First => unreachable!("a session has been counted"),
+            Why::Budget => {
+                assert!(schedule.budget(at - 1) < SESSION_RESERVE);
+                assert!(at < now + SESSION_RESERVE * 3600 / LED_BUDGET + 6);
+            }
+            Why::Moved => assert!(read && moved && at == now + MIN_INTERVAL),
+            Why::Elevated => assert!(read && !moved && at == now + ELEVATED_INTERVAL),
+            Why::Asleep => assert!(read && asleep && at <= now + ASLEEP_INTERVAL),
+            Why::Rest => assert!(read && !asleep && !moved && at <= now + MAX_INTERVAL),
+            Why::Retry => assert!(!read && at <= now + MAX_FAILED_INTERVAL),
+            // Sooner than the retry would be, but never within
+            // `OVERDUE_RETRY` of the failure.
+            Why::Overdue => {
+                assert!(!read && outcome != Outcome::OffWrist);
+                assert!(at >= now + OVERDUE_RETRY && at < now + MAX_FAILED_INTERVAL);
+            }
+        }
+        if why != Why::Budget {
+            assert!(read || !moved || at <= now + MAX_INTERVAL);
+            assert!(outcome != Outcome::CalmNoReading || at <= now + CALM_RETRY_INTERVAL);
+        }
+    }
+
+    /// The wait for a session, as `heart::heart_task` makes it between
+    /// sessions with no one watching: one look at the schedule at `now`,
+    /// with `due_since` kept between looks. `None` to look again later,
+    /// or how the session starts.
+    ///
+    /// TODO: a copy of the task's loop, which Kani can't reach (it's
+    /// async, and reads the wrist from `activity`'s statics). Were the
+    /// loop's decision a function of `heart_schedule`, this would call it.
+    fn look(
+        schedule: &Schedule,
+        now: u32,
+        due_since: &mut Option<u32>,
+        (active_polls, asleep, calm_polls): (u8, bool, u8),
+    ) -> Option<Start> {
+        let (at, _) = schedule.due(active_polls, asleep);
+        if now < at {
+            *due_since = None;
+            return None;
+        }
+        let since = *due_since.get_or_insert(now);
+        match schedule.start(now, since, calm_polls) {
+            Start::Wait => None,
+            start => Some(start),
+        }
+    }
+
+    /// From any consistent state: movement only ever brings the next
+    /// session forward (so does a wrist that stops being asleep, or
+    /// starts, by no more than to the later of the two), so there's a time
+    /// from which it's due whatever the wrist does. From then on a wait
+    /// isn't started afresh: a look that finds it due, and doesn't start
+    /// it, keeps since when; and any look `CALM_WAIT` after that starts it,
+    /// however busy the wrist, as does any look once a reading is overdue.
+    /// So no wrist can hold a session back for longer than `CALM_WAIT`
+    /// (and the 3 s between looks) past that time, as one did for 18
+    /// minutes before 0.10.0-rc.5.
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn no_wrist_holds_a_due_session_back_for_long() {
+        let schedule = any_consistent();
+        let wrist = || -> (u8, bool, u8) { kani::any() };
+
+        // Movement never puts a session off.
+        let (active_polls, asleep, _) = wrist();
+        let (at, _) = schedule.due(active_polls, asleep);
+        assert!(at <= schedule.due(0, asleep).0);
+        let whatever = schedule.due(0, false).0.max(schedule.due(0, true).0);
+        assert!(at <= whatever);
+
+        // A look from then on, at a session found due at or before it (or
+        // not yet found due).
+        let (first, second): (u32, u32) = kani::any();
+        kani::assume(whatever <= first && first <= second && second < UPTIME);
+        let mut due_since: Option<u32> = kani::any();
+        kani::assume(due_since.is_none_or(|since| since <= first));
+        let found = due_since.unwrap_or(first);
+        if look(&schedule, first, &mut due_since, wrist()).is_some() {
+            return;
+        }
+        assert_eq!(due_since, Some(found));
+
+        // And a later one.
+        let start = look(&schedule, second, &mut due_since, wrist());
+        assert_eq!(due_since, Some(found));
+        if second - found >= CALM_WAIT {
+            assert!(start.is_some());
+        }
+    }
+
+    /// From any consistent state, between any two later times: the budget
+    /// never passes `OVERDUE_BUDGET`, never shrinks with time alone, and
+    /// earns no faster than a second every 6 s (the overdue rate; a
+    /// second every 12 s for as long as no reading is overdue, which
+    /// `the_budget_fills_at_its_rate_up_to_its_cap` shows from a boot,
+    /// where it knows when the last reading came). And for half an hour
+    /// after a reading, it holds no more than `LED_BUDGET`.
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn the_budget_stays_within_its_caps_from_any_state() {
+        let mut schedule = any_consistent();
+        let (earlier, later): (u32, u32) = kani::any();
+        kani::assume(schedule.as_of() <= earlier && earlier <= later && later < UPTIME);
+        let (before, after) = (schedule.budget(earlier), schedule.budget(later));
+        assert!(before <= after && after <= OVERDUE_BUDGET);
+        assert!(after - before <= (later - earlier).div_ceil(3600 / OVERDUE_BUDGET));
+
+        let before = Before {
+            active_polls: kani::any(),
+            stepless_polls: kani::any(),
+            asleep: kani::any(),
+        };
+        let reading = Outcome::Reading(kani::any());
+        schedule.ended(earlier, kani::any(), reading, kani::any(), before);
+        if later <= earlier + OVERDUE {
+            assert!(schedule.budget(later) <= LED_BUDGET);
+        }
+    }
+
+    /// From any consistent state: a session takes its LED seconds out of
+    /// the budget, down to nothing (and a reading leaves no more than
+    /// `LED_BUDGET`); and one that spends nothing and counts for nothing
+    /// (watched, without a reading) changes nothing about what the budget
+    /// holds later, so bringing it up to date often loses no time to
+    /// rounding.
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn the_budget_is_spent_and_refilled_exactly_from_any_state() {
+        let schedule = any_consistent();
+        let (now, later, led_seconds): (u32, u32, u32) = kani::any();
+        kani::assume(schedule.as_of() <= now && now <= later && later < UPTIME);
+        let (outcome, background, before) = any_end();
+
+        let mut spent = schedule.clone();
+        spent.ended(now, led_seconds, outcome, background, before);
+        let left = schedule.budget(now).saturating_sub(led_seconds);
+        match outcome {
+            Outcome::Reading(_) => assert_eq!(spent.budget(now), left.min(LED_BUDGET)),
+            _ => assert_eq!(spent.budget(now), left),
+        }
+
+        let mut refilled = schedule.clone();
+        refilled.ended(now, 0, Outcome::NoReading, false, before);
+        assert_eq!(refilled.budget(later), schedule.budget(later));
+    }
 }
