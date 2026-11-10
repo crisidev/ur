@@ -193,6 +193,16 @@ pub fn record_steps_at(utc_minute: i64, steps: u16) {
     sample.0 = sample.0.saturating_add(steps);
 }
 
+/// The history's minutes from `from` (UTC minute) on, oldest first: (steps,
+/// heart rate or 0) each.
+pub fn history_since(from: i64) -> Vec<(i64, (u16, u8))> {
+    state()
+        .history
+        .range(from..)
+        .map(|(&minute, &sample)| (minute, sample))
+        .collect()
+}
+
 /// Shows a dev kit's day from now on, instead of the history here.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn show_devkit_day(day: Option<crate::day::Day>) {

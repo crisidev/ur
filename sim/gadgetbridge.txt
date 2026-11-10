@@ -58,6 +58,8 @@ expect not buzzing
 # What the watch ignores: a kind it doesn't act on, and a cut-off line.
 gb GB({"t":"weather","temp":278,"hum":80,"txt":"Light rain","loc":"Oslo"})
 gb GB({"t":"notify","src":"Sig
+
+# Its sync: the history (none here), in 3-minute buckets.
 gb GB({"t":"actfetch","ts":1794063600000})
 
 # Its live activity chart opening (Charts, "Live activity"): steps, then

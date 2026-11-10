@@ -70,6 +70,9 @@ mod font;
 #[path = "../../src/gb.rs"]
 #[allow(dead_code)]
 mod gb;
+#[path = "../../src/gb_buckets.rs"]
+#[allow(dead_code)]
+mod gb_buckets;
 #[path = "../../src/geo.rs"]
 #[allow(dead_code)]
 mod geo;
@@ -103,6 +106,9 @@ mod route;
 #[path = "../../src/sleep.rs"]
 #[allow(dead_code)]
 mod sleep;
+#[path = "../../src/stages.rs"]
+#[allow(dead_code)]
+mod stages;
 #[path = "../../src/storage.rs"]
 #[allow(dead_code)]
 mod storage;

@@ -636,11 +636,7 @@ fn gadgetbridge(watch: &mut Watch, line: &str) -> Result<(), String> {
             let _ = crate::ble::OUTBOX.try_send(Outgoing::GpsPower(false));
             watch.refresh();
         }
-        Some(Incoming::ActivityFetch { since_ms }) => {
-            watch.log(format!(
-                "activity since {since_ms} ms asked for; not simulated"
-            ));
-        }
+        Some(Incoming::ActivityFetch { since_ms }) => activity_fetch(watch, since_ms),
         // As `ble` does: the UI loop's passes run the session, and send
         // its reports.
         Some(Incoming::Live {
@@ -674,6 +670,51 @@ fn gadgetbridge(watch: &mut Watch, line: &str) -> Result<(), String> {
         None => watch.log("not a line the watch understands; ignored"),
     });
     Ok(())
+}
+
+/// As `ble::send_activity` does: the history since what Gadgetbridge asked
+/// for, less what's revised since, in buckets (see `gb_buckets`), the
+/// bucket under way left for later. Straight to the log rather than
+/// through `ble::OUTBOX`, which holds a handful: a fetch is hundreds of
+/// lines. The simulator's history has steps and heart rates, but no
+/// movement or sleep, nor `ble`'s 24-hour limit.
+fn activity_fetch(watch: &mut Watch, since_ms: i64) {
+    let send = |message: Outgoing| {
+        let line = message.to_line();
+        watch.log(format!("to the phone: {}", line.trim_end()));
+    };
+    send(Outgoing::ActivityFetch { done: false });
+    let now = clock::now_utc_seconds();
+    let since =
+        gb::fetch_from(since_ms, now).div_euclid(60_000) - crate::stages::REVISED as i64;
+    if let Some(now) = now {
+        let mut fetch = crate::gb_buckets::Fetch::new(since, i64::MIN / 2, now.div_euclid(60));
+        while let Some(bucket) = fetch.next(activity::history_since(fetch.from()).into_iter().map(
+            |(minute, (steps, heart_rate))| {
+                let sample = crate::gb_buckets::Minute {
+                    steps,
+                    movement: 0,
+                    heart_rate,
+                    seen: true,
+                    kind: None,
+                };
+                (minute, sample)
+            },
+        )) {
+            send(Outgoing::Activity {
+                timestamp_ms: bucket.timestamp_ms(),
+                steps: bucket.steps,
+                movement: bucket.movement,
+                heart_rate: bucket.heart_rate,
+                kind: bucket.kind,
+            });
+        }
+    }
+    // The empty track list too: the simulator doesn't keep `ble`'s pace
+    // for it.
+    for message in gb::FETCH_END {
+        send(message);
+    }
 }
 
 /// A `gb` line as Gadgetbridge puts it on the wire: ISO-8859-1, between
