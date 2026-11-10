@@ -66,6 +66,10 @@ use crate::spi_flash::{self, FLASH};
 // and proofs can check it never reaches outside the slot.
 
 const _: () = assert!(dfu_slot::PAGE == spi_flash::PAGE && dfu_slot::SECTOR == spi_flash::SECTOR);
+// The slot ends before the field log starts.
+// TODO: and before the saved activity (`system_off`'s `RECORD`, private
+// to it), which lies between them: check that there, or share the map.
+const _: () = assert!(dfu_slot::SLOT_START + dfu_slot::SLOT_SIZE <= crate::field_log::REGION.start);
 
 /// How far an update has got (percent), while one is in progress; the UI
 /// shows it.

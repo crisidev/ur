@@ -104,6 +104,11 @@ pub fn version_word() -> u32 {
 const IMAGE_OK_ADDRESS: u32 = 0x7C000 - 16 - 8;
 const IMAGE_OK: u32 = 1;
 
+// A whole word, below the storage map: what `write_word_elsewhere` insists
+// on when it's called (it panics otherwise), known here as it's built.
+const _: () =
+    assert!(IMAGE_OK_ADDRESS.is_multiple_of(4) && IMAGE_OK_ADDRESS < crate::storage::RANGE.start);
+
 fn is_confirmed() -> bool {
     // SAFETY: Internal flash is memory-mapped and always readable.
     let flag = unsafe { (IMAGE_OK_ADDRESS as *const u32).read_volatile() };
