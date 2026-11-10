@@ -788,7 +788,7 @@ mod proofs {
 
     /// Up to two alarms from the phone, as `push` takes them (any hour,
     /// minute and days; nonsense ones refused): what CBMC can take through
-    /// `due`'s loops. Ten, through `from_bytes`, took it past 10 GB; the
+    /// `next`'s loops. Ten, through `from_bytes`, took it past 10 GB; the
     /// alarms are alike, so two show what any number would.
     fn any_two_phone_alarms() -> Phone {
         let mut phone = Phone::default();
@@ -857,11 +857,61 @@ mod proofs {
         let _ = state.next(&settings, &phone, any_now(), any_uptime());
     }
 
+    /// Whether `minute` is one [`next_at_is_within_eight_days`] and
+    /// [`next_smart_is_within_three_days`] cover (`any_now() / 60`).
+    fn covered(minute: i64) -> bool {
+        (-DAY..7_258_118_400 / 60).contains(&minute)
+    }
+
+    const DAY: i64 = 24 * 60;
+
+    /// Stands in for `next_at` in [`checking_what_is_due_never_panics`]:
+    /// any minute [`next_at_is_within_eight_days`] says it may give,
+    /// having checked that it's asked only what that proof covers.
+    fn some_next_at(time: u16, days: u8, after: i64) -> i64 {
+        assert!(time < 24 * 60 && days < 0x80 && covered(after));
+        let at: i64 = kani::any();
+        kani::assume(after < at && at <= after + 8 * DAY);
+        at
+    }
+
+    /// As [`some_next_at`], for `next_smart` and
+    /// [`next_smart_is_within_three_days`] (which takes any settings).
+    fn some_next_smart(_: &Settings, now: i64) -> i64 {
+        assert!(covered(now));
+        let at: i64 = kani::any();
+        kani::assume(now < at && at <= now + 3 * DAY);
+        at
+    }
+
+    /// Checking what's due, twice, at any two times (the second finds the
+    /// minutes the first checked, whichever way the clock went since),
+    /// with any settings and any ten alarms from the phone: nothing
+    /// panics or overflows.
+    ///
+    /// With `next_at` and `next_smart` themselves, CBMC unwinds their
+    /// loops over the days a dozen times a check, and hadn't finished in
+    /// 20 minutes with two phone alarms and one check. They're proven on
+    /// their own above, so here stubs stand in for them (hence `stubbing`
+    /// in `Cargo.toml`): any answer those proofs allow, and an assertion
+    /// that `due` asks only what they cover. That leaves `due` its own
+    /// arithmetic and slicing to answer for, and is done in seconds.
+    ///
+    /// The clock stops four days short of 2200 and starts an hour into
+    /// the day before 1970, so that the minutes `due` asks about (up to
+    /// an hour either side of now, and three days on for the smart
+    /// alarm) are ones those proofs cover.
     #[kani::proof]
-    #[kani::unwind(9)]
+    #[kani::unwind(12)]
+    #[kani::stub(next_at, some_next_at)]
+    #[kani::stub(next_smart, some_next_smart)]
     fn checking_what_is_due_never_panics() {
-        let (mut settings, mut phone) = (any_settings(), any_two_phone_alarms());
+        let (mut settings, mut phone) = (any_settings(), any_phone());
         let mut state = State::default();
-        let _ = state.due(&mut settings, &mut phone, any_now(), kani::any());
+        for _ in 0..2 {
+            let now = any_now();
+            kani::assume((3600 - 86_400..7_258_118_400 - 4 * 86_400).contains(&now));
+            let _ = state.due(&mut settings, &mut phone, now, kani::any());
+        }
     }
 }

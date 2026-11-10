@@ -13,3 +13,8 @@ publish = false
 [lints.rust]
 # `cargo kani` sets `cfg(kani)` for the proofs at the end of src/main.rs.
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+# The proof of `State::due` stubs `next_at` and `next_smart` (see `proofs`
+# in `src/main.rs`).
+[package.metadata.kani.unstable]
+stubbing = true
