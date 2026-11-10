@@ -268,10 +268,11 @@ end in a second or two, so it costs nothing there; what can reach the
 worst case is a wrist that won't read all day, or a still surface that
 reflects the LED like skin.
 
-Awake, every other background session starts at 30 mA (`heart::Arm`,
-an experiment). That doesn't move the cap, only how soon it's reached:
-a ~12 s desk session costs ~29 budget seconds rather than 12, ~0.013 mAh
-more. At ~3 bright sessions an hour over 8 desk hours, ~0.3 mAh a day.
+Awake, every other round of background sessions (a scheduled one and its
+retries) starts at 30 mA (`heart_schedule::Arm`, an experiment). That
+doesn't move the cap, only how soon it's reached: a ~12 s desk session
+costs ~29 budget seconds rather than 12, ~0.013 mAh more. At ~3 bright
+sessions an hour over 8 desk hours, ~0.3 mAh a day.
 
 ### What a connection event and an advertising event cost
 

@@ -14,8 +14,8 @@
 //!   ([`heart_schedule::give_up`]); if it runs out on a calm wrist with a
 //!   pulse too faint to read, it may go on for another 15 s with a
 //!   brighter LED, once or twice ([`heart_schedule::brighter`]); awake,
-//!   every other one starts with a brighter LED (see [`Arm`]); both are an
-//!   experiment, and
+//!   every other round of tries (a scheduled session and its retries)
+//!   starts with a brighter LED (see [`Arm`]); both are an experiment, and
 //! - while the clock face is showing (see
 //!   [`crate::heart_reading::set_watching`]), continuously,
 //!   since then someone is looking at the number, and
@@ -42,7 +42,7 @@ use crate::activity;
 // hardware, so the simulator runs it too.
 use crate::heart_reading::{WAKE, publish, watching};
 pub use crate::heart_reading::{wake, worn};
-use crate::heart_schedule::{self, Before, Outcome, Schedule};
+use crate::heart_schedule::{self, Arm, Before, Outcome, Schedule};
 use crate::i2c::Device;
 use crate::ppg::{Consensus, Conversions, Ppg, Rejection};
 
@@ -119,32 +119,6 @@ const RECHECK_SECS: u32 = 30;
 /// Seconds of movement readings kept (one per level check, i.e. a second),
 /// to judge a whole window: an analysis window is ~8 s.
 const MOTION_HISTORY: usize = 8;
-
-/// Which LED a background session starts with: the experiment comparing a
-/// brighter LED with the usual one where readings are hardest, at a desk.
-///
-/// Awake, background sessions take turns: one starts at its level's
-/// drive (`Dim`, 12.5 mA on a wrist), the next two drive settings up
-/// (`Bright`, 30 mA; see [`heart_schedule::bright_start`] for when it's
-/// 20 mA or the usual drive after all), keeping the gain. Taking turns
-/// rather than all bright gives a field log both, at the same desk on the
-/// same day, under the same rules, so it can say whether more light reads
-/// more (and for what LED) instead of comparing days whose wrists differ.
-/// If it does, half the desk sessions have it meanwhile; if it doesn't,
-/// half pay for it.
-///
-/// Asleep (`Asleep`), sessions stay at their level's drive, as night
-/// readings come 88% of the time without it. Watched sessions too, as
-/// they're not in the comparison. A session that fails calm on either arm
-/// may still go on brighter at its end ([`heart_schedule::brighter`]).
-///
-/// TODO: once field logs have judged it, make the winner the rule.
-#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
-enum Arm {
-    Asleep,
-    Dim,
-    Bright,
-}
 
 // ==============================================================================
 // The HRS3300
@@ -404,8 +378,6 @@ pub async fn heart_task(i2c: Device) {
     // tell whether a bright arm's start would saturate. Unknown, it starts
     // bright anyway, and steps back down if it saturates.
     let mut skin_peak = 0u32;
-    // Whose turn it is, awake (see `Arm`): dim first.
-    let mut bright_turn = false;
     // When to measure in the background. Its first session is due at once,
     // so the clock face has a number soon after boot.
     let mut schedule = Schedule::new();
@@ -448,28 +420,27 @@ pub async fn heart_task(i2c: Device) {
         let mut level = good_level;
         let base = LEVELS[level].drive;
         let budget = schedule.budget(uptime());
-        // The arm, and the drive it starts at.
-        let (arm, drive) = match due {
-            None => (Arm::Dim, base),
-            Some(_) if asleep => (Arm::Asleep, base),
-            Some(_) if !bright_turn => (Arm::Dim, base),
-            Some(_) => {
+        // The round of tries and its arm (a watched session is in neither),
+        // and the drive it starts at.
+        let (round, arm) = match due {
+            Some(_) => schedule.begin(asleep),
+            None => (0, Arm::Dim),
+        };
+        let drive = match arm {
+            Arm::Bright => {
                 let peak = (skin_peak << LEVELS[level].gain)
                     * heart_schedule::DRIVE_CURRENT[usize::from(base)]
                     / heart_schedule::DRIVE_CURRENT[0];
-                let bright = heart_schedule::bright_start(base, peak, budget);
-                (Arm::Bright, bright.unwrap_or(base))
+                heart_schedule::bright_start(base, peak, budget).unwrap_or(base)
             }
+            Arm::Dim | Arm::Asleep => base,
         };
         if let Some(why) = due {
             let (awake, asleep) = schedule.resting();
             info!(
-                "heart: due ({}); budget {} s, resting {}/{}; {} drive {}",
-                why, budget, awake, asleep, arm, drive
+                "heart: due ({}); budget {} s, resting {}/{}; round {} {} drive {}",
+                why, budget, awake, asleep, round, arm, drive
             );
-            if arm != Arm::Asleep {
-                bright_turn = !bright_turn;
-            }
         }
         // Movement from here on counts towards the next session.
         let before = Before {

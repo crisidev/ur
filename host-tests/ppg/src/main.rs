@@ -540,7 +540,8 @@ const RESTLESS: u16 = 300;
 /// `brighter` if the segment carries on the one before it with a brighter
 /// LED (see `heart_schedule::brighter`), `cont` if it carries on after a
 /// level change, and `arm=dim` or `arm=bright` for an awake background
-/// session in the LED experiment (see `heart::Arm`).
+/// session in the LED experiment (see `heart_schedule::Arm`), with its
+/// `round=N` of tries (logs after 0.10.0-rc.3).
 struct Recorded {
     start: String,
     reference: f32,
@@ -555,6 +556,8 @@ struct Recorded {
     cont: bool,
     /// The LED experiment's arm: `Some(true)` bright, `Some(false)` dim.
     bright: Option<bool>,
+    /// The round of tries the session belongs to, which share an arm.
+    round: Option<u16>,
 }
 
 fn parse_sessions(text: &str) -> Vec<Recorded> {
@@ -588,6 +591,10 @@ fn parse_sessions(text: &str) -> Vec<Recorded> {
                     .split_whitespace()
                     .find_map(|f| f.strip_prefix("arm="))
                     .map(|arm| arm == "bright"),
+                round: sleep
+                    .split_whitespace()
+                    .find_map(|f| f.strip_prefix("round="))
+                    .map(|r| r.parse().expect("a round")),
             }
         })
         .collect()
@@ -828,8 +835,9 @@ fn reading(
     None
 }
 
-/// One arm of the LED experiment (see `heart::Arm`), over a replay: what
-/// the sessions that started on it made of their LED.
+/// One arm of the LED experiment (see `heart_schedule::Arm`), over a
+/// replay: what the sessions that started on it made of their LED, and
+/// its rounds of tries.
 #[derive(Default)]
 struct Arm {
     sessions: usize,
@@ -850,6 +858,11 @@ struct Arm {
     /// sessions on a moving wrist would swamp a mean).
     pulse_dc: Vec<f32>,
     quality: Vec<f32>,
+    /// Rounds (logs after 0.10.0-rc.3), and whether each read, in the
+    /// replay and as recorded: the fair comparison, as a round's arm is
+    /// chosen before any of its tries, while which sessions there are
+    /// depends on how the ones before them went.
+    rounds: std::collections::BTreeMap<u16, (bool, bool)>,
 }
 
 impl Arm {
@@ -875,6 +888,18 @@ impl Arm {
             median(&self.pulse_dc) * 1000.0,
             median(&self.quality),
         );
+        if !self.rounds.is_empty() {
+            let count =
+                |f: fn(&(bool, bool)) -> bool| self.rounds.values().filter(|r| f(r)).count();
+            println!(
+                "  {:6} {:3} rounds, {:2} read ({} recorded), {:.1} sessions a round",
+                "",
+                self.rounds.len(),
+                count(|r| r.0),
+                count(|r| r.1),
+                self.sessions as f32 / self.rounds.len() as f32,
+            );
+        }
     }
 }
 
@@ -1003,7 +1028,12 @@ fn replay(path: &str, strict: bool) {
             arm.weighted += lit_for
                 * heart_schedule::DRIVE_CURRENT[usize::from(session.drive & 3)] as f32
                 / heart_schedule::DRIVE_CURRENT[0] as f32;
-            arm.recorded += usize::from(session.outcome.parse::<u8>().is_ok());
+            let recorded = session.outcome.parse::<u8>().is_ok();
+            arm.recorded += usize::from(recorded);
+            if let Some(round) = session.round {
+                let read = arm.rounds.entry(round).or_default();
+                *read = (read.0 || reading.is_some(), read.1 || recorded);
+            }
             if let Some((bpm, _)) = reading {
                 arm.read += 1;
                 if session.reference > 0.0 {
@@ -1487,8 +1517,9 @@ mod tests {
     /// 80) whose wrist started typing again within seconds: every window
     /// was rejected, and they gave up at 12 s. They now stop at the first
     /// restless second, to try again at the next still moment.
-    /// The LED experiment's arms (see `heart::Arm`) parse, and a bright
-    /// start counts as a brighter step, as `heart::measure` counts it.
+    /// The LED experiment's arms (see `heart_schedule::Arm`) and rounds
+    /// parse, and a bright start counts as a brighter step, as
+    /// `heart::measure` counts it.
     #[test]
     fn arms_are_parsed() {
         let line = "1 70 37500.0 none 2500 2510 | 30 | background drive=2 arm=bright";
@@ -1506,6 +1537,9 @@ mod tests {
             parse_sessions(&line.replace(" arm=bright", ""))[0].bright,
             None
         );
+        assert_eq!(session.round, None);
+        let line = line.replace("arm=bright", "arm=bright round=12");
+        assert_eq!(parse_sessions(&line)[0].round, Some(12));
     }
 
     #[test]

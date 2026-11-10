@@ -143,8 +143,9 @@ mod tests {
     fn the_state_stays_small() {
         // It lives in the heart task's static future, where RAM is tight.
         // (20 bytes until counting interruptions took one more, and
-        // alignment three more; 28 with when the last reading came.)
-        assert!(size_of::<Schedule>() <= 28);
+        // alignment three more; 28 with when the last reading came, 32
+        // with the LED experiment's rounds.)
+        assert!(size_of::<Schedule>() <= 32);
     }
 
     #[test]
@@ -846,6 +847,81 @@ mod tests {
         assert_eq!(bright_start(0, 2000, 72), Some(2));
         assert_eq!(bright_start(0, 2000, 71), Some(1));
         assert_eq!(bright_start(0, 2000, 47), None);
+    }
+
+    /// The LED experiment's arms take turns by round: every try of a round
+    /// (interrupted, failed, retried) keeps its arm, and only a reading
+    /// starts the next round, on the other arm. The field log that showed
+    /// the need (2026-11-10): a round's first try, bright, stopped for a
+    /// moving wrist after 6 s, and its retry read, dim; the next round's
+    /// first try was bright again, and so on, so bright had the scheduled
+    /// tries (often cut short) and dim the retries (at a still moment).
+    #[test]
+    fn every_try_of_a_round_keeps_its_arm() {
+        let mut schedule = Schedule::new();
+        let mut t = 0;
+        let mut first_tries = Vec::new();
+        // Each round: a first try that's stopped for a moving wrist, one
+        // that fails outright, a retry that reads; or, every other round,
+        // a first try that reads.
+        for round in 1..=8 {
+            let tries: &[Outcome] = if round % 2 == 1 {
+                &[
+                    Outcome::Interrupted,
+                    Outcome::NoReading,
+                    Outcome::Reading(60),
+                ]
+            } else {
+                &[Outcome::Reading(60)]
+            };
+            let mut arms = Vec::new();
+            for &outcome in tries {
+                arms.push(schedule.begin(false));
+                t += 300;
+                schedule.ended(t, 13, outcome, true, awake(0));
+            }
+            assert!(
+                arms.iter().all(|&a| a == arms[0]),
+                "round {round}: {arms:?}"
+            );
+            assert_eq!(arms[0].0, round);
+            first_tries.push(arms[0].1);
+        }
+        // Dim first, then turns, however many tries each round took.
+        assert_eq!(first_tries, [Arm::Dim, Arm::Bright].repeat(4));
+    }
+
+    /// Asleep, a session is on neither arm, and doesn't take a turn: the
+    /// first awake session of a round does, even if the round started
+    /// asleep. A watched reading ends a round too (the next background
+    /// session is due afresh), and a watched failure doesn't.
+    #[test]
+    fn rounds_asleep_or_watched_dont_take_a_turn() {
+        let mut schedule = Schedule::new();
+        assert_eq!(schedule.begin(false), (1, Arm::Dim));
+        schedule.ended(100, 13, Outcome::Reading(60), true, awake(0));
+        // A night's rounds.
+        for (round, t) in (2..6).zip((400..).step_by(300)) {
+            assert_eq!(schedule.begin(true), (round, Arm::Asleep));
+            schedule.ended(t, 13, Outcome::Reading(50), true, sleeping());
+        }
+        // Waking up mid-round: the awake retry takes the turn.
+        assert_eq!(schedule.begin(true), (6, Arm::Asleep));
+        schedule.ended(2000, 30, Outcome::NoReading, true, sleeping());
+        assert_eq!(schedule.begin(false), (6, Arm::Bright));
+        // Falling asleep again within the round, then waking, keeps it.
+        schedule.ended(2300, 30, Outcome::NoReading, true, awake(0));
+        assert_eq!(schedule.begin(true), (6, Arm::Asleep));
+        schedule.ended(2600, 30, Outcome::NoReading, true, sleeping());
+        assert_eq!(schedule.begin(false), (6, Arm::Bright));
+        // Someone looks and gets no reading: still the same round.
+        schedule.ended(2900, 30, Outcome::NoReading, true, awake(0));
+        schedule.ended(3000, 20, Outcome::OffWrist, false, awake(0));
+        assert_eq!(schedule.begin(false), (6, Arm::Bright));
+        // Someone looks and gets one: the round is over.
+        schedule.ended(3300, 30, Outcome::NoReading, true, awake(0));
+        schedule.ended(3400, 20, Outcome::Reading(64), false, awake(0));
+        assert_eq!(schedule.begin(false), (7, Arm::Dim));
     }
 
     /// An hour without a reading, the budget refills twice as fast, into a

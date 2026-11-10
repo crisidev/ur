@@ -342,7 +342,7 @@ struct Resting {
     candidate: u8,
 }
 
-/// The scheduling state, 28 bytes: the heart task holds it across every
+/// The scheduling state, 32 bytes: the heart task holds it across every
 /// await, so it lives in that task's static future, where RAM is tight.
 #[derive(Clone, Debug)]
 pub struct Schedule {
@@ -373,6 +373,14 @@ pub struct Schedule {
     tokens: u16,
     /// When `tokens` was last brought up to date.
     refilled_at: u32,
+    /// The LED experiment's rounds (see [`Arm`]): the latest round's
+    /// number (0: none yet), whether it's still going (no reading since
+    /// it started), whether it has chosen its awake arm yet, and whether
+    /// the arm last chosen was bright.
+    round: u16,
+    in_round: bool,
+    armed: bool,
+    bright: bool,
 }
 
 impl Default for Schedule {
@@ -402,6 +410,11 @@ impl Schedule {
             },
             tokens: LED_BUDGET as u16,
             refilled_at: 0,
+            round: 0,
+            in_round: false,
+            armed: false,
+            // So that the first round to choose is dim, as before.
+            bright: true,
         }
     }
 
@@ -513,6 +526,8 @@ impl Schedule {
                 // No longer overdue: back to the usual budget (see
                 // `OVERDUE`), keeping no more than it holds.
                 self.last_reading = now;
+                // The round of tries is over, watched or not (see `Arm`).
+                self.in_round = false;
                 self.tokens = self.tokens.min(LED_BUDGET as u16);
                 self.failures = 0;
                 self.off_wrist = false;
@@ -796,7 +811,7 @@ pub fn brighter(drive: u8, steps: u8, peak: u32, spare: u32) -> Option<u8> {
 }
 
 /// The drive an awake background session in the experiment's bright arm
-/// should start at, rather than its level's `drive` (see `heart`'s arms):
+/// should start at, rather than its level's `drive` (see [`Arm`]):
 /// two settings up (30 mA from 12.5), or one if the `peak` expected at
 /// `drive` (the last session's last second, scaled to this level) would
 /// pass [`BRIGHTER_PEAK_LIMIT`] at 30 mA, or none; and only if the
@@ -811,13 +826,84 @@ pub fn brighter(drive: u8, steps: u8, peak: u32, spare: u32) -> Option<u8> {
 /// TODO: once the arms have answered that, start bright only when a
 /// reading looks hard on a calm wrist (the last session failed, or read a
 /// faint pulse, i.e. a small peak-to-mean against its DC), rather than
-/// every other awake session: where a dim session reads easily, the light
-/// only costs charge and risks saturating. Every other session for now,
-/// for a quicker comparison (user, 2026-11-09).
+/// every other awake round: where a dim session reads easily, the light
+/// only costs charge and risks saturating. Every other round for now, for
+/// a quicker comparison (user, 2026-11-09).
 pub fn bright_start(drive: u8, peak: u32, budget: u32) -> Option<u8> {
     step_up(drive, peak, |next| {
         budget >= budget_seconds(next, SESSION_RESERVE * 1000)
     })
+}
+
+/// Which LED a background session starts with: the experiment comparing a
+/// brighter LED with the usual one where readings are hardest, at a desk.
+///
+/// Awake, *rounds* take turns: one starts at its level's drive (`Dim`,
+/// 12.5 mA on a wrist), the next two drive settings up (`Bright`, 30 mA;
+/// see [`bright_start`] for when it's 20 mA or the usual drive after all),
+/// keeping the gain. Taking turns rather than all bright gives a field log
+/// both, at the same desk on the same day, under the same rules, so it can
+/// say whether more light reads more (and for what LED) instead of
+/// comparing days whose wrists differ. If it does, half the desk rounds
+/// have it meanwhile; if it doesn't, half pay for it.
+///
+/// A round is a reading's worth of tries: the background session the
+/// schedule had due for its own reasons, and every one after it
+/// (interrupted, retried, overdue) until a reading, background or watched,
+/// ends it (see [`Schedule::begin`]). Its first awake session chooses the
+/// arm, and the rest keep it. Taking turns by session instead (0.10.0-rc.3)
+/// handed each try's retry to the other arm, so whenever a round's first
+/// try failed and its retry read, the next round's first try was on the
+/// same arm as this one's: in a field log (2026-11-10), one arm got nearly
+/// all the first tries, which come at the scheduled time and are often cut
+/// short by movement, and the other the retries, which wait for a still
+/// moment. By round, both arms get first tries and retries alike, and a
+/// round's outcome (read or not, after how many tries and how much LED) is
+/// what to compare.
+///
+/// Strict turns rather than a pseudo-random choice per round: nothing the
+/// wrist does decides a round's parity (a round ends at a reading, not at
+/// a time), so turns carry no bias, and they keep a short log's arms
+/// even.
+///
+/// Asleep (`Asleep`), sessions stay at their level's drive, as night
+/// readings come 88% of the time without it, and an asleep session doesn't
+/// choose its round's arm (an awake one later in the round does). Watched
+/// sessions stay there too, as they're not in the comparison. A session
+/// that fails calm on either arm may still go on brighter at its end
+/// ([`brighter`]).
+///
+/// TODO: once field logs have judged it, make the winner the rule.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(target_os = "none", derive(defmt::Format))]
+pub enum Arm {
+    Asleep,
+    Dim,
+    Bright,
+}
+
+impl Schedule {
+    /// Starts a background session (`asleep`, if the sleep classifier
+    /// thinks so): its round, numbered from 1 since boot (wrapping), and
+    /// its [`Arm`]. A round starts with the first session after a reading
+    /// (or boot), and an awake round alternates its arm with the last
+    /// awake one's, dim first.
+    pub fn begin(&mut self, asleep: bool) -> (u16, Arm) {
+        if !self.in_round {
+            self.round = self.round.wrapping_add(1);
+            self.in_round = true;
+            self.armed = false;
+        }
+        if asleep {
+            return (self.round, Arm::Asleep);
+        }
+        if !self.armed {
+            self.bright = !self.bright;
+            self.armed = true;
+        }
+        let arm = if self.bright { Arm::Bright } else { Arm::Dim };
+        (self.round, arm)
+    }
 }
 
 /// The brightest drive up to two settings above `drive` at which `peak`,
