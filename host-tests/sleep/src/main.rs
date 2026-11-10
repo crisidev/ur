@@ -1257,3 +1257,6 @@ mod tests {
         assert!(sleep::noon_between(at(-3, 11, 0), at(-3, 12, 30)));
     }
 }
+
+#[cfg(test)]
+mod fuzz;
