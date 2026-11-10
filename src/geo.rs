@@ -226,6 +226,9 @@ impl GpsPolicy {
         }
         self.asked(now);
         self.sensor_requests += 1;
+        // `asked` started the count over if this is the day's first, and
+        // a day's fifth was refused above: so it can't overflow either.
+        debug_assert!(self.sensor_requests <= SENSOR_REQUESTS);
         true
     }
 
@@ -252,6 +255,16 @@ pub struct Sun {
 
 impl Sun {
     fn contains(&self, minute_of_day: u16) -> bool {
+        // TODO: this takes the sun to rise before it sets, within the
+        // local day (`debug_assert!(self.sunrise <= self.sunset)`), which
+        // `compute_sun` doesn't promise: each is a time of day, and a sun
+        // that sets after local midnight sets "before" it rose, so that
+        // no minute counts as daytime. That's Tromsø on 16 May and 25-26
+        // July (01:12 to 00:09: the nights around the midnight sun),
+        // Reykjavik around midsummer, and anywhere while the time zone
+        // is hours from the location's (the phone's zone changes on
+        // landing; a new fix can take a day): the dark theme all day.
+        // Then the day is the minutes *outside* `sunset..sunrise`.
         (self.sunrise..self.sunset).contains(&minute_of_day)
     }
 }
@@ -344,15 +357,26 @@ fn compute_sun(today: &DateTime, location: Location, offset_minutes: i16) -> Sun
         let seconds = (0.5 + days) * 86_400.0 + f32::from(offset_minutes) * 60.0;
         (wrap(seconds, 86_400.0) / 60.0) as u16
     };
-    Sun {
+    let sun = Sun {
         sunrise: local_minute(transit - hour_angle / 360.0),
         sunset: local_minute(transit + hour_angle / 360.0),
-    }
+    };
+    // Times of day, both: `wrap` saw to that. (Only polar day's sunset,
+    // above, is the day's end itself.)
+    debug_assert!(sun.sunrise < 24 * 60 && sun.sunset < 24 * 60);
+    sun
 }
 
 /// `x` modulo `m`, in `0..m`, for `x` within a few `m` of it (`fmodf`'s
 /// generality costs flash).
 fn wrap(mut x: f32, m: f32) -> f32 {
+    // "Within a few": each loop takes a turn per `m`, and a float far
+    // enough out doesn't change at all when `m` is added to it, so the
+    // loop would never end (and nothing else would run: the watchdog
+    // resets the watch, and the next frame does it again). `compute_sun`
+    // stays within ~31 `m` even for a location and offset no phone sends
+    // (any `i32`s from flash, any `i16`). A NaN ends both loops at once.
+    debug_assert!(x.is_nan() || (-64.0 * m..=64.0 * m).contains(&x));
     while x < 0.0 {
         x += m;
     }
@@ -365,6 +389,10 @@ fn wrap(mut x: f32, m: f32) -> f32 {
 /// The sine of an angle in degrees, within a few turns of zero, to an
 /// `f32`'s precision; [`compute_sun`] says why not `libm`'s.
 fn sin_deg(degrees: f32) -> f32 {
+    // "A few turns": what keeps the steps below exact. `compute_sun`
+    // asks for under three, or up to seven of a latitude that isn't one
+    // (any `i32` of millionths, from flash).
+    debug_assert!(degrees.is_nan() || (-8.0 * 360.0..=8.0 * 360.0).contains(&degrees));
     // Into −180°..180°, then −90°..90° by sin(180° − x) = sin(x). Every
     // step is exact: each subtracts floats within a factor of two of each
     // other (Sterbenz's lemma), so an angle of a few turns loses nothing.
@@ -411,6 +439,73 @@ mod tests {
         assert_eq!((summer.sunrise, summer.sunset), (3 * 60 + 53, 22 * 60 + 43));
         let winter = compute_sun(&date(12, 21), HOME, 60);
         assert_eq!((winter.sunrise, winter.sunset), (9 * 60 + 18, 15 * 60 + 12));
+    }
+
+    /// Anywhere, any day, in any time zone: sunrise and sunset are times
+    /// of day (or polar day's `0..1440`), and computing them ends. That
+    /// goes for the locations and offsets nothing sends, too (the
+    /// location is read from flash unchecked): `wrap`'s and `sin_deg`'s
+    /// assertions about what they're asked hold throughout.
+    #[test]
+    fn the_sun_rises_and_sets_within_the_day_everywhere() {
+        // Coarse steps, plus the edges: the poles, the polar circles (where
+        // the hour angle's cosine passes ±1), the date line, and the
+        // integers' ends.
+        let step = |from: i32, to: i32, by: usize| (from..=to).step_by(by);
+        let latitudes = step(-90_000_000, 90_000_000, 2_500_000).chain([
+            -66_560_000,
+            66_560_000,
+            89_999_999,
+            i32::MIN,
+            i32::MAX,
+        ]);
+        let longitudes: Vec<i32> = step(-180_000_000, 180_000_000, 15_000_000)
+            .chain([179_999_999, i32::MIN, i32::MAX])
+            .collect();
+        let offsets = [-18 * 60, -12 * 60, -60, 0, 345, 12 * 60, 18 * 60]
+            .into_iter()
+            .chain([i16::MIN, i16::MAX]);
+        // Every tenth day of 2025, and the calendar's ends.
+        let days: Vec<DateTime> = (0..36)
+            .map(|i| (2025, 1 + i / 3, 1 + 10 * (i % 3)))
+            .chain([
+                (1970, 1, 1),
+                (2020, 2, 29),
+                (2099, 12, 31),
+                (u16::MAX, 12, 31),
+            ])
+            .map(|(year, month, day)| DateTime {
+                year,
+                month,
+                day,
+                hour: 12,
+                minute: 0,
+                second: 0,
+            })
+            .collect();
+        for latitude_micro in latitudes {
+            for &longitude_micro in &longitudes {
+                let location = Location {
+                    latitude_micro,
+                    longitude_micro,
+                };
+                for offset in offsets.clone() {
+                    for day in &days {
+                        let sun = compute_sun(day, location, offset);
+                        let polar_day = (sun.sunrise, sun.sunset) == (0, 24 * 60);
+                        assert!(
+                            polar_day || (sun.sunrise < 24 * 60 && sun.sunset < 24 * 60),
+                            "{latitude_micro} {longitude_micro} {offset} {}-{}-{}: {} to {}",
+                            day.year,
+                            day.month,
+                            day.day,
+                            sun.sunrise,
+                            sun.sunset,
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// To a few `f32` steps, for every angle the equation takes.
