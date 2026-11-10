@@ -169,3 +169,85 @@ mod tests {
         }
     }
 }
+
+/// Kani proofs (`cargo kani` here, one at a time with `--harness`): what
+/// the tests above check from chosen times, from every time a `u32` of
+/// milliseconds holds, the ones just before it wraps included, and
+/// across the wrap. Nothing panics or overflows, and every millisecond
+/// on lands in exactly one report.
+///
+/// Times are a start and the stretches between calls (any `u32` each, so
+/// under the 49.7 days the module allows between two calls on a counter),
+/// added up wrapping, as the firmware's truncated clock does.
+#[cfg(kani)]
+mod proofs {
+    use super::on_time::OnTime;
+
+    /// A state on from any time, through two reports and off before a
+    /// third, any stretch apart: each report has exactly the time since
+    /// the one before (up to the state turning off), and the one after
+    /// has none, however long it waits.
+    #[kani::proof]
+    fn each_report_has_the_time_since_the_last() {
+        let (start, first, second, third, fourth, fifth): (u32, u32, u32, u32, u32, u32) =
+            kani::any();
+        let on_time = OnTime::new();
+        let mut now = start;
+        // Off since boot: nothing yet, even if the clock has wrapped.
+        assert_eq!(on_time.take(now), 0);
+
+        on_time.on(now);
+        now = now.wrapping_add(first);
+        assert_eq!(on_time.take(now), first);
+        now = now.wrapping_add(second);
+        assert_eq!(on_time.take(now), second);
+
+        // Off part-way through the third: that part alone.
+        now = now.wrapping_add(third);
+        on_time.off(now);
+        now = now.wrapping_add(fourth);
+        assert_eq!(on_time.take(now), third);
+        now = now.wrapping_add(fifth);
+        assert_eq!(on_time.take(now), 0);
+    }
+
+    /// A state on twice over (two clients connected, say) counts once
+    /// for each, saturating rather than wrapping round if that's more
+    /// than a `u32` holds; and turning off the second leaves the first
+    /// counting.
+    #[kani::proof]
+    fn overlapping_stretches_count_once_each() {
+        let (start, alone, both, after): (u32, u32, u32, u32) = kani::any();
+        let on_time = OnTime::new();
+        let mut now = start;
+        on_time.on(now);
+        now = now.wrapping_add(alone);
+        on_time.on(now);
+        now = now.wrapping_add(both);
+        let total = u64::from(alone) + 2 * u64::from(both);
+        assert_eq!(u64::from(on_time.take(now)), total.min(u32::MAX.into()));
+
+        on_time.off(now);
+        now = now.wrapping_add(after);
+        assert_eq!(on_time.take(now), after);
+    }
+
+    /// An `off` without an `on` is ignored, any number of them: the next
+    /// `on` still counts, from when it came, and its `off` still ends it.
+    #[kani::proof]
+    fn an_off_without_an_on_is_ignored() {
+        let (start, off, on, after): (u32, u32, u32, u32) = kani::any();
+        let on_time = OnTime::new();
+        let mut now = start;
+        on_time.off(now);
+        now = now.wrapping_add(off);
+        on_time.off(now);
+        assert_eq!(on_time.take(now), 0);
+
+        on_time.on(now);
+        now = now.wrapping_add(on);
+        on_time.off(now);
+        now = now.wrapping_add(after);
+        assert_eq!(on_time.take(now), on);
+    }
+}
