@@ -1276,7 +1276,11 @@ impl<'a> Follower<'a> {
                 );
                 let ticked = Instant::from_ticks(event.ticked);
                 time::set(ticked);
-                self.app.on_tick(ticked, flag(compare::flag::WATCHING));
+                self.app.on_tick(
+                    ticked,
+                    flag(compare::flag::WATCHING),
+                    flag(compare::flag::FINGER_DOWN),
+                );
                 None
             }
             kind::BUTTON => Some(InputEvent::Button),

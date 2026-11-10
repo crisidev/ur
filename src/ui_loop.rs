@@ -724,10 +724,12 @@ impl UiLoop {
                 // Pairing and updates need the user to watch the screen.
                 let watching = ble::PASSKEY.lock(Cell::get).is_some()
                     || dfu::PROGRESS.lock(Cell::get).is_some();
+                // A finger held on keeps the screen on (see `App::on_tick`).
+                let finger_down = board.finger_down();
                 let ticked = Instant::now();
                 #[cfg(feature = "compare")]
-                crate::compare::tick(at, second, stirring, asleep, ticked, watching);
-                app.on_tick(ticked, watching)
+                crate::compare::tick(at, second, stirring, asleep, ticked, watching, finger_down);
+                app.on_tick(ticked, watching, finger_down)
             }
             Wake::Input(event) => {
                 info!("input: {}", event);

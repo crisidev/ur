@@ -14,7 +14,9 @@
 //! only a [`Gesture::Release`], for what lasts while the finger stays
 //! down (the button grid's holds; everything else ignores it). Every
 //! long press gets its release, even one only seen at the lift, or a
-//! touch cut short (see [`Tracking::lifted`] and [`Tracking::lost`]). A
+//! touch cut short (see [`Tracking::lifted`] and [`Tracking::lost`]).
+//! While it's held, the screen stays on, up to [`HOLD_LIMIT`] (see
+//! [`screen_timeout`]). A
 //! finger that moves past the tap tolerance before then is on its way to
 //! a swipe, and the long press is off for that touch, even if it comes
 //! back. Anything else is a tap.
@@ -32,6 +34,15 @@ pub const SWIPE_DISTANCE: i32 = 20;
 /// A stationary touch at least this long is a long press, reported as soon
 /// as it's been held this long.
 pub const LONG_PRESS: Duration = Duration::from_millis(600);
+/// The longest a long press held on keeps the screen on (see
+/// [`screen_timeout`]), and the touch controller's own limit for one,
+/// after which it resets itself, ending the touch (see `crate::touch`).
+/// Well above any hold a person means: a grid hold dimming a light takes
+/// seconds, and the field logs' longest hold was ~10 s. But a sleeve,
+/// or bedding, resting on the awake screen looks the same as a finger
+/// held on, and this is the most screen it can keep on: a minute of the
+/// backlight, and in the quiet night, a minute of its low level.
+pub const HOLD_LIMIT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(target_os = "none", derive(defmt::Format))]
@@ -157,5 +168,24 @@ impl Tracking {
             y: self.start.1 / scale,
             held_ms: self.since.elapsed().as_millis().min(u64::from(u16::MAX)) as u16,
         }
+    }
+}
+
+/// How long the screen stays on after the last input: `timeout`, as the
+/// screen has it, or while a long press begun on the awake screen is
+/// `held` on, until [`HOLD_LIMIT`] after it (if that's longer). The hold's
+/// release counts as an input, so the screen goes off `timeout` after
+/// the lift, not mid-hold: by day or in the quiet night, someone holding
+/// a grid button to dim a light sees the button lit until they let go,
+/// and the release goes at the real lift (in the quiet night, the screen
+/// going off would put the touch controller to sleep, and send the
+/// release early; see [`Tracking::lost`]). The limit is for what isn't a
+/// finger (see [`HOLD_LIMIT`]): past it, the screen goes off as if the
+/// hold had ended.
+pub fn screen_timeout(timeout: Duration, held: bool) -> Duration {
+    if held {
+        timeout.max(HOLD_LIMIT)
+    } else {
+        timeout
     }
 }

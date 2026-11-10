@@ -19,7 +19,17 @@
 //! down, however still: the field logs have long presses of nearly 10 s,
 //! which [`LIFT_TIMEOUT`] would otherwise have cut short.
 //!
+//! Nearly 10 s, and no longer, perhaps because the chip resets itself
+//! after a long press of its `LongPressTime`, 10 s by default (per
+//! Hynitron's register declaration), which ends the touch: reports stop,
+//! and [`LIFT_TIMEOUT`] sends its release. So [`configure`] raises that
+//! to [`HOLD_LIMIT`], for a grid hold's release to come at the lift.
+//! TODO: confirm with a real finger, held 20 s on a dev kit (the
+//! simulated one never reaches the chip): `touch: lifted after` should
+//! read ~20000 ms, not ~10000.
+//!
 //! [`LONG_PRESS`]: crate::gesture::LONG_PRESS
+//! [`HOLD_LIMIT`]: crate::gesture::HOLD_LIMIT
 //!
 //! When touches can't do anything (the screen is off in the quiet night;
 //! see [`set_asleep`]), the chip goes into deep sleep, as InfiniTime puts
@@ -28,8 +38,11 @@
 //! then needs configuring again, as at boot. A touch in progress then is
 //! dropped, bar a long press's release, which goes then rather than at a
 //! lift that will never be seen (see [`crate::gesture::Tracking::lost`]).
-//! Nothing keeps the screen on for a finger that's down: a sleeve or
-//! bedding resting on it would keep it lit all night.
+//! The screen, and so the chip, stays on for a long press begun on the
+//! awake screen until its release, but only up to [`HOLD_LIMIT`] (see
+//! [`crate::gesture::screen_timeout`]): a sleeve or bedding resting on
+//! it mustn't keep it lit all night. Past that, in the quiet night, the
+//! screen goes off, the chip to sleep, and the release goes then.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -41,7 +54,7 @@ use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use embedded_hal_async::i2c::I2c;
 
-use crate::gesture::Tracking;
+use crate::gesture::{HOLD_LIMIT, Tracking};
 use crate::i2c::Device;
 
 pub use crate::gesture::{Gesture, Touch};
@@ -53,6 +66,9 @@ pub(crate) const ADDRESS: u8 = 0x15;
 const REG_REPORT: u8 = 0x01;
 /// Interrupt control.
 const REG_IRQ_CTL: u8 = 0xFA;
+/// How long, in seconds, a touch may last before the chip resets itself
+/// (`LongPressTime`; 0 would never). See the module docs.
+const REG_LONG_PRESS_TIME: u8 = 0xFC;
 /// Power mode; [`DEEP_SLEEP`] is the value InfiniTime writes.
 const REG_POWER: u8 = 0xA5;
 const DEEP_SLEEP: u8 = 0x03;
@@ -307,6 +323,13 @@ async fn sleep(i2c: &mut Device, reset: &mut Output<'static>) {
 async fn configure(i2c: &mut Device) -> bool {
     match i2c.write(ADDRESS, &[REG_IRQ_CTL, IRQ_CTL]).await {
         Ok(()) => {
+            // Not "never": a stuck contact (water, say) should still end,
+            // as the chip's reset does. If this fails, holds end at the
+            // chip's default instead, as they did, with their release.
+            let limit = HOLD_LIMIT.as_secs() as u8;
+            if let Err(e) = i2c.write(ADDRESS, &[REG_LONG_PRESS_TIME, limit]).await {
+                warn!("touch: setting the long press time failed: {}", e);
+            }
             // While the chip still listens, as it only does now.
             #[cfg(feature = "touch-probe")]
             crate::touch_probe::dump_settings(i2c).await;

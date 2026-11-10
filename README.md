@@ -28,6 +28,8 @@ on top:
 - **Quiet nights:** once you fall asleep, or nap, notifications neither
   buzz nor light the screen, and touches don't wake it, until your alarm
   or you're up. Alarms, timers, calls, and "find my watch" still ring.
+  Woken with the button, the screen works as usual (dimly) while you use
+  it, and stays on while you hold a finger on it.
 - **Sleep stages and smart wake:** light, deep, and REM sleep, from
   movement and heart rate. Smart wake rings in the half hour before your
   time, as soon as you stir from light sleep, and alarms build up from

@@ -684,13 +684,15 @@ pub fn tick(
     asleep: bool,
     ticked: Instant,
     watching: bool,
+    finger_down: bool,
 ) {
     push(Event {
         ticked: ticked.as_ticks(),
         local_second: local_second.unwrap_or(NONE_I64),
         flags: (u8::from(stirring) * flag::STIRRING)
             | (u8::from(asleep) * flag::ASLEEP)
-            | (u8::from(watching) * flag::WATCHING),
+            | (u8::from(watching) * flag::WATCHING)
+            | (u8::from(finger_down) * flag::FINGER_DOWN),
         ..event(kind::TICK, at)
     });
 }

@@ -101,21 +101,96 @@ fn a_hold_lifted_near_the_long_press_still_ends() {
     );
 }
 
+/// The quiet night, with the screen woken by the button, on the button
+/// grid: the start of each script below.
+const QUIET_GRID: &str = "time 2026-11-10 23:30\nbuttons bthome\nuntil 23:40\nasleep on\n\
+     wait 2m\nexpect quiet-night\nbutton\nwait 1s\nup\nwait 1s\n";
+
+/// Whether `event` reached Home Assistant after the log's `marker` line
+/// (an `echo`), rather than before it.
+fn heard_after(log: &str, marker: &str, event: &str) -> bool {
+    let at = |needle: &str| log.lines().position(|line| line.ends_with(needle));
+    let marker = at(marker).expect("the marker is in the log");
+    let heard = log
+        .lines()
+        .position(|line| line.contains(&format!("to Home Assistant: button_{event} ")))
+        .expect("the event is in the log");
+    heard > marker
+}
+
 /// A hold in the quiet night, kept on past the screen's timeout: the
-/// screen goes off, and the touch controller to sleep, so the lift is
-/// never seen. The release goes then; it once never did, and whatever
-/// the hold set going (a light dimming) ran on.
+/// screen stays on until the lift, the release goes then, and the screen
+/// goes off its usual timeout after. The screen used to go off 10 s into
+/// the hold, the touch controller to sleep with it, and the release went
+/// then, with the finger still down (and before that, never).
 #[test]
-fn a_hold_past_the_quiet_night_timeout_ends() {
+fn a_quiet_night_hold_keeps_the_screen_on_until_the_lift() {
     let log = log_of(
         "grid-hold-night",
-        "time 2026-11-10 23:30\nbuttons bthome\nuntil 23:40\nasleep on\nwait 2m\n\
-         expect quiet-night\nbutton\nwait 1s\nup\nwait 1s\n\
-         press 40,20\nwait 12s\nexpect not screen-on\nlift\nwait 1s\n",
+        &format!(
+            "{QUIET_GRID}press 40,20\nwait 20s\nexpect screen-on\nexpect quiet-night\n\
+             echo lifting\nlift\nwait 9s\nexpect screen-on\nwait 2s\n\
+             expect not screen-on\nexpect quiet-night\n"
+        ),
     );
     assert_eq!(
         heard(&log),
         ["2 hold_press", "2 long_press", "2 hold_release"],
         "{log}"
     );
+    assert!(heard_after(&log, "lifting", "2 hold_release"), "{log}");
+}
+
+/// A hold kept on past `gesture::HOLD_LIMIT` (a minute), in the quiet
+/// night: not a finger, most likely (bedding resting on the screen), so
+/// the screen goes off then, as if the hold had ended, and its release
+/// goes as the touch controller sleeps, before the lift.
+#[test]
+fn a_hold_past_the_limit_still_ends() {
+    let log = log_of(
+        "grid-hold-limit",
+        &format!(
+            "{QUIET_GRID}press 40,20\nwait 55s\nexpect screen-on\nwait 10s\n\
+             expect not screen-on\necho lifting\nlift\nwait 1s\n"
+        ),
+    );
+    assert_eq!(
+        heard(&log),
+        ["2 hold_press", "2 long_press", "2 hold_release"],
+        "{log}"
+    );
+    assert!(!heard_after(&log, "lifting", "2 hold_release"), "{log}");
+}
+
+/// A hold by day, past the screen's timeout: the screen stays on until
+/// the lift too (it used to go off 10 s in, the touch going on unseen).
+#[test]
+fn a_hold_by_day_keeps_the_screen_on_until_the_lift() {
+    let log = log_of(
+        "grid-hold-day",
+        "time 2026-11-10 12:00\nbuttons bthome\nwait 1s\nup\nwait 1s\n\
+         press 40,20\nwait 20s\nexpect screen-on\necho lifting\nlift\nwait 9s\n\
+         expect screen-on\nwait 2s\nexpect not screen-on\n",
+    );
+    assert_eq!(
+        heard(&log),
+        ["2 hold_press", "2 long_press", "2 hold_release"],
+        "{log}"
+    );
+    assert!(heard_after(&log, "lifting", "2 hold_release"), "{log}");
+}
+
+/// In the quiet night, a touch held on a glance only wakes the screen
+/// (bedding, against a wrist that turned in sleep, as likely as a
+/// finger): it doesn't hold the screen on, which goes off as after any
+/// wake, the touch controller with it.
+#[test]
+fn a_touch_that_woke_the_screen_does_not_hold_it() {
+    let log = log_of(
+        "grid-hold-glance",
+        "time 2026-11-10 23:30\nuntil 23:40\nasleep on\nwait 2m\nexpect quiet-night\n\
+         glance\nwait 1s\npress 40,40\nwait 5s\nexpect screen-on\n\
+         wait 7s\nexpect not screen-on\nlift\n",
+    );
+    assert!(log.contains("input: long press"), "{log}");
 }

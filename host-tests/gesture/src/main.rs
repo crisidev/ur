@@ -196,6 +196,25 @@ mod tests {
         assert_eq!(tracking.long_press_at(), None);
         assert_eq!(tracking.classify().gesture, Gesture::Tap);
     }
+
+    /// A hold keeps the screen on until it's released, but no longer than
+    /// [`HOLD_LIMIT`]; without one, the screen's own timeout stands.
+    #[test]
+    fn a_hold_keeps_the_screen_on_up_to_the_limit() {
+        let ten = Duration::from_secs(10);
+        assert_eq!(screen_timeout(ten, false), ten);
+        assert_eq!(screen_timeout(ten, true), HOLD_LIMIT);
+        // Longer timeouts (the music screen's, Home Assistant's key)
+        // aren't cut short by a hold.
+        let long = HOLD_LIMIT + Duration::from_secs(1);
+        assert_eq!(screen_timeout(long, true), long);
+        assert_eq!(screen_timeout(Duration::MAX, true), Duration::MAX);
+        // Well above any hold a person means, and within what the touch
+        // controller's limit (in whole seconds, a byte) can say.
+        assert!(HOLD_LIMIT >= Duration::from_secs(30));
+        assert!(HOLD_LIMIT.as_secs() <= u64::from(u8::MAX));
+        assert_eq!(HOLD_LIMIT.as_ticks() % Duration::from_secs(1).as_ticks(), 0);
+    }
 }
 
 /// Proofs about telling touches apart, for every position the panel has

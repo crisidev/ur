@@ -90,7 +90,9 @@
 //!   woke to. See [`crate::wake`] for the guards against brushes.
 //! - No input for [`SCREEN_TIMEOUT`] (longer on the music screen, for a
 //!   long title to scroll by; never while a banner shows, or Home
-//!   Assistant's key): turn the screen off.
+//!   Assistant's key): turn the screen off. A long press held on (a
+//!   grid hold dimming a light) is input until its finger lifts, up to
+//!   [`crate::gesture::HOLD_LIMIT`]; not one that woke the screen.
 //! - Turning the wrist to look (see [`crate::glance`]) while the screen is
 //!   off: a glance, just the time in white on black at a low backlight, for
 //!   [`GLANCE_TIME`]. While the phone navigates, the next turn instead,
@@ -551,6 +553,12 @@ pub struct App {
     ha_presses: heapless::Vec<Press, 2>,
     /// Whether there's an Aranet4 reading to show (see [`App::set_air`]).
     air: bool,
+    /// Whether a long press begun on the awake screen is still held on,
+    /// until its release: the screen stays on for it, up to
+    /// [`crate::gesture::HOLD_LIMIT`] (see `App::screen_timeout`). Not a
+    /// touch that woke the screen (from off, or a glance): in the quiet
+    /// night that's as likely bedding as a finger.
+    holding: bool,
 }
 
 /// How long the grid shows a press it sent.
@@ -606,6 +614,7 @@ impl App {
             grid: buttons::Grid::default(),
             sent: None,
             ha_presses: heapless::Vec::new(),
+            holding: false,
         }
     }
 
@@ -902,7 +911,13 @@ impl App {
             // end, which goes wherever its start did (see
             // `buttons::Grid::lift`). Nothing else acts on it, nor counts
             // it as a touch: the long press was the touch.
+            //
+            // A hold the screen stayed on for ends now: its time starts
+            // from the lift, as from any input's (see `screen_timeout`).
             InputEvent::Touch(touch) if touch.gesture == Gesture::Release => {
+                if core::mem::take(&mut self.holding) {
+                    self.last_input = now;
+                }
                 if let Some(press) = self.grid.lift() {
                     self.send_press(press, now);
                 }
@@ -1104,6 +1119,11 @@ impl App {
                 self.centre_until = now + CENTRE_AFTER_TOUCH_WAKE;
             }
             return;
+        }
+        // A long press on the awake screen, still held: the screen stays
+        // on until its release (see `screen_timeout`), whatever it does.
+        if let InputEvent::Touch(touch) = event {
+            self.holding = touch.gesture == Gesture::LongPress;
         }
         // Pairing or an update: what's beneath doesn't show, so touches
         // mustn't change it.
@@ -1836,9 +1856,24 @@ impl App {
 
     /// `keep_awake` holds the screen on regardless of input, e.g. while a
     /// pairing passkey is showing and the user is typing it on the phone.
-    pub fn on_tick(&mut self, now: Instant, keep_awake: bool) {
+    /// `finger_down`: whether a finger is on the screen
+    /// (`touch::finger_down`), for a hold (see `screen_timeout`).
+    pub fn on_tick(&mut self, now: Instant, keep_awake: bool, finger_down: bool) {
         // That's pairing or an update, which take every touch too.
         self.takeover = keep_awake;
+        // A hold whose finger has lifted is over, as at its release
+        // (see `on_input`), which may not have come yet: the touch task
+        // says the finger's up a moment before it sends that. Or never
+        // will: a long press injected for testing (`debug`, the
+        // simulator's `long`) has no finger, nor release. With the
+        // screen off (past `HOLD_LIMIT`, below, or by the button), a
+        // hold keeps it on no more either: woken again with the finger
+        // still down, it goes off as after any wake. Its release still
+        // goes, and does what a release does.
+        if self.holding && !(self.awake && finger_down) {
+            self.holding = false;
+            self.last_input = now;
+        }
         self.media_hint = match self.media_hint {
             Some((icon, ticks)) if ticks > 1 => Some((icon, ticks - 1)),
             _ => None,
@@ -1917,17 +1952,22 @@ impl App {
     ///
     /// TODO: maybe a safety cap (minutes) for a watch put down with the
     /// key showing; the user asked for none.
+    ///
+    /// And whatever the screen, a long press held on keeps it on until
+    /// its release, up to [`crate::gesture::HOLD_LIMIT`] (see
+    /// [`crate::gesture::screen_timeout`]).
     fn screen_timeout(&self) -> Duration {
         let overflow =
             |text: &str, scale: i32| font::small_text_width(text) * scale - MUSIC_TEXT_WIDTH;
-        match (self.screen, &self.music) {
+        let timeout = match (self.screen, &self.music) {
             (Screen::Music, Some(music)) => {
                 let overflow = overflow(&music.track, 2).max(overflow(&music.artist, 1));
                 SCREEN_TIMEOUT.max(marquee_cycle(overflow))
             }
             (Screen::HaQr | Screen::HaKey, _) => Duration::MAX,
             _ => SCREEN_TIMEOUT,
-        }
+        };
+        crate::gesture::screen_timeout(timeout, self.holding)
     }
 
     /// Whether something on screen is scrolling, so frames are needed more
