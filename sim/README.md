@@ -162,9 +162,12 @@ each script still draws exactly those: `tour.txt`'s in `shots/tour/`,
 `gadgetbridge.txt`'s in `shots/gadgetbridge/`, and
 `readme-screenshots.txt`'s in `../docs/screenshots/`, the README's own,
 so it can't go stale, and each theme's (`../src/themes/<name>/shots.txt`,
-into `shots/` beside it, for the theme's README), for the themes the
-build has: the default one, unless it's built with others
-(`--features themes-all` checks them all). A test fails on a screenshot that differs (with
+into `shots/` beside it, the few the theme's README shows, which must
+be exactly those), for the themes the build has: the default one,
+unless it's built with others (`--features themes-all` checks them
+all). Each theme's `screens.txt`, which goes round every screen, is
+only run (`--no-shots`, writing nothing): it must get to the end,
+without a panic or a failed debug assertion. A test fails on a screenshot that differs (with
 how many pixels, and an image of it before, after, and where it differs,
 in magenta, side by side), on a new one, and on one no longer taken.
 

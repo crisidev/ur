@@ -108,14 +108,13 @@ with schemes of one side only, say which: `--night-only` or
 `--day-only` (`scripts/new-theme.sh --night-only neon "Neon"`). Such a
 theme shows its schemes by day and by night alike, and its FORCE can't
 change (a tap points to FAQ D02); its other side's list is empty
-(`pub const DAY: [&Neon; 0] = [];`), and its README and `shots.txt`
-have its side's half (every screen once, the clock face in its scheme,
-the dim look, and switching off). What it does, which is also what to
-do by hand:
+(`pub const DAY: [&Neon; 0] = [];`), and its README, `shots.txt` and
+`screens.txt` have its side's half (`screens.txt`'s with switching
+off). What it does, which is also what to do by hand:
 
 1. Copies `src/themes/retro/` to `src/themes/neon/`, without Retro's
-   README, screenshots, `shots.txt`, or any module of schemes beside
-   `schemes/mod.rs` (more of Retro's).
+   README, screenshots, `shots.txt`, `screens.txt`, or any module of
+   schemes beside `schemes/mod.rs` (more of Retro's).
 2. Renames the type, `Retro`, to `Neon`, in the code (the
    `Scheme::Retro` of `mod.rs`'s `wrap` and `BUILT_IN` becomes
    `Scheme::Neon`), `BUILT_IN`'s `name: "retro"` to `"neon"`, and
@@ -154,9 +153,9 @@ do by hand:
 5. Lists it (see [Listing it](#listing-it)): `themes!` and `pub mod` in
    `src/themes/mod.rs`, `theme-neon` and `themes-all` in both
    manifests, and a row in `src/themes/README.md`.
-6. Writes its `README.md`, from Retro's table of every screen, with
-   TODOs for the rest, and its `shots.txt`, Retro's for its schemes
-   (see [The README and its
+6. Writes its `README.md`, from Retro's tables of its screenshots, with
+   TODOs for the rest, and its `shots.txt` and `screens.txt`, Retro's
+   for its schemes (see [The README and its
    screenshots](#the-readme-and-its-screenshots)).
 7. Copies `host-tests/theme`, Retro's colour checks, to
    `host-tests/neon`, for its schemes, re-wording its comments as in the
@@ -200,7 +199,8 @@ RAM.
 ### Starting from nothing
 
 The directory is `src/themes/<name>/`, with a `mod.rs` (and any other
-files the code wants), a `README.md`, and a `shots.txt`. A starting
+files the code wants), a `README.md`, a `shots.txt` and a
+`screens.txt`. A starting
 point, with one scheme for the night:
 
 ```rust
@@ -458,9 +458,19 @@ from 0.10 shows the Retro scheme it had.
 ## The README and its screenshots
 
 `README.md` shows what the theme looks like, under its `theme_name` as
-the title: screenshots of every screen, by night and by day where it has
-that side (with several schemes, one a side is plenty, with a strip of
-each one's clock face), and the dim look. And its credits:
+the title, in a few screenshots:
+
+- the clock face in each of its schemes (so each side's too);
+- for each side it has (night, day), in one scheme of it: Last night,
+  and LOOK (Settings);
+- the dim look: a glance, and a notification that came with the screen
+  off. Once, if its dim look is the same in every scheme (as Retro's
+  is, and a copy of Retro's); a side each if not.
+
+Those are all: every committed screenshot is a Git LFS object, and so
+is every approval of one, so a theme shows how it looks, not every
+screen. Every other screen is still drawn, by CI, as a smoke test (see
+below). And its credits:
 
 - Inspired by: the theme or watch face it's after, if any, with a link.
 - Contributed by: who made it.
@@ -468,10 +478,16 @@ each one's clock face), and the dim look. And its credits:
 
 Retro's [README](src/themes/retro/README.md) is the model.
 
-The screenshots come from `shots.txt`, a simulator script (its commands
-are `ur-sim --help`'s). Start from a copy of Retro's
-[shots.txt](src/themes/retro/shots.txt), which visits every screen, and
-change its schemes. Its first line,
+Two simulator scripts (their commands are `ur-sim --help`'s) go with
+it, each starting from a copy of Retro's with its schemes changed:
+
+- `shots.txt` takes the README's screenshots, and only those: Retro's
+  is [shots.txt](src/themes/retro/shots.txt).
+- `screens.txt` visits every screen, by night and by day where it has
+  that side, and the dim look: Retro's is
+  [screens.txt](src/themes/retro/screens.txt).
+
+Their first line,
 
 ```text
 version 1.0.0+1a2b3c4
@@ -483,21 +499,29 @@ build's, which would change it at every release. Pick each side with
 (`theme "tokyo night"`), and `shot NAME.png` each screen. (`shot
 NAME.png SCHEME` redraws the frame in another scheme's colours, which
 is only right for a scheme drawn like the one showing: for one whose
-drawing differs, pick it with `theme`.) Draw them, and look:
+drawing differs, pick it with `theme`.) Draw them, and look at them
+all, every screen's as well as the README's:
 
 ```sh
 cd sim
 cargo run --release --features theme-neon -- --out ../src/themes/neon/shots ../src/themes/neon/shots.txt
+cargo run --release --features theme-neon -- --out ../tmp/neon ../src/themes/neon/screens.txt
 ```
 
-They're approved screenshots, in Git LFS like every PNG: the
+The README's are approved screenshots, in Git LFS like every PNG: the
 simulator's tests check every theme's against its `shots/`, pixel for
-pixel. Approve what the script draws once it's right, and after any
-change you mean:
+pixel, and that its README shows each of them and no other. Approve
+what `shots.txt` draws once it's right, and after any change you mean:
 
 ```sh
 UPDATE_SHOTS=1 cargo test --no-default-features --features themes-all --test scripts every_themes_screenshots
 ```
+
+`screens.txt`'s are never approved or committed: the tests only run it
+(`every_themes_screens`, with `ur-sim --no-shots`, which writes no
+PNG), and fail if it doesn't get to the end, on a panic, a debug
+assertion (a `row_fits`, say) or a step of the script that fails (an
+`expect`, a scheme that isn't one).
 
 Approved shots are drawn with every theme built in (`themes-all`), so
 they can differ from what the theme looks like alone, as its package
@@ -506,7 +530,7 @@ one-sided theme's FORCE is a choice there, and bright, as Retro brings
 the other side, but dim and fixed alone, a tap showing "NO DAY THEMES"
 or "NO NIGHT THEMES" (FAQ D02); likewise THEME with one scheme for the
 side showing ("ONLY ONE THEME", FAQ D01). So the approved shots never
-show that; look at a build of it alone (the `--out` run above, with
+show that; look at a build of it alone (the `--out` runs above, with
 `--features theme-neon`) to see it.
 
 When a change to a script moves later steps in time (another swipe, a
@@ -544,15 +568,18 @@ drawing and kept its role meanings can keep its checks too:
   every theme and feature (`features.yml`); clippy with `themes-all`
   (`check.yml`).
 - The simulator's tests, all of them, with every theme built in: your
-  screenshots against `shots/`, that it's in `src/themes/README.md`,
+  README's screenshots against `shots/` (and that the README shows
+  exactly those), that `screens.txt` draws every screen to the end,
+  that it's in `src/themes/README.md`,
   that every built-in theme has a scheme, that no two schemes share a
   name, and that every scheme's name fits Retro's THEME row; and the
   rest of the tests, so nothing assumes Retro is the only theme.
 - On a pull request, `screenshots.yml` draws every script's
-  screenshots, yours included, for the PR and for where it branched
-  off, and `screenshots-comment.yml` keeps one comment on the PR with
-  each screen that changed (before, after, and where, side by side),
-  was added, or was removed. A new theme's all show as added.
+  screenshots, your `shots.txt`'s included (not `screens.txt`'s), for
+  the PR and for where it branched off, and `screenshots-comment.yml`
+  keeps one comment on the PR with each screen that changed (before,
+  after, and where, side by side), was added, or was removed. A new
+  theme's all show as added.
 
 ## On a watch
 

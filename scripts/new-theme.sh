@@ -13,8 +13,9 @@
 #
 # It writes:
 #
-# - src/themes/IDENT/: Retro's code (not its README, shots, or any of its
-#   schemes beyond the four in `schemes/mod.rs`), with its type renamed
+# - src/themes/IDENT/: Retro's code (not its README, shots, scripts, or
+#   any of its schemes beyond the four in `schemes/mod.rs`), with its
+#   type renamed
 #   (`living_tokyo` gets `LivingTokyo`) and its comments re-wrapped where
 #   that changed them, its module docs saying what it is, and a
 #   placeholder scheme a side, "<NAME> NIGHT" and "<NAME> DAY" (Retro's
@@ -22,8 +23,9 @@
 #   12 letters, which always fit the THEME row), which the theme
 #   replaces. Retro's `name_fits` goes, as only the simulator's check of
 #   Retro uses it.
-# - Its README.md (to fill in) and shots.txt (Retro's, for its schemes,
-#   a side's half only for a one-sided theme).
+# - Its README.md (to fill in), shots.txt (the README's screenshots) and
+#   screens.txt (every screen, which the tests only run): Retro's, for
+#   its schemes, a side's half only for a one-sided theme.
 # - The lines that list it: `themes!` and `pub mod` in
 #   src/themes/mod.rs, its feature and `themes-all` in both Cargo.toml
 #   and sim/Cargo.toml, and a row in src/themes/README.md.
@@ -33,8 +35,9 @@
 #   running it.
 #
 # Then, from sim/, `UPDATE_SHOTS=1 cargo test --release
-# --no-default-features --features themes-all` takes its screenshots
-# (look at them: they're Retro's look, in the placeholders' colours), and
+# --no-default-features --features themes-all` takes its README's
+# screenshots and runs its every screen (look at them all: they're
+# Retro's look, in the placeholders' colours), and
 # the theme is the author's to restyle. Nothing is committed. It refuses
 # an IDENT that's taken.
 set -euo pipefail
@@ -190,7 +193,7 @@ def rename(source, width=76):
 shutil.copytree(
     retro,
     theme,
-    ignore=lambda dir, names: [n for n in names if n in ("README.md", "shots", "shots.txt")],
+    ignore=lambda dir, names: [n for n in names if n in ("README.md", "shots", "shots.txt", "screens.txt")],
 )
 for path in theme.rglob("*.rs"):
     path.write_text(rename(path.read_text()))
@@ -322,22 +325,27 @@ const _: () = assert!(GLANCE.idle_mode_safe(), "GLANCE: idle mode's colours only
 
 night_name, day_name = statics["night"][1], statics["day"][1]
 readme = (retro / "README.md").read_text()
-every = readme[readme.index("## Every screen") : readme.index("## Credits")]
-every = every.replace("ARCADE", night_name).replace("HANDHELD", day_name)
+# Retro's tables of its screenshots, a side each and the dim look, and
+# what they're `shots.txt`'s; not its colour schemes', nor the tour's
+# line, which is of Retro's screens.
+sides_and_dim = readme[readme.index("## Last night and LOOK") : readme.index("## Credits")]
+tour = "The simulator's [tour](../../../sim/shots/tour/) has most of Retro's\nscreens too.\n\n"
+if tour not in sides_and_dim:
+    sys.exit("Retro's README has no line about the tour: has it changed? (update scripts/new-theme.sh)")
+sides_and_dim = sides_and_dim.replace(tour, "")
+sides_and_dim = sides_and_dim.replace("ARCADE", night_name).replace("HANDHELD", day_name)
 if sides != "both":
-    # The one side's column of the table of every screen, with switching
-    # off (which Retro shoots by day) on that side.
-    keep, drop = (1, 2) if sides == "night" else (2, 1)
+    # The one side's column of the table of Last night and LOOK.
+    keep = 1 if sides == "night" else 2
     rows = []
-    for row in every.split("\n"):
+    for row in sides_and_dim.split("\n"):
         cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
         if row.startswith("| ") and len(cells) == 3:
-            cell = cells[keep] or cells[drop].replace("day-off", f"{sides}-off").replace(", by day,", ", at night,").replace(day_name, night_name)
-            row = f"| {cells[0]} | {cell} |"
+            row = f"| {cells[0]} | {cells[keep]} |"
         elif row == "|---|---|---|":
             row = "|---|---|"
         rows.append(row)
-    every = "\n".join(rows)
+    sides_and_dim = "\n".join(rows)
 schemes_table = " | ".join(names)
 clocks = " | ".join(
     f'<img src="shots/clock-{dashed}-{side}.png" width="120" alt="The clock face in {statics[side][1]}">' for side in shown
@@ -362,41 +370,81 @@ Retro, so for now it's Retro's look, in placeholder colours. The
 |{'---|' * len(names)}
 | {clocks} |
 
-{every}## Credits
+{sides_and_dim}## Credits
 
 - Inspired by: TODO.
 - Contributed by: TODO.
 - Maintained by: TODO.
 """
 )
-shots = (retro / "shots.txt").read_text()
-day_at = shots.index("# ==============================================================================\n# By day")
-off_at = shots.index("# Switching off, last:")
-midday_at = shots.index("# Midday, with the day's readings so far.")
-if sides != "both":
-    # One side's: Retro's night half (every screen, and the dim look),
-    # for that side, then switching off.
-    shots = shots[:midday_at] + shots[off_at:]
-    shots = shots.replace("shot day-off.png", f"shot {sides}-off.png")
+
+
+def one_side(script, cut_at, end_at):
+    """`script`'s night half, up to `cut_at` (and from `end_at`, if any),
+    for a one-sided theme's side: Retro's night is the side's."""
+    script = script[: script.index(cut_at)] + (script[script.index(end_at) :] if end_at else "")
     if sides == "day":
-        shots = shots.replace("At night, in ARCADE", "By day, in HANDHELD")
-        shots = re.sub(r"^shot night-", "shot day-", shots, flags=re.M)
-        shots = shots.replace("\ntheme arcade\n", "\ntheme handheld\n")
-        shots = shots.replace("shot clock-arcade.png", "shot clock-handheld.png")
-    header = "every screen, at night (in ARCADE)\n# and by day (in HANDHELD), the clock face in each scheme, and the dim\n# look."
-    if header not in shots:
-        sys.exit("Retro's shots.txt has another header: has it changed? (update scripts/new-theme.sh)")
-    scheme = "HANDHELD" if sides == "day" else "ARCADE"
-    shots = shots.replace(header, f"every screen (in\n# {scheme}), its clock face, and the dim look.")
-shots = shots.replace("Retro's screenshots", f"{display}'s screenshots")
-shots = shots.replace("src/themes/retro/", f"src/themes/{ident}/")
-shots = re.sub(r"^shot clock-(terminal|parchment)\.png .*\n", "", shots, flags=re.M)
-shots = shots.replace("shot clock-arcade.png", f"shot clock-{dashed}-night.png")
-shots = shots.replace("shot clock-handheld.png", f"shot clock-{dashed}-day.png")
-shots = shots.replace("\ntheme arcade\n", f'\ntheme "{night_name}"\n')
-shots = shots.replace("\ntheme handheld\n", f'\ntheme "{day_name}"\n')
-shots = shots.replace("ARCADE", night_name).replace("HANDHELD", day_name)
-(theme / "shots.txt").write_text(shots)
+        script = script.replace("At night, in ARCADE", "By day, in HANDHELD")
+        script = re.sub(r"^shot night-", "shot day-", script, flags=re.M)
+        script = script.replace("\ntheme arcade\n", "\ntheme handheld\n")
+        script = script.replace("shot clock-arcade.png", "shot clock-handheld.png")
+    return script
+
+
+def rename_script(script):
+    """Retro's names in a script, as the new theme's: its schemes', its
+    directory, and its clock face's screenshots."""
+    script = script.replace("Retro's", f"{display}'s")
+    script = script.replace("src/themes/retro/", f"src/themes/{ident}/")
+    script = script.replace("../tmp/retro ", f"../tmp/{ident} ")
+    # Built with Retro, the default, as the tests build it with every theme.
+    script = script.replace("cargo run --release -- ", f"cargo run --release --features theme-{ident} -- ")
+    script = re.sub(r"^shot clock-(terminal|parchment)\.png .*\n", "", script, flags=re.M)
+    script = script.replace("shot clock-arcade.png", f"shot clock-{dashed}-night.png")
+    script = script.replace("shot clock-handheld.png", f"shot clock-{dashed}-day.png")
+    script = script.replace("\ntheme arcade\n", f'\ntheme "{night_name}"\n')
+    script = script.replace("\ntheme handheld\n", f'\ntheme "{day_name}"\n')
+    script = script.replace("ARCADE", night_name).replace("HANDHELD", day_name)
+    # Its first paragraph, which says what it's for, re-wrapped where
+    # the names changed it.
+    end = script.index("\n#\n")
+    first = " ".join(line.removeprefix("# ") for line in script[:end].split("\n"))
+    wrapped = textwrap.wrap(first, 70, break_long_words=False, break_on_hyphens=False)
+    return "\n".join("# " + line for line in wrapped) + script[end:]
+
+
+def header(script, old, new):
+    if old not in script:
+        sys.exit("one of Retro's scripts has another header: has it changed? (update scripts/new-theme.sh)")
+    return script.replace(old, new)
+
+
+scheme = "HANDHELD" if sides == "day" else "ARCADE"
+
+# shots.txt: the README's screenshots.
+shots = (retro / "shots.txt").read_text()
+shots = header(shots, " (At 15:46, the time Retro's glance has always shown.)", "")
+if sides != "both":
+    shots = one_side(shots, "# Midday, with the day's readings so far.", None)
+    shots = header(
+        shots,
+        "the clock face in each scheme,\n# Last night and LOOK at night (in ARCADE) and by day (in HANDHELD), and\n# the dim look's",
+        f"the clock face in its scheme,\n# Last night and LOOK (in {scheme}), and the dim look's",
+    )
+(theme / "shots.txt").write_text(rename_script(shots))
+
+# screens.txt: every screen, for the tests to run.
+screens = (retro / "screens.txt").read_text()
+if sides != "both":
+    # Switching off, which Retro does by day, on the side's.
+    screens = one_side(screens, "# Midday, with the day's readings so far.", "# Switching off, last:")
+    screens = screens.replace("shot day-off.png", f"shot {sides}-off.png")
+    screens = header(
+        screens,
+        "# Every screen of Retro's, at night (in ARCADE) and by day (in HANDHELD),\n# and the dim look,",
+        f"# Every screen of Retro's (in {scheme}), and the dim look,",
+    )
+(theme / "screens.txt").write_text(rename_script(screens))
 
 # ==============================================================================
 # Listing it
@@ -452,9 +500,13 @@ cargo fmt
 (cd "host-tests/$ident" && cargo fmt)
 
 cat >&2 <<EOF
-Next, from sim/, take its screenshots, and look at them:
+Next, from sim/, take its README's screenshots, and run its every screen:
 
     UPDATE_SHOTS=1 cargo test --release --no-default-features --features themes-all
+
+look at them, and at every screen:
+
+    cargo run --release --features theme-$ident -- --out ../tmp/$ident ../src/themes/$ident/screens.txt
 
 then build it alone, as its package is:
 

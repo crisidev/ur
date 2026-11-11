@@ -8,8 +8,8 @@
 #   host crate under host-tests/ and tested on the computer, with the
 #   pinned toolchain and on beta
 # - sim: the simulator's tests (sim/), which check its screenshots of the
-#   UI against the approved ones (every theme's own too), and those
-#   screenshots, to look at
+#   UI against the approved ones (every theme's README's too), run every
+#   theme's every screen, and upload those screenshots, to look at
 # - sim-web: the simulator built for browsers, checked against the above
 # - blueprints: the Home Assistant blueprints for the button grid, run in
 #   Home Assistant's test harness
@@ -109,10 +109,11 @@ jobs:
       - name: cargo test
         working-directory: sim
         run: cargo test --locked --no-default-features
-      # And all of them again with every theme built in: each theme's own
-      # screenshots (src/themes/<name>/shots/), which the run above only
-      # checked the default's of, and that nothing else assumes the
-      # default is the only theme (THEME's next scheme, say).
+      # And all of them again with every theme built in: each theme's
+      # README screenshots (src/themes/<name>/shots/) and every screen
+      # (screens.txt, run but not compared), which the run above only
+      # did the default's of, and that nothing else assumes the default
+      # is the only theme (THEME's next scheme, say).
       - name: cargo test, every theme
         working-directory: sim
         run: cargo test --locked --no-default-features --features themes-all

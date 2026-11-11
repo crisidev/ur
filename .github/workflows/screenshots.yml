@@ -69,7 +69,8 @@ jobs:
       # Each checkout's simulator draws that checkout's scripts: the ones
       # the tests check (sim/tests/scripts.rs), each into a directory of
       # its own. A script the base doesn't have yet shows as all added.
-      # Each theme's (src/themes/<name>/shots.txt) with every theme built
+      # Each theme's README set (src/themes/<name>/shots.txt; not
+      # screens.txt, which is only a smoke test) with every theme built
       # in, as a base from before themes has none.
       - name: render
         run: |

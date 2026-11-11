@@ -215,7 +215,10 @@ its scripts' screenshots are committed, and `cargo test` in `sim/` fails
 if any screen changes: it names each screenshot that differs (and
 writes an image of it before, after, and where, in magenta), each that's
 new, and each no longer taken. Those of `readme-screenshots.txt` are the
-README's own, in `docs/screenshots/`. When a change to what the watch
+README's own, in `docs/screenshots/`; each theme's, in
+`src/themes/<name>/shots/`, are its README's few (`shots.txt`), while
+its every screen (`screens.txt`) is only drawn, as a smoke test, and
+never approved or committed. When a change to what the watch
 shows is meant, look at those images, then approve the new screenshots
 and commit them with it:
 

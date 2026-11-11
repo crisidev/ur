@@ -5,8 +5,9 @@
 //!
 //! `tour.txt` checks itself with `expect`; this checks that it, the
 //! README's screenshots, Gadgetbridge's lines, and each built-in theme's
-//! screenshots (`src/themes/<name>/shots.txt`) run to the end, and that
-//! every screenshot they take is the approved one, pixel for pixel.
+//! README screenshots (`src/themes/<name>/shots.txt`) run to the end, and
+//! that every screenshot they take is the approved one, pixel for pixel;
+//! and that each theme's every screen (`screens.txt`) draws.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -219,22 +220,47 @@ fn the_readme_screenshots() {
     });
 }
 
-/// Each theme's own screenshots, for its README (`src/themes/<name>/`:
-/// `shots.txt` takes them, into `shots/`), for every theme this build
-/// has: just the default with `--no-default-features`, every one with
-/// `--features themes-all` (as CI runs them too). Each is listed in
+// ==============================================================================
+// Each theme's screens
+// ==============================================================================
+//
+// A theme has two scripts. `shots.txt` takes its README's few
+// screenshots (each scheme's clock face, Last night and LOOK a side,
+// the dim look's glance and notification), the only ones approved and
+// committed: every approval of a PNG is another Git LFS object. And
+// `screens.txt` goes round every screen, a side each, which is only run:
+// to see that no screen of any theme panics, fails a debug assertion
+// (Retro's text that must fit, say) or breaks its script. It compares no
+// pixels: the tour checks most of Retro's screens', and a PR's
+// screenshot comment shows any README shot that changed.
+
+/// The built-in themes' directories' names, under `src/themes/`: just the
+/// default with `--no-default-features`, every one with `--features
+/// themes-all` (as CI runs them too).
+fn built_themes() -> Vec<&'static str> {
+    // `theme-<name>`, in `src/themes/<name>/` (see the build script).
+    let built: Vec<_> = env!("UR_THEME_FEATURES")
+        .split(',')
+        .filter(|f| !f.is_empty())
+        .map(|f| f.trim_start_matches("theme-"))
+        .collect();
+    assert!(!built.is_empty(), "no theme built in");
+    built
+}
+
+fn themes_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/themes")
+}
+
+/// Each theme's README screenshots (`src/themes/<name>/`: `shots.txt`
+/// takes them, into `shots/`), against the approved ones, and that its
+/// README shows each, and no other. Each theme is listed in
 /// `src/themes/README.md`, too.
 #[test]
 fn every_themes_screenshots() {
-    // `theme-<name>`, in `src/themes/<name>/` (see the build script).
-    let built = env!("UR_THEME_FEATURES")
-        .split(',')
-        .filter(|f| !f.is_empty());
-    let themes = Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/themes");
+    let themes = themes_dir();
     let index = std::fs::read_to_string(themes.join("README.md")).expect("src/themes/README.md");
-    let mut checked = 0;
-    for feature in built {
-        let name = feature.trim_start_matches("theme-");
+    for name in built_themes() {
         for file in ["shots.txt", "README.md"] {
             assert!(
                 themes.join(name).join(file).is_file(),
@@ -251,9 +277,49 @@ fn every_themes_screenshots() {
             approved: &format!("../src/themes/{name}/shots"),
             unchecked: &[],
         });
-        checked += 1;
+
+        // What's approved is what the README shows: a shot it doesn't is
+        // an LFS object for nothing, and one it shows that isn't there,
+        // a broken image. (Checked or approved above, `shots/` is what
+        // the script drew.)
+        let readme = std::fs::read_to_string(themes.join(name).join("README.md"))
+            .expect("the theme's README reads");
+        let shown: BTreeSet<String> = readme
+            .split("shots/")
+            .skip(1)
+            .filter_map(|after| {
+                let end = after.find(".png")?;
+                let file = &after[..end];
+                file.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_".contains(c))
+                    .then(|| format!("{file}.png"))
+            })
+            .collect();
+        let approved = pngs(&themes.join(name).join("shots"));
+        let unshown: Vec<_> = approved.difference(&shown).collect();
+        let missing: Vec<_> = shown.difference(&approved).collect();
+        assert!(
+            unshown.is_empty() && missing.is_empty(),
+            "src/themes/{name}/README.md must show exactly shots.txt's screenshots: \
+             not shown: {unshown:?}; shown, but not taken: {missing:?}"
+        );
     }
-    assert!(checked > 0, "no theme built in");
+}
+
+/// Each theme's every screen (`src/themes/<name>/screens.txt`), run to the
+/// end, without writing a screenshot (`--no-shots`): a smoke test.
+#[test]
+fn every_themes_screens() {
+    let themes = themes_dir();
+    for name in built_themes() {
+        let script = format!("../src/themes/{name}/screens.txt");
+        assert!(
+            themes.join(name).join("screens.txt").is_file(),
+            "src/themes/{name}/ has no screens.txt, to go round every screen"
+        );
+        let (ok, log) = run(&script, &["--no-shots"]);
+        assert!(ok, "{script}:\n{log}");
+    }
 }
 
 #[test]
