@@ -406,7 +406,9 @@ def rename_script(script):
     script = script.replace("../tmp/retro ", f"../tmp/{ident} ")
     # Built with Retro, the default, as the tests build it with every theme.
     script = script.replace("cargo run --release -- ", f"cargo run --release --features theme-{ident} -- ")
-    script = re.sub(r"^shot clock-(terminal|parchment)\.png .*\n", "", script, flags=re.M)
+    # Its clock face in each of Retro's schemes but the two it renames:
+    # any scheme Retro has beyond ARCADE and HANDHELD isn't the copy's.
+    script = re.sub(r"^shot clock-(?!arcade\.png|handheld\.png)[a-z-]+\.png .*\n", "", script, flags=re.M)
     script = script.replace("shot clock-arcade.png", f"shot clock-{dashed}-night.png")
     script = script.replace("shot clock-handheld.png", f"shot clock-{dashed}-day.png")
     script = script.replace("\ntheme arcade\n", f'\ntheme "{night_name}"\n')
