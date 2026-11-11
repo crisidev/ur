@@ -108,7 +108,7 @@ jobs:
     # paths must match exactly).
     env:
       KANI_VERSION: 0.68.0
-      CARGO_TARGET_DIR: ${{ runner.temp }}/kani
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/kani
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
       - name: Install the pinned toolchain
