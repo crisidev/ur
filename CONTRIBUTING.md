@@ -762,7 +762,9 @@ gh release download v0.9.0 --pattern sha256.sum --dir published
   all together with every feature (`--all-features`), and that the
   simulator builds with everything. `test.yml`'s heavier jobs, the
   simulator and firmware, wait for it.
-- `test.yml`: the host tests, the simulator's tests and screenshots
+- `test.yml`: the host tests, that their Kani proofs compile (Kani
+  only compiles `#[cfg(kani)]` code, and running the proofs is for
+  release tags), the simulator's tests and screenshots
   (as the run's `screenshots` artifact; every theme's own too, with
   `themes-all`) and its browser build (`sim-web`), and a packaged build
   (by `release.sh`, so without `debug-input`) of every PR and every

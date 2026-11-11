@@ -8,6 +8,8 @@
 #   host crate under host-tests/ and tested on the computer, with the
 #   pinned toolchain (beta.yml tests them on beta, weekly), one crate
 #   after another in one job; and the Gadgetbridge mock (gbmock/)
+# - kani: that every host-test crate's Kani proofs still compile, without
+#   running them (verify.yml runs them, on release tags)
 # - sim: the simulator's tests (sim/), which check its screenshots of the
 #   UI against the approved ones (every theme's README's too), run every
 #   theme's every screen, and upload those screenshots, to look at; then
@@ -91,6 +93,51 @@ jobs:
           done
           if [ "${#failed[@]}" -gt 0 ]; then
             echo "::error::tests failed in: ${failed[*]}"
+            exit 1
+          fi
+  # The Kani proofs (`#[kani::proof]`, under `#[cfg(kani)]`), compiled
+  # but not verified (`--only-codegen`): only `cargo kani` compiles them,
+  # so without this a change to a module can break its proofs and nothing
+  # notices until verify.yml runs them on a release tag. That happened to
+  # gb_buckets' and snapshot's in November 2026. All 32 crates' proofs
+  # compile in ~20 s on a desktop; verifying them takes most of an hour.
+  kani:
+    runs-on: ubuntu-latest
+    name: kani
+    # As verify.yml's, so the two share the cache entry below (its key and
+    # paths must match exactly).
+    env:
+      KANI_VERSION: 0.68.0
+      CARGO_TARGET_DIR: ${{ runner.temp }}/kani
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      # Kani brings its own compiler and CBMC (`cargo kani setup`, into
+      # ~/.kani), kept between runs by version. A new version takes ~5
+      # minutes, once, to build and set up.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # tag=v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/kani
+            ~/.cargo/bin/cargo-kani
+            ~/.kani
+          key: kani-${{ env.KANI_VERSION }}
+      - name: Install Kani
+        run: |
+          command -v cargo-kani >/dev/null || cargo install --locked kani-verifier --version "$KANI_VERSION"
+          cargo kani setup
+      - name: cargo kani --only-codegen, every crate with proofs
+        run: |
+          failed=()
+          mapfile -t crates < <(grep -rl 'kani::proof' host-tests/*/src | cut -d/ -f2 | sort -u)
+          for crate in "${crates[@]}"; do
+            echo "::group::$crate"
+            (cd "host-tests/$crate" && cargo kani --only-codegen) || failed+=("$crate")
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::Kani proofs don't compile in: ${failed[*]}"
             exit 1
           fi
   features:
