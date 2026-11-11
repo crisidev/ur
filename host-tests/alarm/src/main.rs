@@ -1,11 +1,29 @@
-//! Host tests for the firmware's `alarm` module. `cargo test` runs them.
+//! Host tests for the firmware's `alarm` module. `cargo test` runs them;
+//! `cargo run --release -- <decoded field log> [<reference stages>]`
+//! replays a night's smart wake instead (see `replay`).
 
 #[path = "../../../src/alarm.rs"]
 #[allow(dead_code)]
 mod alarm;
+#[cfg(not(kani))]
+mod replay;
+#[cfg(not(kani))]
+#[path = "../../../src/sleep.rs"]
+#[allow(dead_code)]
+mod sleep;
+#[cfg(not(kani))]
+#[path = "../../../src/stages.rs"]
+#[allow(dead_code)]
+mod stages;
 
 fn main() {
-    println!("run `cargo test`");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.is_empty() {
+        println!("run `cargo test`, or `cargo run --release -- <decoded field log> [<stages>]`");
+        return;
+    }
+    #[cfg(not(kani))]
+    replay::main(&args);
 }
 
 #[cfg(test)]
