@@ -2,9 +2,9 @@
 # - fmt: rustfmt, for the firmware, each host-test crate, and the simulator
 # - clippy: lints, for the firmware as released (both variants; see
 #   scripts/release.sh) and as compared with the simulator (`compare`,
-#   which covers `debug-input` too), with the pinned toolchain and on
-#   beta, and with every theme (`themes-all`), and for the simulator
-#   (sim/), with and without its window, and with every theme
+#   which covers `debug-input` too), and with every theme (`themes-all`),
+#   and for the simulator (sim/), with and without its window, and with
+#   every theme
 # - scripts: shellcheck, and that the Python scripts at least parse
 #
 # Most of jonhoo/rust-ci-conf's library checks (semver, minimal versions,
@@ -14,8 +14,7 @@
 # The toolchain is the one rust-toolchain.toml pins, for releases to be
 # reproducible; `rustup toolchain install` (with no arguments) installs it,
 # so the pin lives in that one file. Beta, for early warning of new lints
-# and breakage, is installed alongside and selected with `cargo +beta`,
-# which overrides the pin.
+# and breakage, runs weekly instead (beta.yml).
 permissions:
   contents: read
 # Restricting the push trigger to main means a PR from a branch of this repo
@@ -46,11 +45,10 @@ jobs:
         run: cargo fmt --check
   clippy:
     runs-on: ubuntu-latest
-    name: ${{ matrix.toolchain }} / clippy / ${{ matrix.variant }}
+    name: clippy / ${{ matrix.variant }}
     strategy:
       fail-fast: false
       matrix:
-        toolchain: [pinned, beta]
         variant: [ur, ur-logging, compare, flash-stress, themes-all]
         include:
           - variant: ur
@@ -71,18 +69,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
       - name: Install the pinned toolchain
         run: rustup toolchain install
-      - name: Install beta
-        if: matrix.toolchain == 'beta'
-        run: rustup toolchain install beta --profile minimal --target thumbv7em-none-eabihf --component clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
-        with:
-          key: ${{ matrix.toolchain }}
       # The target comes from .cargo/config.toml. Release profile, as that's
       # what ships (and some lints depend on the profile's cfgs).
       - name: cargo clippy
-        run: >-
-          cargo ${{ matrix.toolchain == 'beta' && '+beta' || '' }}
-          clippy --locked --release --features "${{ matrix.features }}" -- -D warnings
+        run: cargo clippy --locked --release --features "${{ matrix.features }}" -- -D warnings
   sim-clippy:
     runs-on: ubuntu-latest
     name: clippy / sim

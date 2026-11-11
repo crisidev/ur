@@ -1,0 +1,67 @@
+# Beta, weekly (and on demand): early warning of what the next stable Rust
+# will break or newly lint, before the pinned toolchain (rust-toolchain.toml)
+# moves to it.
+# - clippy: the firmware, as check.yml lints it with the pinned toolchain
+#   (both released variants, `compare`, `flash-stress`, every theme)
+# - host-tests: every host-test crate, and gbmock, as test.yml tests them
+#
+# Not on every PR and push, as it used to be: beta moves on rustc's own
+# schedule (a new one every six weeks, backports between), never because
+# of a PR, so a PR's run only ever blamed the PR for beta's change, and
+# doubled the jobs. Weekly finds the same breakage within days. A
+# scheduled run that fails emails whoever last changed the `cron` line
+# below; it shows in the Actions tab as `beta`.
+#
+# No cache: a week apart, GitHub would have evicted it (after 7 days
+# unused) anyway, and nothing waits on this run.
+permissions:
+  contents: read
+on:
+  schedule:
+    # Mondays, 05:17 UTC: off the hour, when GitHub's scheduler is busiest.
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+name: beta
+jobs:
+  beta:
+    runs-on: ubuntu-latest
+    name: beta
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      # `cargo +beta` overrides rust-toolchain.toml's pin, so the pinned
+      # toolchain itself isn't needed.
+      - name: Install beta
+        run: rustup toolchain install beta --profile minimal --target thumbv7em-none-eabihf --component clippy
+      # The target comes from .cargo/config.toml. Release profile, as that's
+      # what ships (and some lints depend on the profile's cfgs). Each
+      # variant, even after one fails, so one run shows them all.
+      - name: cargo clippy, every variant
+        run: |
+          failed=()
+          for features in "" field-log compare flash-stress themes-all; do
+            echo "::group::clippy --features '$features'"
+            cargo +beta clippy --locked --release --features "$features" -- -D warnings || failed+=("${features:-ur}")
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::clippy on beta failed for: ${failed[*]}"
+            exit 1
+          fi
+      # As test.yml's host-tests job: from each crate's own directory, for
+      # its .cargo/config.toml, sharing one target directory.
+      - name: cargo test, every host-test crate
+        if: ${{ !cancelled() }}
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/host-tests
+        run: |
+          failed=()
+          for dir in host-tests/*/ gbmock/; do
+            crate=${dir%/}
+            echo "::group::$crate"
+            (cd "$crate" && cargo +beta test --locked --release) || failed+=("$crate")
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::tests on beta failed in: ${failed[*]}"
+            exit 1
+          fi

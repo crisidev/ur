@@ -753,16 +753,15 @@ gh release download v0.9.0 --pattern sha256.sum --dir published
 ## CI
 
 - `check.yml`: rustfmt, clippy (both variants, the dev kit's `compare`
-  and `flash-stress` builds, and every theme, with the pinned toolchain
-  and on beta; and the simulator, with every theme too), [shellcheck],
-  and that the Python scripts parse.
+  and `flash-stress` builds, and every theme; and the simulator, with
+  every theme too), [shellcheck], and that the Python scripts parse.
 - `features.yml`: that every theme builds alone (as its package is) and
   all together with every feature (`--all-features`), and that the
   simulator builds with everything. The heavier jobs wait for it:
   `test.yml`'s simulator, web and firmware jobs, `screenshots.yml`'s
   rendering, and `pages.yml`'s build (those two only for its simulator
   check).
-- `test.yml`: the host tests (pinned and beta), the simulator's tests
+- `test.yml`: the host tests, the simulator's tests
   and screenshots (as the run's `screenshots` artifact; every theme's
   own too, with `themes-all`), and a packaged
   build (by `release.sh`, so without `debug-input`) of every PR and
@@ -772,6 +771,9 @@ gh release download v0.9.0 --pattern sha256.sum --dir published
   ready to send to a watch, and everything (with the ELFs that decode
   logs) as one zip.
 - `release.yml`: on a version tag; see [Releasing](#releasing).
+- `beta.yml`: weekly, and on demand, the firmware's clippy and the host
+  tests on beta, for early warning of the next stable Rust. Not per PR:
+  beta changes on its own schedule, not the PR's.
 
 Dependabot proposes updates to the actions, the firmware's and host
 tests' Cargo.lock, and the pinned toolchain quarterly.

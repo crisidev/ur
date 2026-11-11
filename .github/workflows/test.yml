@@ -6,7 +6,7 @@
 #   QR code, what a touch does with the screen off, Gadgetbridge's
 #   messages and link, colours that must differ in every colour scheme), each built into a
 #   host crate under host-tests/ and tested on the computer, with the
-#   pinned toolchain and on beta
+#   pinned toolchain (beta.yml tests them on beta, weekly)
 # - sim: the simulator's tests (sim/), which check its screenshots of the
 #   UI against the approved ones (every theme's README's too), run every
 #   theme's every screen, and upload those screenshots, to look at
@@ -40,29 +40,24 @@ name: test
 jobs:
   host-tests:
     runs-on: ubuntu-latest
-    name: ${{ matrix.toolchain }} / ${{ matrix.crate }}
+    name: host-tests / ${{ matrix.crate }}
     strategy:
       fail-fast: false
       matrix:
-        toolchain: [pinned, beta]
         crate: [alarm, aranet, arrival, backoff, battery, brightness, bthome, buttons, calendar, day, decimal, dfu, font, gb, gb_buckets, gesture, glance, heart_schedule, link, live, mcuboot, minute_ring, nav, on_time, packet_pool, ppg, qr, route, rtt_ring, sleep, step_counter, snapshot, temperature, theme, living_tokyo, wake]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
       - name: Install the pinned toolchain
         run: rustup toolchain install
-      - name: Install beta
-        if: matrix.toolchain == 'beta'
-        run: rustup toolchain install beta --profile minimal
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
         with:
           workspaces: host-tests/${{ matrix.crate }}
-          key: ${{ matrix.toolchain }}
       # Each crate has its own .cargo/config.toml pointing it at the host,
       # which cargo only finds when run from the crate's directory.
       # --release: the PPG simulations are slow unoptimised.
       - name: cargo test
         working-directory: host-tests/${{ matrix.crate }}
-        run: cargo ${{ matrix.toolchain == 'beta' && '+beta' || '' }} test --locked --release
+        run: cargo test --locked --release
   # The Gadgetbridge mock's own tests (its JSON, escaping and upsert
   # against Gadgetbridge's behaviour). It's shared by `host-tests/gb` and
   # `sim`, so it lives at the top, not in `host-tests/` with the matrix.
