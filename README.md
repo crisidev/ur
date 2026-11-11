@@ -216,8 +216,8 @@ turn CoMaps on in its settings, under "Navigation apps".
 
 ## Installing
 
-Download `ur-<version>-dfu.zip` from the [releases]: the same package
-installs ur over InfiniTime and updates it afterwards.
+Download `ur-<version>-dfu.zip` from the [latest release][releases]: the
+same package installs ur over InfiniTime and updates it afterwards.
 `ur-logging-<version>-dfu.zip` is the same firmware keeping a log in the
 watch's flash, for reporting problems; it costs a little battery, and
 [CONTRIBUTING.md](CONTRIBUTING.md#field-logs) explains fetching the log.
@@ -246,7 +246,7 @@ Send the zip over Bluetooth with either of these:
   python3 scripts/dfu.py ur-<version>-dfu.zip --address <MAC> --packet-size 240
   ```
 
-[releases]: https://github.com/jonhoo/ur/releases
+[releases]: https://github.com/jonhoo/ur/releases/latest
 [nrf-dfu-android]: https://play.google.com/store/apps/details?id=no.nordicsemi.android.dfu
 [nrf-dfu-ios]: https://apps.apple.com/app/nrf-device-firmware-update/id1624454660
 
