@@ -760,14 +760,14 @@ gh release download v0.9.0 --pattern sha256.sum --dir published
 - `features.yml`: that every theme builds alone (as its package is) and
   all together with every feature (`--all-features`), and that the
   simulator builds with everything. The heavier jobs wait for it:
-  `test.yml`'s simulator, web and firmware jobs, `screenshots.yml`'s
+  `test.yml`'s simulator and firmware jobs, `screenshots.yml`'s
   rendering, and `pages.yml`'s build (those two only for its simulator
   check).
-- `test.yml`: the host tests, the simulator's tests
-  and screenshots (as the run's `screenshots` artifact; every theme's
-  own too, with `themes-all`), and a packaged
-  build (by `release.sh`, so without `debug-input`) of every PR and
-  every commit on main, to try on a watch:
+- `test.yml`: the host tests, the simulator's tests and screenshots
+  (as the run's `screenshots` artifact; every theme's own too, with
+  `themes-all`) and its browser build (`sim-web`), and a packaged build
+  (by `release.sh`, so without `debug-input`) of every PR and every
+  commit on main, to try on a watch:
   `0.9.0-pr.<number>+<commit>`, or `0.9.0-snap.<commits>+<commit>`. The
   run's artifacts include each variant's `-dfu.zip` on its own, unzipped,
   ready to send to a watch, and everything (with the ELFs that decode

@@ -7,8 +7,8 @@
 # Needs Pages switched on, with GitHub Actions as its source (Settings,
 # Pages, "Build and deployment"); until then, this fails at "configure".
 #
-# test.yml's sim-web job checks the simulator's build on every PR (and that
-# its screenshots match the command line's); this only builds and deploys.
+# test.yml's sim job checks the browser's build on every PR (and that its
+# screenshots match the command line's); this only builds and deploys.
 permissions:
   contents: read
 on:

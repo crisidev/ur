@@ -1,5 +1,5 @@
 # That every theme builds, alone and with everything: a gate the heavier
-# jobs wait on (test.yml's simulator, web and firmware jobs, with the size
+# jobs wait on (test.yml's simulator and firmware jobs, with the size
 # report; screenshots.yml's renderings; pages.yml's build), so a theme or a
 # feature that doesn't compile fails here, in a minute or so, rather than
 # in each of them. Called by those workflows (`workflow_call`), with
