@@ -245,16 +245,24 @@ write access:
   as an artifact.
 - `screenshots-comment.yml` runs after it, on `workflow_run`, from the
   default branch's copy of itself, never the PR's code. It treats the
-  artifact as untrusted: the PR must exist and have the commit the run
-  was for, and every file must be a PNG with a plain name, of limited
-  size and number. It uploads the images as comment attachments (what
-  `gh pr comment --attach` does, nothing stored in the repository), then
+  artifact as untrusted: the PR must exist, be open, and have the commit
+  the run was for, and every file must be a PNG with a plain name, of
+  limited size and number. It uploads the images as assets of one
+  pre-release, `pr-screenshots` (made the first time; a tag, but nothing
+  in the repository's history), named `pr<N>-<commit>-<path>.png`, then
   edits its comment in place to show them. It skips Dependabot's PRs,
   whose runs only get read access.
 
+A release holds at most 1000 assets, so once the comment shows a new
+push's images, the PR's earlier ones are deleted (an older revision of
+the comment, in its edit history, then shows broken images), and when
+the PR closes, the rest are. The `pr-screenshots` pre-release is CI's,
+not a release of ur: it's never "Latest", which the README's download
+links go to.
+
 If the images can't be uploaded, the comment still says what changed,
 with each screen's name and how many pixels differ, notes that the
-images couldn't be attached, and links the artifact of the run that
+images couldn't be uploaded, and links the artifact of the run that
 drew them (kept for 7 days).
 
 ## Themes

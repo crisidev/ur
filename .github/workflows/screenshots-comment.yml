@@ -8,43 +8,62 @@
 # this runs after it (on `workflow_run`, from the default branch's copy of
 # this file), with write access, and never checks out or runs the PR's
 # code. What it gets from that run, an artifact, is the PR's to write, so
-# it's untrusted: the PR must exist and be at the commit the run was for
-# (so a PR can't post on another), every file must be a PNG with a plain
-# name (they become paths, upload names and alt text), and there are
-# only so many, of only so large. Nothing from it reaches a shell
-# command but through variables, after those checks.
+# it's untrusted: the PR must exist, be open, and be at the commit the
+# run was for (so a PR can't post on another), every file must be a PNG
+# with a plain name (they become paths, asset names, URLs and alt text),
+# and there are only so many, of only so large. Nothing from it reaches
+# a shell command but through variables, after those checks.
 #
 # PR comments can't embed artifacts, and the images aren't kept in the
-# repository: they're uploaded as comment attachments, as dragging an
-# image into a comment on github.com does, and the comment links each by
-# the `https://github.com/user-attachments/assets/…` URL GitHub gives
-# back. A later push uploads its own, so an older revision of the
-# comment still shows what it showed.
+# repository's history: they're assets of one published pre-release,
+# `pr-screenshots`, made the first time it's needed (its tag at the
+# default branch's tip: a tag, but no commit and no branch). A
+# pre-release, so it's never the "Latest" release, which the README's
+# download links go to; published, as a draft's assets aren't public.
+# Each image is uploaded as `pr<N>-<head sha7>-<path>.png`, so each push
+# uploads its own and a re-run replaces its own, and the comment links it
+# by its `https://github.com/<repo>/releases/download/pr-screenshots/…`
+# URL.
 #
-# The upload is what `gh pr comment --attach` (gh 2.99+) does, but made
-# with `gh api`, because `--attach` can only create a comment or edit
-# the token's *last* one, and this bot's last comment on a PR may be
-# size-report.yml's. gh's own code (internal/attachments/client.go, as of
-# v2.103.3) POSTs the file's bytes to
-# `https://uploads.github.com/user-attachments/assets` with the query
-# `name`, `content_type` and `repository_id`, `Content-Type:
-# application/octet-stream`, and the same `Authorization: token …` as
-# any API call; the reply is `{"url": …}`. So: upload each image, then
-# edit our comment by its id, in place, as before. That endpoint isn't
-# in GitHub's REST docs, only behind `--attach`, so it could change
-# under us; if it does (or this token can't upload at all, which nothing
-# documents either way), the comment still goes up, with the summary,
-# without images, and saying so.
+# GitHub serves a release asset as `application/octet-stream`, and as an
+# attachment, whatever type it was uploaded with. That doesn't stop the
+# comment showing it: GitHub leaves github.com images in a comment as
+# they are (no camo proxy, which would want an image type), and a
+# browser draws an <img> by what the bytes are. As checked on 2026-11-11
+# with a throwaway pre-release: the markdown API kept the URL as is, and
+# Chromium and Firefox both drew it.
+#
+# (Comment attachments, `gh pr comment --attach`'s, would have been
+# tidier, but only signed-in users can upload those: GitHub answers this
+# token with a 404.)
+#
+# A release holds at most 1000 assets, so they mustn't pile up. Once the
+# comment is updated, this PR's assets it no longer links (an earlier
+# head's, or all of them if it links none) are deleted, and when the PR
+# closes, the `clean` job deletes the rest. The cost: an older revision
+# of the comment, in its edit history, shows broken images. Keeping a
+# few heads' instead would multiply what each PR holds (up to 200 images
+# a head) for a view hardly anyone opens.
 on:
   workflow_run:
     workflows: [screenshots]
     types: [completed]
-# Nothing by default; the job asks for what it needs (as size-report.yml).
+  # For `clean`. pull_request_target runs with write access even for a
+  # fork's PR, which is safe only because that job never checks out or
+  # runs the PR's code: it uses the PR's number, from GitHub, and nothing
+  # else of the PR's.
+  pull_request_target:
+    types: [closed]
+# Nothing by default; each job asks for what it needs (as size-report.yml).
 permissions: {}
-# One at a time a PR, so two runs don't both create its comment. The
-# names only go into the group's name, never a shell.
+env:
+  # The pre-release whose assets are the images.
+  TAG: pr-screenshots
+# One at a time a PR, so two runs don't both create its comment, and a
+# PR's `clean` waits for a `post` in progress (and vice versa). The names
+# only go into the group's name, never a shell.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_repository.full_name || github.event.pull_request.head.repo.full_name }}-${{ github.event.workflow_run.head_branch || github.event.pull_request.head.ref }}
   cancel-in-progress: false
 name: screenshots-comment
 jobs:
@@ -54,11 +73,8 @@ jobs:
     permissions:
       # To download the other run's artifact.
       actions: read
-      # To upload the images. Nothing is pushed: the upload endpoint
-      # wants push access to the repository it attaches to (gh checks
-      # for WRITE, MAINTAIN or ADMIN first, and the endpoint answers 404
-      # without it), and for this token push access is `contents:
-      # write`.
+      # To upload the images as release assets (and make the release the
+      # first time), and to delete earlier ones. Nothing is pushed.
       contents: write
       # To comment.
       pull-requests: write
@@ -66,6 +82,7 @@ jobs:
     # push) or a failed one has nothing complete to say. Dependabot's
     # PRs' runs get a read-only token, so couldn't post anyway.
     if: >-
+      github.event_name == 'workflow_run' &&
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.actor.login != 'dependabot[bot]'
@@ -80,12 +97,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          # What the uploads are attached to (GitHub's, as the rest).
-          REPO_ID: ${{ github.event.repository.id }}
           # GitHub's, not the artifact's: the commit the run was for.
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           # The screenshots run, whose artifact the comment can point to
-          # when the images can't be attached.
+          # when the images can't be uploaded.
           RUN: ${{ github.event.workflow_run.id }}
           ARTIFACT: ${{ runner.temp }}/artifact
         run: |
@@ -100,13 +115,22 @@ jobs:
           # What the artifact claims, checked
           # ====================================================================
 
-          # The PR: a number, which GitHub says is at the commit this run
-          # was for. If it has moved on since, a newer run will post.
+          # The PR: a number, which GitHub says is open and at the commit
+          # this run was for. If it has moved on since, a newer run will
+          # post; if it has closed, `clean` has deleted (or will delete)
+          # its images, and uploading more would leave them behind.
+          [[ $HEAD_SHA =~ ^[0-9a-f]{40}$ ]] || fail "odd head commit"
           pr=$(head -c 16 "$ARTIFACT/pr" | tr -d '\n')
           [[ $pr =~ ^[1-9][0-9]{0,8}$ ]] || fail "the artifact's PR number isn't one"
-          at=$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)
+          pull=$(gh api "repos/$REPO/pulls/$pr" --jq '"\(.head.sha) \(.state)"')
+          at=${pull% *}
+          state=${pull#* }
           if [[ $at != "$HEAD_SHA" ]]; then
             echo "PR #$pr is at $at now, not $HEAD_SHA: not posting"
+            exit 0
+          fi
+          if [[ $state != open ]]; then
+            echo "PR #$pr is $state: not posting"
             exit 0
           fi
           base=$(head -c 48 "$ARTIFACT/base" | tr -d '\n')
@@ -161,62 +185,116 @@ jobs:
           fi
 
           # ====================================================================
-          # The images, attached
+          # The images, uploaded
           # ====================================================================
 
-          # Each image uploaded as `gh pr comment --attach` would (see the
-          # top of this file), for a URL to put in the comment. All or
-          # nothing: at the first failure, the comment goes up without
-          # images, saying why, rather than with some of them, where a
-          # missing one would look like a removed screen. What did upload
-          # stays on GitHub, unreferenced: there's no endpoint to delete
-          # an upload.
+          # The release's id, or nothing if there's none yet (GitHub's
+          # 404 for that isn't worth the log's space).
+          release_id() {
+            gh api "repos/$REPO/releases/tags/$TAG" --jq .id 2>/dev/null || true
+          }
+
+          # Each image as an asset of the release (see the top of this
+          # file). All or nothing: at the first problem, the comment goes
+          # up without images, saying why, rather than with some of them,
+          # where a missing one would look like a removed screen.
           #
           # gh comes with the runner image (2.103.3 on both ubuntu-24.04
-          # and 26.04, as of their 20261101 images). This needs only `gh
-          # api` with an absolute URL and `--input`, which long predate
-          # `--attach`, so no particular gh is installed; its version goes
-          # in the log, for when an upload fails.
+          # and 26.04, as of their 20261101 images); `gh release upload`
+          # has long done all this needs, so no particular gh is
+          # installed. Its version goes in the log, for when an upload
+          # fails.
           #
           # TODO: GitHub limits content-creating requests to about 80 a
           # minute. A PR that changes more screens than that may need the
           # uploads paced; for now, it gets the comment without images.
-          declare -A urls=()
-          attached=
+          declare -A urls=() linked=()
+          release=
+          uploaded=
           if ((${#shots[@]} > 0)); then
-            [[ $REPO_ID =~ ^[1-9][0-9]*$ ]] || fail "odd repository id"
             gh --version | head -n 1
-            attached=1
+            uploaded=1
+
+            # Asset names, from the checked paths alone: `/` becomes `-`,
+            # so each is letters, digits, `.`, `_` and `-`, which GitHub
+            # keeps as they are. gh names an asset by its file, so each
+            # is copied to that name first (with no `#`, which gh would
+            # take as the start of a label). Two paths can come out the
+            # same (`a-b.png` and `a/b.png`); rather than pick one, that's
+            # a problem like any other.
+            stage="$RUNNER_TEMP/upload"
+            mkdir -p "$stage"
             for rel in "${shots[@]}"; do
-              # The `-f` fields go into the query, as `--input` is the body;
-              # gh sends the file's size as its Content-Length. On failure
-              # gh prints GitHub's status and message, which hold nothing
-              # of the artifact's.
-              rc=0
-              reply=$(gh api --method POST https://uploads.github.com/user-attachments/assets \
-                -H 'Content-Type: application/octet-stream' \
-                -H 'Accept: application/vnd.github+json' \
-                -f name="${rel##*/}" -f content_type=image/png -f repository_id="$REPO_ID" \
-                --input "$images/$rel" --jq .url) || rc=$?
-              # GitHub's reply, but it goes into the comment, so it must
-              # be what an attachment's URL looks like, and nothing else.
-              if ((rc == 0)) && [[ $reply =~ ^https://github\.com/user-attachments/assets/[A-Za-z0-9-]+$ ]]; then
-                urls[$rel]=$reply
-                continue
+              asset="pr$pr-${HEAD_SHA:0:7}-${rel//\//-}"
+              if [[ -e $stage/$asset ]]; then
+                echo "::warning::two images would both be $asset: posting without images"
+                uploaded=
+                break
               fi
-              if ((rc == 0)); then
-                echo "::warning::uploading $rel got a reply that isn't an attachment's URL"
-              else
-                echo "::warning::couldn't upload $rel (gh exited with $rc): posting without images"
-              fi
-              attached=
-              break
+              cp "$images/$rel" "$stage/$asset"
+              urls[$rel]="$GITHUB_SERVER_URL/$REPO/releases/download/$TAG/$asset"
+              linked[$asset]=1
             done
+
+            # The release, made the first time. Its tag goes at the
+            # default branch's tip (this run's commit), never the PR's.
+            # Two PRs' runs may both find none and both try; the second
+            # fails, and finds the first's.
+            if [[ -n $uploaded ]]; then
+              release=$(release_id)
+              if [[ -z $release ]]; then
+                gh release create "$TAG" --repo "$REPO" --target "$GITHUB_SHA" \
+                  --prerelease --latest=false \
+                  --title "PR screenshots (CI's, not a release of ur)" \
+                  --notes "The images in the screenshots comment on pull requests, uploaded by .github/workflows/screenshots-comment.yml, which deletes a PR's when it moves on or closes. Not a release of ur: those are named \`ur <version>\`." \
+                  >/dev/null || true
+                release=$(release_id)
+              fi
+              if [[ ! $release =~ ^[1-9][0-9]*$ ]]; then
+                echo "::warning::couldn't find or make the $TAG release: posting without images"
+                release=
+                uploaded=
+              fi
+            fi
+
+            # `--clobber`, as a re-run uploads the same names again. gh
+            # types each by its extension, image/png. On failure it prints
+            # GitHub's status and message, and maybe an asset's name,
+            # which is only ever one made above.
+            if [[ -n $uploaded ]]; then
+              rc=0
+              gh release upload "$TAG" "$stage"/* --repo "$REPO" --clobber || rc=$?
+              if ((rc != 0)); then
+                echo "::warning::couldn't upload the images (gh exited with $rc): posting without images"
+                uploaded=
+              fi
+            fi
+
+            # And then GitHub's word for it: every asset there by the
+            # name asked for (it renames those it doesn't like), uploaded
+            # in full, as a PNG. Names from the release are only compared,
+            # never logged.
+            if [[ -n $uploaded ]]; then
+              declare -A have=()
+              while IFS=$'\t' read -r asset ctype astate; do
+                if [[ $asset == "pr$pr-${HEAD_SHA:0:7}-"* && $ctype == image/png && $astate == uploaded ]]; then
+                  have[$asset]=1
+                fi
+              done < <(gh api --paginate "repos/$REPO/releases/$release/assets?per_page=100" \
+                --jq '.[] | [.name, .content_type, .state] | @tsv' || true)
+              for asset in "${!linked[@]}"; do
+                if [[ -z ${have[$asset]:-} ]]; then
+                  echo "::warning::$asset isn't in the release as uploaded: posting without images"
+                  uploaded=
+                  break
+                fi
+              done
+            fi
           fi
 
-          # Where the images are when they couldn't be attached: the
+          # Where the images are when they couldn't be uploaded: the
           # screenshots run's artifact, if GitHub names it, else the run.
-          if ((${#shots[@]} > 0)) && [[ -z $attached ]]; then
+          if ((${#shots[@]} > 0)) && [[ -z $uploaded ]]; then
             [[ $RUN =~ ^[1-9][0-9]*$ ]] || fail "odd run id"
             runs="$GITHUB_SERVER_URL/$REPO/actions/runs"
             artifact_url="$runs/$RUN"
@@ -248,10 +326,10 @@ jobs:
             else
               echo "$(count changed) changed, $(count added) added, $(count removed) removed."
             fi
-            if ((${#shots[@]} > 0)) && [[ -z $attached ]]; then
+            if ((${#shots[@]} > 0)) && [[ -z $uploaded ]]; then
               echo
               printf '> [!WARNING]\n'
-              printf '> **The images couldn'\''t be attached** (see [this run'\''s log](%s)). ' \
+              printf '> **The images couldn'\''t be uploaded** (see [this run'\''s log](%s)). ' \
                 "$runs/$GITHUB_RUN_ID"
               # shellcheck disable=SC2016 # The backticks are Markdown's.
               printf 'They'\''re in the [`screenshots-comment` artifact](%s) ' "$artifact_url"
@@ -275,7 +353,7 @@ jobs:
                 else
                   echo "\`$shot\`"
                 fi
-                if [[ -n $attached ]]; then
+                if [[ -n $uploaded ]]; then
                   echo
                   echo "<img src=\"${urls[$rel]}\" alt=\"$shot ($kind)\">"
                 fi
@@ -296,3 +374,92 @@ jobs:
             gh api "repos/$REPO/issues/$pr/comments" --input "$payload" >/dev/null
             echo "Commented on PR #$pr"
           fi
+
+          # ====================================================================
+          # The images the comment no longer links
+          # ====================================================================
+
+          # Now that the comment is up, this PR's other assets are only in
+          # its edit history: an earlier head's, or, when the comment
+          # links none, any at all (some of this head's may have uploaded
+          # before a failure). A release holds at most 1000, so they go
+          # (see the top of this file). By id, and by the PR's prefix,
+          # with its `-` so PR 2's never matches PR 23's. Best effort: a
+          # failure here only leaves them for the next run, or `clean`.
+          # The whole list first, then the deletions, so deleting doesn't
+          # shift the pages being read.
+          [[ -n $release ]] || release=$(release_id)
+          if [[ $release =~ ^[1-9][0-9]*$ ]]; then
+            rc=0
+            assets=$(gh api --paginate "repos/$REPO/releases/$release/assets?per_page=100" \
+              --jq '.[] | [.id, .name] | @tsv') || rc=$?
+            if ((rc != 0)); then
+              echo "::warning::couldn't list the $TAG release's assets: not deleting any"
+              exit 0
+            fi
+            stale=()
+            while IFS=$'\t' read -r id asset; do
+              [[ $id =~ ^[1-9][0-9]*$ && $asset == "pr$pr-"* ]] || continue
+              if [[ -n $uploaded && -n ${linked[$asset]:-} ]]; then
+                continue
+              fi
+              stale+=("$id")
+            done <<<"$assets"
+            deleted=0
+            for id in "${stale[@]}"; do
+              if gh api -X DELETE "repos/$REPO/releases/assets/$id"; then
+                deleted=$((deleted + 1))
+              else
+                echo "::warning::couldn't delete asset $id"
+              fi
+            done
+            echo "Deleted $deleted of PR #$pr's ${#stale[@]} images the comment no longer links"
+          fi
+
+  clean:
+    runs-on: ubuntu-latest
+    name: clean
+    permissions:
+      # To delete the PR's images, assets of the release.
+      contents: write
+    # When a PR closes (merged or not). Never checks out or runs the PR's
+    # code: see `pull_request_target` above. Dependabot's PRs never get
+    # images (`post` skips them), and when Dependabot closes one itself
+    # its token is read-only.
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
+    steps:
+      - name: delete the PR's images
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # GitHub's, but checked as `post` checks the artifact's, since
+          # it goes into a pattern.
+          if [[ ! $PR =~ ^[1-9][0-9]{0,8}$ ]]; then
+            echo "::error::odd PR number"
+            exit 1
+          fi
+          release=$(gh api "repos/$REPO/releases/tags/$TAG" --jq .id 2>/dev/null || true)
+          if [[ ! $release =~ ^[1-9][0-9]*$ ]]; then
+            echo "No $TAG release: nothing to delete"
+            exit 0
+          fi
+          # The list first, then the deletions, so deleting doesn't shift
+          # the pages being read. Every asset by this PR's prefix, with
+          # its `-` so PR 2's never matches PR 23's.
+          assets=$(gh api --paginate "repos/$REPO/releases/$release/assets?per_page=100" \
+            --jq '.[] | [.id, .name] | @tsv')
+          ids=()
+          while IFS=$'\t' read -r id asset; do
+            if [[ $id =~ ^[1-9][0-9]*$ && $asset == "pr$PR-"* ]]; then
+              ids+=("$id")
+            fi
+          done <<<"$assets"
+          for id in "${ids[@]}"; do
+            gh api -X DELETE "repos/$REPO/releases/assets/$id"
+          done
+          echo "Deleted PR #$PR's ${#ids[@]} images"
