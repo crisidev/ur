@@ -33,8 +33,8 @@
 #   live too).
 # - host-tests/IDENT: a copy of host-tests/theme's checks of Retro's
 #   colours, for its schemes (without `target/`, and without the test of
-#   an old collision of ARCADE's), with CI's fmt and test matrices
-#   running it.
+#   an old collision of ARCADE's), with CI's fmt matrix checking it
+#   (CI's host-tests job finds it by itself).
 #
 # Then, from sim/, `UPDATE_SHOTS=1 cargo test --release
 # --no-default-features --features themes-all` takes its README's
@@ -495,11 +495,6 @@ for path in [tests / "Cargo.toml", tests / "Cargo.lock"]:
 
 check = Path(".github/workflows/check.yml")
 edit(check, ("host-tests/theme, ", f"host-tests/theme, host-tests/{ident}, "))
-test = Path(".github/workflows/test.yml")
-text, found = re.subn(r"^(\s+crate: \[.*\btheme), ", rf"\1, {ident}, ", test.read_text(), count=1, flags=re.M)
-if not found:
-    sys.exit(f"{test}: no host tests' matrix with theme in it")
-test.write_text(text)
 
 print(f"src/themes/{ident}/ and host-tests/{ident}/ written, and {display} listed.")
 EOF

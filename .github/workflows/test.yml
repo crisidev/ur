@@ -6,7 +6,8 @@
 #   QR code, what a touch does with the screen off, Gadgetbridge's
 #   messages and link, colours that must differ in every colour scheme), each built into a
 #   host crate under host-tests/ and tested on the computer, with the
-#   pinned toolchain (beta.yml tests them on beta, weekly)
+#   pinned toolchain (beta.yml tests them on beta, weekly), one crate
+#   after another in one job; and the Gadgetbridge mock (gbmock/)
 # - sim: the simulator's tests (sim/), which check its screenshots of the
 #   UI against the approved ones (every theme's README's too), run every
 #   theme's every screen, and upload those screenshots, to look at
@@ -38,42 +39,61 @@ concurrency:
   cancel-in-progress: true
 name: test
 jobs:
+  # Every host-test crate, and gbmock (the Gadgetbridge mock's own tests:
+  # its JSON, escaping and upsert against Gadgetbridge's behaviour; shared
+  # by `host-tests/gb` and `sim`, so it lives at the top), one after
+  # another in one job. Found in the tree, so a new crate needs no list
+  # here.
+  #
+  # One job, not one per crate: once built, a crate's tests take a second
+  # or two, and as a job each it spent ~20 s on the runner, checkout and
+  # toolchain around them, and took one of the 20 jobs the repository runs
+  # at once, so the jobs on the critical path (features, then firmware)
+  # queued behind them. Each crate still fails on its own: the loop
+  # carries on, and ends by naming every crate that failed.
   host-tests:
     runs-on: ubuntu-latest
-    name: host-tests / ${{ matrix.crate }}
-    strategy:
-      fail-fast: false
-      matrix:
-        crate: [alarm, aranet, arrival, backoff, battery, brightness, bthome, buttons, calendar, day, decimal, dfu, font, gb, gb_buckets, gesture, glance, heart_schedule, link, live, mcuboot, minute_ring, nav, on_time, packet_pool, ppg, qr, route, rtt_ring, sleep, step_counter, snapshot, temperature, theme, living_tokyo, wake]
+    name: host-tests
+    # One target directory for all of them, so the dependencies they share
+    # (bolero, quickcheck, heapless, ...) build once. Cargo keeps each
+    # crate's own builds apart by hash, as their lock files and features
+    # differ.
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/host-tests
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
       - name: Install the pinned toolchain
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
+      # actions/cache, not Swatinem/rust-cache: rust-cache prunes a target
+      # directory down to one workspace's dependencies before saving, and
+      # with 37 workspaces sharing one, each would prune the others'. An
+      # exact key and no fallback: a fallback would carry every superseded
+      # dependency build forward forever (nothing prunes this one), so a
+      # change to any of these files builds from scratch once, a few
+      # minutes, with nothing waiting on this job.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # tag=v6.1.0
         with:
-          workspaces: host-tests/${{ matrix.crate }}
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            target/host-tests
+          key: host-tests-${{ hashFiles('rust-toolchain.toml', 'host-tests/*/Cargo.toml', 'host-tests/*/Cargo.lock', 'gbmock/Cargo.toml', 'gbmock/Cargo.lock') }}
       # Each crate has its own .cargo/config.toml pointing it at the host,
       # which cargo only finds when run from the crate's directory.
       # --release: the PPG simulations are slow unoptimised.
-      - name: cargo test
-        working-directory: host-tests/${{ matrix.crate }}
-        run: cargo test --locked --release
-  # The Gadgetbridge mock's own tests (its JSON, escaping and upsert
-  # against Gadgetbridge's behaviour). It's shared by `host-tests/gb` and
-  # `sim`, so it lives at the top, not in `host-tests/` with the matrix.
-  gbmock:
-    runs-on: ubuntu-latest
-    name: gbmock
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
-      - name: Install the pinned toolchain
-        run: rustup toolchain install
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
-        with:
-          workspaces: gbmock
-      - name: cargo test
-        working-directory: gbmock
-        run: cargo test --locked --release
+      - name: cargo test, every crate
+        run: |
+          failed=()
+          for dir in host-tests/*/ gbmock/; do
+            crate=${dir%/}
+            echo "::group::$crate"
+            (cd "$crate" && cargo test --locked --release) || failed+=("$crate")
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::tests failed in: ${failed[*]}"
+            exit 1
+          fi
   features:
     uses: ./.github/workflows/features.yml
   sim:
