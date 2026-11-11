@@ -30,6 +30,7 @@ missing below were test builds for the dev kit.
 
 ### Fixed
 
+- Keep a glance on screen through a double tap or a tap, then a hold, whose first tap is firm (introduced in 0.10.0): such a first tap used to wake the screen at once, the gesture then acting on the clock face it woke to, so whether a glance stayed depended on how firmly it was tapped; now only a heavy tap (75 ms or more) wakes a glance at once, and a firm but lighter tap on its own wakes it half a second later, once no second touch can follow (e6b36c8)
 - Skip to the next track again with a tap, then a hold (introduced in 0.10.0), rather than playing or pausing, often twice with two buzzes: the touch controller sometimes reports a finger held still as lifted and pressed again about 10 ms later, which cut the hold into short taps that never reached 0.6 s, two of which made a double tap; a press that quick, near where the finger lifted, now continues the same touch, which also keeps a button grid hold from sending a second hold partway through (8fe4930)
 
 ### Security
