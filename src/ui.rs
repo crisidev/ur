@@ -1708,7 +1708,15 @@ impl App {
         if !self.connected {
             return;
         }
-        send(Outgoing::Music(command));
+        // What the watch sent, for telling from a field log whether a skip
+        // the phone ignored left the watch at all (or found the outbox
+        // full: `send` drops rather than waits).
+        let sent = ble::OUTBOX.try_send(Outgoing::Music(command)).is_ok();
+        defmt::info!(
+            "media: {} {}",
+            command,
+            if sent { "sent" } else { "dropped, outbox full" }
+        );
         let action = match (command, &mut self.music) {
             // As the music screen does, the new state straight away, if
             // it's known.
