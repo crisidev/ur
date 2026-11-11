@@ -67,7 +67,8 @@ default = ["theme-retro"]
 theme-retro = []
 # Every theme in the repository: the web simulator's, and CI's check that
 # every theme builds.
-themes-all = ["theme-retro"]
+theme-living_tokyo = []
+themes-all = ["theme-retro", "theme-living_tokyo"]
 
 # Keep the defmt log in the SPI flash, for watches without a debug probe; see
 # `src/field_log.rs`. Not for builds read through a probe.

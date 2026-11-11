@@ -36,7 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        crate: [".", host-tests/alarm, host-tests/aranet, host-tests/arrival, host-tests/backoff, host-tests/battery, host-tests/brightness, host-tests/bthome, host-tests/calendar, host-tests/buttons, host-tests/day, host-tests/decimal, host-tests/dfu, host-tests/font, host-tests/gb, host-tests/gb_buckets, host-tests/gesture, host-tests/glance, host-tests/heart_schedule, host-tests/link, host-tests/live, host-tests/mcuboot, host-tests/minute_ring, host-tests/nav, host-tests/on_time, host-tests/packet_pool, host-tests/ppg, host-tests/qr, host-tests/route, host-tests/rtt_ring, host-tests/sleep, host-tests/step_counter, host-tests/snapshot, host-tests/temperature, host-tests/theme, host-tests/wake, gbmock, sim]
+        crate: [".", host-tests/alarm, host-tests/aranet, host-tests/arrival, host-tests/backoff, host-tests/battery, host-tests/brightness, host-tests/bthome, host-tests/calendar, host-tests/buttons, host-tests/day, host-tests/decimal, host-tests/dfu, host-tests/font, host-tests/gb, host-tests/gb_buckets, host-tests/gesture, host-tests/glance, host-tests/heart_schedule, host-tests/link, host-tests/live, host-tests/mcuboot, host-tests/minute_ring, host-tests/nav, host-tests/on_time, host-tests/packet_pool, host-tests/ppg, host-tests/qr, host-tests/route, host-tests/rtt_ring, host-tests/sleep, host-tests/step_counter, host-tests/snapshot, host-tests/temperature, host-tests/theme, host-tests/living_tokyo, host-tests/wake, gbmock, sim]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
       - name: Install the pinned toolchain

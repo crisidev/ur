@@ -1,0 +1,73 @@
+# Living Tokyo's screenshots, for its README: its clock face in each
+# scheme, Last night and LOOK at night (in LIVING TOKYO: it's a theme for
+# the night only), and the dim look's glance and notification. From
+# sim/:
+#
+#     cargo run --release --features theme-living_tokyo -- --out ../src/themes/living_tokyo/shots ../src/themes/living_tokyo/shots.txt
+#
+# The simulator's tests check them against the approved ones in shots/
+# (`UPDATE_SHOTS=1 cargo test` approves; see AUTHORING-THEMES.md). Every
+# other screen is screens.txt's, which the tests run without comparing.
+
+# A version of its own on the Info screen, so a release's doesn't change
+# the screenshots.
+version 1.0.0+1a2b3c4
+battery 3990
+time 2026-11-09 15:42:10 +01:00
+location 59.91 10.75
+connect
+heart 64
+temperature 31
+demo-day
+last-night 23:20 06:55 deep=82 rem=96
+phone-alarms 06:45/31 08:30/96/off
+smart on 06:30 08:30
+music "Ida Moreau" "Night Signals" playing
+aranet 1091 20.75 53 1012.3 87 3m
+buttons both
+
+# ==============================================================================
+# At night, in LIVING TOKYO
+# ==============================================================================
+
+theme "living tokyo"
+wait 1.5s
+expect clock
+shot clock-living-tokyo.png
+# Storm's is drawn alike, in its colours.
+shot clock-living-storm.png "living storm"
+
+# Left of the clock: Last night, past Today.
+right
+wait 1s
+right
+wait 1s
+shot night-last-night.png
+button
+wait 1s
+
+# Right: LOOK, past the alarms and the phone's.
+left
+wait 1s
+left
+wait 1s
+left
+wait 1s
+shot night-look-settings.png
+button
+wait 1s
+expect clock
+
+# The dim look: a glance, and a notification that came with the screen
+# off. (At 15:46, the time its glance has always shown.)
+until 15:46
+expect not screen-on
+glance
+wait 1s
+expect dim
+shot dim-glance.png
+wait 6s
+notify Signal "Nora Lindqvist"
+wait 1s
+expect dim
+shot dim-notification.png

@@ -16,6 +16,23 @@ black in every one.
 |---|---|---|---|
 | <img src="shots/clock-arcade.png" width="120" alt="The clock face in ARCADE: white and red on black"> | <img src="shots/clock-terminal.png" width="120" alt="The clock face in TERMINAL: phosphor green on near-black"> | <img src="shots/clock-handheld.png" width="120" alt="The clock face in HANDHELD: four shades of olive green, dark on light, with a dash of red"> | <img src="shots/clock-parchment.png" width="120" alt="The clock face in PARCHMENT: brown ink on cream, with a muted red"> |
 
+### Tokyo Night
+
+TOKYO NIGHT and TOKYO STORM for the night, and TOKYO DAY for the day:
+Retro's screens in the colours of [Tokyo Night], the Neovim theme. The
+accent is its blue, labels its fg_dark, the heart's highlight its
+yellow, and deep and REM sleep its cyan and magenta.
+
+| TOKYO NIGHT | TOKYO STORM | TOKYO DAY |
+|---|---|---|
+| <img src="shots/clock-tokyo-night.png" width="120" alt="The clock face in TOKYO NIGHT: blue-white on near-black indigo, with a blue accent"> | <img src="shots/clock-tokyo-storm.png" width="120" alt="The clock face in TOKYO STORM: blue-white on a lighter, bluer slate"> | <img src="shots/clock-tokyo-day.png" width="120" alt="The clock face in TOKYO DAY: indigo ink on pale grey-blue"> |
+
+- Inspired by: [Tokyo Night], folke's colour scheme for Neovim.
+- Contributed by: Matteo Bigoi ([crisidev](https://github.com/crisidev)).
+- Maintained by: Matteo Bigoi ([crisidev](https://github.com/crisidev)).
+
+[Tokyo Night]: https://github.com/folke/tokyonight.nvim
+
 ## Last night and LOOK
 
 | Screen | At night (ARCADE) | By day (HANDHELD) |

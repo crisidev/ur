@@ -17,6 +17,10 @@
 
 use crate::palette::{Color, Palette, palette};
 
+mod tokyo_night;
+
+pub use tokyo_night::{TOKYO_DAY, TOKYO_NIGHT, TOKYO_STORM};
+
 /// Retro: today's look of the watch, after old handhelds, arcade
 /// cabinets and terminals: few colours a scheme, ramps of a single hue,
 /// and dithering (the transition) to fake in-between shades.
@@ -34,10 +38,10 @@ pub struct Retro {
 /// ARCADE first, and HANDHELD in [`DAY`], as a watch with nothing saved,
 /// one upgraded from 0.10, and one whose saved scheme isn't built in all
 /// show them (see `themes::migrate` and `themes::find`).
-pub const NIGHT: [&Retro; 2] = [&ARCADE, &TERMINAL];
+pub const NIGHT: [&Retro; 4] = [&ARCADE, &TERMINAL, &TOKYO_NIGHT, &TOKYO_STORM];
 
 /// The schemes for daylight, likewise.
-pub const DAY: [&Retro; 2] = [&HANDHELD, &PARCHMENT];
+pub const DAY: [&Retro; 3] = [&HANDHELD, &PARCHMENT, &TOKYO_DAY];
 
 // Three schemes survived trying six on the real panel (also tried: amber
 // terminal, '80s home-computer blue, and the original navy/teal); Terminal

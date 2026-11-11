@@ -1,0 +1,218 @@
+# Every screen of Living Tokyo's, at night (in LIVING TOKYO: it's a
+# theme for the night only), its clock face in the states it shows
+# (notifications unseen, a low battery with no phone and no heart rate,
+# charging), and the dim look, the README's few (shots.txt) among them.
+# From sim/, to look at them:
+#
+#     cargo run --release --features theme-living_tokyo -- --out ../tmp/living_tokyo ../src/themes/living_tokyo/screens.txt
+#
+# The simulator's tests run it without writing any (`--no-shots`), and
+# compare nothing: it's a smoke test, which fails on a panic, a failed
+# debug assertion (text that doesn't fit, say) or a script error. None of
+# these is approved, or committed.
+
+# A version of its own on the Info screen, so a release's doesn't change
+# the screenshots.
+version 1.0.0+1a2b3c4
+battery 3990
+time 2026-11-09 15:42:10 +01:00
+location 59.91 10.75
+connect
+heart 64
+temperature 31
+demo-day
+last-night 23:20 06:55 deep=82 rem=96
+phone-alarms 06:45/31 08:30/96/off
+smart on 06:30 08:30
+music "Ida Moreau" "Night Signals" playing
+aranet 1091 20.75 53 1012.3 87 3m
+buttons both
+
+# ==============================================================================
+# At night, in LIVING TOKYO
+# ==============================================================================
+
+theme "living tokyo"
+wait 1.5s
+expect clock
+shot night-clock.png
+# A second on, the beacon is out.
+wait 1s
+shot night-clock-blink.png
+
+# A low battery, no phone, and no heart rate; then back.
+battery 3550
+heart off
+disconnect
+wait 1s
+shot night-clock-low.png
+battery 3990
+connect
+heart 64
+music "Ida Moreau" "Night Signals" playing
+wait 1s
+expect clock
+
+# Charging: the moon in the "good" colour.
+battery 4100 charging
+wait 1s
+shot night-clock-charging.png
+battery 3990 unplugged
+wait 1s
+
+# Left of the clock: the past.
+right
+wait 1s
+shot night-today.png
+right
+wait 1s
+shot night-last-night.png
+button
+wait 1s
+
+# Right: the alarms (and one in the editor), the phone's, the two
+# settings screens (the look's, the grid's, and its key), the info, and
+# storage mode's prompt.
+left
+wait 1s
+shot night-alarms.png
+tap 20,40
+wait 1s
+shot night-editor.png
+button
+wait 1s
+left
+wait 1s
+shot night-phone-alarms.png
+left
+wait 1s
+shot night-look-settings.png
+left
+wait 1s
+shot night-grid-settings.png
+tap 40,60
+wait 1s
+shot night-bthome-qr.png
+tap
+wait 1s
+shot night-bthome-key.png
+tap
+wait 1s
+left
+wait 1s
+shot night-info.png
+long 40,40
+wait 1s
+shot night-storage-prompt.png
+button
+wait 1s
+expect clock
+
+# Above: a notification, as a banner, then in the history.
+notify Signal "Nora Lindqvist"
+wait 1s
+shot night-banner.png
+wait 5s
+# Seen by nobody yet: the billboard says so.
+shot night-clock-unseen.png
+down
+wait 1s
+shot night-notification.png
+button
+wait 1s
+
+# Below: the button grid, the music, and the air.
+up
+wait 1s
+shot night-grid.png
+up
+wait 1s
+shot night-music.png
+up
+wait 1s
+shot night-air.png
+button
+wait 1s
+
+# What takes the screen over.
+call "Nora Lindqvist"
+wait 1s
+shot night-call.png
+call over
+wait 1s
+find on
+wait 1s
+shot night-find.png
+find off
+wait 1s
+passkey 482913
+wait 1s
+shot night-pairing.png
+passkey off
+update 42
+wait 1s
+shot night-update.png
+update off
+wait 1s
+alarm 1 15:46 on
+until 15:46
+wait 1s
+shot night-ringing.png
+button
+wait 1s
+
+# The dim look: a glance, the route's, a notification that came with the
+# screen off, and the quiet night.
+button
+wait 1s
+expect not screen-on
+glance
+wait 1s
+expect dim
+shot dim-glance.png
+wait 6s
+nav left "150 m" Storgata
+glance
+wait 1s
+shot dim-route-glance.png
+nav off
+wait 6s
+notify Signal "Nora Lindqvist"
+wait 1s
+expect dim
+shot dim-notification.png
+wait 6s
+until 23:40
+asleep on
+wait 2m
+expect quiet-night
+button
+wait 1s
+expect dim
+shot dim-quiet-night.png
+up
+wait 1s
+shot dim-grid.png
+button
+wait 1s
+asleep off
+until 07:10
+heart 64
+button
+wait 1s
+expect not quiet-night
+
+# Switching off, last: storage mode, from the info screen, before
+# sunrise.
+left
+left
+left
+left
+left
+wait 1s
+long 40,40
+wait 1s
+tap 40,40
+wait 1s
+expect off
+shot night-off.png

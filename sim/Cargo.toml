@@ -31,7 +31,8 @@ window = ["dep:minifb"]
 # still a build of the default firmware: the tests, and their approved
 # screenshots, are of that. `themes-all` is the web page's.
 theme-retro = []
-themes-all = ["theme-retro"]
+theme-living_tokyo = []
+themes-all = ["theme-retro", "theme-living_tokyo"]
 
 [lints.rust]
 # The firmware's own features, which the modules included from it check

@@ -9,4 +9,5 @@ package of its own.
 
 | Theme | Feature | Schemes |
 |---|---|---|
-| [Retro](retro/) | `theme-retro` (the default) | ARCADE and TERMINAL by night, HANDHELD and PARCHMENT by day |
+| [Retro](retro/) | `theme-retro` (the default) | ARCADE, TERMINAL, TOKYO NIGHT and TOKYO STORM by night; HANDHELD, PARCHMENT and TOKYO DAY by day |
+| [Living Tokyo](living_tokyo/) | `theme-living_tokyo` | LIVING TOKYO and LIVING STORM, by night only |

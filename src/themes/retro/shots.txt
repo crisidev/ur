@@ -35,6 +35,8 @@ wait 1.5s
 expect clock
 shot clock-arcade.png
 shot clock-terminal.png terminal
+shot clock-tokyo-night.png "tokyo night"
+shot clock-tokyo-storm.png "tokyo storm"
 
 # Left of the clock: Last night, past Today.
 right
@@ -89,6 +91,7 @@ wait 1s
 expect clock
 shot clock-handheld.png
 shot clock-parchment.png parchment
+shot clock-tokyo-day.png "tokyo day"
 
 right
 wait 1s
