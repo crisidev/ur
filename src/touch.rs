@@ -103,6 +103,10 @@ const PANEL: i32 = 240;
 /// While a finger is down, the chip reports every ~10 ms. If reports stop for
 /// this long without a lift report, assume we missed the lift.
 const LIFT_TIMEOUT: Duration = Duration::from_millis(250);
+/// How soon after a lift we saw the chip's extra lift report comes, at
+/// most (it's ~10 ms; see the lift arms in [`touch_task`]): a lift with no
+/// press later than this is worth logging.
+const LIFT_ECHO: Duration = Duration::from_millis(50);
 /// Far longer than any transfer here takes (a 6-byte report at 250 kHz:
 /// ~0.4 ms). Every transfer has one: one that never ended once held the
 /// shared bus, and with it the accelerometer and heart-rate sensor, for as
@@ -178,6 +182,9 @@ pub async fn touch_task(
     let mut tracking: Option<Tracking> = None;
     // What the touch's latest lift report said (see `report_bits` below).
     let mut lift_bits: Option<[u8; 3]> = None;
+    // When a touch we tracked last lifted, to tell the chip's echo of
+    // that lift from a lift whose press we never saw.
+    let mut last_lift: Option<Instant> = None;
     loop {
         // Every change to `tracking` comes back here before awaiting.
         DOWN.store(tracking.is_some(), Ordering::Relaxed);
@@ -347,12 +354,27 @@ pub async fn touch_task(
                 }
                 touch.lift();
                 lift_bits = report_bits;
+                last_lift = Some(Instant::now());
             }
             // A lift after a lift, or without a press we saw. The chip
             // sends one more report ~10 ms after a tap's lift (its own
             // gesture detection firing, with no finger); treating it as a
             // touch produced a phantom second tap.
-            (_, true) => {}
+            (Some(_), true) => {}
+            // Without a press we saw, and not that echo: the chip sensed a
+            // touch whose press report we missed (a busy bus, say), or a
+            // touch too brief for one. A field log (0.10.1-rc.1) had a
+            // tap-and-hold's tap never reach the UI, mid heart session;
+            // this says, next time, whether the chip saw anything.
+            // `lifted` is the event saying lift, or no fingers.
+            (None, true) => {
+                if last_lift.is_none_or(|at| at.elapsed() > LIFT_ECHO) {
+                    info!(
+                        "touch: a lift without its press, [gesture, fingers, event] {}",
+                        report_bits
+                    );
+                }
+            }
         }
     }
 }
