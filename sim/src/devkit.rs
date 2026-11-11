@@ -1271,9 +1271,17 @@ impl<'a> Follower<'a> {
     fn replay(&mut self, event: &Event) -> Result<(), String> {
         let at = Instant::from_ticks(event.at);
         time::set(at);
-        self.app.set_connected(self.connected);
-        self.app.set_air(self.air);
-        self.app.set_daytime(self.daytime);
+        // The flags as the dev kit's last pass left them, as its UI had
+        // them for this event. Not for a change of them, though: the pass
+        // that logged it applied the new flags straight away, and the old
+        // ones applied first could undo what came before (a disconnect
+        // forgets the music, so a `musicstate` handled just before the
+        // pass that saw the phone connect would be lost here only).
+        if event.kind != kind::STATE {
+            self.app.set_connected(self.connected);
+            self.app.set_air(self.air);
+            self.app.set_daytime(self.daytime);
+        }
         let input = match event.kind {
             kind::TICK => {
                 let second =
