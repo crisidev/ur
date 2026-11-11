@@ -199,6 +199,250 @@ mod tests {
         assert_eq!(tracking.classify().gesture, Gesture::Tap);
     }
 
+    /// A finger the touch controller reports: down at a place, or lifted.
+    #[derive(Clone, Copy)]
+    enum Report {
+        At(i32, i32),
+        Lifted,
+    }
+
+    /// Drives a touch as `touch::touch_task` does, through `reports`, each
+    /// after waiting its milliseconds (from the one before), then lets
+    /// time run out: what it sends, in order. The long press's timer and
+    /// the end of a lift's wait for the finger to come back fire between
+    /// reports, when they're due.
+    fn drive(reports: &[(u64, Report)]) -> Vec<Touch> {
+        let mut sent = Vec::new();
+        let mut tracking: Option<Tracking> = None;
+        // Whatever's due before `until` (ms from now), in order; then
+        // `until` itself.
+        let run_until = |tracking: &mut Option<Tracking>, sent: &mut Vec<Touch>, ms: u64| {
+            let until = embassy_time::Instant::now() + Duration::from_millis(ms);
+            loop {
+                let due = tracking
+                    .as_ref()
+                    .and_then(|touch| touch.over_at().or(touch.long_press_at()));
+                match due {
+                    Some(at) if at <= until => {
+                        MockDriver::get().advance(at - embassy_time::Instant::now());
+                        let touch = tracking.as_mut().expect("only due while tracking");
+                        if touch.over_at().is_some() {
+                            let (event, release) = touch.lifted();
+                            sent.extend([Some(event), release].into_iter().flatten());
+                            *tracking = None;
+                        } else {
+                            touch.held = true;
+                            sent.push(touch.classify());
+                        }
+                    }
+                    _ => {
+                        MockDriver::get().advance(until - embassy_time::Instant::now());
+                        return;
+                    }
+                }
+            }
+        };
+        for &(ms, report) in reports {
+            run_until(&mut tracking, &mut sent, ms);
+            match (&mut tracking, report) {
+                (None, Report::At(x, y)) => tracking = Some(Tracking::new((x, y))),
+                (Some(touch), Report::At(x, y)) => {
+                    if !touch.pressed((x, y)) {
+                        let (event, release) = touch.lifted();
+                        sent.extend([Some(event), release].into_iter().flatten());
+                        tracking = Some(Tracking::new((x, y)));
+                    }
+                }
+                (Some(touch), Report::Lifted) if touch.over_at().is_none() => touch.lift(),
+                (_, Report::Lifted) => {}
+            }
+        }
+        run_until(&mut tracking, &mut sent, 10_000);
+        assert!(tracking.is_none(), "a touch never over");
+        sent
+    }
+
+    fn gestures(sent: &[Touch]) -> Vec<(Gesture, u16)> {
+        sent.iter()
+            .map(|touch| (touch.gesture, touch.held_ms))
+            .collect()
+    }
+
+    /// A tap: down at `at` for `ms`, with its reports every 10 ms, as the
+    /// controller sends them; then the lift, and its one more report
+    /// after it.
+    fn tap(at: (i32, i32), ms: u64) -> Vec<(u64, Report)> {
+        let mut reports = vec![(0, Report::At(at.0, at.1))];
+        reports.extend((0..ms / 10).map(|_| (10, Report::At(at.0, at.1))));
+        reports.push((ms % 10, Report::Lifted));
+        reports.push((10, Report::Lifted));
+        reports
+    }
+
+    /// Pieces of a finger held at `at`, each `(gap, ms)`: pressed `gap`
+    /// ms after the last report, and down for `ms`. The controller's
+    /// chopped holds: `tap`s, each pressed again in place of the report
+    /// after the lift before (or after it, from the second on).
+    fn chopped(at: (i32, i32), pieces: &[(u64, u64)]) -> Vec<(u64, Report)> {
+        let mut reports = Vec::new();
+        for &(gap, ms) in pieces {
+            let mut piece = tap(at, ms);
+            piece.pop();
+            piece[0].0 = gap;
+            reports.extend(piece);
+        }
+        reports
+    }
+
+    /// The sealed watch's chopped hold (0.10.0-rc.6's field log, uptime
+    /// 42879.7–42880.6): six pieces, each pressed again 7–11 ms after
+    /// the last lifted, as one 0.9 s touch. Held still long enough, it's
+    /// a long press, reported while held, and released at the end.
+    #[test]
+    fn a_hold_the_controller_chopped_is_one_long_press() {
+        let _clock = clock();
+        let pieces = [
+            (0, 321),
+            (10, 107),
+            (11, 67),
+            (10, 155),
+            (10, 102),
+            (7, 103),
+        ];
+        assert_eq!(
+            gestures(&drive(&chopped((121, 107), &pieces))),
+            [(Gesture::LongPress, 600), (Gesture::Release, 903)]
+        );
+        // One pressed again 20 ms after (a report missed, as on the dev
+        // kit), and one that drifted a pixel.
+        let mut reports = chopped((121, 107), &[(0, 321), (20, 400)]);
+        reports.extend(chopped((122, 108), &[(10, 100)]));
+        assert_eq!(
+            gestures(&drive(&reports)),
+            [(Gesture::LongPress, 600), (Gesture::Release, 851)]
+        );
+    }
+
+    /// A tap, then a hold the controller chopped: the tap, then the long
+    /// press (the next track, with a phone), not a double tap.
+    #[test]
+    fn a_tap_then_a_chopped_hold_is_a_tap_and_a_long_press() {
+        let _clock = clock();
+        let mut reports = tap((126, 130), 67);
+        reports.extend(chopped((123, 127), &[(70, 200), (10, 150), (10, 400)]));
+        assert_eq!(
+            gestures(&drive(&reports)),
+            [
+                (Gesture::Tap, 67),
+                (Gesture::LongPress, 600),
+                (Gesture::Release, 770)
+            ]
+        );
+    }
+
+    /// The wearer's quickest double tap in the field logs, 41 ms between
+    /// the taps, 3 px apart: two taps, the window long since closed.
+    /// And a tap's time down is to its lift, not counting the wait.
+    #[test]
+    fn a_quick_double_tap_is_still_two_taps() {
+        let _clock = clock();
+        assert!(REJOIN_WINDOW < Duration::from_millis(41));
+        let mut reports = tap((124, 134), 76);
+        let mut second = tap((121, 131), 76);
+        second[0].0 = 41 - 10;
+        reports.extend(second);
+        assert_eq!(
+            gestures(&drive(&reports)),
+            [(Gesture::Tap, 76), (Gesture::Tap, 76)]
+        );
+        // A double tap whose taps the controller chopped too: still two.
+        let mut reports = chopped((124, 134), &[(0, 40), (10, 30)]);
+        reports.extend(chopped((121, 131), &[(80, 20), (10, 50)]));
+        assert_eq!(
+            gestures(&drive(&reports)),
+            [(Gesture::Tap, 80), (Gesture::Tap, 80)]
+        );
+    }
+
+    #[test]
+    fn a_lift_is_over_unless_the_finger_comes_back_soon_and_near() {
+        let _clock = clock();
+        let near = REJOIN_DISTANCE - 1;
+        // Back in time, nearly where it lifted: the same touch, from
+        // where it started.
+        let mut tracking = Tracking::new((120, 120));
+        wait(100);
+        tracking.lift();
+        let over = tracking.over_at().expect("lifted");
+        assert_eq!(
+            over - tracking.since,
+            Duration::from_millis(100) + REJOIN_WINDOW
+        );
+        // The controller's report after a lift doesn't move that.
+        wait(10);
+        tracking.lift();
+        assert_eq!(tracking.over_at(), Some(over));
+        wait(REJOIN_WINDOW.as_millis() - 10);
+        assert!(tracking.pressed((120 + near, 120 - near)));
+        assert_eq!(tracking.over_at(), None);
+        assert_eq!(tracking.rejoined, 1);
+        assert_eq!(tracking.start, (120, 120));
+        // Too late: over, as of the lift.
+        tracking.lift();
+        wait(REJOIN_WINDOW.as_millis() + 1);
+        assert!(!tracking.pressed((120, 120)));
+        let (tap, _) = tracking.lifted();
+        assert_eq!((tap.gesture, tap.held_ms), (Gesture::Tap, 130));
+        // Too far: over, as of the lift; a swipe's the same.
+        for far in [(120 + SWIPE_DISTANCE, 120), (120, 120 - REJOIN_DISTANCE)] {
+            let mut tracking = Tracking::new((120, 120));
+            wait(50);
+            tracking.lift();
+            wait(10);
+            assert!(!tracking.pressed(far));
+            assert_eq!(tracking.rejoined, 0);
+            let (tap, _) = tracking.lifted();
+            assert_eq!((tap.gesture, tap.held_ms), (Gesture::Tap, 50));
+        }
+        // Near where it lifted, not where it started: a swipe's finger,
+        // dropped and back, is still the swipe.
+        let mut swipe = Tracking::new((120, 120));
+        wait(50);
+        swipe.moved_to((150, 120));
+        swipe.lift();
+        wait(10);
+        assert!(swipe.pressed((155, 120)));
+        wait(50);
+        swipe.lift();
+        wait(REJOIN_WINDOW.as_millis());
+        assert_eq!(swipe.lifted().0.gesture, Gesture::SwipeRight);
+    }
+
+    /// While lifted, the finger isn't held: no long press is due. If it
+    /// comes back past the time, it's due at once, from the first press.
+    #[test]
+    fn a_long_press_waits_for_the_finger_to_come_back() {
+        let _clock = clock();
+        let mut tracking = Tracking::new((120, 120));
+        wait(LONG_PRESS.as_millis() - 5);
+        tracking.lift();
+        assert_eq!(tracking.long_press_at(), None);
+        wait(10);
+        assert!(tracking.pressed((120, 120)));
+        assert_eq!(tracking.long_press_at(), Some(tracking.since + LONG_PRESS));
+        assert_eq!(tracking.classify().gesture, Gesture::LongPress);
+        // Lifted just before it, for good: a tap, as long as it was down.
+        let mut tracking = Tracking::new((120, 120));
+        wait(LONG_PRESS.as_millis() - 5);
+        tracking.lift();
+        wait(REJOIN_WINDOW.as_millis());
+        assert_eq!(
+            tracking.lifted().0.gesture,
+            Gesture::Tap,
+            "the wait for the finger counted as held"
+        );
+    }
+
     /// A hold keeps the screen on until it's released, but no longer than
     /// [`HOLD_LIMIT`]; without one, the screen's own timeout stands.
     #[test]
@@ -422,10 +666,13 @@ mod proofs {
     /// if the long press's timer is due, it may fire (the task's
     /// `select3` can as well take a report that's ready at the same
     /// moment, so the timer firing is a choice, not a must), which
-    /// reports the long press with the finger down. Then the touch ends
-    /// one of the two ways it can: the finger lifts
-    /// ([`Tracking::lifted`]), or the controller is put to sleep under
-    /// it ([`Tracking::lost`]).
+    /// reports the long press with the finger down, or the finger lifts,
+    /// and after any wait, something presses anywhere: the finger come
+    /// back ([`Tracking::pressed`]), and the touch goes on, or something
+    /// else, and the touch is over as of its lift. Then, if not over
+    /// already, the touch ends one of the two ways it can: the finger
+    /// lifts ([`Tracking::lifted`]), or the controller is put to sleep
+    /// under it ([`Tracking::lost`]).
     ///
     /// Whatever happens:
     ///
@@ -454,24 +701,36 @@ mod proofs {
             }
             _ => others += 1,
         };
+        let mut over = false;
         for _ in 0..2 {
             wait_any();
-            if kani::any() {
+            let step: u8 = kani::any();
+            if step == 0 {
                 tracking.moved_to(any_position());
-            } else if tracking
-                .long_press_at()
-                .is_some_and(|due| Instant::now() >= due)
-            {
-                // As `touch_task` does when its timer fires.
-                tracking.held = true;
-                let event = tracking.classify();
-                assert_eq!(event.gesture, Gesture::LongPress);
-                count(event);
+            } else if step == 1 {
+                if tracking
+                    .long_press_at()
+                    .is_some_and(|due| Instant::now() >= due)
+                {
+                    // As `touch_task` does when its timer fires.
+                    tracking.held = true;
+                    let event = tracking.classify();
+                    assert_eq!(event.gesture, Gesture::LongPress);
+                    count(event);
+                }
+            } else {
+                tracking.lift();
+                wait_any();
+                if !tracking.pressed(any_position()) {
+                    over = true;
+                    break;
+                }
             }
         }
         wait_any();
-        let lifted: bool = kani::any();
+        let lifted: bool = over || kani::any();
         if lifted {
+            tracking.lift();
             let (event, release) = tracking.lifted();
             count(event);
             if let Some(release) = release {
@@ -493,6 +752,11 @@ mod proofs {
             "a lift that beat the timer"
         );
         kani::cover!(!lifted && releases == 1, "a hold cut short");
+        kani::cover!(
+            tracking.rejoined > 0 && long_presses == 1,
+            "a long press the finger came back to"
+        );
+        kani::cover!(over && others == 1, "a touch over when another began");
         kani::cover!(lifted && others == 1, "a tap or a swipe");
     }
 }

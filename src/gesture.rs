@@ -21,6 +21,13 @@
 //! a swipe, and the long press is off for that touch, even if it comes
 //! back. Anything else is a tap.
 //!
+//! A lift isn't always the end of the touch: the touch controller
+//! sometimes reports a finger held still as lifted, and pressed again
+//! ~10 ms later at the same spot (see [`REJOIN_WINDOW`]). So a lift only
+//! ends the touch once [`REJOIN_WINDOW`] has passed without the finger
+//! coming back near where it lifted ([`REJOIN_DISTANCE`]); if it does,
+//! the touch goes on as if it had never lifted (see [`Tracking::lift`]).
+//!
 //! Hardware-free, so it runs in host tests (`host-tests/gesture`).
 
 use embassy_time::{Duration, Instant};
@@ -43,6 +50,37 @@ pub const LONG_PRESS: Duration = Duration::from_millis(600);
 /// held on, and this is the most screen it can keep on: a minute of the
 /// backlight, and in the quiet night, a minute of its low level.
 pub const HOLD_LIMIT: Duration = Duration::from_secs(60);
+/// How soon after a lift a press near where it lifted continues the same
+/// touch (see [`Tracking::lift`]), and so how long every lift waits
+/// before it's reported.
+///
+/// The sealed watch's field log (0.10.0-rc.6, uptime 42880–42891) has
+/// the wearer's holds, meant as a tap-and-hold's (skip to the next
+/// track), chopped by the touch controller into pieces of 67–552 ms:
+/// each piece starting 7–12 ms after the last one lifted, exactly where
+/// it ended. So none reached [`LONG_PRESS`], and two pieces made a
+/// double tap, which played or paused instead. Others started 20–21 ms
+/// after (one report missed): within a 9.2 s hold on the dev kit, and
+/// within a hold of 815 ms in 0.10.0-rc.1's field log. The chip's
+/// reports come every ~10 ms, so these are its next report or the one
+/// after. The quickest of the wearer's double taps in the field logs
+/// left 41 ms between the taps (and more often 80 ms or more); a finger
+/// has to leave the glass and come back. So 30 ms: past the 21 ms with
+/// a little to spare for the touch task's own delays, and under the
+/// 41 ms by as much.
+///
+/// It costs every lift those 30 ms before its tap or swipe is acted on:
+/// not something to see, and a double tap's two taps are both late by
+/// the same, so the time between them (see `wake::follows`) is the
+/// same.
+pub const REJOIN_WINDOW: Duration = Duration::from_millis(30);
+/// How near, in panel pixels, where a touch lifted a press within
+/// [`REJOIN_WINDOW`] must be to continue it (either way): a tap's
+/// tolerance, [`SWIPE_DISTANCE`]. The chopped holds in the field logs
+/// went on exactly where they lifted, or a pixel off; a press further
+/// than a tap drifts, that soon, isn't the same finger come back, but
+/// something else touching (a second finger, a sleeve), so a new touch.
+pub const REJOIN_DISTANCE: i32 = SWIPE_DISTANCE;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(target_os = "none", derive(defmt::Format))]
@@ -82,6 +120,13 @@ pub struct Tracking {
     moved: bool,
     /// It was reported as a long press already, while still down.
     pub held: bool,
+    /// When the finger last lifted, if it hasn't come back since: the
+    /// touch is over once [`REJOIN_WINDOW`] has passed (see
+    /// [`Tracking::lift`]).
+    lifted_at: Option<Instant>,
+    /// How many times the finger came back after a lift (saturating):
+    /// for the log, to see how often the controller does it.
+    pub rejoined: u8,
 }
 
 impl Tracking {
@@ -93,7 +138,45 @@ impl Tracking {
             since: Instant::now(),
             moved: false,
             held: false,
+            lifted_at: None,
+            rejoined: 0,
         }
+    }
+
+    /// The finger is (still, or again) at `at`: whether that's this
+    /// touch. Not if it lifted, and `at` is too late or too far for the
+    /// finger to have come back (see [`REJOIN_WINDOW`] and
+    /// [`REJOIN_DISTANCE`]): this touch is over then, as of its lift
+    /// ([`Tracking::lifted`]), and `at` starts another.
+    pub fn pressed(&mut self, at: (i32, i32)) -> bool {
+        if let Some(lifted_at) = self.lifted_at {
+            let (dx, dy) = (at.0 - self.last.0, at.1 - self.last.1);
+            if lifted_at.elapsed() > REJOIN_WINDOW || dx.abs().max(dy.abs()) >= REJOIN_DISTANCE {
+                return false;
+            }
+            // As if it had never lifted: the same start, its time down
+            // counting on from the press, and its long press (if not
+            // yet reported) still due then.
+            self.lifted_at = None;
+            self.rejoined = self.rejoined.saturating_add(1);
+        }
+        self.moved_to(at);
+        true
+    }
+
+    /// The finger lifted. Maybe not for good: until [`Tracking::over_at`],
+    /// it may come back ([`Tracking::pressed`]), and the touch goes on.
+    /// Further lifts before then (the controller sends another report
+    /// after a lift) change nothing.
+    pub fn lift(&mut self) {
+        self.lifted_at.get_or_insert_with(Instant::now);
+    }
+
+    /// When a touch that lifted is over, the finger not having come back:
+    /// then it's reported, as [`Tracking::lifted`] says. `None` while the
+    /// finger is down.
+    pub fn over_at(&self) -> Option<Instant> {
+        self.lifted_at.map(|at| at + REJOIN_WINDOW)
     }
 
     /// The finger is now at `at`.
@@ -104,9 +187,11 @@ impl Tracking {
         self.moved |= dx.abs().max(dy.abs()) >= SWIPE_DISTANCE;
     }
 
-    /// When this touch becomes a long press, if it still can.
+    /// When this touch becomes a long press, if it still can. Not while
+    /// the finger is lifted: if it comes back, it's due again (at once,
+    /// if its time has come).
     pub fn long_press_at(&self) -> Option<Instant> {
-        (!self.moved && !self.held).then_some(self.since + LONG_PRESS)
+        (!self.moved && !self.held && self.lifted_at.is_none()).then_some(self.since + LONG_PRESS)
     }
 
     pub fn classify(&self) -> Touch {
@@ -120,7 +205,7 @@ impl Tracking {
                 (false, _, true) => Gesture::SwipeUp,
                 (false, _, false) => Gesture::SwipeDown,
             }
-        } else if !self.moved && self.since.elapsed() >= LONG_PRESS {
+        } else if !self.moved && self.down() >= LONG_PRESS {
             // Usually reported while held (see `touch::touch_task`); this
             // is for a lift that beat the timer.
             Gesture::LongPress
@@ -161,8 +246,17 @@ impl Tracking {
     /// What it was is moot, bar a long press already reported, whose
     /// release must still go, for the same reason as in
     /// [`Tracking::lifted`]: the release comes early, rather than never.
+    /// (Not for a touch whose finger lifted, and may yet come back
+    /// ([`Tracking::over_at`]): that lift was seen, and it's over as of
+    /// then, as [`Tracking::lifted`] says.)
     pub fn lost(&self) -> Option<Touch> {
         self.held.then(|| self.release())
+    }
+
+    /// How long the finger has been down: until now, or until it lifted,
+    /// not counting the wait to see whether it comes back.
+    fn down(&self) -> Duration {
+        self.lifted_at.unwrap_or_else(Instant::now) - self.since
     }
 
     fn touch(&self, gesture: Gesture) -> Touch {
@@ -171,7 +265,7 @@ impl Tracking {
             gesture,
             x: self.start.0 / scale,
             y: self.start.1 / scale,
-            held_ms: self.since.elapsed().as_millis().min(u64::from(u16::MAX)) as u16,
+            held_ms: self.down().as_millis().min(u64::from(u16::MAX)) as u16,
         }
     }
 }
