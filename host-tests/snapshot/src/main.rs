@@ -193,8 +193,9 @@ mod proofs {
     use super::snapshot::*;
 
     /// For every header a record can have (any first minute, date, steps
-    /// and checksum, and up to a day of minutes): it reads back from its
-    /// 32 bytes exactly as it was written, as a fresh record.
+    /// and checksum, up to a day of minutes, and whether the phone's copy
+    /// ends just before it): it reads back from its 32 bytes exactly as
+    /// it was written, as a fresh record.
     #[kani::proof]
     fn every_header_reads_back_as_written() {
         let header = Header {
@@ -203,6 +204,7 @@ mod proofs {
             day: kani::any(),
             steps: kani::any(),
             checksum: kani::any(),
+            synced: kani::any(),
         };
         kani::assume(usize::from(header.minutes) <= MAX_MINUTES);
         assert_eq!(Header::from_bytes(&header.to_bytes()), Some(header));
@@ -212,8 +214,10 @@ mod proofs {
     /// write, anything): they read as a header only with the magic and
     /// an erased consumed word, and then one with no more minutes than a
     /// record holds, so `system_off::restore` never reads samples past
-    /// the record's sectors; and writing that header gives the same
-    /// bytes back, bar the reserved ones.
+    /// the record's sectors; it's synced only if its synced word says
+    /// so; and writing that header gives the same bytes back, bar the
+    /// reserved ones, and a synced word that was neither "sync" nor
+    /// erased (which reads, and is written, as not synced).
     #[kani::proof]
     fn only_a_fresh_record_within_bounds_is_read() {
         let bytes: [u8; HEADER_BYTES] = kani::any();
@@ -223,9 +227,13 @@ mod proofs {
                 assert!(fresh);
                 assert!(usize::from(header.minutes) <= MAX_MINUTES);
                 assert!(HEADER_BYTES + usize::from(header.minutes) * SAMPLE_BYTES <= MAX_BYTES);
+                assert_eq!(header.synced, bytes[28..32] == *b"sync");
                 let again = header.to_bytes();
                 assert_eq!(again[..10], bytes[..10]);
                 assert_eq!(again[12..28], bytes[12..28]);
+                if header.synced || bytes[28..32] == [0xFF; 4] {
+                    assert_eq!(again[28..32], bytes[28..32]);
+                }
             }
             None => {
                 let minutes = u16::from_le_bytes([bytes[8], bytes[9]]);
@@ -234,33 +242,38 @@ mod proofs {
         }
     }
 
-    /// For any newest minute (to the year 6000), any minute the phone
-    /// has fetched through (or none), and any revision window up to a
-    /// day: the record starts within the history (the day up to the
-    /// newest minute), so it never holds more minutes than a record can,
-    /// which `from_bytes` would refuse at the next boot. It starts where
-    /// the phone's next fetch will (the revision window before what it
-    /// has) when that's in the history, and holds the whole history when
-    /// it's before it, or the phone has nothing, or has "fetched" a
-    /// minute the history hasn't reached (the clock went back since).
+    /// For any newest minute (to the year 6000) and any minute the phone
+    /// has fetched through (or none): the record starts within the
+    /// history (the day up to the newest minute), or just after it when
+    /// the phone has it all, so it never holds more minutes than a record
+    /// can, which `from_bytes` would refuse at the next boot. It starts
+    /// where the phone's next fetch will (just after what it has), and
+    /// says so, when that's in the history; it holds the whole history,
+    /// still saying so, when the phone's copy ends before it; and it
+    /// holds the whole history, saying nothing is known, when the phone
+    /// has nothing, or has "fetched" a minute the history hasn't reached
+    /// (the clock went back since).
     #[kani::proof]
     fn the_record_starts_within_the_history() {
-        let (newest, resend): (i64, i64) = kani::any();
+        let newest: i64 = kani::any();
         kani::assume((0..1 << 31).contains(&newest));
-        kani::assume((0..=MAX_MINUTES as i64).contains(&resend));
         let synced: Option<i64> = kani::any();
         if let Some(synced) = synced {
             kani::assume((0..1 << 32).contains(&synced));
         }
-        let from = unsynced_from(newest, synced, resend);
+        let (from, known) = unsynced_from(newest, synced);
         let minutes = newest - from + 1;
-        assert!(1 <= minutes && minutes <= MAX_MINUTES as i64);
+        assert!(0 <= minutes && minutes <= MAX_MINUTES as i64);
         let oldest = newest - MAX_MINUTES as i64 + 1;
         match synced {
-            Some(synced) if synced <= newest && synced - resend >= oldest => {
-                assert_eq!(from, synced - resend)
+            Some(synced) if synced <= newest => {
+                assert!(known);
+                assert_eq!(from, (synced + 1).max(oldest));
             }
-            _ => assert_eq!(from, oldest),
+            _ => {
+                assert!(!known);
+                assert_eq!(from, oldest);
+            }
         }
     }
 }
