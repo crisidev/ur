@@ -986,6 +986,82 @@ fn activity_fetch_holds_back_the_night() {
     );
 }
 
+/// A night let go once the wearer is clearly up (`sleep_hold::settles`):
+/// up from 06:30, walking at 06:35 and 06:40, a fetch at 07:10 still gets
+/// nothing from the night's start on; one at 07:20, past the 46 minutes
+/// awake that settle it at 07:16 (but well before 06:30 plus 135
+/// minutes), gets the whole night and the steps after it up to the
+/// settling, the rest waiting as before.
+#[test]
+fn activity_fetch_sends_the_night_once_up() {
+    let dir = out("activity-fetch-up");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    // 2026-11-11 06:31 local, 05:31 UTC.
+    let t0: i64 = 1_794_202_260;
+    let text = format!(
+        "gb setTime({t0});E.setTimeZone(1.0)\n\
+         last-night 23:00 06:30\n\
+         wait 4m\nsteps 30\nwait 5m\nsteps 30\n\
+         wait 30m\n\
+         echo early fetch\n\
+         gb GB({{\"t\":\"actfetch\",\"ts\":{evening}}})\n\
+         wait 10m\n\
+         echo settled fetch\n\
+         gb GB({{\"t\":\"actfetch\",\"ts\":{early}}})\n",
+        // 21:50 the evening before, as in `activity_fetch_holds_back_the_night`.
+        evening = (t0 - 8 * 60 * 60 - 41 * 60) * 1000,
+        // As Gadgetbridge saves it: a minute before its last fetch.
+        early = (t0 + 38 * 60) * 1000,
+    );
+    std::fs::write(&script, text).expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+    let samples = |part: &str| {
+        part.lines()
+            .filter_map(|line| line.split_once("to the phone: "))
+            .map(|(_, json)| json.to_owned())
+            .filter(|json| json.starts_with(r#"{"t":"act","#))
+            .collect::<Vec<_>>()
+    };
+    let (first, second) = log.split_once("settled fetch").expect("both fetch");
+    // 23:00 local, 22:00 UTC; settled at 07:16 local, the last minute
+    // asleep (06:29) 47 minutes back.
+    let night = (t0 - 7 * 60 * 60 - 31 * 60) / 60;
+    let settled = (t0 + 45 * 60) / 60;
+    assert!(
+        first.contains(&format!("holding back from UTC minute {night}")),
+        "{log}"
+    );
+    assert_eq!(samples(first), Vec::<String>::new(), "{log}");
+    assert!(
+        second.contains(&format!("settled before UTC minute {settled}")),
+        "{log}"
+    );
+    assert!(
+        second.contains(&format!("holding back from UTC minute {settled}")),
+        "{log}"
+    );
+    let second = samples(second);
+    // 23:00 to 06:30 in 5-minute buckets, then the morning's with steps
+    // (the simulator's history has no others): 06:35 and 06:40.
+    assert_eq!(second.len(), 92, "{log}");
+    assert!(
+        second[..90]
+            .iter()
+            .all(|s| s.ends_with(r#""act":"LIGHT_SLEEP"}"#)),
+        "{log}"
+    );
+    assert_eq!(
+        second[90],
+        format!(
+            r#"{{"t":"act","ts":{},"stp":30,"mov":0,"hrm":0}}"#,
+            (night * 60 + 7 * 60 * 60 + 35 * 60 + 299) * 1000
+        ),
+        "{log}"
+    );
+}
+
 /// Summer time's changes, as Gadgetbridge sends them (the new offset a
 /// few seconds after the change): an alarm every day at 02:30 rings once
 /// the night the clock goes back, rather than in both 02:00s, and the

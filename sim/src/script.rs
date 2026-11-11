@@ -721,12 +721,13 @@ fn gadgetbridge(watch: &mut Watch, line: &str) -> Result<(), String> {
 /// As `ble::send_activity` does: the history since where the last fetch
 /// stopped, or without one, since after what Gadgetbridge asked for (see
 /// `gb_buckets::start`), in buckets (see `gb_buckets`), the bucket under way
-/// left for later, and the last sleep held back until its stages settle
-/// (see `sleep_hold`). Straight to the log rather than through
-/// `ble::OUTBOX`, which holds a handful: a fetch is hundreds of lines.
-/// The simulator's history has steps and heart rates, and the minutes of
-/// the last night (`last-night`) are light sleep; but it has no movement
-/// (so a stillness holds nothing back), no stages, nor `ble`'s 24-hour
+/// left for later, and the last sleep held back until its stages settle,
+/// or the wearer is clearly up (see `sleep_hold`). Straight to the log
+/// rather than through `ble::OUTBOX`, which holds a handful: a fetch is
+/// hundreds of lines. The simulator's history has steps and heart rates,
+/// and the minutes of the last night (`last-night`) are light sleep; but
+/// it has no movement (so a stillness holds nothing back, and the minutes
+/// with steps are the ones up and about), no stages, nor `ble`'s 24-hour
 /// limit.
 fn activity_fetch(watch: &mut Watch, since_ms: i64) {
     /// Where the last fetch stopped (`system_off::synced_through`).
@@ -751,10 +752,37 @@ fn activity_fetch(watch: &mut Watch, since_ms: i64) {
                 crate::sleep::Kind::Awake
             }
         };
-        let hold = crate::sleep_hold::hold(now.div_euclid(60), kind, |_| {
-            crate::sleep::Minute::default()
-        });
-        let mut fetch = crate::gb_buckets::Fetch::new(since, i64::MIN / 2, now.div_euclid(60));
+        // The minutes with steps, as walked (moving, and so never still);
+        // the rest unseen.
+        let history: std::collections::BTreeMap<i64, (u16, u8)> =
+            activity::history_since(night.start).into_iter().collect();
+        let evidence = |minute: i64| {
+            let steps = history.get(&minute).map_or(0, |&(steps, _)| steps);
+            crate::sleep::Minute {
+                seen: steps > 0,
+                movement: if steps > 0 { 1000 } else { 0 },
+                steps,
+                worn: Some(true),
+            }
+        };
+        // What the watch would have settled by now, checking every
+        // minute after the night as `activity` does, while it may still
+        // change (nothing here rewrites a kind, so the first minute it
+        // would is enough).
+        let newest = now.div_euclid(60);
+        let reach = night.end + (crate::sleep::WINDOW + crate::sleep::SAME_NIGHT_GAP) as i64;
+        let settled = (night.end..=newest.min(reach))
+            .filter(|_| !night.is_empty())
+            .find(|&minute| {
+                let settled = crate::sleep_hold::Settled::NONE;
+                crate::sleep_hold::settles(minute, settled, kind, evidence).is_some()
+            })
+            .map_or(crate::sleep_hold::Settled::NONE, |minute| {
+                watch.log(format!("settled before UTC minute {minute}"));
+                crate::sleep_hold::Settled::before(minute)
+            });
+        let hold = crate::sleep_hold::hold(newest, settled, kind, evidence);
+        let mut fetch = crate::gb_buckets::Fetch::new(since, i64::MIN / 2, newest);
         if let Some(hold) = hold {
             fetch.hold(hold.from);
             watch.log(format!("holding back from UTC minute {}", hold.from));

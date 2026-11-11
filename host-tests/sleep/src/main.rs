@@ -16,6 +16,9 @@
 #[path = "../../../src/sleep.rs"]
 #[allow(dead_code)]
 mod sleep;
+#[path = "../../../src/sleep_hold.rs"]
+#[allow(dead_code)]
+mod sleep_hold;
 #[path = "../../../src/stages.rs"]
 #[allow(dead_code)]
 mod stages;
@@ -232,21 +235,33 @@ impl stages::Record for Record<'_> {
 /// movement is still restless). `heart` may be shorter than `minutes`
 /// (empty for no readings).
 fn firmware(minutes: &[Minute], heart: &[u8]) -> (Vec<Kind>, Vec<bool>) {
+    let (kinds, asleep, _) = settling(minutes, heart);
+    (kinds, asleep)
+}
+
+/// [`firmware`], and when the watch settled a night, the wearer being
+/// clearly up (`activity::History::settle`, see `sleep_hold`): the
+/// minute it settled before, and the last minute asleep. (Minute indices
+/// stand in for UTC minutes.)
+fn settling(minutes: &[Minute], heart: &[u8]) -> (Vec<Kind>, Vec<bool>, Vec<(usize, usize)>) {
     let mut kinds = vec![Kind::Unknown; minutes.len()];
     let mut asleep = Vec::with_capacity(minutes.len());
+    let mut settled = sleep_hold::Settled::NONE;
+    let mut settles = Vec::new();
     for now in 0..minutes.len() {
         let window = (now + 1).saturating_sub(sleep::WINDOW);
-        let start = window.saturating_sub(sleep::CONTEXT);
-        let before = if start == 0 {
+        let read = window.saturating_sub(sleep::CONTEXT);
+        let rewrite = settled.rewritten(now as i64).max(0) as usize;
+        let before = if read == 0 {
             Kind::Unknown
         } else {
-            kinds[start - 1]
+            kinds[read - 1]
         };
-        let mut out = vec![Kind::Unknown; now + 1 - start];
-        sleep::classify(before, &minutes[start..=now], &mut out);
-        kinds[window..=now].copy_from_slice(&out[window - start..]);
+        let mut out = vec![Kind::Unknown; now + 1 - read];
+        sleep::classify(before, &minutes[read..=now], &mut out);
+        kinds[rewrite..=now].copy_from_slice(&out[rewrite - read..]);
         if let Some((start, end, _)) = last_sleep(&kinds[..=now])
-            && now < end + sleep::WINDOW
+            && settled.restaged(now as i64, start as i64, end as i64)
         {
             let mut record = Record {
                 kinds: &mut kinds,
@@ -256,9 +271,19 @@ fn firmware(minutes: &[Minute], heart: &[u8]) -> (Vec<Kind>, Vec<bool>) {
             };
             stages::stage(&mut record, start as i64, end as i64);
         }
+        let inside = |minute: i64| usize::try_from(minute).ok().filter(|&t| t <= now);
+        if let Some(last) = sleep_hold::settles(
+            now as i64,
+            settled,
+            |minute| inside(minute).map_or(Kind::Unknown, |t| kinds[t]),
+            |minute| inside(minute).map_or(Minute::default(), |t| minutes[t]),
+        ) {
+            settled = sleep_hold::Settled::before(now as i64);
+            settles.push((now, last as usize));
+        }
         asleep.push(kinds[now].is_sleep());
     }
-    (kinds, asleep)
+    (kinds, asleep, settles)
 }
 
 #[cfg(test)]
@@ -445,7 +470,7 @@ fn replay(path: &str, reference: Option<&str>) {
     let heart: Vec<u8> = (first..=last)
         .map(|m| heart.get(&m).copied().unwrap_or(0))
         .collect();
-    let (kinds, _) = firmware(&evidence, &heart);
+    let (kinds, _, settles) = settling(&evidence, &heart);
     let stages = stages::Minutes::count(kinds.iter().copied());
     println!(
         "{} minutes, {} heart rate readings; asleep {} (light {}, deep {}, REM {}); last sleep {:?}",
@@ -457,6 +482,24 @@ fn replay(path: &str, reference: Option<&str>) {
         stages.rem,
         last_sleep(&kinds)
     );
+    // When the watch settled a night (see `sleep_hold`), and so let
+    // Gadgetbridge have it.
+    let hhmm = |t: usize| {
+        let second = (first + t as i64) * 60;
+        format!(
+            "{:02}:{:02}Z",
+            second.rem_euclid(86_400) / 3600,
+            second.rem_euclid(3600) / 60
+        )
+    };
+    for &(at, last) in &settles {
+        println!(
+            "settled before {}, {} minutes after the last minute asleep ({})",
+            hhmm(at),
+            at - last,
+            hhmm(last)
+        );
+    }
 
     let reference: Option<Vec<Option<Kind>>> = reference.map(|path| {
         let text = std::fs::read_to_string(path).expect("a readable reference");
