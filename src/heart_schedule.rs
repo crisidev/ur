@@ -1098,6 +1098,118 @@ impl Schedule {
     }
 }
 
+// ==============================================================================
+// Longer sessions on a busy wrist (an experiment, in the logging build)
+// ==============================================================================
+//
+// Only the logging build (`field-log`) runs this; the plain build's
+// sessions are as they were. The host tests run it all the same.
+
+/// Seconds an awake background session in the experiment's longer arm (see
+/// [`Length`]) goes on for, beyond the usual 30 (`heart::SESSION_LIMIT`),
+/// when that has passed on a busy wrist without a reading: 90 s in all.
+#[cfg(any(feature = "field-log", not(target_os = "none")))]
+pub const LONGER_FOR: u32 = 60;
+
+/// How long an awake background session on a busy wrist runs, without a
+/// reading: the logging build's field experiment.
+///
+/// Replaying 730 recorded sessions against a Garmin (2026-11-11) couldn't
+/// say whether a busy wrist reads more often given longer, as the
+/// recordings end at 30 s: joining a session to the next minutes later
+/// isn't the same wrist. Nor what a reading on a busy wrist is worth: a
+/// walk read 58-60 BPM, half its step cadence, against the Garmin's 97, at
+/// a high window quality, the PPG having locked onto the arm's swing. So
+/// the logging build records both halves of the question: the
+/// accelerometer's samples through every session (`accel:` lines, at
+/// `trace`), from which a replay can find the movement's own rhythm
+/// and test rejecting it, and, on half the awake rounds, sessions that go
+/// on to 90 s, for what a longer session reads (and at what error).
+///
+/// By round, as [`Arm`] is, and crossed with it, so that each comparison
+/// is between rounds alike in the other: the first two awake rounds after
+/// boot are `Longer` (dim, then bright), the next two `Usual`, and so on
+/// (see [`Lengths`]). Longer first, so that a dev kit, whose rounds never
+/// end (a desk gives no reading), runs the longer arm.
+///
+/// A `Longer` session goes on only if it would otherwise end there: awake
+/// and in the background, no reading yet, a busy wrist (not
+/// [`calm_throughout`], which is when a calm one may go [`brighter`]
+/// instead), and the budget covers the extra 60 s at its drive and still
+/// keeps [`SESSION_RESERVE`] for the next (see [`longer`]). Everything
+/// else about the session is as usual: the same drive, the windows and
+/// their consensus carrying on, and a reading ending it.
+///
+/// What it costs: ~1.6 mAh a day, ~7 at worst, within the budget's caps
+/// (see docs/power-plan.md); and ~0.4 MB more field log a day.
+///
+/// TODO: once field logs have judged it, keep the winner (in the plain
+/// build too, if it's longer), and drop the accelerometer's samples.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(target_os = "none", derive(defmt::Format))]
+#[cfg(any(feature = "field-log", not(target_os = "none")))]
+pub enum Length {
+    /// Ends at 30 s, as in the plain build.
+    Usual,
+    /// May go on to 90 s on a busy wrist.
+    Longer,
+}
+
+/// Which awake rounds are [`Length::Longer`]: the heart task's count of the
+/// rounds that have chosen their LED [`Arm`], 4 bytes of its state.
+#[derive(Clone, Copy, Debug, Default)]
+#[cfg(any(feature = "field-log", not(target_os = "none")))]
+pub struct Lengths {
+    /// The latest round to have chosen (0: none yet, as rounds count from
+    /// 1).
+    round: u16,
+    /// How many have, wrapping.
+    chosen: u16,
+}
+
+#[cfg(any(feature = "field-log", not(target_os = "none")))]
+impl Lengths {
+    pub const fn new() -> Self {
+        Self {
+            round: 0,
+            chosen: 0,
+        }
+    }
+
+    /// The length of a background session in `round`, as [`Schedule::begin`]
+    /// numbered it, on LED arm `arm`. Asleep it's always `Usual`; an awake
+    /// round chooses at its first awake session, as its `arm` does, and
+    /// keeps it for its retries.
+    pub fn of(&mut self, round: u16, arm: Arm) -> Length {
+        if arm == Arm::Asleep {
+            return Length::Usual;
+        }
+        if self.chosen == 0 || round != self.round {
+            self.round = round;
+            self.chosen = self.chosen.wrapping_add(1);
+        }
+        // The first two longer, the next two usual: with the LED's arm
+        // taking turns round by round, each pair has both LEDs.
+        if (self.chosen - 1) & 2 == 0 {
+            Length::Longer
+        } else {
+            Length::Usual
+        }
+    }
+}
+
+/// Whether a [`Length::Longer`] session that has run its usual time without
+/// a reading on a busy wrist, at `drive`, may go on for [`LONGER_FOR`], with
+/// `spare` seconds of the [`LED_BUDGET`] left after its own so far: if that
+/// covers the extension and still leaves [`SESSION_RESERVE`], as for a
+/// [`brighter`] phase. So the extension never holds back the next session,
+/// an overdue try included: when the budget runs short, it's the extension
+/// that gives way.
+#[cfg(any(feature = "field-log", not(target_os = "none")))]
+pub fn longer(drive: u8, spare: u32) -> bool {
+    spare >= budget_seconds(drive, LONGER_FOR * 1000) + SESSION_RESERVE
+}
+
 /// The brightest drive up to two settings above `drive` at which `peak`,
 /// scaled by the current, stays within [`BRIGHTER_PEAK_LIMIT`], and that
 /// `affordable` allows.

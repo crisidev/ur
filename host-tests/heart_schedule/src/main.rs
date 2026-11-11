@@ -1146,6 +1146,125 @@ mod tests {
             assert!(spent > LED_BUDGET + 114, "hour {hour}: {spent} s");
         }
     }
+
+    /// The logging build's longer arm is crossed with the LED's: over any
+    /// four awake rounds in a row, each pairing once, longer first (dim,
+    /// then bright), and every try of a round on its round's.
+    #[test]
+    fn lengths_cross_the_led_arms_by_round() {
+        let mut schedule = Schedule::new();
+        let mut lengths = Lengths::new();
+        let mut t = 0;
+        let mut firsts = Vec::new();
+        for round in 1..=12 {
+            // Odd rounds take two tries, a failure and a reading.
+            let tries = if round % 2 == 1 { 2 } else { 1 };
+            let mut seen = Vec::new();
+            for try_ in 0..tries {
+                let (number, arm) = schedule.begin(false);
+                seen.push((arm, lengths.of(number, arm)));
+                t += 300;
+                let outcome = if try_ + 1 == tries {
+                    Outcome::Reading(60)
+                } else {
+                    Outcome::NoReading
+                };
+                schedule.ended(t, 30, outcome, true, awake(0));
+            }
+            assert!(
+                seen.iter().all(|&s| s == seen[0]),
+                "round {round}: {seen:?}"
+            );
+            firsts.push(seen[0]);
+        }
+        use Length::{Longer, Usual};
+        assert_eq!(
+            firsts,
+            [
+                (Arm::Dim, Longer),
+                (Arm::Bright, Longer),
+                (Arm::Dim, Usual),
+                (Arm::Bright, Usual)
+            ]
+            .repeat(3)
+        );
+    }
+
+    /// Asleep, a session is never longer, and doesn't choose: the round's
+    /// first awake session does, as for the LED's arm.
+    #[test]
+    fn lengths_are_chosen_awake() {
+        let mut schedule = Schedule::new();
+        let mut lengths = Lengths::new();
+        let (round, arm) = schedule.begin(true);
+        assert_eq!(lengths.of(round, arm), Length::Usual);
+        schedule.ended(300, 30, Outcome::NoReading, true, sleeping());
+        // Woken mid-round: the first round to choose, so longer.
+        let (round, arm) = schedule.begin(false);
+        assert_eq!((round, arm), (1, Arm::Dim));
+        assert_eq!(lengths.of(round, arm), Length::Longer);
+        schedule.ended(600, 13, Outcome::Reading(60), true, awake(0));
+        // A night of rounds doesn't move the turns on.
+        for (n, t) in (0..5).zip((900..).step_by(300)) {
+            let (round, arm) = schedule.begin(true);
+            assert_eq!((round, lengths.of(round, arm)), (n + 2, Length::Usual));
+            schedule.ended(t, 13, Outcome::Reading(50), true, sleeping());
+        }
+        let (round, arm) = schedule.begin(false);
+        assert_eq!((arm, lengths.of(round, arm)), (Arm::Bright, Length::Longer));
+    }
+
+    /// The extension spends from the budget, and only what leaves the next
+    /// session its reserve: when the budget runs short, the extension gives
+    /// way, not the next try (an overdue one included).
+    #[test]
+    fn longer_leaves_the_next_session_its_reserve() {
+        // 60 s at 12.5 mA is 60 s of budget, at 30 mA 144, at 40 mA 192.
+        for (drive, cost) in [(0, 60), (1, 96), (2, 144), (3, 192)] {
+            assert_eq!(budget_seconds(drive, LONGER_FOR * 1000), cost);
+            assert!(longer(drive, cost + SESSION_RESERVE));
+            assert!(!longer(drive, cost + SESSION_RESERVE - 1));
+        }
+        assert!(!longer(0, 0));
+        // A dim session that has spent its 30 s from a full bucket can go
+        // on; a bright one that leaves 150 can't (it needs 174).
+        assert!(longer(0, LED_BUDGET - 30));
+        assert!(!longer(2, 150));
+    }
+
+    /// A day of busy desk hours on the longer arm, every session failing at
+    /// 90 s, dim or bright (216 budget seconds at 30 mA), and overdue all
+    /// day: the extension only ever runs on what the budget has spare, so
+    /// the doubled budget still caps the hour, as without it.
+    #[test]
+    fn the_budget_caps_a_day_of_longer_sessions() {
+        let mut schedule = Schedule::new();
+        let (mut t, mut spent) = (0, Vec::new());
+        let mut lengths = Lengths::new();
+        while t < 24 * HOUR {
+            let (due, _) = schedule.due(0, false);
+            t = t.max(due);
+            let budget = schedule.budget(t);
+            let (round, arm) = schedule.begin(false);
+            let drive = if arm == Arm::Bright { 2 } else { 0 };
+            let mut cost = budget_seconds(drive, 30_000);
+            let length = lengths.of(round, arm);
+            if length == Length::Longer && longer(drive, budget.saturating_sub(cost)) {
+                cost += budget_seconds(drive, LONGER_FOR * 1000);
+            }
+            t += 90;
+            schedule.ended(t, cost, Outcome::NoReading, true, awake(0));
+            spent.push((t, cost));
+        }
+        for hour in 2..23 {
+            let spent: u32 = spent
+                .iter()
+                .filter(|(t, _)| (hour * HOUR..(hour + 1) * HOUR).contains(t))
+                .map(|(_, s)| s)
+                .sum();
+            assert!(spent <= OVERDUE_BUDGET + 216, "hour {hour}: {spent} s");
+        }
+    }
 }
 
 /// Kani proofs (`cargo kani` here, one at a time with `--harness`: CBMC

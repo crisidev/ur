@@ -1294,6 +1294,9 @@ pub async fn activity_task(i2c: Device) {
                 previous = Some(now);
             }
             trace_samples(&frames, moved * 8 / u64::from(samples.max(1)));
+            // In the logging build, through each heart rate session.
+            #[cfg(feature = "field-log")]
+            crate::heart::trace_accel(&frames);
             (moved, samples)
         };
         let Ok(count) = bma.steps().await else {

@@ -319,6 +319,24 @@ walking, so the change adds ~0.9 and ~2.3 tries an hour: ~0.35–0.8 mAh
 over 16 desk hours, ~0.9–2.1 walking (dim to bright). The hourly caps
 (`LED_BUDGET`, `OVERDUE_BUDGET`) are unchanged and still bound it all.
 
+### Longer busy sessions (the logging build)
+
+After 0.10.0, the logging build runs a field experiment
+(`heart_schedule::Length`): an awake background session that reaches
+30 s on a busy wrist without a reading goes on to 90 s on half the
+rounds, if the budget covers the extra minute and still keeps a
+session's reserve. The rc.5 and rc.6 field logs had ~2.3–2.8 such
+sessions an hour awake (rc.4's, ~0.9), so ~20 extensions over 16 hours,
+half on each LED arm. At the ~2.9 mA a second of LED at 12.5 mA is taken
+as here (chip and polling included), and ~6.7 at 30 mA, a minute costs
+~0.05 mAh dim and ~0.11 bright: **~1.6 mAh a day** (~1%). Were the LED to
+draw its nominal current whenever it's lit, ~7 mAh (~4%). Either way it
+only spends what the budget has spare, so the caps above still bound it,
+and the hourly `power:` line's LED seconds by drive measure it. The
+accelerometer's samples, logged through every session, cost nothing
+measurable: ~0.4 MB more of the field log a day, ~0.05 mAh of writing
+to the SPI flash.
+
 ### What a connection event and an advertising event cost
 
 Nordic's figures for the nRF52832: radio TX at 0 dBm is 5.3 mA and RX is

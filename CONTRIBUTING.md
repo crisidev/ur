@@ -650,6 +650,18 @@ Some host-test crates replay decoded logs, to tune against real wrists:
   tissue. A desk day has a few dozen sessions on each arm, so look at a
   couple of days before deciding.
 
+  Logging builds after 0.10.0 run a field experiment for a busy wrist
+  (`heart_schedule::Length`), which the plain build doesn't: an awake
+  background session that reaches 30 s on a busy wrist without a reading
+  goes on to 90 s on half the rounds (crossed with the LED's arms; its
+  `heart: due` line ends `Longer` or `Usual`, and `heart: longer after 30
+  s` marks one going on), and every session logs the accelerometer's
+  samples (`accel: [x, y, z, …]`, every 2 s, 12.5 Hz, in 1/64 g), to find
+  a walk's cadence and the readings that lock onto it. That's ~46 bytes
+  a second of session, plus the longer sessions' own lines: ~0.4 MB a
+  day more, so the 2 MB holds ~22 hours, not ~26. Fetch the log at least
+  once a day.
+
 Steps come from the accelerometer's own counter, which a log can't
 replay. A capture build, `UR_ACTIVITY_LOG=trace scripts/release.sh --pre
 accel tmp/accel`, also logs the accelerometer's samples while the wrist
