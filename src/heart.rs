@@ -1123,14 +1123,17 @@ const ACCEL_TAIL: u8 = 2;
 /// `ur::heart=trace` (`scripts/release.sh`); only in the logging build.
 ///
 /// `accel: [x, y, z, x, y, z, …]`: the poll's samples, oldest first, at
-/// the FIFO's 12.5 Hz (80 ms apart, by the accelerometer's own clock), the
-/// newest a moment before the line's time, in 1/64 g (±2 g, as the chip
-/// measures, is ±128, so each axis fits a byte), the same as a capture
-/// build's `activity: samples` (see `activity::trace_samples`). That's ~85
-/// bytes a poll, ~43 a second of session, against the ~100 of the PPG's
-/// own lines; ~25 samples a line, or fewer when a read failed or the FIFO
-/// was flushed. The movement's fundamental (a walk's ~1.8 Hz of steps, or
-/// ~0.9 Hz of arm swing) is well below the 6.25 Hz this resolves.
+/// the FIFO's rate (nominally 12.5 Hz, but by the accelerometer's own
+/// clock: 11.94 Hz on the sealed watch, so a replay should measure it from
+/// the lines' times and lengths), the newest a moment before the line's
+/// time, in 1/64 g (±2 g, as the chip measures, is ±128, so each axis
+/// fits a byte), the same as a capture build's `activity: samples` (see
+/// `activity::trace_samples`). That's ~93 bytes a poll (rzCOBS-encoded,
+/// measured on a capture log's samples), ~46 a second of session, against
+/// the ~100 of the PPG's own lines; ~24 samples a line, or fewer when a
+/// read failed or the FIFO was flushed. The movement's fundamental (a
+/// walk's ~1.8 Hz of steps, or ~0.9 Hz of arm swing) is well below the
+/// ~6 Hz this resolves.
 #[cfg(feature = "field-log")]
 pub fn trace_accel(frames: &[[i16; 3]]) {
     let wanted = match ACCEL.load(Ordering::Relaxed) {
