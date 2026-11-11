@@ -10,6 +10,10 @@
 # - sim: the simulator's tests (sim/), which check its screenshots of the
 #   UI against the approved ones (every theme's README's too), run every
 #   theme's every screen, and upload those screenshots, to look at
+# - sim-fuzz-seeds: every seed of the simulator's two fuzz targets
+#   (sim/fuzz/seeds.tar.zst), once each: the firmware's UI and settings
+#   storage on inputs long fuzzing found, with every `debug_assert!` on
+#   (verify.yml fuzzes from them, on release tags)
 # - sim-web: the simulator built for browsers, checked against the above
 # - blueprints: the Home Assistant blueprints for the button grid, run in
 #   Home Assistant's test harness
@@ -128,6 +132,36 @@ jobs:
           name: screenshots
           path: sim/target/*/tmp/shots/
           if-no-files-found: error
+  # The simulator's fuzz targets (sim/fuzz/), on their seeds only: a
+  # minute or two, against what CI otherwise misses, a panic or a
+  # `debug_assert!` deep in a sequence of steps no test takes. They need
+  # nightly (libFuzzer), pinned as verify.yml pins it. Both targets in one
+  # job: they share the build, and each runs its seeds in under a minute.
+  sim-fuzz-seeds:
+    runs-on: ubuntu-latest
+    name: sim / fuzz seeds
+    env:
+      NIGHTLY: nightly-2026-11-06
+      CARGO_FUZZ_VERSION: 0.13.2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      - name: Install nightly
+        run: rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # tag=v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-fuzz
+          key: cargo-fuzz-${{ env.CARGO_FUZZ_VERSION }}
+      - name: Install cargo-fuzz
+        run: command -v cargo-fuzz >/dev/null || cargo install --locked cargo-fuzz --version "$CARGO_FUZZ_VERSION"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
+        with:
+          workspaces: sim/fuzz
+      - name: the seeds
+        working-directory: sim/fuzz
+        run: |
+          tar --zstd -xf seeds.tar.zst
+          cargo "+$NIGHTLY" fuzz run -s none steps seeds/steps -- -runs=0
+          cargo "+$NIGHTLY" fuzz run -s none gadgetbridge seeds/gadgetbridge -- -runs=0
   # The simulator in a browser (sim/web/): that it builds for WebAssembly
   # (and lints clean there: much of it is compiled differently), that it
   # works driven as the page drives it, and that every screenshot it takes
