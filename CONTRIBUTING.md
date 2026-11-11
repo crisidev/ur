@@ -759,10 +759,8 @@ gh release download v0.9.0 --pattern sha256.sum --dir published
   everything it checks, so a new crate needs no list in CI.
 - `features.yml`: that every theme builds alone (as its package is) and
   all together with every feature (`--all-features`), and that the
-  simulator builds with everything. The heavier jobs wait for it:
-  `test.yml`'s simulator and firmware jobs, `screenshots.yml`'s
-  rendering, and `pages.yml`'s build (those two only for its simulator
-  check).
+  simulator builds with everything. `test.yml`'s heavier jobs, the
+  simulator and firmware, wait for it.
 - `test.yml`: the host tests, the simulator's tests and screenshots
   (as the run's `screenshots` artifact; every theme's own too, with
   `themes-all`) and its browser build (`sim-web`), and a packaged build

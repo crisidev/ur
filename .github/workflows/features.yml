@@ -1,9 +1,11 @@
 # That every theme builds, alone and with everything: a gate the heavier
 # jobs wait on (test.yml's simulator and firmware jobs, with the size
-# report; screenshots.yml's renderings; pages.yml's build), so a theme or a
-# feature that doesn't compile fails here, in a minute or so, rather than
-# in each of them. Called by those workflows (`workflow_call`), with
-# `firmware: false` where only the simulator is built after.
+# report), so a theme or a feature that doesn't compile fails here, in a
+# minute or so, rather than in each of them. Called by test.yml
+# (`workflow_call`). (screenshots.yml and pages.yml used to call it too,
+# with an input that left out the firmware's themes, for their one
+# simulator job each; test.yml runs it on the same PR or push, and a job
+# that doesn't build fails as early on its own.)
 #
 # What each check catches that nothing else does:
 #
@@ -38,11 +40,6 @@ permissions:
   contents: read
 on:
   workflow_call:
-    inputs:
-      firmware:
-        description: check the firmware's themes too, not only the simulator
-        type: boolean
-        default: true
 name: features
 jobs:
   check:
@@ -61,7 +58,6 @@ jobs:
       # Release profile, as the packages are built (and as some code
       # depends on the profile's cfgs).
       - name: every theme alone, and everything together
-        if: inputs.firmware
         run: |
           read -r -a others < <(python3 -c 'import tomllib; f = tomllib.load(open("Cargo.toml", "rb"))["features"]; print(" ".join(t for t in f if t.startswith("theme-") and t not in f["default"]))')
           for theme in "${others[@]}"; do

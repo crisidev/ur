@@ -24,13 +24,10 @@ concurrency:
   cancel-in-progress: true
 name: screenshots
 jobs:
-  # That the simulator builds with every theme, before drawing any.
-  features:
-    uses: ./.github/workflows/features.yml
-    with:
-      firmware: false
+  # Not behind features.yml, as test.yml's simulator is: test.yml runs it
+  # on this same PR, and a simulator that doesn't build fails this job
+  # as soon as it would have failed that check.
   render:
-    needs: features
     runs-on: ubuntu-latest
     name: render
     steps:
