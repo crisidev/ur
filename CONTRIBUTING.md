@@ -405,6 +405,21 @@ it:
   sends over the air (`ur-sim --fuzz ELF --peer ADDRESS --corpus DIR
   --gadgetbridge`; see "Fuzzing a dev kit").
 
+### In CI, on release tags
+
+`.github/workflows/verify.yml` runs the slow checks on every release
+tag, rc's included, and on demand (Actions → verify → Run workflow), a
+job for each: every crate's Kani proofs, Miri on the crates with
+`unsafe` code (named in the workflow: in safe Rust, Miri finds nothing a
+normal run doesn't, a thousand times slower), every Bolero harness for
+four minutes, and the simulator's two fuzz targets for half an hour
+each, from their seeds (`sim/fuzz/seeds.tar.zst`). The other jobs find
+their crates in the tree. It takes a few hours, so it doesn't
+hold up the release a tag starts; a failure on an rc is what to fix
+before the final release. On every PR, `test.yml` does the quick part
+of two of them: it compiles the Kani proofs without running them, and
+runs each of the simulator's seeds once (see [CI](#ci)).
+
 ### cargo-careful and Miri
 
 `cargo +nightly careful test` (a standard library with its debug checks)
@@ -766,7 +781,9 @@ gh release download v0.9.0 --pattern sha256.sum --dir published
   only compiles `#[cfg(kani)]` code, and running the proofs is for
   release tags), the simulator's tests and screenshots
   (as the run's `screenshots` artifact; every theme's own too, with
-  `themes-all`) and its browser build (`sim-web`), and a packaged build
+  `themes-all`) and its browser build (`sim-web`), every seed of the
+  simulator's fuzz targets once (`sim-fuzz-seeds`; see [In CI, on
+  release tags](#in-ci-on-release-tags)), and a packaged build
   (by `release.sh`, so without `debug-input`) of every PR and every
   commit on main, to try on a watch:
   `0.9.0-pr.<number>+<commit>`, or `0.9.0-snap.<commits>+<commit>`. The
@@ -777,6 +794,10 @@ gh release download v0.9.0 --pattern sha256.sum --dir published
   Home Assistant's own test harness; only when a PR or push changes
   something under `blueprints/`, as nothing else can break them.
 - `release.yml`: on a version tag; see [Releasing](#releasing).
+- `verify.yml`: on a version tag too (rc's included), and on demand,
+  the slow checks: running the Kani proofs, Miri, Bolero and the
+  simulator's fuzzing; see [In CI, on release tags](#in-ci-on-release-tags).
+  It doesn't hold up the release.
 - `beta.yml`: weekly, and on demand, the firmware's clippy and the host
   tests on beta, for early warning of the next stable Rust. Not per PR:
   beta changes on its own schedule, not the PR's.

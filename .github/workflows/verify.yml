@@ -1,0 +1,211 @@
+# The slow checks, on every release tag (rc's included) and on demand:
+# what test.yml can't afford on every PR, and nothing else runs. A
+# failure on an rc is the signal to fix it before the final release; this
+# doesn't hold up release.yml, which a tag starts at the same time.
+#
+# One job per kind of check, each going through every crate that has one
+# (found in the tree, so a new crate needs no list here; Miri's are named,
+# see there), and carrying on past a failure so that one run shows them
+# all:
+# - kani: each host-test crate's proofs (`#[kani::proof]`), with CBMC. Only
+#   `cargo kani` compiles them (`#[cfg(kani)]`), so nothing else even
+#   notices when a change to a module breaks its proofs
+# - miri: the tests of the host-test crates with `unsafe` code under Miri,
+#   which catches the undefined behaviour (out-of-bounds or misaligned
+#   pointers, aliasing, data races) that a normal run passes over
+# - bolero: each host-test crate's Bolero harnesses, fuzzed with libFuzzer
+#   for a few minutes each (`cargo test` gives each only a second)
+# - sim-fuzz: the simulator's coverage-guided targets (sim/fuzz/), which
+#   run the firmware's UI and settings storage against random inputs,
+#   with every `debug_assert!` on: half an hour each, from their seeds
+#   (sim/fuzz/seeds.tar.zst; test.yml runs those alone on every PR)
+#
+# Nightly: Miri, Bolero's libFuzzer and cargo-fuzz need it, so it is
+# pinned here (not in rust-toolchain.toml, which is the release compiler),
+# as test.yml pins it. TODO: Dependabot doesn't update this pin; move it,
+# and Kani's, when either breaks, or a new Rust edition needs it.
+#
+# See CONTRIBUTING.md for running each of these locally.
+permissions:
+  contents: read
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  NIGHTLY: nightly-2026-11-06
+  KANI_VERSION: 0.68.0
+  CARGO_BOLERO_VERSION: 0.13.5
+  CARGO_FUZZ_VERSION: 0.13.2
+name: verify
+jobs:
+  kani:
+    runs-on: ubuntu-latest
+    name: kani
+    # All 32 crates take 50 minutes on a desktop (in November 2026;
+    # alarm 20 of them, heart_schedule 6, the rest under 4): room for a
+    # runner's slower cores, without letting a proof that blew up (an
+    # unwind bound too high) run for GitHub's six hours.
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      # Kani brings its own compiler and CBMC (`cargo kani setup`, into
+      # ~/.kani), kept between runs by version.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # tag=v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/kani
+            ~/.cargo/bin/cargo-kani
+            ~/.kani
+          key: kani-${{ env.KANI_VERSION }}
+      - name: Install Kani
+        run: |
+          command -v cargo-kani >/dev/null || cargo install --locked kani-verifier --version "$KANI_VERSION"
+          cargo kani setup
+      # A crate at a time, each crate's proofs one after another: CBMC's
+      # memory grows fast with a proof's bounds, and one at a time keeps
+      # the largest (4 GB) within a runner's.
+      - name: cargo kani, every crate with proofs
+        run: |
+          failed=()
+          mapfile -t crates < <(grep -rl 'kani::proof' host-tests/*/src | cut -d/ -f2 | sort -u)
+          for crate in "${crates[@]}"; do
+            echo "::group::$crate"
+            (cd "host-tests/$crate" && timeout 60m cargo kani) || failed+=("$crate")
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::Kani failed in: ${failed[*]}"
+            exit 1
+          fi
+  miri:
+    runs-on: ubuntu-latest
+    name: miri
+    # About a minute on a desktop (in November 2026; packet_pool 48 s).
+    timeout-minutes: 30
+    env:
+      # Undefined behaviour needs `unsafe`, so these are the crates with
+      # any: packet_pool, the firmware's own (src/packet_pool.rs: buffers
+      # handed out by raw pointer); gesture's test clock (a `static mut`,
+      # which the test runner's threads share) and route's test strings
+      # (`from_utf8_unchecked`). In the others, which are safe Rust, Miri
+      # finds nothing a normal run doesn't, at up to a thousand times the
+      # time (battery's charging simulation alone runs past half an hour).
+      # TODO: a crate that gains `unsafe` (in its own code, or a module
+      # of src/ it includes) belongs here.
+      MIRI_CRATES: packet_pool gesture route
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      - name: Install nightly, with Miri
+        run: rustup toolchain install "$NIGHTLY" --profile minimal --component miri,rust-src
+      # Bolero's harnesses read their corpus from disk, which Miri's
+      # isolation forbids; the job below fuzzes them.
+      - name: cargo miri test, the crates with unsafe code
+        run: |
+          failed=()
+          read -ra crates <<<"$MIRI_CRATES"
+          for crate in "${crates[@]}"; do
+            dir=host-tests/$crate
+            echo "::group::$crate"
+            (cd "$dir" && timeout 30m cargo "+$NIGHTLY" miri test --locked -- --skip fuzz::) || failed+=("$crate")
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::Miri failed in: ${failed[*]}"
+            exit 1
+          fi
+  bolero:
+    runs-on: ubuntu-latest
+    name: bolero
+    # 39 harnesses, four minutes each, and the builds.
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      - name: Install nightly
+        run: rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # tag=v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-bolero
+          key: cargo-bolero-${{ env.CARGO_BOLERO_VERSION }}
+      - name: Install cargo-bolero
+        run: command -v cargo-bolero >/dev/null || cargo install --locked cargo-bolero --version "$CARGO_BOLERO_VERSION"
+      # Every harness of every crate that depends on Bolero (`cargo bolero
+      # list` names them, a JSON object a line).
+      - name: cargo bolero test, every harness
+        run: |
+          failed=()
+          mapfile -t crates < <(grep -l bolero host-tests/*/Cargo.toml | cut -d/ -f2)
+          for crate in "${crates[@]}"; do
+            # (Steps run with `-eo pipefail`: a failed listing is recorded
+            # below, not the end of the step.)
+            harnesses=()
+            mapfile -t harnesses < <(cd "host-tests/$crate" && cargo "+$NIGHTLY" bolero list | jq -r 'select(.test) | .test') || true
+            if [ "${#harnesses[@]}" -eq 0 ]; then
+              failed+=("$crate (no harnesses listed)")
+              continue
+            fi
+            for harness in "${harnesses[@]}"; do
+              echo "::group::$crate $harness"
+              (cd "host-tests/$crate" && cargo "+$NIGHTLY" bolero test "$harness" --engine libfuzzer -T 4min) \
+                || failed+=("$crate $harness")
+              echo "::endgroup::"
+            done
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            printf '::error::Bolero failed: %s\n' "${failed[@]}"
+            exit 1
+          fi
+      # What a harness found (Bolero keeps it in the crate's src/__fuzz__/,
+      # under the harness's name), to rerun.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # tag=v7.0.2
+        if: failure()
+        with:
+          name: bolero-crashes
+          path: host-tests/*/src/__fuzz__/*/crashes/
+          if-no-files-found: ignore
+  sim-fuzz:
+    runs-on: ubuntu-latest
+    name: sim-fuzz
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      - name: Install nightly
+        run: rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # tag=v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-fuzz
+          key: cargo-fuzz-${{ env.CARGO_FUZZ_VERSION }}
+      - name: Install cargo-fuzz
+        run: command -v cargo-fuzz >/dev/null || cargo install --locked cargo-fuzz --version "$CARGO_FUZZ_VERSION"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
+        with:
+          workspaces: sim/fuzz
+      # Half an hour of each target, a process per core, from its seeds
+      # into a scratch corpus (the seeds stay as unpacked). `-s none`:
+      # the targets catch what they check themselves, and a sanitizer
+      # would only slow them.
+      - name: half an hour of each target
+        working-directory: sim/fuzz
+        run: |
+          tar --zstd -xf seeds.tar.zst
+          mkdir -p artifacts
+          for target in steps gadgetbridge; do
+            echo "::group::$target"
+            mkdir -p "corpus/$target"
+            cargo "+$NIGHTLY" fuzz run -s none "$target" "corpus/$target" "seeds/$target" -- \
+              -fork="$(nproc)" -timeout=20 -rss_limit_mb=2048 -max_total_time=1800 \
+              -artifact_prefix="artifacts/$target-"
+            echo "::endgroup::"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # tag=v7.0.2
+        if: failure()
+        with:
+          name: sim-fuzz-artifacts
+          path: sim/fuzz/artifacts/
+          if-no-files-found: ignore
