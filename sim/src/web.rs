@@ -77,7 +77,7 @@ pub enum Text {
     Error = 1,
     /// The status line (as the window's title).
     Status = 2,
-    /// The colour schemes, one a line: its theme's name, a tab, its own.
+    /// The colour schemes, one a line (see [`ur_themes`]).
     Themes = 3,
 }
 
@@ -580,16 +580,31 @@ pub extern "C" fn ur_status() {
     print(Text::Status, &line);
 }
 
-/// Prints the colour schemes, for the page's picker (`theme NAME`): a
-/// line each, its theme's name, a tab, and its own.
+/// Prints the colour schemes, for the page's picker (`theme NAME`) and
+/// its links (`?theme=IDENT`, see `web/ur.js`): a line each, tab
+/// separated, of its theme's identifier (its directory's and feature's
+/// name, `theme-<ident>`), its theme's name, its side (`night` or
+/// `day`), and its own name.
 #[unsafe(no_mangle)]
 pub extern "C" fn ur_themes() {
     // Each built-in theme's own, so a one-sided build lists each once.
     let lines: Vec<String> = (themes::THEMES.iter())
         .flat_map(|theme| {
-            let schemes = theme.night.iter().chain(theme.day);
-            schemes.map(|scheme| format!("{}\t{}", theme.display_name(), scheme.palette().name))
+            let night = theme.night.iter().map(|scheme| ("night", scheme));
+            let day = theme.day.iter().map(|scheme| ("day", scheme));
+            night.chain(day).map(|(side, scheme)| {
+                let (ident, name) = (theme.name, theme.display_name());
+                format!("{ident}\t{name}\t{side}\t{}", scheme.palette().name)
+            })
         })
         .collect();
     print(Text::Themes, &lines.join("\n"));
+}
+
+/// Whether the watch shows the day's side now: by the sun, or as a
+/// scheme picked forces it (`theme NAME`). A link that names a theme, but
+/// not which of its schemes, gets its first for this side.
+#[unsafe(no_mangle)]
+pub extern "C" fn ur_daytime() -> bool {
+    with_watch(|watch| watch.daytime.unwrap_or_else(crate::geo::is_daytime))
 }

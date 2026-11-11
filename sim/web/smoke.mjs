@@ -4,14 +4,15 @@
 //
 // First, it boots the watch as the page does and drives it as a wearer
 // would, through the same functions the page calls (ur.js), checking
-// that each input reaches the watch. Then it runs each SCRIPT on a watch
-// of its own, booted bare (as the command line's), and writes its
-// screenshots to OUT/SCRIPT-NAME/, for check.sh to compare with the
-// command line's. Exits non-zero at the first thing that's wrong.
+// that each input reaches the watch, and that links to a theme
+// (`?theme=retro`) pick it. Then it runs each SCRIPT on a watch of its
+// own, booted bare (as the command line's), and writes its screenshots
+// to OUT/SCRIPT-NAME/, for check.sh to compare with the command line's.
+// Exits non-zero at the first thing that's wrong.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { ERROR, LOG, STATUS, THEMES, load } from "./ur.js";
+import { ERROR, LOG, STATUS, THEMES, chosen, linking, load, schemes } from "./ur.js";
 
 const [wasmPath, out, ...scripts] = process.argv.slice(2);
 if (!out) {
@@ -127,8 +128,7 @@ async function watch({ start, files }) {
   }
 
   ur.themes();
-  // A line a scheme: its theme's name, a tab, its own.
-  const themes = printed[THEMES].at(-1).split("\n").map((line) => line.split("\t")[1]);
+  const themes = schemes(printed[THEMES].at(-1)).map(({ scheme }) => scheme);
   if (themes.length < 2) fail(`themes: ${JSON.stringify(themes)}`);
   printed[ERROR].length = 0;
   // Quoted, as a scheme's name may have a space.
@@ -158,6 +158,88 @@ async function watch({ start, files }) {
   ur.mimic(true);
   if (!ur.frame().every((value, i) => value === real[i])) fail("ur.mimic(true) drew another frame");
   console.log(`smoke: the page's watch works (${ur.width}×${ur.height}, ${themes.length} colour schemes)`);
+}
+
+// ==============================================================================
+// Links to a theme
+// ==============================================================================
+//
+// What the page does with its URL's query (ur.js's `chosen`), for every
+// built-in theme and scheme: each picks a scheme of the theme it names,
+// which the watch then shows.
+
+{
+  const files = [];
+  const { ur, printed } = await watch({ start: true, files });
+  ur.themes();
+  const list = schemes(printed[THEMES].at(-1));
+  const idents = [...new Set(list.map((s) => s.ident))];
+  const base = "https://jonhoo.github.io/ur/sim/";
+
+  // The scheme `query` picks, failing on a warning unless `warns`.
+  const pick = (query, { warns = false } = {}) => {
+    const warnings = [];
+    const scheme = chosen(query, list, ur.daytime(), (w) => warnings.push(w));
+    if (warnings.length !== (warns ? 1 : 0)) {
+      fail(`?${query} warned ${JSON.stringify(warnings)}`);
+    }
+    return scheme;
+  };
+  // That the watch shows `scheme` once the page picks it.
+  const show = (scheme) => {
+    printed[ERROR].length = 0;
+    ur.command(`theme "${scheme.scheme}"`);
+    ur.command(`expect theme "${scheme.scheme}"`);
+    if (printed[ERROR].length) fail(`picking ${scheme.scheme}`, printed[ERROR]);
+  };
+
+  for (const ident of idents) {
+    const its = list.filter((s) => s.ident === ident);
+    const first = pick(`theme=${ident}`);
+    if (first?.ident !== ident) fail(`?theme=${ident} picked ${JSON.stringify(first)}`);
+    show(first);
+    // Each side's first, or with none for it, the other's.
+    for (const side of ["night", "day"]) {
+      const want = its.find((s) => s.side === side) ?? its[0];
+      const got = pick(`theme=${ident}&side=${side}`);
+      if (got !== want) fail(`?theme=${ident}&side=${side} picked ${got?.scheme}, not ${want.scheme}`);
+    }
+  }
+  for (const scheme of list) {
+    // By name in any case, spaces as `+` or `%20`, with its theme or not;
+    // and the link the page makes when it's picked.
+    const name = encodeURIComponent(scheme.scheme.toLowerCase());
+    for (const query of [
+      `scheme=${name}`,
+      `scheme=${name.replaceAll("%20", "+")}`,
+      `theme=${scheme.ident}&scheme=${name}`,
+      linking(base, scheme).search,
+    ]) {
+      if (pick(query) !== scheme) fail(`?${query} didn't pick ${scheme.scheme}`);
+    }
+    show(scheme);
+  }
+  if (linking(`${base}?theme=x&debug=1#top`, undefined).href !== `${base}?debug=1#top`) {
+    fail("Auto's link keeps the theme, or loses the rest");
+  }
+
+  // Anything else: a warning, and the default (or the theme's first).
+  for (const query of ["theme=nope", "scheme=nope", "side=dusk", "theme=", "scheme=%3Cb%3E"]) {
+    if (pick(query, { warns: true }) !== undefined) fail(`?${query} picked a scheme`);
+  }
+  if (pick("", {}) !== undefined || pick("debug=1") !== undefined) fail("no query picked a scheme");
+  // A side alone: the build's default for it, its first scheme.
+  for (const side of ["night", "day"]) {
+    const want = list.find((s) => s.side === side) ?? list[0];
+    if (pick(`side=${side}`) !== want) fail(`?side=${side} didn't pick ${want.scheme}`);
+  }
+  const other = list.find((s) => s.ident !== idents[0]);
+  if (other) {
+    const got = pick(`theme=${idents[0]}&scheme=${encodeURIComponent(other.scheme)}`, { warns: true });
+    if (got?.ident !== idents[0]) fail(`another theme's scheme picked ${got?.scheme}`);
+  }
+
+  console.log(`smoke: links pick each of ${idents.length} themes and ${list.length} schemes`);
 }
 
 // ==============================================================================

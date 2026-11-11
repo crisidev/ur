@@ -83,6 +83,16 @@ screenshots and GIFs, `gadgetbridge.txt` and `web/compare.txt` on it and
 on the command line, and checks that every screenshot and recording is
 the same, byte for byte.
 
+The page's address picks its theme, so a link can show one:
+[`?theme=living_tokyo`](https://jonhoo.github.io/ur/sim/?theme=living_tokyo),
+a theme by its directory's name, in its first scheme for the side the
+sun says; `&side=day` or `&side=night` for a side's (alone, the
+default for that side); `?scheme=tokyo+night`, a scheme by its name, in
+any case (with `theme`, only one of that theme's). A value that isn't
+built in is left out, with a warning in the browser's console. Picking
+a theme changes the address to match, so it's always a link to what
+shows.
+
 The project's site, <https://jonhoo.github.io/ur/>, is this page under
 `sim/`, beneath a landing page made from the top-level README.
 `web/site.sh` builds it into `target/site`, as the Pages workflow does:

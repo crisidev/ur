@@ -319,7 +319,7 @@
 // The page runs the loop the window does (sim/src/window.rs): each
 // animation frame, the time since the last passes on the watch, and the
 // watch is drawn. Everything else is handing input to the module.
-import { load, ERROR, STATUS, THEMES } from "./ur.js";
+import { load, chosen, linking, schemes, ERROR, STATUS, THEMES } from "./ur.js";
 
 const canvas = document.getElementById("watch");
 const stage = document.getElementById("stage");
@@ -370,6 +370,10 @@ window.addEventListener("resize", fit);
 // The module
 // ==============================================================================
 
+// The built-in schemes, as `ur_themes` lists them (see ur.js's
+// `schemes`): the picker's, and those a link may ask for.
+let builtIn = [];
+
 // The log keeps its last lines; a long `wait` can print thousands.
 function show(text, className) {
   const line = document.createElement("div");
@@ -389,17 +393,18 @@ function print(kind, text) {
     record.classList.toggle("on", recording);
     record.setAttribute("aria-pressed", recording);
   } else if (kind === THEMES) {
-    // A group a theme, of its schemes (`ur_themes`: "Retro\tARCADE").
+    // A group a theme, of its schemes (`ur_themes`:
+    // "retro\tRetro\tnight\tARCADE").
+    builtIn = schemes(text);
     const groups = new Map();
-    for (const line of text.split("\n")) {
-      const [theme, scheme] = line.split("\t");
-      if (!groups.has(theme)) {
+    for (const { ident, theme, scheme } of builtIn) {
+      if (!groups.has(ident)) {
         const group = document.createElement("optgroup");
         group.label = theme;
         themes.add(group);
-        groups.set(theme, group);
+        groups.set(ident, group);
       }
-      groups.get(theme).append(new Option(scheme, scheme));
+      groups.get(ident).append(new Option(scheme, scheme));
     }
   } else if (kind === ERROR) {
     show(text, "error");
@@ -438,6 +443,18 @@ canvas.height = ur.height;
 fit();
 const context = canvas.getContext("2d");
 guard(() => ur.themes());
+
+// The theme a link asks for (`?theme=retro`, see ur.js's `chosen`), once
+// the start script has set the clock, so the sun says which side's
+// scheme a theme alone means. Only ever a built-in scheme's name goes on
+// to the picker and the command, never the URL's text; one that isn't
+// built in leaves the default, with a warning in the browser's console.
+const linked = guard(() =>
+  chosen(location.search, builtIn, ur.daytime(), (warning) => console.warn(`ur: ${warning}`)));
+if (linked) {
+  themes.value = linked.scheme;
+  guard(() => ur.command(`theme "${linked.scheme}"`));
+}
 
 // The pointer, in the drawn watch's pixels, however big the page shows it.
 function at(event) {
@@ -497,7 +514,13 @@ typed.addEventListener("keydown", (event) => {
     event.preventDefault();
   }
 });
-themes.addEventListener("change", () => guard(() => ur.command(`theme "${themes.value}"`)));
+themes.addEventListener("change", () => {
+  guard(() => ur.command(`theme "${themes.value}"`));
+  // The address follows the picker, so it's always a link to what's
+  // showing (Auto: none). `window.`, as `history` is the typed commands'.
+  const scheme = builtIn.find((s) => s.scheme === themes.value);
+  window.history.replaceState(window.history.state, "", linking(location.href, scheme));
+});
 document.getElementById("script").addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
