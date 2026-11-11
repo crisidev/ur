@@ -5,13 +5,15 @@
 // First, it boots the watch as the page does and drives it as a wearer
 // would, through the same functions the page calls (ur.js), checking
 // that each input reaches the watch, and that links to a theme
-// (`?theme=retro`) pick it. Then it runs each SCRIPT on a watch of its
-// own, booted bare (as the command line's), and writes its screenshots
-// to OUT/SCRIPT-NAME/, for check.sh to compare with the command line's.
-// Exits non-zero at the first thing that's wrong.
+// (`?theme=retro`) pick it, its README's among them. Then it runs each
+// SCRIPT on a watch of its own, booted bare (as the command line's), and
+// writes its screenshots to OUT/SCRIPT-NAME/, for check.sh to compare
+// with the command line's. Exits non-zero at the first thing that's
+// wrong.
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ERROR, LOG, STATUS, THEMES, chosen, linking, load, schemes } from "./ur.js";
 
 const [wasmPath, out, ...scripts] = process.argv.slice(2);
@@ -165,8 +167,8 @@ async function watch({ start, files }) {
 // ==============================================================================
 //
 // What the page does with its URL's query (ur.js's `chosen`), for every
-// built-in theme and scheme: each picks a scheme of the theme it names,
-// which the watch then shows.
+// built-in theme and scheme, and for the links in the themes' READMEs:
+// each picks a scheme of the theme it names, which the watch then shows.
 
 {
   const files = [];
@@ -239,6 +241,24 @@ async function watch({ start, files }) {
     if (got?.ident !== idents[0]) fail(`another theme's scheme picked ${got?.scheme}`);
   }
 
+  // Every theme's README links to the page showing it: its own, and a
+  // row of the themes' list. With every theme built in, as check.sh
+  // builds it, each link picks a scheme of that theme.
+  const themesDir = fileURLToPath(new URL("../../src/themes/", import.meta.url));
+  const links = (file) =>
+    [...readFileSync(file, "utf8").matchAll(/https:\/\/jonhoo\.github\.io\/ur\/sim\/(\?[^)\s>"]*)/g)]
+      .map((match) => match[1]);
+  const index = links(join(themesDir, "README.md"));
+  for (const dir of readdirSync(themesDir)) {
+    if (!existsSync(join(themesDir, dir, "mod.rs"))) continue;
+    if (!idents.includes(dir)) fail(`src/themes/${dir}/ isn't built in: build with themes-all`);
+    const own = links(join(themesDir, dir, "README.md"));
+    if (!own.length) fail(`src/themes/${dir}/README.md has no link to the page (${base}?theme=${dir})`);
+    if (!index.includes(`?theme=${dir}`)) fail(`src/themes/README.md doesn't link ${base}?theme=${dir}`);
+    for (const query of own) {
+      if (pick(query.slice(1))?.ident !== dir) fail(`src/themes/${dir}/README.md links ${query}`);
+    }
+  }
   console.log(`smoke: links pick each of ${idents.length} themes and ${list.length} schemes`);
 }
 

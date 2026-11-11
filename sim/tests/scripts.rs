@@ -306,6 +306,35 @@ fn every_themes_screenshots() {
     }
 }
 
+/// Each theme's README, and its row in `src/themes/README.md`, link to
+/// the published simulator showing it (`?theme=<name>`; see
+/// `web/ur.js`). That the page then picks a scheme of that theme from
+/// each link is `web/smoke.mjs`'s to check (`web/check.sh`), as it
+/// runs the page's own code.
+#[test]
+fn every_theme_links_live() {
+    let themes = themes_dir();
+    let index = std::fs::read_to_string(themes.join("README.md")).expect("src/themes/README.md");
+    for name in built_themes() {
+        let link = format!("(https://jonhoo.github.io/ur/sim/?theme={name})");
+        let readme = std::fs::read_to_string(themes.join(name).join("README.md"))
+            .expect("the theme's README reads");
+        assert!(
+            readme.contains(&format!("[Try it live]{link}")),
+            "src/themes/{name}/README.md has no \"Try it live\" link under its title: \
+             add `[Try it live]{link}`"
+        );
+        let row = index
+            .lines()
+            .find(|line| line.contains(&format!("({name}/)")))
+            .unwrap_or_else(|| panic!("src/themes/README.md has no row for {name}"));
+        assert!(
+            row.contains(&link),
+            "src/themes/README.md's row for {name} doesn't link {link}"
+        );
+    }
+}
+
 /// Each theme's every screen (`src/themes/<name>/screens.txt`), run to the
 /// end, without writing a screenshot (`--no-shots`): a smoke test.
 #[test]

@@ -83,7 +83,8 @@ screenshots and GIFs, `gadgetbridge.txt` and `web/compare.txt` on it and
 on the command line, and checks that every screenshot and recording is
 the same, byte for byte.
 
-The page's address picks its theme, so a link can show one:
+The page's address picks its theme, so a link can show one (each
+theme's README links to it so):
 [`?theme=living_tokyo`](https://jonhoo.github.io/ur/sim/?theme=living_tokyo),
 a theme by its directory's name, in its first scheme for the side the
 sun says; `&side=day` or `&side=night` for a side's (alone, the

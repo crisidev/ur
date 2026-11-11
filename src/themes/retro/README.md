@@ -1,5 +1,7 @@
 # Retro
 
+[Try it live](https://jonhoo.github.io/ur/sim/?theme=retro): the simulator, in your browser.
+
 The watch's own look, after old handhelds, arcade cabinets, terminals
 and printed game manuals: pixel art on the 80×80 canvas, big 5×7 digits
 with a drop shadow, few colours a scheme, ramps of a single hue, and

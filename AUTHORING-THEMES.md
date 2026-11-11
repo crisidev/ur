@@ -154,8 +154,8 @@ off). What it does, which is also what to do by hand:
    `src/themes/mod.rs`, `theme-neon` and `themes-all` in both
    manifests, and a row in `src/themes/README.md`.
 6. Writes its `README.md`, from Retro's tables of its screenshots, with
-   TODOs for the rest, and its `shots.txt` and `screens.txt`, Retro's
-   for its schemes (see [The README and its
+   its "Try it live" link and TODOs for the rest, and its `shots.txt`
+   and `screens.txt`, Retro's for its schemes (see [The README and its
    screenshots](#the-readme-and-its-screenshots)).
 7. Copies `host-tests/theme`, Retro's colour checks, to
    `host-tests/neon`, for its schemes, re-wording its comments as in the
@@ -413,7 +413,8 @@ theme), and `"theme-neon"` in `themes-all`. Keep each feature on one
 line, as the build reads them line by line.
 
 And a line in [src/themes/README.md](src/themes/README.md), the list of
-themes, linking `(neon/)`.
+themes, linking `(neon/)`, and the simulator showing it (see [The README
+and its screenshots](#the-readme-and-its-screenshots)).
 
 Leave any of these out and the build, or the simulator's tests, say
 what to add where. Without the `pub mod` line, the compiler can't find
@@ -458,7 +459,23 @@ from 0.10 shows the Retro scheme it had.
 ## The README and its screenshots
 
 `README.md` shows what the theme looks like, under its `theme_name` as
-the title, in a few screenshots:
+the title. Right under the title, a link to it live, in the published
+simulator (<https://jonhoo.github.io/ur/sim/>, as of `main`), by its
+directory's name:
+
+```markdown
+[Try it live](https://jonhoo.github.io/ur/sim/?theme=neon): the simulator, in your browser.
+```
+
+That opens the simulator in the theme's first scheme for the side
+the sun says (or its other side's, if it has none for this one);
+`&side=day` or `&side=night` picks the side, and `?scheme=NEON%20DAY`
+a scheme by its name, in any case. Its row in `src/themes/README.md`
+links the same, as "Try it". The link only works once the theme is
+on `main`, which the site is published from: until then, the
+simulator shows its default and says so in the browser's console.
+
+Then a few screenshots:
 
 - the clock face in each of its schemes (so each side's too);
 - for each side it has (night, day), in one scheme of it: Last night,
@@ -570,7 +587,7 @@ drawing and kept its role meanings can keep its checks too:
 - The simulator's tests, all of them, with every theme built in: your
   README's screenshots against `shots/` (and that the README shows
   exactly those), that `screens.txt` draws every screen to the end,
-  that it's in `src/themes/README.md`,
+  that it's in `src/themes/README.md`, that both link it live,
   that every built-in theme has a scheme, that no two schemes share a
   name, and that every scheme's name fits Retro's THEME row; and the
   rest of the tests, so nothing assumes Retro is the only theme.

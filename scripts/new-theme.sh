@@ -23,12 +23,14 @@
 #   12 letters, which always fit the THEME row), which the theme
 #   replaces. Retro's `name_fits` goes, as only the simulator's check of
 #   Retro uses it.
-# - Its README.md (to fill in), shots.txt (the README's screenshots) and
-#   screens.txt (every screen, which the tests only run): Retro's, for
-#   its schemes, a side's half only for a one-sided theme.
+# - Its README.md (to fill in, with its "Try it live" link), shots.txt
+#   (the README's screenshots) and screens.txt (every screen, which the
+#   tests only run): Retro's, for its schemes, a side's half only for a
+#   one-sided theme.
 # - The lines that list it: `themes!` and `pub mod` in
 #   src/themes/mod.rs, its feature and `themes-all` in both Cargo.toml
-#   and sim/Cargo.toml, and a row in src/themes/README.md.
+#   and sim/Cargo.toml, and a row in src/themes/README.md (linking it
+#   live too).
 # - host-tests/IDENT: a copy of host-tests/theme's checks of Retro's
 #   colours, for its schemes (without `target/`, and without the test of
 #   an old collision of ARCADE's), with CI's fmt and test matrices
@@ -355,8 +357,13 @@ by_side = {
     "night": f"{night_name}, by night, and by day too (it has no day schemes), is a placeholder.",
     "day": f"{day_name}, by day, and by night too (it has no night schemes), is a placeholder.",
 }[sides]
+# The published simulator, showing it (see sim/web/ur.js): a link that
+# works once the theme is on main, as Pages publishes main's.
+live = f"https://jonhoo.github.io/ur/sim/?theme={ident}"
 (theme / "README.md").write_text(
     f"""# {display}
+
+[Try it live]({live}): the simulator, in your browser.
 
 TODO: what it looks like, and what it's after. Started as a copy of
 Retro, so for now it's Retro's look, in placeholder colours. The
@@ -467,7 +474,7 @@ listed = {
     "night": f"{night_name} by night (and by day: none for the day)",
     "day": f"{day_name} by day (and by night: none for the night)",
 }[sides]
-index.write_text(index.read_text().rstrip("\n") + f"\n| [{display}]({ident}/) | `theme-{ident}` | {listed} |\n")
+index.write_text(index.read_text().rstrip("\n") + f"\n| [{display}]({ident}/) | `theme-{ident}` | {listed} | [Try it]({live}) |\n")
 
 # ==============================================================================
 # Its colour checks

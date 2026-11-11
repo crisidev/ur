@@ -1,5 +1,7 @@
 # Living Tokyo
 
+[Try it live](https://jonhoo.github.io/ur/sim/?theme=living_tokyo): the simulator, in your browser.
+
 A city at night on the clock face, in [Tokyo Night]'s colours: the time
 and its seconds across the top, the moon as the battery, windows lit by
 the day's steps, a beacon blinking and a sign showing the heart rate,
