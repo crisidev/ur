@@ -35,10 +35,11 @@
 //!
 //! # Smart wake
 //!
-//! Being woken from light sleep is easy, from deep sleep groggy; REM is in
-//! between. So in its window, the smart alarm rings at a stir (the wrist
-//! moving now, [`Wearer::stirring`]) only once the ten minutes before it
-//! were light sleep ([`Wearer::light`], `crate::stages::light`): none of
+//! The wearer would rather be woken from light sleep than from REM, and
+//! from REM rather than from deep sleep, which leaves you groggy. So in
+//! its window, the smart alarm rings at a stir (the wrist moving now,
+//! [`Wearer::stirring`]) only once the ten minutes before it were light
+//! sleep ([`Wearer::light`], `crate::stages::light`): none of
 //! them staged deep or REM, as staged so far, and not all of them still.
 //! A wearer awake in bed counts as light: there's nothing to spare them.
 //!
@@ -79,6 +80,18 @@
 //! takes away about a third of the REM wake-ups; alone, it let 5% come
 //! from deep sleep. Five minutes of light sleep instead of ten, or
 //! fifteen for the stir, did worse on one or the other.
+//!
+//! Two more ideas didn't pay. Letting a stir in REM ring in the window's
+//! last 10 minutes (REM being better than deep sleep, which the time may
+//! fall in) took the rings from deep sleep only from 6% to 5%, and those
+//! from REM up from 25% to 30% (in the last 5: 6% and 27%). The alarm
+//! meets deep sleep at its time when the wearer lies still to the end,
+//! with no stir to ring at sooner. And denser heart rate in the window
+//! (a Garmin's, every 2 minutes, standing in for the watch's) told REM
+//! from light sleep no better than the same readings every 6 minutes.
+//! Holding the alarm back while the watch's own heart rate stood above
+//! the hour's baseline left the share of REM wake-ups as it was, and rang
+//! early less often.
 //!
 //! Four nights are few, of one wearer, and the Garmin's stages are only
 //! its estimate; the windows overlap (a stir rings many of them), so
