@@ -190,8 +190,14 @@ jobs:
 
           # The release's id, or nothing if there's none yet (GitHub's
           # 404 for that isn't worth the log's space).
+          # The release's id, or nothing. Not trusting the exit status
+          # alone: on a 404, `gh api` prints GitHub's error body on stdout,
+          # `--jq` or not, which passed for an id, so the release was never
+          # made. (The `clean` job's lookup checks for a number already.)
           release_id() {
-            gh api "repos/$REPO/releases/tags/$TAG" --jq .id 2>/dev/null || true
+            local id
+            id=$(gh api "repos/$REPO/releases/tags/$TAG" --jq .id 2>/dev/null) || id=
+            if [[ $id =~ ^[1-9][0-9]*$ ]]; then echo "$id"; fi
           }
 
           # Each image as an asset of the release (see the top of this
