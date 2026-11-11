@@ -310,6 +310,7 @@ fn output() -> Output {
     Output {
         dir: PathBuf::new(),
         zoom: ZOOM,
+        save: true,
     }
 }
 

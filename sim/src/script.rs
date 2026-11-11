@@ -135,6 +135,10 @@ pub struct Output {
     pub dir: PathBuf,
     /// Pixels a canvas pixel, for the whole watch (`shot … --watch`).
     pub zoom: usize,
+    /// Whether `shot` writes its screenshot. Not for a smoke run
+    /// (`--no-shots`), which only needs the screens drawn, and skips
+    /// encoding a PNG of each (most of a debug build's run).
+    pub save: bool,
 }
 
 /// Runs one line. Blank lines and `#` comments do nothing.
@@ -526,6 +530,14 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
         "until" => {
             let (hour, minute) = hh_mm(need(0, "HH:MM")?)?;
             watch.advance_to_local(hour, minute)?;
+        }
+        // A smoke run's (`--no-shots`): nothing to write, but a scheme it
+        // names must still be one, so that the run catches a script whose
+        // isn't.
+        "shot" if !output.save => {
+            need(0, "FILE")?;
+            let scheme = arg(1).filter(|flag| !flag.starts_with("--"));
+            scheme.map(find_theme).transpose()?;
         }
         "shot" => {
             let path = output.dir.join(need(0, "FILE")?);

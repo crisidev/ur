@@ -9,8 +9,8 @@ use crate::script::{self, Next, Output};
 use crate::watch::Watch;
 
 const USAGE: &str = "\
-Usage: ur-sim [--window] [--flash FILE] [--out DIR] [--speed N] [--zoom N]
-              [--sent-colours] [SCRIPT ...]
+Usage: ur-sim [--window] [--flash FILE] [--out DIR] [--no-shots] [--speed N]
+              [--zoom N] [--sent-colours] [SCRIPT ...]
        ur-sim --devkit ELF [--peer ADDRESS] [--storage FILE] [--out DIR] SCRIPT ...
        ur-sim --fuzz ELF [--peer ADDRESS] [--seed N] [--runs N] [--steps N]
               [--guided | --corpus DIR [--gadgetbridge]] [--dry] [--out DIR]
@@ -28,6 +28,9 @@ after running any scripts, and takes commands typed into the terminal.
                to the next; or start from a dump of a watch's (its 12 KiB
                at 0x7D000). Without, it starts erased, and is forgotten
   --out DIR    where `shot` writes screenshots (default: .)
+  --no-shots   `shot` writes nothing: for running a script only to see
+               that it gets to the end (each theme's screens.txt, in the
+               tests)
   --speed N    in the window, run time N times as fast (default: 1)
   --zoom N     in the window (and `shot … --watch`), draw a canvas pixel N
                pixels wide (default: 4, a 320-pixel screen; 3 is the
@@ -238,6 +241,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
         output: Output {
             dir: ".".into(),
             zoom: 4,
+            save: true,
         },
         speed: 1.0,
         zoom: 4,
@@ -307,6 +311,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
             }
             "--list-themes" => options.list_themes = true,
             "--out" => options.output.dir = args.next().ok_or("--out needs a DIR")?.into(),
+            "--no-shots" => options.output.save = false,
             "--speed" => {
                 let speed = args.next().ok_or("--speed needs N")?;
                 options.speed = match speed.parse::<f64>() {

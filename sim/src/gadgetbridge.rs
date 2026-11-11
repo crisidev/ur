@@ -134,6 +134,7 @@ impl Simulator {
             output: Output {
                 dir: scratch.to_owned(),
                 zoom: 1,
+                save: true,
             },
             as_devkit,
         }

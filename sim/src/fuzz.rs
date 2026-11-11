@@ -770,6 +770,7 @@ fn dry(out: &Path, setup: &Setup, fuzz: &Fuzz) -> Result<(), String> {
         let output = crate::script::Output {
             dir: dir.clone(),
             zoom: 1,
+            save: true,
         };
         let text: String = steps
             .iter()
@@ -814,6 +815,7 @@ pub fn host_one(bytes: &[u8], scratch: &Path) {
     let output = crate::script::Output {
         dir: scratch.to_owned(),
         zoom: 1,
+        save: true,
     };
     let text: String = steps
         .iter()
