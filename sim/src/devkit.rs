@@ -1313,7 +1313,10 @@ impl<'a> Follower<'a> {
                 self.app.check_alarms(
                     at,
                     second,
-                    flag(compare::flag::STIRRING),
+                    alarm::Wearer {
+                        stirring: flag(compare::flag::STIRRING),
+                        light: flag(compare::flag::LIGHT),
+                    },
                     flag(compare::flag::ASLEEP),
                 );
                 let ticked = Instant::from_ticks(event.ticked);

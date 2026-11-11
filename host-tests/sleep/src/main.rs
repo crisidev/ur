@@ -920,6 +920,59 @@ mod tests {
         );
     }
 
+    /// Light enough for a smart alarm: the last [`stages::LIGHT_FOR`]
+    /// minutes before the newest all light (or awake), and one of them a
+    /// stir. Still light minutes aren't; nor is a stir among deep or REM
+    /// ones, or with a minute unseen.
+    #[test]
+    fn light_wants_light_minutes_and_a_stir() {
+        let n = 30;
+        let light_at = |kinds: &mut Vec<Kind>, minutes: &[Minute]| {
+            let heart = vec![0; n];
+            let record = Record {
+                kinds,
+                minutes,
+                heart: &heart,
+                newest: n as i64 - 1,
+            };
+            stages::light(&record)
+        };
+        let (_, mut minutes, _) = hand_made(n, &[]);
+        let mut kinds = vec![Kind::Light; n];
+        assert!(!light_at(&mut kinds, &minutes), "all still");
+        // A stir 5 minutes back (a twitch: one minute's movement, three
+        // minutes' average).
+        minutes[n - 6].movement = 400;
+        assert!(light_at(&mut kinds, &minutes));
+        // Awake and restless minutes are light enough.
+        kinds[n - 3] = Kind::Awake;
+        kinds[n - 4] = Kind::Restless;
+        assert!(light_at(&mut kinds, &minutes));
+        for other in [Kind::Deep, Kind::Rem, Kind::Unknown, Kind::NotWorn] {
+            let mut kinds = vec![Kind::Light; n];
+            kinds[n - 2 - stages::LIGHT_FOR as usize] = other;
+            assert!(
+                light_at(&mut kinds, &minutes),
+                "{other:?} before the minutes"
+            );
+            kinds[n - 2] = other;
+            assert!(!light_at(&mut kinds, &minutes), "{other:?} among them");
+        }
+        // The stir too long ago: 11 minutes back, its average reaching
+        // 10 minutes back. 12 is out of reach.
+        minutes[n - 6].movement = 30;
+        minutes[n - 12].movement = 400;
+        assert!(light_at(&mut kinds, &minutes));
+        minutes[n - 12].movement = 30;
+        minutes[n - 13].movement = 400;
+        assert!(!light_at(&mut kinds, &minutes));
+        // Nor does the newest minute's own movement count: that's the
+        // stir now, which the alarm looks at itself.
+        minutes[n - 13].movement = 30;
+        minutes[n - 1].movement = 4000;
+        assert!(!light_at(&mut kinds, &minutes));
+    }
+
     /// Stirring keeps it from being deep, however calm the heart.
     #[test]
     fn stirs_are_not_deep() {

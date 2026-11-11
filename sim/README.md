@@ -116,7 +116,7 @@ tap                               # snooze
   so the button grid's presses can't go to Home Assistant).
 - **The wearer and the watch:** `battery` (and charging; the percentage
   starts over from it, as after a reboot), `steps`,
-  `heart`, `temperature`, `asleep`, `movement`, `last-night`,
+  `heart`, `temperature`, `asleep`, `movement`, `light-sleep`, `last-night`,
   `demo-day` (a day of steps and heart rates so far), `alarm`, `smart`,
   `timer`, `theme`, and `version` (what the Info screen says the
   version is: the tour and each theme's screenshots pin one, so a
@@ -464,7 +464,9 @@ log lines go to it, and files download.
 - **Sensors.** Steps, movement, heart rate, sleep and temperature are
   whatever you set: the accelerometer and heart rate processing, the
   sleep classifier, and the wrist-turn detector don't run (`asleep on`
-  says the classifier decided; `glance` that the wrist turned; `heart`
+  says the classifier decided; `light-sleep on` that the stages of the
+  last ten minutes were light, for smart wake; `glance` that the wrist
+  turned; `heart`
   that a measurement just finished, so it shows for half an hour, and
   the watch is taken to be worn). `temperature` is the die's, read once a
   minute as on the watch, and shown as the firmware would: as an

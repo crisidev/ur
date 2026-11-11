@@ -595,6 +595,40 @@ fn a_smart_alarm_rings_after_another_rings_out_over_its_time() {
     assert_eq!(buzzes, ["06:58:00", "07:01:00", "stop"], "{log}");
 }
 
+/// Smart wake rings early only at a stir in light sleep: a stir out of
+/// other sleep in its window doesn't ring it; one once the sleep is light
+/// does. And with no stir in light sleep, it rings at its time.
+#[test]
+fn smart_wake_waits_for_light_sleep() {
+    let dir = out("smart-light");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    std::fs::write(
+        &script,
+        "# A Monday.\n\
+         time 2026-11-09 06:00 +01:00\nsmart on 07:00 09:00\nasleep on\n\
+         # A stir in the window, from deep or REM sleep.\n\
+         until 06:35\nmovement 500\nwait 5s\nexpect not buzzing\nmovement 30\n\
+         # Light sleep, but still.\n\
+         light-sleep on\nwait 2m\nexpect not buzzing\n\
+         # A stir now rings it.\n\
+         movement 500\nwait 2s\nexpect buzzing\nbutton\nmovement 30\n\
+         # The next morning: stirring, never light, until its time.\n\
+         light-sleep off\nuntil 06:30\nmovement 500\nuntil 06:59\nexpect not buzzing\n\
+         until 07:00\nwait 2s\nexpect buzzing\n",
+    )
+    .expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+    let rang: Vec<&str> = log
+        .lines()
+        .filter_map(|line| line.split_once("] buzz: "))
+        .filter(|(_, buzz)| *buzz == "alarm")
+        .map(|(at, _)| &at[at.len() - 8..at.len() - 3])
+        .collect();
+    assert_eq!(rang, ["06:37", "07:00"], "{log}");
+}
+
 /// The phone setting the clock back while a timer runs (host fuzzing's
 /// find, as it was found): the timer counted local seconds, so 8.7 days
 /// back left over 200 hours on a 3-minute timer, and opening it in the

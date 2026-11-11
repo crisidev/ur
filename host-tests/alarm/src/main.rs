@@ -29,21 +29,27 @@ mod tests {
         }
     }
 
+    /// A stir in light sleep: what a smart alarm rings early at.
+    const LIGHT_STIR: Wearer = Wearer {
+        stirring: true,
+        light: true,
+    };
+
     /// Runs minute by minute from `from` to `to`; returns when (and what)
-    /// rang first. `stir` says which minutes the wearer stirs in.
+    /// rang first. `wearer` says what the watch sees each minute.
     fn first_ring(
         settings: &mut Settings,
         state: &mut State,
         from: i64,
         to: i64,
-        stir: impl Fn(i64) -> bool,
+        wearer: impl Fn(i64) -> Wearer,
     ) -> Option<(i64, Kind)> {
         // A check a minute (the firmware checks every second; minutes are
         // enough for these).
         let mut phone = Phone::default();
         (from..to).find_map(|now| {
             state
-                .due(settings, &mut phone, now * 60, stir(now))
+                .due(settings, &mut phone, now * 60, wearer(now))
                 .map(|due| (now, due.kind))
         })
     }
@@ -60,7 +66,7 @@ mod tests {
         (from..to)
             .filter_map(|now| {
                 state
-                    .due(settings, phone, now * 60, false)
+                    .due(settings, phone, now * 60, Wearer::default())
                     .map(|due| (now, due.kind))
             })
             .collect()
@@ -86,7 +92,7 @@ mod tests {
     }
 
     #[test]
-    fn smart_rings_at_the_first_stir_in_its_window() {
+    fn smart_rings_at_the_first_stir_in_light_sleep_in_its_window() {
         let mut s = smart();
         let mut state = State::default();
         // Stirring all night: only stirs inside the window count.
@@ -95,13 +101,89 @@ mod tests {
             &mut state,
             at(MONDAY - 1, 23, 0),
             at(MONDAY, 8, 0),
-            |t| t % 7 == 0,
+            |t| Wearer {
+                stirring: t % 7 == 0,
+                light: true,
+            },
         );
         let (when, kind) = rang.expect("rings");
         assert_eq!(kind, Kind::Smart);
         assert!(
             when >= at(MONDAY, 6, 30) && when < at(MONDAY, 7, 0),
             "rang at {when}"
+        );
+    }
+
+    /// Stirs out of deep or REM sleep (or out of stillness) don't ring
+    /// it early; the first in light sleep does, and says it was early.
+    #[test]
+    fn smart_waits_for_a_stir_in_light_sleep() {
+        let mut s = smart();
+        let mut state = State::default();
+        let mut phone = Phone::default();
+        // Stirring every minute from 06:00; light only from 06:44.
+        let wearer = |t: i64| Wearer {
+            stirring: true,
+            light: t >= at(MONDAY, 6, 44),
+        };
+        let rang = (at(MONDAY, 6, 0)..at(MONDAY, 8, 0)).find_map(|now| {
+            state
+                .due(&mut s, &mut phone, now * 60, wearer(now))
+                .map(|d| (now, d))
+        });
+        assert_eq!(
+            rang,
+            Some((
+                at(MONDAY, 6, 44),
+                Due {
+                    kind: Kind::Smart,
+                    early: true,
+                    phone_rang: false
+                }
+            ))
+        );
+
+        // Light sleep without a stir now doesn't ring it either.
+        let mut state = State::default();
+        let rang = first_ring(
+            &mut s,
+            &mut state,
+            at(MONDAY, 6, 0),
+            at(MONDAY, 8, 0),
+            |_| Wearer {
+                stirring: false,
+                light: true,
+            },
+        );
+        assert_eq!(rang, Some((at(MONDAY, 7, 0), Kind::Smart)));
+    }
+
+    /// Never light sleep in the window, however much the wearer stirs: it
+    /// rings at its time, and not as early.
+    #[test]
+    fn smart_rings_at_its_time_without_light_sleep() {
+        let mut s = smart();
+        let mut state = State::default();
+        let mut phone = Phone::default();
+        let stirring = Wearer {
+            stirring: true,
+            light: false,
+        };
+        let rang = (at(MONDAY, 6, 0)..at(MONDAY, 8, 0)).find_map(|now| {
+            state
+                .due(&mut s, &mut phone, now * 60, stirring)
+                .map(|d| (now, d))
+        });
+        assert_eq!(
+            rang,
+            Some((
+                at(MONDAY, 7, 0),
+                Due {
+                    kind: Kind::Smart,
+                    early: false,
+                    phone_rang: false
+                }
+            ))
         );
     }
 
@@ -114,7 +196,7 @@ mod tests {
             &mut state,
             at(MONDAY, 0, 0),
             at(MONDAY, 8, 0),
-            |_| false,
+            |_| Wearer::default(),
         );
         assert_eq!(rang, Some((at(MONDAY, 7, 0), Kind::Smart)));
     }
@@ -125,7 +207,7 @@ mod tests {
         let mut state = State::default();
         let mut rings = Vec::new();
         for now in at(MONDAY, 0, 0)..at(MONDAY + 2, 0, 0) {
-            if let Some(due) = state.due(&mut s, &mut Phone::default(), now * 60, true) {
+            if let Some(due) = state.due(&mut s, &mut Phone::default(), now * 60, LIGHT_STIR) {
                 rings.push((now, due.kind));
             }
         }
@@ -152,7 +234,7 @@ mod tests {
                 &mut state,
                 at(MONDAY, 0, 0),
                 at(MONDAY + 7, 0, 0),
-                |_| true
+                |_| LIGHT_STIR
             ),
             None
         );
@@ -172,7 +254,7 @@ mod tests {
             &mut state,
             at(MONDAY, 12, 0),
             at(MONDAY + 3, 0, 0),
-            |_| false,
+            |_| Wearer::default(),
         );
         assert_eq!(rang, Some((at(MONDAY + 1, 6, 15), Kind::At(0))));
         assert!(!s.at[0]);
@@ -182,7 +264,7 @@ mod tests {
                 &mut state,
                 at(MONDAY + 1, 6, 16),
                 at(MONDAY + 3, 0, 0),
-                |_| false
+                |_| Wearer::default()
             ),
             None
         );
@@ -199,7 +281,7 @@ mod tests {
         let rings: Vec<_> = (at(MONDAY, 0, 0)..at(MONDAY + 2, 0, 0))
             .filter_map(|now| {
                 state
-                    .due(&mut s, &mut Phone::default(), now * 60, false)
+                    .due(&mut s, &mut Phone::default(), now * 60, Wearer::default())
                     .map(|due| (now, due.kind))
             })
             .collect();
@@ -511,7 +593,7 @@ mod tests {
         // what rang at 07:00, the only minute anything is set for.
         fn at_seven(s: &mut Settings, p: &mut Phone) -> Due {
             let mut state = State::default();
-            let mut due = |minute| state.due(s, p, minute * 60, false);
+            let mut due = |minute| state.due(s, p, minute * 60, Wearer::default());
             assert_eq!(due(at(MONDAY, 6, 59)), None);
             let rang = due(at(MONDAY, 7, 0)).expect("something rings at 07:00");
             assert_eq!(due(at(MONDAY, 7, 1)), None);
@@ -530,6 +612,7 @@ mod tests {
             at_seven(&mut s, &mut p),
             Due {
                 kind: Kind::At(0),
+                early: false,
                 phone_rang: true
             }
         );
@@ -543,6 +626,7 @@ mod tests {
             at_seven(&mut s, &mut p),
             Due {
                 kind: Kind::At(0),
+                early: false,
                 phone_rang: false
             }
         );
@@ -557,6 +641,7 @@ mod tests {
             at_seven(&mut s, &mut p),
             Due {
                 kind: Kind::Phone(0),
+                early: false,
                 phone_rang: true
             }
         );
@@ -569,6 +654,7 @@ mod tests {
             at_seven(&mut Settings::default(), &mut p),
             Due {
                 kind: Kind::Phone(0),
+                early: false,
                 phone_rang: false
             }
         );
@@ -580,6 +666,7 @@ mod tests {
             at_seven(&mut s, &mut p),
             Due {
                 kind: Kind::Smart,
+                early: false,
                 phone_rang: false
             }
         );
@@ -593,7 +680,7 @@ mod tests {
         let mut state = State::default();
         let mut due = |minute| {
             state
-                .due(&mut s, &mut p, minute * 60, false)
+                .due(&mut s, &mut p, minute * 60, Wearer::default())
                 .map(|due| due.kind)
         };
         assert_eq!(due(at(MONDAY, 6, 59)), None);
@@ -610,7 +697,7 @@ mod tests {
         let mut state = State::default();
         let mut due = |minute| {
             state
-                .due(&mut s, &mut p, minute * 60, false)
+                .due(&mut s, &mut p, minute * 60, Wearer::default())
                 .map(|due| due.kind)
         };
         assert_eq!(due(at(MONDAY, 6, 0)), None);
@@ -673,7 +760,7 @@ mod tests {
             .chain(at(sunday, 2, 0)..at(sunday, 3, 30))
             .chain(at(MONDAY, 2, 0)..at(MONDAY, 3, 0));
         for minute in minutes {
-            if let Some(due) = state.due(&mut s, &mut p, minute * 60, false) {
+            if let Some(due) = state.due(&mut s, &mut p, minute * 60, Wearer::default()) {
                 rang.push((minute, due.kind));
             }
         }
@@ -698,7 +785,7 @@ mod tests {
         let mut state = State::default();
         let mut due = |minute| {
             state
-                .due(&mut s, &mut p, minute * 60, false)
+                .due(&mut s, &mut p, minute * 60, Wearer::default())
                 .map(|due| due.kind)
         };
         assert_eq!(due(at(MONDAY, 6, 59)), None);
@@ -743,7 +830,7 @@ mod tests {
             let uptime = BOOTED + second - from * 60;
             let due = state.elapsed(uptime).or_else(|| {
                 state
-                    .due(settings, phone, second, false)
+                    .due(settings, phone, second, Wearer::default())
                     .map(|due| due.kind)
             });
             if let Some(kind) = due {
@@ -887,15 +974,20 @@ mod tests {
         // Checked at 06:59, then not until an hour after 07:00: it rings.
         let mut state = State::default();
         assert_eq!(
-            state.due(&mut s, &mut p, at(MONDAY, 6, 59) * 60, false),
+            state.due(&mut s, &mut p, at(MONDAY, 6, 59) * 60, Wearer::default()),
             None
         );
-        let late = state.due(&mut s, &mut p, (at(MONDAY, 7, 0) + CATCH_UP) * 60, false);
+        let late = state.due(
+            &mut s,
+            &mut p,
+            (at(MONDAY, 7, 0) + CATCH_UP) * 60,
+            Wearer::default(),
+        );
         assert_eq!(late.map(|due| due.kind), Some(Kind::Smart));
         // A minute later than that, it doesn't, nor later on.
         let mut state = State::default();
         assert_eq!(
-            state.due(&mut s, &mut p, at(MONDAY, 6, 59) * 60, false),
+            state.due(&mut s, &mut p, at(MONDAY, 6, 59) * 60, Wearer::default()),
             None
         );
         let rang = rings(
@@ -909,7 +1001,7 @@ mod tests {
         // Nor after a reset, which starts checking afresh.
         let mut state = State::default();
         assert_eq!(
-            state.due(&mut s, &mut p, at(MONDAY, 7, 5) * 60, false),
+            state.due(&mut s, &mut p, at(MONDAY, 7, 5) * 60, Wearer::default()),
             None
         );
     }
@@ -946,13 +1038,14 @@ mod tests {
         let mut p = phone(&[(7, 0, 0, true)]);
         let mut state = State::default();
         assert_eq!(
-            state.due(&mut s, &mut p, at(MONDAY, 6, 59) * 60, false),
+            state.due(&mut s, &mut p, at(MONDAY, 6, 59) * 60, Wearer::default()),
             None
         );
         assert_eq!(
-            state.due(&mut s, &mut p, at(MONDAY, 7, 0) * 60, false),
+            state.due(&mut s, &mut p, at(MONDAY, 7, 0) * 60, Wearer::default()),
             Some(Due {
                 kind: Kind::Smart,
+                early: false,
                 phone_rang: true
             })
         );
@@ -970,10 +1063,10 @@ mod tests {
         let mut p = Phone::default();
         let mut state = State::default();
         let now = at(MONDAY, 6, 0) * 60;
-        assert_eq!(state.due(&mut s, &mut p, now, false), None);
+        assert_eq!(state.due(&mut s, &mut p, now, Wearer::default()), None);
         let (kind, when) = state.next(&s, &p, now, BOOTED).expect("two alarms are on");
         let due = state
-            .due(&mut s, &mut p, when, false)
+            .due(&mut s, &mut p, when, Wearer::default())
             .expect("next said it rings then");
         assert_eq!((kind, when), (due.kind, at(MONDAY, 7, 0) * 60));
 
@@ -1077,6 +1170,13 @@ mod proofs {
 
     fn any_settings() -> Settings {
         Settings::from_bytes(kani::any())
+    }
+
+    fn any_wearer() -> Wearer {
+        Wearer {
+            stirring: kani::any(),
+            light: kani::any(),
+        }
     }
 
     fn any_phone() -> Phone {
@@ -1208,7 +1308,7 @@ mod proofs {
         for _ in 0..2 {
             let now = any_now();
             kani::assume((3600 - 86_400..7_258_118_400 - 4 * 86_400).contains(&now));
-            let _ = state.due(&mut settings, &mut phone, now, kani::any());
+            let _ = state.due(&mut settings, &mut phone, now, any_wearer());
         }
     }
 
@@ -1364,7 +1464,7 @@ mod proofs {
         let into_the_week: u32 = kani::any();
         kani::assume(into_the_week < 7 * 86_400);
         let now = 20_766 * 86_400 + i64::from(into_the_week);
-        let due = state.due(&mut settings, &mut phone, now, kani::any());
+        let due = state.due(&mut settings, &mut phone, now, any_wearer());
         let Some(due) = due else {
             assert!(settings == settings_before && phone == phone_before);
             return;
@@ -1406,6 +1506,51 @@ mod proofs {
             Kind::Smart => assert!(settings.smart),
             // Durations are `elapsed`'s.
             Kind::Timer(_) | Kind::Snooze => unreachable!(),
+        }
+    }
+
+    /// Whatever the wearer's sleep, a smart alarm that's on rings at its
+    /// time: at the first check after a reset, at any second of one week
+    /// (as above), with any settings, any two alarms from the phone, and
+    /// any wearer. Before its time, it rings only early in its window, at
+    /// a stir in light sleep, and says so.
+    ///
+    /// (One check, as in [`what_rings_is_switched_off_and_said_so`]: the
+    /// wearer only comes into `due` once nothing is overdue, so what an
+    /// earlier check left changes which minutes are overdue, not whether
+    /// the wearer can hold one back.)
+    #[kani::proof]
+    #[kani::unwind(12)]
+    #[kani::stub(next_at, proven_next_at)]
+    #[kani::stub(next_smart, proven_next_smart)]
+    fn a_smart_alarm_rings_by_its_time_whatever_the_sleep() {
+        let (mut settings, mut phone) = (any_settings(), any_two_phone_alarms());
+        let mut state = State::default();
+        let into_the_week: u32 = kani::any();
+        kani::assume(into_the_week < 7 * 86_400);
+        let now = 20_766 * 86_400 + i64::from(into_the_week);
+        let minute = now.div_euclid(60);
+        // Its time, as the check sees it: the first after the minute before
+        // (a fresh state has checked none).
+        let latest = next_smart_closed(&settings, minute - 1);
+        let smart = settings.smart;
+        let wearer = any_wearer();
+        let due = state.due(&mut settings, &mut phone, now, wearer);
+
+        if smart && latest == minute {
+            // Others at its minute ring as one with it, under its name.
+            let due = due.expect("a smart alarm rings at its time");
+            assert!(due.kind == Kind::Smart && !due.early);
+        }
+        if let Some(due) = due
+            && due.kind == Kind::Smart
+            && latest != minute
+        {
+            assert!(due.early && wearer.stirring && wearer.light);
+            assert!(latest - SMART_WINDOW <= minute && minute < latest);
+        }
+        if let Some(due) = due {
+            assert!(!due.early || due.kind == Kind::Smart);
         }
     }
 

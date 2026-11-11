@@ -72,8 +72,10 @@ The wearer and the watch:
   bthome-temp C [RH% [BATTERY% [AGO]]] | bthome-temp off
                              a nearby BTHome thermometer's instead (AGO:
                              heard e.g. 4m ago)
-  asleep on|off | movement N           what sleep tracking says (smart
-                                       alarms, the quiet night)
+  asleep on|off | movement N | light-sleep on|off
+                             what sleep tracking says (the quiet night;
+                             smart wake rings at movement 120 or more in
+                             light sleep)
   last-night HH:MM HH:MM [deep=MIN] [rem=MIN] [awake=MIN]
   demo-day                   fill today's history so far with a typical day
   alarm 1|2 HH:MM [on|off] | smart on|off [HH:MM [HH:MM]] | timer 1|2 MIN
@@ -444,6 +446,10 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
         }
         "movement" => {
             activity::set_movement(number(need(0, "N")?)?);
+            watch.refresh();
+        }
+        "light-sleep" => {
+            activity::set_light(on_off(need(0, "on|off")?, "on", "off")?);
             watch.refresh();
         }
         "last-night" => {

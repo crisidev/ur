@@ -1991,14 +1991,14 @@ impl App {
     }
 
     /// Once a second: starts or ends the quiet night, and rings any alarm
-    /// that's due. `local_second` is the time, if known; `stirring` whether
-    /// the wearer just moved (for smart wake); `asleep` whether they're
-    /// asleep (see [`crate::activity::asleep`]).
+    /// that's due. `local_second` is the time, if known; `wearer` whether
+    /// they just stirred, in light sleep (for smart wake); `asleep` whether
+    /// they're asleep (see [`crate::activity::asleep`]).
     pub fn check_alarms(
         &mut self,
         now: Instant,
         local_second: Option<i64>,
-        stirring: bool,
+        wearer: alarm::Wearer,
         asleep: bool,
     ) {
         let before = core::mem::replace(&mut self.local_second, local_second);
@@ -2040,13 +2040,29 @@ impl App {
                     &mut self.alarms,
                     &mut self.phone_alarms,
                     second,
-                    stirring,
+                    wearer,
                 )?;
                 // A one-off phone alarm turned itself off, so it doesn't
                 // ring again after a reset: save them. Whichever alarm
                 // rang, not only one of the phone's: the watch's own, at
                 // the same minute, rings in their place.
                 self.phone_alarms_changed |= due.phone_rang;
+                // For the field log: which morning's time, and why now.
+                if due.kind == alarm::Kind::Smart
+                    && let Some(latest) = self.alarm_state.smart_rang()
+                {
+                    let of_day = latest.rem_euclid(24 * 60);
+                    let (hh, mm) = ((of_day / 60) as u8, (of_day % 60) as u8);
+                    if due.early {
+                        defmt::info!(
+                            "alarm: smart, for {=u8:02}:{=u8:02}, early: a stir in light sleep",
+                            hh,
+                            mm
+                        );
+                    } else {
+                        defmt::info!("alarm: smart, for {=u8:02}:{=u8:02}, at its time", hh, mm);
+                    }
+                }
                 Some(due.kind)
             })
         {

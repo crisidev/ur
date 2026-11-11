@@ -5,11 +5,10 @@
 //!
 //! - **Smart wake**: "wake me before 07:00, when my sleep allows". Separate
 //!   times for weekdays and weekends, and one switch for both (off for a
-//!   holiday). In the [`SMART_WINDOW`] before the time it rings at the first
-//!   sign of light sleep: a stir. Being woken mid-stir rather than from
-//!   deep stillness is the whole point. At the time itself it rings
-//!   regardless, or as soon as the watch can if it couldn't check then
-//!   (see [`CATCH_UP`]).
+//!   holiday). In the [`SMART_WINDOW`] before the time it rings at a stir
+//!   in light sleep (see [Smart wake](#smart-wake)). At the time itself it
+//!   rings regardless, or as soon as the watch can if it couldn't check
+//!   then (see [`CATCH_UP`]).
 //! - **Alarms**: two, each at a time of day, the next time it comes round.
 //!   Each turns itself off after ringing.
 //! - **Phone alarms**: up to [`PHONE_ALARMS`], set in Gadgetbridge and
@@ -33,6 +32,61 @@
 //!
 //! Like [`crate::sleep`], this knows nothing of hardware or the clock, so it
 //! runs in host tests (`host-tests/alarm`).
+//!
+//! # Smart wake
+//!
+//! Being woken from light sleep is easy, from deep sleep groggy; REM is in
+//! between. So in its window, the smart alarm rings at a stir (the wrist
+//! moving now, [`Wearer::stirring`]) only once the ten minutes before it
+//! were light sleep ([`Wearer::light`], `crate::stages::light`): none of
+//! them staged deep or REM, as staged so far, and not all of them still.
+//! A wearer awake in bed counts as light: there's nothing to spare them.
+//!
+//! It used to ring at the first stir in the window, from whatever sleep.
+//! But asleep, the wrist stirs about once a minute, so it rang within a
+//! few minutes of the window opening, from light, REM, and deep sleep
+//! alike. On four mornings in a row (2026-11-08 to 11-11) it rang 0.3 to
+//! 2.6 minutes into its window: from what a Garmin worn alongside called
+//! REM sleep, deep sleep (a stir out of 20 still minutes), REM, and
+//! light sleep. This rule would have rung at the last of those only.
+//!
+//! The rule comes from replaying the watch's field logs from those four
+//! nights (every poll's movement and every heart rate reading, through
+//! the firmware's own classifier and stages, minute by minute as the
+//! watch ran them; `host-tests/alarm` does that) against the Garmin's
+//! stages, for wake times every 2 minutes from 05:00 to when the wearer
+//! actually woke (440 windows):
+//!
+//! | rings at a stir…          | light | REM | deep | awake | at its time | minutes in |
+//! |---------------------------|-------|-----|------|-------|-------------|------------|
+//! | anywhere (the old rule)   | 50%   | 37% | 11%  | 1%    | 0%          | 4          |
+//! | after 10 minutes of light | 64%   | 25% | 6%   | 5%    | 26%         | 16         |
+//! | never (a plain alarm)     | 48%   | 36% | 14%  | 2%    | 100%        | 30         |
+//!
+//! Of the rings before the time, the old rule's were 11% from deep sleep
+//! (48 of 438) and 37% from REM; this rule's are none or one of about 325
+//! from deep sleep and 21% from REM. The deep sleep left is that of
+//! alarms that come at their time, as a plain alarm's would. (For wake
+//! times from 06:30 only, nearer the real ones, the old rule rang 55% in
+//! light sleep and 4% in deep, this one 71% and none, 11% at its time.)
+//!
+//! Each half of the rule does its own part. Deep sleep is still, and the
+//! live stages hardly ever say deep after the fifth hour of sleep
+//! (`crate::stages::DEEP_UNTIL`), when alarms ring: the stir before rules
+//! it out. Alone, though, a stir after another let 4% of rings come from
+//! deep sleep, and 43% from REM. Leaving out what the live stages call
+//! REM (the Garmin's REM, too, in 86% of those minutes on these nights)
+//! takes away about a third of the REM wake-ups; alone, it let 5% come
+//! from deep sleep. Five minutes of light sleep instead of ten, or
+//! fifteen for the stir, did worse on one or the other.
+//!
+//! Four nights are few, of one wearer, and the Garmin's stages are only
+//! its estimate; the windows overlap (a stir rings many of them), so
+//! they're not 440 separate tests. The deep part rests on what sleep is
+//! like as much as on the counts; the REM part on the live REM being
+//! right, as it was on these nights. The cost is plain: about a quarter
+//! of the time no light sleep comes in time, and the alarm rings at its
+//! time, from whatever sleep, as a plain alarm would.
 
 /// How long before a smart alarm's time it may ring early, in minutes.
 pub const SMART_WINDOW: i64 = 30;
@@ -168,10 +222,25 @@ pub enum Kind {
     Phone(u8),
 }
 
+/// What the watch sees of its wearer, which a smart alarm goes by in its
+/// window (see [Smart wake](self#smart-wake)).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Wearer {
+    /// The wrist is moving now, after being still (`crate::activity`'s
+    /// latest movement at least `crate::sleep::STILL_LIMIT`).
+    pub stirring: bool,
+    /// The minutes before now were light sleep, or awake
+    /// (`crate::stages::light`).
+    pub light: bool,
+}
+
 /// What [`State::due`] found to ring.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Due {
     pub kind: Kind,
+    /// Whether it's the smart alarm, ringing before its time, at a stir
+    /// in light sleep.
+    pub early: bool,
     /// Whether it turned off any of the phone's one-off alarms (to
     /// [`Switch::Rang`]), which then need saving. Not the same as `kind`
     /// being the phone's: every one-off ringing at that minute turns off,
@@ -482,6 +551,12 @@ impl State {
         }
     }
 
+    /// The latest time (local minutes) of the smart alarm's last
+    /// occurrence to ring, if one has since a reset.
+    pub fn smart_rang(&self) -> Option<i64> {
+        self.smart_rang.map(i64::from)
+    }
+
     /// Checks, every second or so, whether a duration (the snooze, or a
     /// timer) has run out at `uptime` (seconds), and if so, disarms it.
     /// It doesn't need the time of day, so this goes first: [`State::due`]
@@ -501,17 +576,16 @@ impl State {
     }
 
     /// Checks, every second or so, whether an alarm at a time of day should
-    /// start ringing now (`now` in local seconds). `stirring` says the
-    /// wearer just moved after being still (see `crate::activity`), which
-    /// is what a smart alarm waits for in its window. Turns off what rings
-    /// (a one-off alarm, saying so for the phone's: see [`Due`]), and
+    /// start ringing now (`now` in local seconds). `wearer` is what a smart
+    /// alarm waits for in its window: a stir in light sleep. Turns off what
+    /// rings (a one-off alarm, saying so for the phone's: see [`Due`]), and
     /// remembers the smart one.
     pub fn due(
         &mut self,
         settings: &mut Settings,
         phone: &mut Phone,
         now: i64,
-        stirring: bool,
+        wearer: Wearer,
     ) -> Option<Due> {
         let minute = now.div_euclid(60);
         // The minutes not yet checked: normally just this one, or more
@@ -568,19 +642,25 @@ impl State {
                     phone_rang = true;
                 }
             }
-            return Some(Due { kind, phone_rang });
+            return Some(Due {
+                kind,
+                early: false,
+                phone_rang,
+            });
         }
         // (Not back to `minute` while the clock repeats checked minutes.)
         self.checked = Some(kept(after.max(minute)));
         // Nothing is overdue, but the smart alarm may ring early, at a
-        // stir in its window.
+        // stir in light sleep in its window.
         if let Some(latest) = smart
-            && stirring
+            && wearer.stirring
+            && wearer.light
             && minute >= latest - SMART_WINDOW
         {
             self.smart_rang = Some(kept(latest));
             return Some(Due {
                 kind: Kind::Smart,
+                early: true,
                 phone_rang: false,
             });
         }

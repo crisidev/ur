@@ -778,6 +778,15 @@ pub fn asleep() -> bool {
 
 static ASLEEP: AtomicBool = AtomicBool::new(false);
 
+/// Whether the minutes before this one were light sleep, or awake (see
+/// [`stages::light`]), as of the last classification: what a smart alarm
+/// waits for to ring early.
+pub fn light() -> bool {
+    LIGHT.load(Ordering::Relaxed)
+}
+
+static LIGHT: AtomicBool = AtomicBool::new(false);
+
 /// The most recent sleep in the last 24 hours, for the UI; updated every
 /// minute.
 pub fn last_sleep() -> Option<Sleep> {
@@ -1338,7 +1347,7 @@ pub async fn activity_task(i2c: Device) {
         // Once a minute: revise the recent past's sleep, its stages, and the
         // summary.
         if new_minute {
-            let (summary, changed, asleep) = HISTORY.lock(|history| {
+            let (summary, changed, asleep, light) = HISTORY.lock(|history| {
                 let mut history = history.borrow_mut();
                 history.classify_sleep();
                 let summary = history.last_sleep();
@@ -1346,10 +1355,17 @@ pub async fn activity_task(i2c: Device) {
                     summary,
                     summary != LAST_SLEEP.lock(Cell::get),
                     history.asleep_now(),
+                    // After `last_sleep`, which stages what's new.
+                    stages::light(&*history),
                 )
             });
             if asleep != ASLEEP.swap(asleep, Ordering::Relaxed) {
                 info!("sleep: {}", if asleep { "asleep now" } else { "awake now" });
+            }
+            // So a field log says why a smart alarm did or didn't ring at
+            // a stir (a few dozen lines a night).
+            if light != LIGHT.swap(light, Ordering::Relaxed) {
+                info!("sleep: {}", if light { "light" } else { "not light" });
             }
             if changed && let Some(sleep) = summary {
                 info!(

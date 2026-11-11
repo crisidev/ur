@@ -1519,7 +1519,7 @@ fn action(rng: &mut Rng, context: &mut Context) -> Step {
         // What only the simulator can be told (see `host_only`).
         (2, 30), // steps
         (2, 31), // a heart rate
-        (2, 32), // sleep tracking: asleep, movement
+        (2, 32), // sleep tracking: asleep, movement, light sleep
         (1, 33), // the watch's temperature
         (2, 34), // an Aranet4
         (1, 35), // last night's sleep, or a day's history
@@ -1787,8 +1787,10 @@ fn action(rng: &mut Rng, context: &mut Context) -> Step {
         ),
         32 => host_only(
             context,
-            if rng.chance(0.5) {
+            if rng.chance(0.4) {
                 format!("asleep {}", if rng.chance(0.5) { "on" } else { "off" })
+            } else if rng.chance(0.3) {
+                format!("light-sleep {}", if rng.chance(0.5) { "on" } else { "off" })
             } else {
                 format!("movement {}", rng.below(4000))
             },

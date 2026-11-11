@@ -773,10 +773,14 @@ impl UiLoop {
                 );
             }
             Wake::Tick => {
-                // A stir after stillness: what a smart alarm waits for.
-                let stirring = activity::movement() >= sleep::STILL_LIMIT;
+                // A stir after stillness, in light sleep: what a smart
+                // alarm waits for.
+                let wearer = alarm::Wearer {
+                    stirring: activity::movement() >= sleep::STILL_LIMIT,
+                    light: activity::light(),
+                };
                 let (at, second, asleep) = (Instant::now(), local_second(), activity::asleep());
-                app.check_alarms(at, second, stirring, asleep);
+                app.check_alarms(at, second, wearer, asleep);
                 // Pairing and updates need the user to watch the screen.
                 let watching = ble::PASSKEY.lock(Cell::get).is_some()
                     || dfu::PROGRESS.lock(Cell::get).is_some();
@@ -784,7 +788,7 @@ impl UiLoop {
                 let finger_down = board.finger_down();
                 let ticked = Instant::now();
                 #[cfg(feature = "compare")]
-                crate::compare::tick(at, second, stirring, asleep, ticked, watching, finger_down);
+                crate::compare::tick(at, second, wearer, asleep, ticked, watching, finger_down);
                 app.on_tick(ticked, watching, finger_down)
             }
             Wake::Input(event) => {

@@ -34,6 +34,8 @@ struct State {
     last_sleep: Option<Sleep>,
     asleep: bool,
     movement: u16,
+    /// As `activity::light`: the minutes before were light sleep.
+    light: bool,
     /// A dev kit's day, which `today` shows instead (see `devkit`).
     today_from_devkit: Option<Option<crate::day::Day>>,
 }
@@ -45,6 +47,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     last_sleep: None,
     asleep: false,
     movement: 0,
+    light: false,
     today_from_devkit: None,
 });
 
@@ -67,6 +70,10 @@ pub fn still() -> bool {
 
 pub fn movement() -> u16 {
     state().movement
+}
+
+pub fn light() -> bool {
+    state().light
 }
 
 pub fn last_sleep() -> Option<Sleep> {
@@ -219,4 +226,8 @@ pub fn set_asleep(asleep: bool) {
 
 pub fn set_movement(movement: u16) {
     state().movement = movement;
+}
+
+pub fn set_light(light: bool) {
+    state().light = light;
 }

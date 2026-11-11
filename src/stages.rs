@@ -66,11 +66,13 @@
 //! depends on up to an hour of readings either side, and on bouts that end
 //! later.
 //!
-//! The smart alarm (`crate::alarm`) doesn't use stages: it rings at a stir
-//! in its window, and a minute's stage is only settled an hour later. A
-//! stir in REM rings it as one in light sleep does, which is as it should
-//! be: waking from REM is fine; it's waking from deep sleep that leaves
-//! you groggy, and deep sleep rarely stirs.
+//! The smart alarm (`crate::alarm`) rings early only in light sleep, which
+//! it asks [`light`] about: the stages as they stand now, at the leading
+//! edge, rather than as they settle an hour later. Those it can't wait for.
+//! Live, the edge's REM is mostly a Garmin's REM too, but its deep isn't
+//! there at all after [`DEEP_UNTIL`], when alarms ring; so [`light`] also
+//! wants a stir in the last minutes, as deep sleep hardly stirs (see
+//! `crate::alarm` for the nights this rests on).
 //!
 //! This module knows nothing about the hardware or the clock, so it can be
 //! tested on a computer (see `host-tests/sleep`).
@@ -123,6 +125,8 @@ pub const MIN_BOUT: i64 = 8;
 /// Light gaps shorter than this many minutes between two bouts of the same
 /// stage are filled.
 pub const FILL: i64 = 6;
+/// Minutes before now that [`light`] looks at.
+pub const LIGHT_FOR: i64 = 10;
 
 // ==============================================================================
 // The record
@@ -168,7 +172,7 @@ pub fn stage<R: Record>(record: &mut R, onset: i64, end: i64) {
         }
     }
     let mut stirs = (onset - STIR_SPAN..onset + STIR_SPAN + 1)
-        .filter(|&m| stir(record, m))
+        .filter(|&m| stir(record, m, record.newest()))
         .count();
     // The nearest readings before and after a minute, for when there's
     // none within `LEVEL` of it: the last one passed, and the next one
@@ -187,8 +191,8 @@ pub fn stage<R: Record>(record: &mut R, onset: i64, end: i64) {
             if let Some(bpm) = reading(record, t + LOCAL) {
                 baseline.insert(bpm);
             }
-            stirs -= usize::from(stir(record, t - 1 - STIR_SPAN));
-            stirs += usize::from(stir(record, t + STIR_SPAN));
+            stirs -= usize::from(stir(record, t - 1 - STIR_SPAN, record.newest()));
+            stirs += usize::from(stir(record, t + STIR_SPAN, record.newest()));
         }
         if let Some(bpm) = reading(record, t) {
             before = Some((t, bpm));
@@ -282,7 +286,7 @@ pub fn stage<R: Record>(record: &mut R, onset: i64, end: i64) {
         end <= onset
             || stirs
                 == (end - 1 - STIR_SPAN..end + STIR_SPAN)
-                    .filter(|&m| stir(record, m))
+                    .filter(|&m| stir(record, m, record.newest()))
                     .count(),
         "the stirs' window lost count"
     );
@@ -295,6 +299,31 @@ pub fn stage<R: Record>(record: &mut R, onset: i64, end: i64) {
         "the baseline's window lost count"
     );
     bouts.finish(record);
+}
+
+/// Whether the wearer has been sleeping lightly (or been awake) for the
+/// last [`LIGHT_FOR`] minutes before the newest, as staged so far: each
+/// of them light, restless, or awake, none deep or REM (nor unseen, or
+/// not worn); and not all still, but with a stir (as [`stage`] counts
+/// them). What a smart alarm waits for to ring early.
+///
+/// The newest minute is left out, its movement too: it holds only the
+/// first few seconds', which may be the very stir the alarm is about to
+/// ring at, and would then count as the stir before it.
+pub fn light<R: Record>(record: &R) -> bool {
+    let newest = record.newest();
+    // A record with no minutes says `i64::MIN`; `stir` looks a minute
+    // either side of those it's asked about.
+    let Some(from) = newest.checked_sub(LIGHT_FOR + 1) else {
+        return false;
+    };
+    let recent = from + 1..newest;
+    recent.clone().all(|m| {
+        matches!(
+            record.minute(m).0,
+            Kind::Light | Kind::Restless | Kind::Awake
+        )
+    }) && recent.into_iter().any(|m| stir(record, m, newest - 1))
 }
 
 // Not inlined, here and below: inlined into each of their several uses,
@@ -312,15 +341,15 @@ fn reading<R: Record>(record: &R, sleep: core::ops::Range<i64>, minute: i64) -> 
 }
 
 /// Whether a minute's movement, averaged with its neighbours' (those the
-/// watch saw), makes it a stir. Any minute's, sleep or not: getting up
-/// right after a stretch says it wasn't deep. (Not minutes still to come,
-/// though their neighbour has been seen.)
+/// watch saw, up to minute `until`), makes it a stir. Any minute's, sleep
+/// or not: getting up right after a stretch says it wasn't deep. (Not
+/// minutes after `until`, though their neighbour has been seen.)
 #[inline(never)]
-fn stir<R: Record>(record: &R, minute: i64) -> bool {
-    if minute > record.newest() {
+fn stir<R: Record>(record: &R, minute: i64, until: i64) -> bool {
+    if minute > until {
         return false;
     }
-    let (sum, count) = (minute - 1..minute + 2)
+    let (sum, count) = (minute - 1..(minute + 2).min(until + 1))
         .filter_map(|m| record.minute(m).1)
         .fold((0u32, 0u32), |(s, c), m| (s + u32::from(m), c + 1));
     count > 0 && sum >= u32::from(STIR_LIMIT) * count

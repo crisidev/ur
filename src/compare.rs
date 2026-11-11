@@ -189,6 +189,7 @@ pub mod flag {
     pub const ASLEEP: u8 = 2;
     pub const WATCHING: u8 = 4;
     pub const FINGER_DOWN: u8 = 8;
+    pub const LIGHT: u8 = 16;
 }
 
 /// [`kind::STATE`] flags: what the pass last told the App
@@ -687,7 +688,7 @@ fn event(kind: u8, at: Instant) -> Event {
 pub fn tick(
     at: Instant,
     local_second: Option<i64>,
-    stirring: bool,
+    wearer: crate::alarm::Wearer,
     asleep: bool,
     ticked: Instant,
     watching: bool,
@@ -696,7 +697,8 @@ pub fn tick(
     push(Event {
         ticked: ticked.as_ticks(),
         local_second: local_second.unwrap_or(NONE_I64),
-        flags: (u8::from(stirring) * flag::STIRRING)
+        flags: (u8::from(wearer.stirring) * flag::STIRRING)
+            | (u8::from(wearer.light) * flag::LIGHT)
             | (u8::from(asleep) * flag::ASLEEP)
             | (u8::from(watching) * flag::WATCHING)
             | (u8::from(finger_down) * flag::FINGER_DOWN),

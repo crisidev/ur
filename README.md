@@ -32,8 +32,9 @@ on top:
   it, and stays on while you hold a finger on it.
 - **Sleep stages and smart wake:** light, deep, and REM sleep, from
   movement and heart rate. Smart wake rings in the half hour before your
-  time, as soon as you stir from light sleep, and alarms build up from
-  faint taps.
+  time when you stir after ten minutes of light sleep (not deep or REM),
+  or at your time if that doesn't come, and alarms build up from faint
+  taps.
 - **Adaptive heart rate:** every 2 to 20 minutes, more often after you
   move, while you sleep, or while it's high. Each try starts once your
   wrist is still, or two minutes on if it never is, and keeps going for
