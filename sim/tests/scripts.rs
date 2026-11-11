@@ -990,8 +990,7 @@ fn activity_fetch_holds_back_the_night() {
 /// up from 06:30, walking at 06:35 and 06:40, a fetch at 07:10 still gets
 /// nothing from the night's start on; one at 07:20, past the 46 minutes
 /// awake that settle it at 07:16 (but well before 06:30 plus 135
-/// minutes), gets the whole night and the steps after it up to the
-/// settling, the rest waiting as before.
+/// minutes), gets the whole night and the steps after it.
 #[test]
 fn activity_fetch_sends_the_night_once_up() {
     let dir = out("activity-fetch-up");
@@ -1038,10 +1037,7 @@ fn activity_fetch_sends_the_night_once_up() {
         second.contains(&format!("settled before UTC minute {settled}")),
         "{log}"
     );
-    assert!(
-        second.contains(&format!("holding back from UTC minute {settled}")),
-        "{log}"
-    );
+    assert!(!second.contains("holding back"), "{log}");
     let second = samples(second);
     // 23:00 to 06:30 in 5-minute buckets, then the morning's with steps
     // (the simulator's history has no others): 06:35 and 06:40.

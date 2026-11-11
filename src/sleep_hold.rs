@@ -71,12 +71,20 @@
 //!   own, staged on its own, as it would be anyway if it came that late.
 //!   And by then the stages are final too, as the minutes either side
 //!   that a stage depends on are all in (see `crate::stages`).
-//! - **Having walked**: at least [`UP_WALKING`] minutes of
-//!   [`sleep::WAKE_STEPS`] steps or more, since the last minute asleep.
-//!   That's what the classifier itself calls getting up, and what rules
-//!   out the late rewrites above: those come from lying still in bed, which
-//!   the classifier can take for sleep after all as its window slides. Two
-//!   minutes, not one, so that one wild step count doesn't do.
+//! - **Having walked, or taken the watch off**: at least [`UP_MINUTES`]
+//!   minutes, since the last minute asleep, of [`sleep::WAKE_STEPS`] steps
+//!   or more, or off the wrist (the heart rate sensor's last look found no
+//!   skin). Either is what the classifier itself calls awake, whatever
+//!   came before, and rules out the late rewrites above: those come from
+//!   lying still in bed, which the classifier can take for sleep after
+//!   all as its window slides. Two minutes, not one, so that one wild step
+//!   count doesn't do. Off the wrist covers a watch taken off on waking,
+//!   to charge it, say, without a walk first. In the night, it settles
+//!   only a watch off for longer than a wake within a night, which splits
+//!   the night in two anyway (slipped off, or the sensor wrong all that
+//!   while; on the field logs' four nights, it never said "off" while
+//!   asleep), and then changes no kind: those minutes are off the wrist,
+//!   whatever comes after.
 //! - **Not lying still now**: no stillness that may yet become sleep (see
 //!   [`sleep::unsettled_onset`]), which settling would cut short, dating
 //!   the sleep from the settling rather than from going still.
@@ -86,13 +94,20 @@
 //!   (the untidiness below), which a fetch has likely sent as awake
 //!   already. A nap of under 45 minutes or so waits the 2¼ hours.
 //!
-//! Only the night goes early, though, and the minutes before the settling:
-//! those after it wait as long as they would have, until the night's last
-//! minute asleep is 2¼ hours back. They can't join the night, but the
-//! classifier, sliding on, can still find sleep among the oldest of its
-//! window (the untidiness below), in a nap, say, soon after getting up;
-//! while the night was held, so were they, and that never mattered. So
-//! the morning's steps after the settling come at the usual time.
+//! The minutes after the settling go as they come too, but for any a nap
+//! may yet claim. They can't join the night, but the classifier, sliding
+//! on, can still find sleep among the oldest of its window (the
+//! untidiness below), in a nap, say, soon after getting up: while the
+//! night was held, so were they, and that never mattered. Now, until the
+//! night would have gone anyway, a fetch holds back from the first
+//! minute of any stillness long enough for a nap ([`sleep::RESUME`]
+//! minutes, the least the classifier takes), while the classifier could
+//! still find one there: while any minute from it until the classifier
+//! next wakes (walking, off the wrist, or six minutes on the move) is in
+//! its window (see [`nap`]). A nap then reaches Gadgetbridge as the
+//! watch settles it, a sleep of its own, like one later in the day. The
+//! rest the classifier calls awake whatever it reads before them, so the
+//! morning's steps go as they come while the wearer keeps busy.
 //!
 //! That lets a night go 47 minutes after its last minute asleep, rather
 //! than 136. On the field logs' four mornings (2026-11-08 to 11), it
@@ -109,7 +124,16 @@
 //! earlier sleep, which the watch keeps where it would otherwise have put
 //! them back to light (the classifier writes its whole window as light,
 //! and only the last sleep is restaged), and a few minutes of sleep at a
-//! night's edge that the classifier would have dropped later.
+//! night's edge that the classifier would have dropped later. In them,
+//! half the morning's minutes after the settling went within a minute,
+//! where they used to wait 20 or so; and none that went
+//! changed after, napping soon after waking (in up to 40% of them, by
+//! design) or not, taking the watch off or not, but those that the watch
+//! without settling sends and changes too (1 to 13 minutes in 1000
+//! nights). On the field logs, the mornings went as they came but for
+//! two stretches the watch took for a nap: lying on a desk, before the
+//! heart rate sensor noticed it was off. The Garmin's nights had no nap
+//! within four hours of waking.
 //!
 //! Settling after 30 minutes up was looked at too, and left: the
 //! field logs' mornings came out as well, but sleep from 30 to 45 minutes
@@ -123,8 +147,8 @@
 //! **Provisional**, then, is everything from the earliest of these that's
 //! not settled:
 //!
-//! - the first minute not settled, while a settled sleep would still be
-//!   held, as above.
+//! - the first minute a nap may yet claim, after a settling, while the
+//!   settled sleep would still be held otherwise, as above.
 //! - the start of any sleep whose last minute asleep is less than 2¼
 //!   hours back, counting wakes of up to [`sleep::SAME_NIGHT_GAP`] minutes
 //!   as part of it, as `crate::activity` does. That's the last sleep,
@@ -148,7 +172,7 @@
 //! reads differently once the window no longer starts before it). That
 //! didn't happen on simulated nights (see `host-tests/gb_buckets`), only
 //! on days made of random stretches of anything, with the watch switched
-//! off right after lying still; nor, once settling held back the minutes
+//! off right after lying still; nor, once settling held back the naps
 //! after it (it did happen without that, in a nap after getting up, and
 //! without the window's age, in a few still minutes of an evening).
 //! Ruling it out would hold every fetch back by the whole window, and so
@@ -173,10 +197,10 @@ use crate::sleep::{self, Kind};
 /// with six hours to spare before the history drops what's held.
 pub const CAP: i64 = 18 * 60;
 
-/// Walking minutes (of [`sleep::WAKE_STEPS`] steps or more) since the last
-/// minute asleep that, with the rest of [`settles`], make the wearer
-/// clearly up.
-pub const UP_WALKING: usize = 2;
+/// Minutes walking (of [`sleep::WAKE_STEPS`] steps or more) or off the
+/// wrist since the last minute asleep that, with the rest of [`settles`],
+/// make the wearer clearly up.
+pub const UP_MINUTES: usize = 2;
 
 // ==============================================================================
 // Settling
@@ -254,10 +278,10 @@ pub fn settles(
     if newest - last - 1 <= sleep::SAME_NIGHT_GAP as i64 {
         return None;
     }
-    let walked = (last + 1..newest)
-        .filter(|&minute| evidence(minute).steps >= sleep::WAKE_STEPS)
+    let up = (last + 1..newest)
+        .filter(|&minute| up(evidence(minute)))
         .count();
-    if walked < UP_WALKING || still(newest, evidence).is_some() {
+    if up < UP_MINUTES || still(newest, evidence).is_some() {
         return None;
     }
     // A sleep that began before the classifier's window, as a night does:
@@ -271,6 +295,106 @@ pub fn settles(
         return None;
     }
     Some(last)
+}
+
+/// Whether a minute shows the wearer up, for [`settles`]: walking, or the
+/// watch off the wrist. Either way the classifier calls it awake, whatever
+/// came before (see [`sleep::classify`]).
+fn up(minute: sleep::Minute) -> bool {
+    minute.steps >= sleep::WAKE_STEPS || minute.worn == Some(false)
+}
+
+/// Whether the classifier wakes at `minute`, whatever came before: a
+/// minute that's up (see [`up`]), or the first of [`sleep::WAKE_RUN`]
+/// moving ones, all recorded by `newest`.
+fn wakes(minute: i64, newest: i64, evidence: impl Fn(i64) -> sleep::Minute) -> bool {
+    let moving = |minute: i64| {
+        let m = evidence(minute);
+        m.seen && m.worn != Some(false) && !still_at(minute, newest, &evidence)
+    };
+    up(evidence(minute))
+        || (minute + sleep::WAKE_RUN as i64 - 1 <= newest
+            && (minute..minute + sleep::WAKE_RUN as i64).all(moving))
+}
+
+/// Whether `minute` is still, as the classifier sees it at `newest` (see
+/// [`sleep::still_among`]).
+fn still_at(minute: i64, newest: i64, evidence: impl Fn(i64) -> sleep::Minute) -> bool {
+    let after = (minute < newest).then(|| evidence(minute + 1));
+    sleep::still_among(Some(evidence(minute - 1)), evidence(minute), after)
+}
+
+/// After a settling (`first_unsettled`, the first minute it left), the
+/// first minute from it that a nap may yet claim, as far as the evidence
+/// goes, if any: the minutes before it go as they come.
+///
+/// The classifier calls a minute sleep only from the start of a stillness
+/// long enough for it ([`sleep::RESUME`] minutes, the least it ever
+/// takes, bridging stirs as it does), until it wakes (see [`wakes`]). And
+/// it was awake at the last waking before the settling, which the
+/// settling needs: so it's those stretches, from such a stillness to the
+/// waking after it, that may yet be sleep, while any of their minutes are
+/// in its window; and any stillness the newest minutes are in, which may
+/// grow into one. The rest it calls awake whatever its context, so they
+/// can go as they come: the morning's steps, while the wearer keeps busy.
+fn nap(newest: i64, first_unsettled: i64, evidence: impl Fn(i64) -> sleep::Minute) -> Option<i64> {
+    let window = newest - sleep::WINDOW as i64 + 1;
+    let reach = first_unsettled - (sleep::WINDOW + sleep::SAME_NIGHT_GAP) as i64;
+    let mut minute = (reach..first_unsettled)
+        .rev()
+        .find(|&minute| wakes(minute, newest, &evidence))
+        .unwrap_or(reach)
+        + 1;
+    let still = |minute: i64| still_at(minute, newest, &evidence);
+    while minute <= newest {
+        if !still(minute) {
+            minute += 1;
+            continue;
+        }
+        // The stillness from here, as `sleep::classify` measures it: its
+        // still minutes and the stirs between them, up to its last still
+        // one; unfinished if it, or a stir after it, reaches the newest.
+        let start = minute;
+        let mut end = minute;
+        let mut unfinished = false;
+        while minute <= newest {
+            if still(minute) {
+                minute += 1;
+                end = minute;
+                continue;
+            }
+            let gap = (minute..=newest)
+                .take_while(|&m| evidence(m).seen && !still(m))
+                .count() as i64;
+            if gap == 0 || gap > sleep::STIR as i64 {
+                break;
+            }
+            if minute + gap > newest {
+                unfinished = true;
+                break;
+            }
+            minute += gap;
+        }
+        unfinished |= end > newest;
+        // Sleep starts at a still minute on the wrist, from which the
+        // stillness is long enough (or may yet be), and lasts until the
+        // classifier wakes: perhaps at the next minute off the wrist, in
+        // the middle of the stillness, after which it may start again.
+        let worn = |m: i64| still(m) && evidence(m).worn != Some(false);
+        let mut onset = (start..end).find(|&m| worn(m));
+        while let Some(from) = onset {
+            if !unfinished && end - from < sleep::RESUME as i64 {
+                break;
+            }
+            let woke = (from..=newest).find(|&m| wakes(m, newest, &evidence));
+            if woke.is_none_or(|woke| woke >= window) {
+                return Some(from.max(first_unsettled));
+            }
+            onset = woke.and_then(|woke| (woke + 1..end).find(|&m| worn(m)));
+        }
+        minute = minute.max(end);
+    }
+    None
 }
 
 /// The first minute of the stillness the newest minutes are in, should it
@@ -318,15 +442,17 @@ pub fn hold(
     // settled.
     let recent = newest - (sleep::WINDOW + sleep::SAME_NIGHT_GAP) as i64;
     let reach = recent.max(first_unsettled);
-    // A settled sleep that would otherwise still be held: it goes, but
-    // the minutes after it wait as long as they would have. Not that they
-    // may join it (they can't), but the classifier, sliding on, can still
-    // find sleep among the oldest of its window, as by day (see below);
-    // while a sleep was held, that never mattered. (Not a sleep's hold:
-    // the night has gone, and should go on to Health Connect.)
+    // A settled sleep that would otherwise still be held: it goes, and so
+    // do the minutes after it, but for any a nap may yet claim. Not that
+    // a nap may join the night (it can't), but the classifier, sliding
+    // on, can still find sleep among the oldest of its window, as by day
+    // (see below); while the night was held, that never mattered. (Not a
+    // sleep's hold: the night has gone, and should go on to Health
+    // Connect.)
     let after_settled = (recent..reach.min(newest + 1))
         .any(|minute| kind(minute).is_sleep())
-        .then_some(first_unsettled);
+        .then(|| nap(newest, first_unsettled, &evidence))
+        .flatten();
     let asleep = (reach..=newest)
         .find(|&minute| kind(minute).is_sleep())
         .and_then(|minute| {

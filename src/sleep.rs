@@ -253,11 +253,24 @@ pub fn classify(before: Kind, minutes: &[Minute], out: &mut [Kind]) {
 /// twitchy minute in the middle of stillness (or one still minute while
 /// active) doesn't flip the verdict.
 fn is_still(minutes: &[Minute], t: usize) -> bool {
-    let range = t.saturating_sub(1)..(t + 2).min(minutes.len());
-    let seen = minutes[range].iter().filter(|m| m.seen);
+    still_among(
+        t.checked_sub(1).map(|i| minutes[i]),
+        minutes[t],
+        minutes.get(t + 1).copied(),
+    )
+}
+
+/// Whether `minute` is still, given its neighbours (`None` outside the
+/// minutes classified), as [`classify`] sees it: for `crate::sleep_hold`,
+/// which reads the history a minute at a time rather than as a slice.
+pub fn still_among(before: Option<Minute>, minute: Minute, after: Option<Minute>) -> bool {
+    let seen = [before, Some(minute), after]
+        .into_iter()
+        .flatten()
+        .filter(|m| m.seen);
     let (sum, count) = seen.fold((0u32, 0u32), |(s, c), m| (s + u32::from(m.movement), c + 1));
     let smoothed = (sum / count.max(1)) as u16;
-    minutes[t].seen && minutes[t].steps == 0 && smoothed < STILL_LIMIT
+    minute.seen && minute.steps == 0 && smoothed < STILL_LIMIT
 }
 
 /// How many of the newest minutes [`unsettled_onset`] needs: a stillness

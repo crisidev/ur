@@ -128,8 +128,8 @@ steps, heart rate and sleep on to [Health Connect] if you like (its
 after the one that brings a night, then after a sync at most every 2
 hours, which ends with a short "End : Fetching sports details" message.
 A night reaches Gadgetbridge in one piece, once its sleep stages are
-settled: about 47 minutes after you get up and walk about, or 2¼ hours if
-you don't ([details](docs/gadgetbridge.md#what-gadgetbridge-gets)).
+settled: about 47 minutes after you get up and walk about (or take the
+watch off), or 2¼ hours if you don't ([details](docs/gadgetbridge.md#what-gadgetbridge-gets)).
 For the themes
 to follow your sun rather than Oslo's, the phone has to share its
 location: see [C03](#c03-the-watch-never-gets-a-location-from-the-phone).

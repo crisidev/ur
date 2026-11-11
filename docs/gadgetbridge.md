@@ -77,16 +77,21 @@ after). So the watch holds a sleep back until its stages are settled:
   included. Waking in the night and falling asleep again keeps the whole
   night waiting.
 - **Clearly up** is awake for 46 minutes since you last slept, with at
-  least two minutes of walking in them, and not lying still just then.
-  The watch then settles the night for good (it logs `sleep: up, so
-  settled before minute …`): a lie-in after that is a sleep of its own.
-  If you don't walk (or take the watch off), or the sleep was a nap of
-  under 45 minutes or so, it waits 2¼ hours after you last slept, as it
-  used to.
+  least two minutes in them of walking or with the watch off your wrist
+  (taken off to charge, say), and not lying still just then. The watch
+  then settles the night for good (it logs `sleep: up, so settled
+  before minute …`): a lie-in after that is a sleep of its own. If you
+  neither walk nor take the watch off, or the sleep was a nap of under
+  45 minutes or so, it waits 2¼ hours after you last slept, as it used
+  to. (A watch off your wrist in the night only counts if it's off for
+  longer than 45 minutes, when the watch splits the night in two
+  anyway.)
 - **The first fetch after that** gets the whole night at once, and those
   46 minutes, and has Gadgetbridge pass them on to Health Connect
-  straight away. Your steps after them still follow 2¼ hours after you
-  last slept: the watch may yet revise whether you napped in them.
+  straight away. Your steps after them go as they come, unless you sit
+  or lie still for 10 minutes or more (a nap, perhaps): until 2¼ hours
+  after you last slept, fetches stop at such a stillness for up to
+  90 minutes, while the watch may still decide you napped in it.
 - **A nap** is held back the same way.
 - **Sitting still** holds back the last 20-odd minutes (stepless anyway),
   in case you're falling asleep: once you have, the watch dates the sleep

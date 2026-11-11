@@ -876,7 +876,7 @@ mod tests {
     // ==========================================================================
 
     use super::sleep::{self, Kind as Class};
-    use super::sleep_hold::{CAP, Hold, Settled, UP_WALKING, hold, settles};
+    use super::sleep_hold::{CAP, Hold, Settled, UP_MINUTES, hold, settles};
     use super::stages;
 
     const ACTIVE: sleep::Minute = sleep::Minute {
@@ -1063,7 +1063,30 @@ mod tests {
         assert_eq!(settles_at(NOON + SETTLED, |_| WALKING), None);
     }
 
-    /// Up, but having walked less than `UP_WALKING` minutes (one wild step
+    /// Off the wrist counts as up, as walking does.
+    #[test]
+    fn off_the_wrist_counts_as_up() {
+        let off = sleep::Minute {
+            worn: Some(false),
+            ..STILL
+        };
+        let gap = sleep::SAME_NIGHT_GAP as i64;
+        assert_eq!(settles_at(NOON + gap, |_| off), None);
+        assert_eq!(settles_at(NOON + gap + 1, |_| off), Some(NOON - 1));
+        // One minute off is one minute up.
+        let once = |minute: i64| if minute == NOON + 3 { off } else { FIDGETING };
+        assert_eq!(settles_at(NOON + 60, once), None);
+        let walked = |minute: i64| {
+            if minute == NOON + 9 {
+                WALKING
+            } else {
+                once(minute)
+            }
+        };
+        assert_eq!(settles_at(NOON + 60, walked), Some(NOON - 1));
+    }
+
+    /// Up, but having walked less than `UP_MINUTES` minutes (one wild step
     /// count, say), or lying still now: not settled.
     #[test]
     fn a_night_settles_only_after_walking_and_not_while_still() {
@@ -1078,9 +1101,9 @@ mod tests {
                 }
             }
         };
-        assert_eq!(settles_at(newest, walked(UP_WALKING as i64 - 1)), None);
+        assert_eq!(settles_at(newest, walked(UP_MINUTES as i64 - 1)), None);
         assert_eq!(
-            settles_at(newest, walked(UP_WALKING as i64)),
+            settles_at(newest, walked(UP_MINUTES as i64)),
             Some(NOON - 1)
         );
         // Walked, then lay down: still for the last ten minutes, which
@@ -1116,9 +1139,11 @@ mod tests {
         }
     }
 
-    /// Once settled, nothing before is held back, and no sleep: the
-    /// minutes after it wait until the night would have gone (or a
-    /// stillness in them, as ever), but never from before it.
+    /// Once settled, nothing before is held back, and no sleep; nor the
+    /// minutes after it, while the wearer is up and about. But a stillness
+    /// after it that's long enough for a nap is, from its start (never
+    /// from before the settling), while the classifier may still find a
+    /// nap in it, until the night would have gone anyway.
     #[test]
     fn a_settled_night_is_held_no_more() {
         let night = |minute: i64| {
@@ -1129,19 +1154,37 @@ mod tests {
             }
         };
         let settled = Settled::before(NOON + 447);
-        let after = Some(Hold {
-            from: NOON + 447,
+        for newest in [NOON + 447, NOON + 460, NOON + 400 + SETTLED] {
+            assert_eq!(hold(newest, settled, night, |_| WALKING), None);
+        }
+        // Up and about, then on the sofa from 470, then up again from
+        // `up`: still for `RESUME` minutes, as the classifier sees them,
+        // which smooths each minute's movement with its neighbours'.
+        let sofa = |up: i64| {
+            move |minute: i64| {
+                if (NOON + 470..up).contains(&minute) {
+                    STILL
+                } else {
+                    WALKING
+                }
+            }
+        };
+        let rest = NOON + 470 + sleep::RESUME as i64 + 2;
+        // From its first still minute, the one before being a walking one.
+        let held = Some(Hold {
+            from: NOON + 471,
             sleep: false,
         });
-        for newest in [NOON + 447, NOON + 460, NOON + 399 + SETTLED] {
-            assert_eq!(hold(newest, settled, night, |_| WALKING), after);
-        }
-        assert_eq!(
-            hold(NOON + 400 + SETTLED, settled, night, |_| WALKING),
-            None
-        );
-        // Lying still since before the settling.
-        let newest = NOON + 600;
+        assert_eq!(hold(rest + 5, settled, night, sofa(rest)), held);
+        // Still held once up, while the night would have been; then as by
+        // day.
+        let night_end = NOON + 400 + SETTLED;
+        assert_eq!(hold(night_end - 1, settled, night, sofa(rest)), held);
+        assert_eq!(hold(night_end, settled, night, sofa(rest)), None);
+        // Shorter than a nap: nothing held once up.
+        assert_eq!(hold(rest + 5, settled, night, sofa(rest - 1)), None);
+        // Lying still since before the settling: from the settling.
+        let newest = NOON + 460;
         let still = |minute: i64| if minute < newest - 10 { WALKING } else { STILL };
         assert_eq!(
             hold(newest, Settled::before(newest - 5), night, still),
@@ -1150,7 +1193,6 @@ mod tests {
                 sleep: false,
             })
         );
-        let newest = NOON + 460;
         // Unsettled, the night itself is held.
         assert_eq!(
             hold(newest, Settled::NONE, night, |_| WALKING),
@@ -1240,8 +1282,9 @@ mod tests {
     }
 
     /// A day and night: what the wearer does, in spans of minutes, and a
-    /// seed for the evidence. Always ends with five hours up and about,
-    /// so that the night is settled by the end.
+    /// seed for the evidence. Always ends with five hours up and about, or
+    /// with the watch off the wrist, so that the night is settled by the
+    /// end.
     #[derive(Clone, Debug)]
     struct Night {
         spans: Vec<(Truth, usize)>,
@@ -1272,9 +1315,22 @@ mod tests {
                 }
             }
             // The morning: maybe lying in for a while, then up for the day,
-            // long enough for the night to settle.
+            // long enough for the night to settle; or taking the watch
+            // off; or up for a while, then napping (or lying on the sofa)
+            // before the night would have gone by itself, then up again.
             spans.push((Truth::Lounging, length(g, 0, 60)));
-            spans.push((Truth::Active, 300));
+            match u8::arbitrary(g) % 3 {
+                0 => spans.push((Truth::OffWrist, 300)),
+                1 => {
+                    spans.push((Truth::Active, length(g, 20, 90)));
+                    let nap = *g
+                        .choose(&[Truth::Lounging, Truth::Asleep, Truth::DeepAsleep])
+                        .expect("not empty");
+                    spans.push((nap, length(g, 5, 60)));
+                    spans.push((Truth::Active, 300));
+                }
+                _ => spans.push((Truth::Active, 300)),
+            }
             spans.retain(|&(_, length)| length > 0);
             Self {
                 spans,
@@ -1580,50 +1636,93 @@ mod tests {
         }
     }
 
+    /// A night slept through, then `morning`: when (in minutes after the
+    /// night's last minute asleep) a fetch would first send all of the
+    /// night, and checks that the watch ends up with the night it would
+    /// have settled to by itself, and that once the night has gone, so
+    /// does every minute after it as it comes, but for any held back by
+    /// `held`, given the minute under way.
+    fn released_after(seed: u64, morning: Truth, held: impl Fn(usize) -> bool) -> usize {
+        let night = Night {
+            spans: vec![
+                (Truth::Active, 60),
+                (Truth::Asleep, 60),
+                (Truth::DeepAsleep, 90),
+                (Truth::Rem, 30),
+                (Truth::Asleep, 120),
+                (Truth::Rem, 40),
+                (Truth::Asleep, 60),
+                (morning, 300),
+            ],
+            seed,
+        };
+        let mut watch = Watch::new(night.minutes());
+        let mut unsettled = Watch::new(night.minutes());
+        unsettled.settling = false;
+        let mut released = None;
+        for now in 0..watch.truth.len() {
+            watch.tick(now);
+            unsettled.tick(now);
+            let hold = watch.hold();
+            if released.is_none() && now > 60 + 400 && hold.is_none_or(|h| h.from > NOON + 460) {
+                released = Some(now);
+            }
+            if released.is_some() && !held(now) {
+                assert_eq!(hold, None, "seed {seed}: held at {now}");
+            }
+        }
+        assert_eq!(watch.kinds, unsettled.kinds, "seed {seed}");
+        let last = (0..watch.kinds.len())
+            .rev()
+            .find(|&t| unsettled.kinds[t].is_sleep())
+            .expect("a night");
+        released.expect("released") - last
+    }
+
     /// A night slept through, then up and about: the night is no longer
     /// held back once the wearer has been up for longer than
-    /// `SAME_NIGHT_GAP` minutes, rather than for 135; and it's the night
-    /// the watch would have settled to by itself.
+    /// `SAME_NIGHT_GAP` minutes, rather than for 135; nor are the
+    /// minutes after it, which go as they come; and it's the night the
+    /// watch would have settled to by itself.
     #[test]
     fn a_night_goes_soon_after_getting_up() {
         for seed in 0..50 {
+            let after = released_after(seed, Truth::Active, |_| false);
+            assert_eq!(after, sleep::SAME_NIGHT_GAP + 2, "seed {seed}");
+        }
+    }
+
+    /// The same with the watch taken off on waking (to charge it, say),
+    /// without walking first: off the wrist counts as up.
+    #[test]
+    fn a_night_goes_soon_after_taking_the_watch_off() {
+        for seed in 0..50 {
+            let after = released_after(seed, Truth::OffWrist, |_| false);
+            assert_eq!(after, sleep::SAME_NIGHT_GAP + 2, "seed {seed}");
+        }
+    }
+
+    /// A watch off the wrist in the night for less than a wake that ends
+    /// a night (slipped off, or the heart rate sensor wrong for a while)
+    /// settles nothing: the night still goes whole in the morning.
+    #[test]
+    fn off_the_wrist_in_the_night_settles_nothing() {
+        for (seed, off) in (0..30).zip([1, 5, 20, 40, 44].into_iter().cycle()) {
             let night = Night {
                 spans: vec![
                     (Truth::Active, 60),
-                    (Truth::Asleep, 60),
-                    (Truth::DeepAsleep, 90),
-                    (Truth::Rem, 30),
+                    (Truth::DeepAsleep, 120),
+                    (Truth::OffWrist, off),
                     (Truth::Asleep, 120),
-                    (Truth::Rem, 40),
-                    (Truth::Asleep, 60),
                     (Truth::Active, 300),
                 ],
                 seed,
             };
             let mut watch = Watch::new(night.minutes());
-            let mut unsettled = Watch::new(night.minutes());
-            unsettled.settling = false;
-            let mut released = None;
-            for now in 0..watch.truth.len() {
+            for now in 0..60 + 240 + off {
                 watch.tick(now);
-                unsettled.tick(now);
-                if released.is_none()
-                    && now > 60 + 400
-                    && watch.hold().is_none_or(|h| h.from > NOON + 60 + 400)
-                {
-                    released = Some(now);
-                }
+                assert_eq!(watch.settled, Settled::NONE, "seed {seed}, off {off}");
             }
-            let last = (0..watch.kinds.len())
-                .rev()
-                .find(|&t| unsettled.kinds[t].is_sleep())
-                .expect("a night");
-            let after = released.expect("released") - last;
-            assert!(
-                after == sleep::SAME_NIGHT_GAP + 2,
-                "seed {seed}: released {after} minutes after the last minute asleep"
-            );
-            assert_eq!(watch.kinds, unsettled.kinds, "seed {seed}");
         }
     }
 
