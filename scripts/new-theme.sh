@@ -33,8 +33,8 @@
 #   live too).
 # - host-tests/IDENT: a copy of host-tests/theme's checks of Retro's
 #   colours, for its schemes (without `target/`, and without the test of
-#   an old collision of ARCADE's), with CI's fmt matrix checking it
-#   (CI's host-tests job finds it by itself).
+#   an old collision of ARCADE's), which CI's fmt and host-tests jobs
+#   find by themselves.
 #
 # Then, from sim/, `UPDATE_SHOTS=1 cargo test --release
 # --no-default-features --features themes-all` takes its README's
@@ -492,9 +492,6 @@ text = re.sub(r"\n    /// The measure itself: the colours Last night first drew.
 main.write_text(rename(text))
 for path in [tests / "Cargo.toml", tests / "Cargo.lock"]:
     edit(path, ('name = "theme-test"', f'name = "{dashed}-theme-test"'))
-
-check = Path(".github/workflows/check.yml")
-edit(check, ("host-tests/theme, ", f"host-tests/theme, host-tests/{ident}, "))
 
 print(f"src/themes/{ident}/ and host-tests/{ident}/ written, and {display} listed.")
 EOF

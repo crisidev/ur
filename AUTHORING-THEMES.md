@@ -575,8 +575,9 @@ drawing and kept its role meanings can keep its checks too:
    about ARCADE's reds.
 4. Name the crate in both its `Cargo.toml` and its `Cargo.lock`
    (`name = "neon-theme-test"`), as CI's `--locked` wants them to agree.
-5. Add `host-tests/neon` to `check.yml`'s fmt matrix. (`test.yml`'s
-   host tests run every crate in `host-tests/`.)
+
+CI formats and tests every crate in `host-tests/`, so there's no list
+to add it to.
 
 ## What CI checks
 

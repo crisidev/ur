@@ -21,7 +21,7 @@
 #   and the web page, and the window.
 #
 # Not each other feature on its own (field-log, compare, flash-stress, …):
-# check.yml's clippy matrix builds those that are built, and no code is
+# check.yml's clippy job lints those that are built, and no code is
 # only there without another feature (no `cfg(not(feature = …))` but
 # field-log's and debug-input's, which the plain build has), so
 # `--all-features` covers the rest. Nor the build with no theme at all,

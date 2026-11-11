@@ -752,9 +752,11 @@ gh release download v0.9.0 --pattern sha256.sum --dir published
 
 ## CI
 
-- `check.yml`: rustfmt, clippy (both variants, the dev kit's `compare`
-  and `flash-stress` builds, and every theme; and the simulator, with
-  every theme too), [shellcheck], and that the Python scripts parse.
+- `check.yml`: rustfmt (every crate), clippy (both variants, the dev
+  kit's `compare` and `flash-stress` builds, and every theme; and the
+  simulator, with every theme too), [shellcheck], and that the Python
+  scripts parse. Two jobs, `fmt` and `clippy`, each going through
+  everything it checks, so a new crate needs no list in CI.
 - `features.yml`: that every theme builds alone (as its package is) and
   all together with every feature (`--all-features`), and that the
   simulator builds with everything. The heavier jobs wait for it:

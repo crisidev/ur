@@ -1,11 +1,20 @@
 # Runs whenever a PR is opened or updated, or a commit is pushed to main:
-# - fmt: rustfmt, for the firmware, each host-test crate, and the simulator
+# - fmt: rustfmt, for every Cargo workspace in the repository (the
+#   firmware, each host-test crate, gbmock, the simulator and its fuzz
+#   targets); shellcheck, for every shell script; and that every Python
+#   script at least parses
 # - clippy: lints, for the firmware as released (both variants; see
 #   scripts/release.sh) and as compared with the simulator (`compare`,
 #   which covers `debug-input` too), and with every theme (`themes-all`),
 #   and for the simulator (sim/), with and without its window, and with
 #   every theme
-# - scripts: shellcheck, and that the Python scripts at least parse
+#
+# A job each, not a job per crate or per variant: rustfmt takes under a
+# second per crate and clippy ~4 s per variant once the dependencies are
+# cached, while each job spent 15-30 s on the runner, checkout, toolchain
+# and cache around that, and took one of the 20 jobs the repository runs
+# at once. Each check still runs when an earlier one failed, and the job
+# ends by naming every one that did.
 #
 # Most of jonhoo/rust-ci-conf's library checks (semver, minimal versions,
 # MSRV, feature powersets, docs.rs) don't apply: this is firmware for one
@@ -31,74 +40,71 @@ name: check
 jobs:
   fmt:
     runs-on: ubuntu-latest
-    name: fmt / ${{ matrix.crate }}
-    strategy:
-      fail-fast: false
-      matrix:
-        crate: [".", host-tests/alarm, host-tests/aranet, host-tests/arrival, host-tests/backoff, host-tests/battery, host-tests/brightness, host-tests/bthome, host-tests/calendar, host-tests/buttons, host-tests/day, host-tests/decimal, host-tests/dfu, host-tests/font, host-tests/gb, host-tests/gb_buckets, host-tests/gesture, host-tests/glance, host-tests/heart_schedule, host-tests/link, host-tests/live, host-tests/mcuboot, host-tests/minute_ring, host-tests/nav, host-tests/on_time, host-tests/packet_pool, host-tests/ppg, host-tests/qr, host-tests/route, host-tests/rtt_ring, host-tests/sleep, host-tests/step_counter, host-tests/snapshot, host-tests/temperature, host-tests/theme, host-tests/living_tokyo, host-tests/wake, gbmock, sim]
+    name: fmt
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
       - name: Install the pinned toolchain
         run: rustup toolchain install
-      - name: cargo fmt --check
-        working-directory: ${{ matrix.crate }}
-        run: cargo fmt --check
+      # Every directory with a Cargo.toml is a workspace of its own (each
+      # host-test crate, gbmock, sim, sim/fuzz), and `cargo fmt` only
+      # formats its own: the root's doesn't reach a host-test crate's
+      # main.rs. Found in the tree, so a new crate needs no list here.
+      - name: cargo fmt --check, every workspace
+        run: |
+          failed=()
+          mapfile -t crates < <(git ls-files '*Cargo.toml' | xargs -n1 dirname | sort -u)
+          for crate in "${crates[@]}"; do
+            (cd "$crate" && cargo fmt --check) || failed+=("$crate")
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::not formatted: ${failed[*]}"
+            exit 1
+          fi
+      # shellcheck comes with the runner image.
+      - name: shellcheck
+        if: ${{ !cancelled() }}
+        run: git ls-files -z '*.sh' | xargs -0 shellcheck
+      - name: python syntax
+        if: ${{ !cancelled() }}
+        run: git ls-files -z '*.py' | xargs -0 python3 -m py_compile
   clippy:
     runs-on: ubuntu-latest
-    name: clippy / ${{ matrix.variant }}
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [ur, ur-logging, compare, flash-stress, themes-all]
-        include:
-          - variant: ur
-            features: ""
-          - variant: ur-logging
-            features: field-log
-          # Not released: for checking the simulator against a dev kit.
-          - variant: compare
-            features: compare
-          # Not released: a dev kit's flash stress test.
-          - variant: flash-stress
-            features: flash-stress
-          # Every theme together. Each theme's own package is built alone
-          # (see scripts/release.sh), which features.yml lints.
-          - variant: themes-all
-            features: themes-all
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
-      - name: Install the pinned toolchain
-        run: rustup toolchain install
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
-      # The target comes from .cargo/config.toml. Release profile, as that's
-      # what ships (and some lints depend on the profile's cfgs).
-      - name: cargo clippy
-        run: cargo clippy --locked --release --features "${{ matrix.features }}" -- -D warnings
-  sim-clippy:
-    runs-on: ubuntu-latest
-    name: clippy / sim
+    name: clippy
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
       - name: Install the pinned toolchain
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # tag=v2.9.3
         with:
-          workspaces: sim
+          workspaces: |
+            .
+            sim
+      # The target comes from .cargo/config.toml. Release profile, as that's
+      # what ships (and some lints depend on the profile's cfgs). The
+      # variants: `ur` (no features) and `ur-logging` (field-log), as
+      # released; `compare`, not released, for checking the simulator
+      # against a dev kit; `flash-stress`, not released, a dev kit's flash
+      # stress test; and `themes-all`, every theme together. Each theme's
+      # own package is built alone (see scripts/release.sh), which
+      # features.yml lints.
+      - name: cargo clippy, the firmware, every variant
+        run: |
+          failed=()
+          for features in "" field-log compare flash-stress themes-all; do
+            echo "::group::clippy --features '$features'"
+            cargo clippy --locked --release --features "$features" -- -D warnings || failed+=("${features:-ur}")
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::clippy failed for: ${failed[*]}"
+            exit 1
+          fi
       # With the window too: on Linux it only loads X11 or Wayland when it
       # opens, so it builds without either installed.
-      - name: cargo clippy
+      - name: cargo clippy, the simulator
+        if: ${{ !cancelled() }}
         working-directory: sim
         run: |
           cargo clippy --locked --all-targets -- -D warnings
           cargo clippy --locked --all-targets --no-default-features -- -D warnings
           cargo clippy --locked --all-targets --all-features -- -D warnings
-  scripts:
-    runs-on: ubuntu-latest
-    name: scripts
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
-      # shellcheck comes with the runner image.
-      - name: shellcheck
-        run: shellcheck scripts/*.sh
-      - name: python syntax
-        run: python3 -m py_compile scripts/*.py docs/*.py
