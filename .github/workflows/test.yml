@@ -16,8 +16,6 @@
 #   (sim/fuzz/seeds.tar.zst), once each: the firmware's UI and settings
 #   storage on inputs long fuzzing found, with every `debug_assert!` on
 #   (verify.yml fuzzes from them, on release tags)
-# - blueprints: the Home Assistant blueprints for the button grid, run in
-#   Home Assistant's test harness
 # - features: that every theme, and every feature, builds (features.yml);
 #   sim and firmware wait for it
 # - firmware: builds and packages both variants exactly as a release would
@@ -27,7 +25,8 @@
 #   reports how their sizes changed, which size-report.yml then posts
 #
 # The firmware itself has no tests that run in CI: it needs the watch. See
-# check.yml for the toolchains, concurrency cancellation and triggers.
+# check.yml for the toolchains, concurrency cancellation and triggers, and
+# blueprints.yml for the Home Assistant blueprints' tests.
 permissions:
   contents: read
 on:
@@ -206,23 +205,6 @@ jobs:
           tar --zstd -xf seeds.tar.zst
           cargo "+$NIGHTLY" fuzz run -s none steps seeds/steps -- -runs=0
           cargo "+$NIGHTLY" fuzz run -s none gadgetbridge seeds/gadgetbridge -- -runs=0
-  # The Home Assistant blueprints (blueprints/), set up as automations in
-  # Home Assistant's own test harness, with the watch's events fired at
-  # them (blueprints/test/).
-  blueprints:
-    runs-on: ubuntu-latest
-    name: blueprints
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
-      # pipx comes with the runner image; uv fetches the Python the pinned
-      # Home Assistant needs, newer than the image's.
-      - name: Install Home Assistant's test harness
-        run: |
-          pipx install uv
-          uv venv -p 3.14 tmp/venv-blueprints
-          VIRTUAL_ENV=tmp/venv-blueprints uv pip install -r blueprints/test/requirements.txt
-      - name: pytest
-        run: tmp/venv-blueprints/bin/python -I -m pytest blueprints/test
   firmware:
     needs: features
     runs-on: ubuntu-latest

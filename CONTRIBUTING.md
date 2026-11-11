@@ -772,6 +772,9 @@ gh release download v0.9.0 --pattern sha256.sum --dir published
   run's artifacts include each variant's `-dfu.zip` on its own, unzipped,
   ready to send to a watch, and everything (with the ELFs that decode
   logs) as one zip.
+- `blueprints.yml`: the Home Assistant blueprints (`blueprints/`), in
+  Home Assistant's own test harness; only when a PR or push changes
+  something under `blueprints/`, as nothing else can break them.
 - `release.yml`: on a version tag; see [Releasing](#releasing).
 - `beta.yml`: weekly, and on demand, the firmware's clippy and the host
   tests on beta, for early warning of the next stable Rust. Not per PR:

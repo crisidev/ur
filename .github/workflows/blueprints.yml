@@ -1,0 +1,45 @@
+# The Home Assistant blueprints for the button grid (blueprints/), set up
+# as automations in Home Assistant's own test harness, with the watch's
+# events fired at them (blueprints/test/).
+#
+# Only when something under blueprints/ changes (or this file): the tests
+# read nothing else, the events they fire included, so no other change can
+# break them, and nearly no change touches them (4 of ~640 commits in
+# November 2026). On a PR, the paths are those of the whole PR, not its
+# last push, so a PR that changes a blueprint is tested on every push.
+#
+# The cost: what changes outside the repository (the runner image, uv,
+# PyPI) only shows up the next time a blueprint changes, or when this is
+# run by hand (Actions → blueprints → Run workflow).
+permissions:
+  contents: read
+on:
+  push:
+    branches: [main]
+    paths:
+      - "blueprints/**"
+      - ".github/workflows/blueprints.yml"
+  pull_request:
+    paths:
+      - "blueprints/**"
+      - ".github/workflows/blueprints.yml"
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+name: blueprints
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    name: blueprints
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      # pipx comes with the runner image; uv fetches the Python the pinned
+      # Home Assistant needs, newer than the image's.
+      - name: Install Home Assistant's test harness
+        run: |
+          pipx install uv
+          uv venv -p 3.14 tmp/venv-blueprints
+          VIRTUAL_ENV=tmp/venv-blueprints uv pip install -r blueprints/test/requirements.txt
+      - name: pytest
+        run: tmp/venv-blueprints/bin/python -I -m pytest blueprints/test
