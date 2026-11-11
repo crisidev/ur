@@ -231,13 +231,14 @@ checked, and the README's `info.png`, which isn't. CI's `sim` job
 uploads what the tests drew, and the images of any differences, as its
 `screenshots` artifact.
 
-On every pull request, CI draws the screenshots for its head and for
-where it branched off its base, and keeps one comment on the PR up to
-date with each screen that changed (before, after, and where, side by
-side), was added, or was removed. It says so when a push leaves no
-screen changed, but doesn't comment at all on a PR that never changed
-one. Two workflows do this, so that a PR from a fork never runs with
-write access:
+On every pull request that touches what the simulator draws from
+(`src/`, `sim/`, `gbmock/`, `Cargo.toml`, the toolchain), CI draws the
+screenshots for its head and for where it branched off its base, and
+keeps one comment on the PR up to date with each screen that changed
+(before, after, and where, side by side), was added, or was removed. It
+says so when a push leaves no screen changed, but doesn't comment at all
+on a PR that never changed one. Two workflows do this, so that a PR
+from a fork never runs with write access:
 
 - `screenshots.yml` runs on the PR, with read-only access: it builds the
   simulator from both commits, draws both sets, compares them

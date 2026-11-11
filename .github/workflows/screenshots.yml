@@ -1,4 +1,4 @@
-# On every PR: what it changes on the watch's screens. Draws the
+# On a PR: what it changes on the watch's screens. Draws the
 # simulator's screenshots for the PR's head and for where it branched off
 # its base, compares them (`ur-sim --diff`), and uploads the differences,
 # with the PR's number, for screenshots-comment.yml to post on the PR.
@@ -12,10 +12,30 @@
 # branch's tip, so what main has gained since doesn't show up as the PR's
 # change; and against its head, not GitHub's merge commit, which a
 # conflict leaves out.
+#
+# Only for a PR that changes something the simulator draws from: the
+# firmware's source (src/, the UI, themes and each theme's shots.txt),
+# the simulator itself (sim/, its scripts among it), gbmock (which it
+# links), Cargo.toml (its themes and version; sim/build.rs reads it) and
+# the toolchain. A CI-, docs- or blueprints-only PR has no screens to
+# compare. On a pull_request, `paths` is matched against the whole PR's
+# changes, not its last push's, so a PR that changes the UI is drawn on
+# every push. The one gap: a PR that changed the UI, then was pushed again
+# without those changes, keeps its last comment; and GitHub matches only
+# a PR's first 300 changed files. Missing an input here only loses the
+# comment: test.yml's sim job still compares every screenshot against
+# the approved ones.
 permissions:
   contents: read
 on:
   pull_request:
+    paths:
+      - "src/**"
+      - "sim/**"
+      - "gbmock/**"
+      - "Cargo.toml"
+      - "rust-toolchain.toml"
+      - ".github/workflows/screenshots.yml"
 # A new push to a PR cancels its run in progress: only the newest is
 # worth posting (and screenshots-comment.yml skips cancelled runs). By
 # the PR's number, as forks' branch names can collide.
