@@ -329,13 +329,17 @@ session's reserve. The rc.5 and rc.6 field logs had ~2.3–2.8 such
 sessions an hour awake (rc.4's, ~0.9), so ~20 extensions over 16 hours,
 half on each LED arm. At the ~2.9 mA a second of LED at 12.5 mA is taken
 as here (chip and polling included), and ~6.7 at 30 mA, a minute costs
-~0.05 mAh dim and ~0.11 bright: **~1.6 mAh a day** (~1%). Were the LED to
-draw its nominal current whenever it's lit, ~7 mAh (~4%). Either way it
+~0.05 mAh dim and ~0.11 bright: ~1.6 mAh a day. On the same rounds, a
+busy session that reads early records on to 90 s; those logs had ~5
+busy background readings a waking day (at ~24 s), so ~3 record on for
+~66 s, ~0.25 mAh, and a 20-minute walk perhaps as much again. In all
+**~2 mAh a day** (~1%). Were the LED to draw its nominal current
+whenever it's lit, ~8 mAh (~5%). Either way it
 only spends what the budget has spare, so the caps above still bound it,
 and the hourly `power:` line's LED seconds by drive measure it. The
-accelerometer's samples, logged through every session, cost nothing
-measurable: ~0.4 MB more of the field log a day, ~0.05 mAh of writing
-to the SPI flash.
+accelerometer's samples, logged through every awake session, cost
+nothing measurable: with the longer sessions' own lines, ~0.4 MB more
+of the field log a day, ~0.05 mAh of writing to the SPI flash.
 
 ### What a connection event and an advertising event cost
 

@@ -1121,7 +1121,7 @@ pub const LONGER_FOR: u32 = 60;
 /// walk read 58-60 BPM, half its step cadence, against the Garmin's 97, at
 /// a high window quality, the PPG having locked onto the arm's swing. So
 /// the logging build records both halves of the question: the
-/// accelerometer's samples through every session (`accel:` lines, at
+/// accelerometer's samples through every awake session (`accel:` lines, at
 /// `trace`), from which a replay can find the movement's own rhythm
 /// and test rejecting it, and, on half the awake rounds, sessions that go
 /// on to 90 s, for what a longer session reads (and at what error).
@@ -1138,9 +1138,19 @@ pub const LONGER_FOR: u32 = 60;
 /// instead), and the budget covers the extra 60 s at its drive and still
 /// keeps [`SESSION_RESERVE`] for the next (see [`longer`]). Everything
 /// else about the session is as usual: the same drive, the windows and
-/// their consensus carrying on, and a reading ending it.
+/// their consensus carrying on.
 ///
-/// What it costs: ~1.6 mAh a day, ~7 at worst, within the budget's caps
+/// And a `Longer` session on a busy wrist that reads before 90 s (often
+/// wrongly, on a walk, locked onto the arm's swing at ~12 s) records on to
+/// 90 s, budget permitting on the same terms: its first reading counts as
+/// usual, and nothing after it does. The later windows' readings are only
+/// logged (`heart: record-only N BPM`), never published, and to the
+/// schedule and the sensor's remembered level the session ended at its
+/// reading; only the budget pays for the minute more. Without it, a walk's
+/// log would hold only the ~12 s up to the wrong reading: enough to see
+/// the lock, not what the PPG reads without it.
+///
+/// What it costs: ~2 mAh a day, ~8 at worst, within the budget's caps
 /// (see docs/power-plan.md); and ~0.4 MB more field log a day.
 ///
 /// TODO: once field logs have judged it, keep the winner (in the plain
@@ -1198,16 +1208,17 @@ impl Lengths {
     }
 }
 
-/// Whether a [`Length::Longer`] session that has run its usual time without
-/// a reading on a busy wrist, at `drive`, may go on for [`LONGER_FOR`], with
-/// `spare` seconds of the [`LED_BUDGET`] left after its own so far: if that
-/// covers the extension and still leaves [`SESSION_RESERVE`], as for a
-/// [`brighter`] phase. So the extension never holds back the next session,
-/// an overdue try included: when the budget runs short, it's the extension
-/// that gives way.
+/// Whether a [`Length::Longer`] session on a busy wrist, at `drive`, may go
+/// on for `seconds` more (the [`LONGER_FOR`] after its usual time without
+/// a reading, or what's left of 90 s after an early one), with `spare`
+/// seconds of the [`LED_BUDGET`] left after its own so far: if that covers
+/// them and still leaves [`SESSION_RESERVE`], as for a [`brighter`] phase.
+/// So going on never holds back the next session, an overdue try
+/// included: when the budget runs short, it's the longer session that
+/// gives way.
 #[cfg(any(feature = "field-log", not(target_os = "none")))]
-pub fn longer(drive: u8, spare: u32) -> bool {
-    spare >= budget_seconds(drive, LONGER_FOR * 1000) + SESSION_RESERVE
+pub fn longer(drive: u8, seconds: u32, spare: u32) -> bool {
+    spare >= budget_seconds(drive, seconds * 1000) + SESSION_RESERVE
 }
 
 /// The brightest drive up to two settings above `drive` at which `peak`,

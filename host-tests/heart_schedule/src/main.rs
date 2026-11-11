@@ -1222,14 +1222,21 @@ mod tests {
         // 60 s at 12.5 mA is 60 s of budget, at 30 mA 144, at 40 mA 192.
         for (drive, cost) in [(0, 60), (1, 96), (2, 144), (3, 192)] {
             assert_eq!(budget_seconds(drive, LONGER_FOR * 1000), cost);
-            assert!(longer(drive, cost + SESSION_RESERVE));
-            assert!(!longer(drive, cost + SESSION_RESERVE - 1));
+            assert!(longer(drive, LONGER_FOR, cost + SESSION_RESERVE));
+            assert!(!longer(drive, LONGER_FOR, cost + SESSION_RESERVE - 1));
         }
-        assert!(!longer(0, 0));
+        assert!(!longer(0, LONGER_FOR, 0));
+        // Recording on after a reading at 12 s: 78 s more.
+        assert!(longer(2, 78, budget_seconds(2, 78_000) + SESSION_RESERVE));
+        assert!(!longer(
+            2,
+            78,
+            budget_seconds(2, 78_000) + SESSION_RESERVE - 1
+        ));
         // A dim session that has spent its 30 s from a full bucket can go
         // on; a bright one that leaves 150 can't (it needs 174).
-        assert!(longer(0, LED_BUDGET - 30));
-        assert!(!longer(2, 150));
+        assert!(longer(0, LONGER_FOR, LED_BUDGET - 30));
+        assert!(!longer(2, LONGER_FOR, 150));
     }
 
     /// A day of busy desk hours on the longer arm, every session failing at
@@ -1249,7 +1256,7 @@ mod tests {
             let drive = if arm == Arm::Bright { 2 } else { 0 };
             let mut cost = budget_seconds(drive, 30_000);
             let length = lengths.of(round, arm);
-            if length == Length::Longer && longer(drive, budget.saturating_sub(cost)) {
+            if length == Length::Longer && longer(drive, LONGER_FOR, budget.saturating_sub(cost)) {
                 cost += budget_seconds(drive, LONGER_FOR * 1000);
             }
             t += 90;

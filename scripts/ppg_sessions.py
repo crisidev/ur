@@ -24,8 +24,12 @@ background sessions after 0.10.0-rc.3 their round of tries, `round=N`
 Background sessions in a logging build after 0.10.0 say their length arm
 too (see `heart_schedule::Length`), `length=longer` or `length=usual`: a
 longer one on a busy wrist may run 90 s rather than 30, which its
-segment's samples show. (The same logs' `accel:` lines, the
-accelerometer's samples through each session, aren't extracted here.)
+segment's samples show; and a longer one that reads on a busy wrist
+records on to 90 s (`heart: recording on`, then `heart: recorded to`),
+its later readings logged as `record-only` but not counted, so its
+segment holds all 90 s, its outcome the first reading. (The same logs'
+`accel:` lines, the accelerometer's samples through each session, aren't
+extracted here.)
 
 Usage: python -I scripts/ppg_sessions.py HEALTH_CONNECT_DB DECODED_LOG OUT
 
@@ -61,6 +65,8 @@ carried, carried_flag = None, None
 # The arm, round and length of the session in progress, from its `due`
 # line.
 arm, round_, length = None, None, None
+# Whether a session that read is recording on (see above).
+recording = False
 # When the last background session was due: its samples follow within a
 # second or two.
 due_at = float("-inf")
@@ -79,7 +85,15 @@ for line in log:
     # A reading is logged before the session's last part-second of samples
     # (0.9.1 on; earlier logs don't have it), so its segment closes at the
     # next heart line that isn't samples.
-    if current and current.get("read") and "heart: " in line and "heart: samples" not in line:
+    if "heart: recording on" in line:
+        recording = True
+    elif "heart: recorded to" in line:
+        recording = False
+        if current:
+            segments.append(current)
+        current = None
+    if current and current.get("read") and not recording and "heart: " in line \
+            and "heart: samples" not in line:
         segments.append(current)
         current = None
     if m := re.search(r"heart: level .*drive: (\d).* period ([\d.]+)", line):
@@ -102,7 +116,7 @@ for line in log:
         if mv := re.search(r"movement (\d+)", line):
             current["movement"].append(mv[1])
         current["period"] = period
-        if current.get("read"):
+        if current.get("read") and not recording:
             segments.append(current)
             current = None
     elif current and (m := re.search(r"INFO  heart: (\d+) BPM after", line)):

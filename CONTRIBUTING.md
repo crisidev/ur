@@ -655,12 +655,16 @@ Some host-test crates replay decoded logs, to tune against real wrists:
   background session that reaches 30 s on a busy wrist without a reading
   goes on to 90 s on half the rounds (crossed with the LED's arms; its
   `heart: due` line ends `Longer` or `Usual`, and `heart: longer after 30
-  s` marks one going on), and every session logs the accelerometer's
-  samples (`accel: [x, y, z, …]`, every 2 s, ~12 Hz, in 1/64 g), to find
-  a walk's cadence and the readings that lock onto it. That's ~46 bytes
-  a second of session, plus the longer sessions' own lines: ~0.4 MB a
-  day more, so the 2 MB holds ~22 hours, not ~26. Fetch the log at least
-  once a day.
+  s` marks one going on). On the same rounds, one that reads early on a
+  busy wrist records on to 90 s: `heart: recording on after a reading`,
+  its later readings only logged (`heart: record-only N BPM`, at `debug`,
+  never published, nor counted by the schedule), then `heart: recorded
+  to N s`. And every awake session logs the accelerometer's samples
+  (`accel: [x, y, z, …]`, every 2 s, ~12 Hz, in 1/64 g), to find a walk's
+  cadence and the readings that lock onto it. That's ~46 bytes a second
+  of session, plus the longer sessions' own lines: ~0.4 MB a day more,
+  so the 2 MB holds ~22 hours, not ~26. Fetch the log at least once a
+  day.
 
 Steps come from the accelerometer's own counter, which a log can't
 replay. A capture build, `UR_ACTIVITY_LOG=trace scripts/release.sh --pre
