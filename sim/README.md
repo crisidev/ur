@@ -109,7 +109,9 @@ tap                               # snooze
 - **Inputs:** `button` (`button 2`: a double press), `glance`, `tap`,
   `long`, `up`/`down`/`left`/`right` (at `X,Y`), `double X,Y` (two taps
   0.1 s apart, quicker than two over a dev kit's probe), or a finger:
-  `press X,Y` (again to move it), `lift`.
+  `press X,Y` (again to move it), `lift`, and `blip [MS]`: the touch
+  controller reporting it lifted, and back MS ms later (10 if left out),
+  as it does mid-hold (within 30 ms, the same touch).
 - **The phone:** `gb` (see below), `connect`, `time`, `location`,
   `notify`, `call`, `music`, `find`, `phone-alarms`, `nav`, `unpaired`,
   `passkey`, `update`, `slots full` (both Bluetooth connections in use,

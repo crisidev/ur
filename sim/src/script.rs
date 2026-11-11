@@ -34,6 +34,8 @@ Inputs (X,Y in canvas pixels, 0-79; 40,40 if left out):
   press X,Y | lift          a finger down (or moved), and up: through the
                             touch task's recogniser, so holding it still
                             for 0.6 s is a long press, and moving it a swipe
+  blip [MS]                 the touch controller reports the finger lifted,
+                            but it's back MS ms later (10 if left out)
 The phone:
   gb LINE                    a line as Gadgetbridge sends it, through the
                              firmware's parser, e.g.
@@ -212,6 +214,7 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
             watch.finger_at(x * 3 + 1, y * 3 + 1);
         }
         "lift" => watch.lift(),
+        "blip" => watch.blip(arg(0).map_or(Ok(10), number)?),
 
         // ======================================================================
         // The phone

@@ -527,6 +527,60 @@ fn a_tap_and_hold_skips_and_a_lone_long_press_does_nothing() {
     }
 }
 
+/// The touch controller reports a finger held still as lifted, and back
+/// ~10 ms later (`blip`): the sealed watch's did it every few hundred ms
+/// of a hold, so a tap-and-hold was a tap and several short touches, two
+/// of which made a double tap, playing or pausing instead of skipping.
+/// Through the touch task's recogniser, with the screen off: a blipped
+/// hold after a tap skips, once, and a double tap whose taps blipped
+/// still plays or pauses, once. A blip too late to be the finger coming
+/// back (see `gesture::REJOIN_WINDOW`) ends the touch, as before: here,
+/// a hold cut into taps too short to wake the screen, which play or
+/// pause in pairs.
+#[test]
+fn a_hold_the_touch_controller_blips_still_skips() {
+    let dir = out("blipped-hold");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    std::fs::write(
+        &script,
+        "connect\nwait 11s\nexpect not screen-on\n\
+         echo hold\npress 40,40\nwait 30ms\nlift\nwait 100ms\npress 40,40\n\
+         wait 200ms\nblip\nwait 150ms\nblip 20\nwait 250ms\nexpect buzzing\n\
+         blip\nwait 1s\nlift\nexpect not screen-on\nwait 2s\n\
+         echo double\npress 40,40\nwait 10ms\nblip\nwait 10ms\nlift\nwait 100ms\n\
+         press 40,40\nwait 10ms\nblip\nwait 10ms\nlift\nwait 50ms\nexpect buzzing\n\
+         expect not screen-on\nwait 2s\n\
+         echo late\npress 40,40\nwait 10ms\nblip 40\nwait 10ms\nblip 40\n\
+         wait 10ms\nblip 40\nwait 10ms\nlift\nwait 2s\necho done\n",
+    )
+    .expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+    // In each section, how many times it played or paused, and skipped.
+    let sections = [
+        ("hold", 0, 1),
+        ("double", 1, 0),
+        ("late", 2, 0),
+        ("done", 0, 0),
+    ];
+    let at = |name: &str| {
+        log.find(&format!("] {name}\n"))
+            .unwrap_or_else(|| panic!("{name} echoes: {log}"))
+    };
+    for pair in sections.windows(2) {
+        let [(name, playpause, next), (following, _, _)] = pair else {
+            unreachable!("windows of two")
+        };
+        let section = &log[at(name)..at(following)];
+        let counts = (
+            section.matches(r#""n":"playpause""#).count(),
+            section.matches(r#""n":"next""#).count(),
+        );
+        assert_eq!(counts, (*playpause, *next), "{name}: {log}");
+    }
+}
+
 #[test]
 fn a_double_press_ends_the_quiet_night() {
     let dir = out("double-press");

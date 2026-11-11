@@ -48,7 +48,9 @@ it's down already), and `lift` lifts it: these go through the touch
 task as the touch controller's reports would, so a long press is
 recognised while the finger is held (e.g. `--input press:40,40 lift`
 holds it for --wait seconds), and moving it (`press:40,40 press:40,70
-lift --wait 0.3`) makes a swipe.
+lift --wait 0.3`) makes a swipe. `blip` (or `blip:MS`) has the touch
+controller report that finger lifted, and back where it was 10 (or MS)
+ms later, as it does mid-hold: within 30 ms, the same touch.
 `asleep:1,0` makes the watch take the wearer as asleep from then on, as
 if sleep tracking said so (the quiet night starts a second later), and
 `asleep:0,0` leaves it to sleep tracking again (the night then ends as
@@ -108,6 +110,7 @@ KINDS = {
     "asleep": 21,
     "movement": 22,
     "skin": 23,
+    "blip": 24,
 }
 
 
@@ -153,6 +156,9 @@ def inject(elf: Path, step: str) -> None:
         # coordinate bytes.
         value = int(where)
         x, y, rest = value & 0xFF, value >> 8, []
+    elif name == "blip":
+        # How long the finger is away, in milliseconds (0: 10), in x.
+        x, y, rest = int(where) if where else 0, 0, []
     else:
         x, y, *rest = (int(v) for v in where.split(",")) if where else (40, 40)
     # A tap's duration, in milliseconds (0: the default), in the top byte.

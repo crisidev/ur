@@ -234,7 +234,9 @@ impl Watch {
                 end = Instant::from_ticks(0) + (end - at);
             }
             let press = self.finger.as_ref().and_then(Tracking::long_press_at);
-            let next = [Some(self.next_tick), self.timer, press]
+            // A lifted finger that hasn't come back (see `blip`).
+            let over = self.finger.as_ref().and_then(Tracking::over_at);
+            let next = [Some(self.next_tick), self.timer, press, over]
                 .into_iter()
                 .flatten()
                 .min()
@@ -244,7 +246,9 @@ impl Watch {
                 return;
             }
             set_time(next);
-            if press == Some(next) {
+            if over == Some(next) {
+                self.finger_over();
+            } else if press == Some(next) {
                 self.long_press();
             } else if next == self.next_tick {
                 self.next_tick += ui_loop::TICK;
@@ -334,16 +338,47 @@ impl Watch {
             return;
         }
         let at = (x.clamp(0, 239), y.clamp(0, 239));
-        match &mut self.finger {
-            Some(finger) => finger.moved_to(at),
-            None => self.finger = Some(Tracking::new(at)),
+        if let Some(finger) = &mut self.finger
+            && finger.pressed(at)
+        {
+            return;
         }
+        // A finger lifted (see `blip`), and this isn't it come back.
+        self.finger_over();
+        self.finger = Some(Tracking::new(at));
     }
 
     /// The finger lifted: what it did is decided now, unless it was a long
     /// press, which was reported while it was down; its lift is a release
-    /// (see `Tracking::lifted`).
+    /// (see `Tracking::lifted`). At once, unlike the touch task, which
+    /// waits [`crate::gesture::REJOIN_WINDOW`] for the finger to come back
+    /// first: a mouse, or a script, lifts for good (for the touch
+    /// controller's lifts that don't, see [`Watch::blip`]).
     pub fn lift(&mut self) {
+        if let Some(finger) = &mut self.finger {
+            finger.lift();
+        }
+        self.finger_over();
+    }
+
+    /// The touch controller reports the finger lifted, though it's still
+    /// down, and pressed again where it was `ms` later, as the sealed
+    /// watch's did every few hundred ms of a hold: the same touch, if
+    /// soon enough (see [`crate::gesture::REJOIN_WINDOW`]); otherwise,
+    /// as on the watch, the touch ends as of the lift, and another
+    /// begins.
+    pub fn blip(&mut self, ms: u64) {
+        let Some(finger) = &mut self.finger else {
+            return;
+        };
+        let at = finger.last;
+        finger.lift();
+        self.advance(Duration::from_millis(ms));
+        self.finger_at(at.0, at.1);
+    }
+
+    /// A finger that lifted is over: what it did.
+    fn finger_over(&mut self) {
         let Some(finger) = self.finger.take() else {
             return;
         };
@@ -504,8 +539,11 @@ impl Watch {
         }
         if touch::asleep() {
             // The controller's asleep: whatever was in progress is moot,
-            // bar a long press's release (see `Tracking::lost`).
-            if let Some(release) = self.finger.take().and_then(|finger| finger.lost()) {
+            // bar a long press's release (see `Tracking::lost`); one
+            // lifted is over as of its lift.
+            if self.finger.as_ref().and_then(Tracking::over_at).is_some() {
+                self.finger_over();
+            } else if let Some(release) = self.finger.take().and_then(|finger| finger.lost()) {
                 self.input(InputEvent::Touch(release));
             }
         }
