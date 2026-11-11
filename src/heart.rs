@@ -939,6 +939,19 @@ async fn measure(
                 busy = busy.saturating_add(1);
             }
             let mean = sum / count;
+            // A dev kit can be told that its desk is skin (see
+            // `debug::skin_forced`): as far as the level goes, the light
+            // is then always enough, neither stepping up nor ending the
+            // session for no skin. Half the ADC's range is above `WEAK`
+            // and every no-skin threshold, scaled to any drive at the
+            // gains it applies to (at most 6,540, at ×4 and 40 mA). (The
+            // saturation check stays: it goes by the peak.)
+            #[cfg(feature = "debug-input")]
+            let mean = if crate::debug::skin_forced() {
+                mean.max(FULL_SCALE / 2)
+            } else {
+                mean
+            };
             debug!(
                 "heart: level {}, mean {}, peak {}, ambient {}, period {} µs",
                 at(*level, drive),

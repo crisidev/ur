@@ -53,6 +53,13 @@ lift --wait 0.3`) makes a swipe.
 if sleep tracking said so (the quiet night starts a second later), and
 `asleep:0,0` leaves it to sleep tracking again (the night then ends as
 on waking, or at once with `button:2,0`).
+`movement:N` makes the watch take the wrist's movement as N from then on
+(`movement:0` for the measured again), e.g. `movement:1000` for a busy
+wrist's heart rate session on a dev kit lying still on a desk (above 150
+is busy, above 1500 too vigorous to measure through). `skin:1,0` makes
+the heart rate sensor take whatever it's on as skin from then on, so a
+dev kit's sessions run their whole length rather than ending at once as
+"not on a wrist" (`skin:0,0` to stop).
 
 `--theme` renders the frame in another theme's colours (e.g. HANDHELD, for
 the day look at night): the canvas holds colour roles, not colours.
@@ -99,6 +106,8 @@ KINDS = {
     "doubletap": 19,
     "find": 20,
     "asleep": 21,
+    "movement": 22,
+    "skin": 23,
 }
 
 
@@ -139,8 +148,9 @@ def inject(elf: Path, step: str) -> None:
     name, _, where = step.partition(":")
     if name not in KINDS:
         sys.exit(f"unknown input {step!r}")
-    if name in ("battery", "steps"):
-        # Millivolts or steps, little endian, in the two coordinate bytes.
+    if name in ("battery", "steps", "movement"):
+        # Millivolts, steps or movement, little endian, in the two
+        # coordinate bytes.
         value = int(where)
         x, y, rest = value & 0xFF, value >> 8, []
     else:

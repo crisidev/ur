@@ -1341,6 +1341,11 @@ pub async fn activity_task(i2c: Device) {
         add_steps_today(new_steps);
         // Counts (1024 per g) to Bangle.js units (8192 per g).
         let recent = (moved * 8 / u64::from(samples.max(1))).min(u64::from(u16::MAX)) as u16;
+        // A dev kit lies still on a desk: it can be told to take the wrist
+        // as moving (for the heart rate's busy sessions), as far as
+        // everything that goes by this measure is concerned.
+        #[cfg(feature = "debug-input")]
+        let recent = crate::debug::movement().unwrap_or(recent);
         MOVEMENT.store(recent, Ordering::Relaxed);
         if new_steps > 0 || recent > crate::heart::MOTION_LIMIT {
             ACTIVE_POLLS.update(Ordering::Relaxed, Ordering::Relaxed, |polls| {
