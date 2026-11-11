@@ -30,6 +30,8 @@ missing below were test builds for the dev kit.
 
 ### Fixed
 
+- Skip to the next track again with a tap, then a hold (introduced in 0.10.0), rather than playing or pausing, often twice with two buzzes: the touch controller sometimes reports a finger held still as lifted and pressed again about 10 ms later, which cut the hold into short taps that never reached 0.6 s, two of which made a double tap; a press that quick, near where the finger lifted, now continues the same touch, which also keeps a button grid hold from sending a second hold partway through (8fe4930)
+
 ### Security
 
 ## [0.10.0] - 2026-11-11
