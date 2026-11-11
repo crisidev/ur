@@ -1801,22 +1801,32 @@ mod proofs {
     /// minute, at any time, with or without minutes held back): it
     /// starts at a bucket's start, no earlier than the bucket asked for,
     /// nor than the history's oldest minute (so never at a bucket the
-    /// history has only the end of); and it ends at a bucket's start,
-    /// no later than now, nor than the first minute held back.
+    /// history has only the end of); and the phone's copy ends just
+    /// before a bucket's start (`synced_through`): never before where the
+    /// fetch started (what's before that the phone has), and past it, no
+    /// later than now, nor than the first minute held back, nor a whole
+    /// bucket short of the sooner of those.
     #[kani::proof]
     fn a_fetch_is_of_whole_buckets() {
         let (since, oldest, now) = (any_minute(), any_minute(), any_minute());
         let mut fetch = Fetch::new(since, oldest, now);
-        assert!(fetch.from().rem_euclid(MINUTES) == 0);
-        assert!(fetch.from() >= start_of(since) && fetch.from() >= oldest);
-        assert!(fetch.from() < since.max(oldest) + MINUTES);
-        assert_eq!(fetch.sent_until(), start_of(now));
+        let start = fetch.from();
+        assert!(start.rem_euclid(MINUTES) == 0);
+        assert!(start >= start_of(since) && start >= oldest);
+        assert!(start < since.max(oldest) + MINUTES);
+        // The first minute the phone won't have.
+        let lacks = |fetch: &Fetch| fetch.synced_through() + 1;
+        assert_eq!(lacks(&fetch), start_of(now).max(start));
         if kani::any() {
             let hold = any_minute();
             fetch.hold(hold);
-            assert!(fetch.sent_until().rem_euclid(MINUTES) == 0);
-            assert!(fetch.sent_until() <= hold && fetch.sent_until() <= now);
-            assert!(fetch.sent_until() > hold.min(now) - MINUTES);
+            let lacks = lacks(&fetch);
+            assert!(lacks.rem_euclid(MINUTES) == 0);
+            assert!(lacks >= start);
+            if lacks > start {
+                assert!(lacks <= hold && lacks <= now);
+                assert!(lacks > hold.min(now) - MINUTES);
+            }
         }
     }
 
@@ -1872,7 +1882,10 @@ mod proofs {
             NOON - 24 * 60,
             NOON + i64::from(now),
         );
-        let (from, end) = (fetch.from(), fetch.sent_until());
+        // `end`: the first minute the phone won't have, the bucket under
+        // way's start (or the fetch's own, if that's later: then it sends
+        // nothing, and the asserts below hold for either).
+        let (from, end) = (fetch.from(), fetch.synced_through() + 1);
         let first = minutes.iter().find(|(minute, _)| *minute >= from);
 
         let Some(bucket) = fetch.next(minutes) else {
