@@ -400,6 +400,30 @@ fuzz/target/x86_64-unknown-linux-gnu/release/steps -merge=1 -use_counters=0 \
 (The same for the `gadgetbridge` target's, for `--corpus DIR
 --gadgetbridge`.)
 
+`fuzz/seeds.tar.zst` keeps such a distillation of each target's corpus,
+from long local runs (in November 2026: 605 inputs for `steps`, 905 for
+`gadgetbridge`, 75 KB packed). CI runs every seed on each PR, and
+fuzzes from them on each release tag (`.github/workflows/verify.yml`);
+a fresh fuzzing run can start from them too, unpacked into
+`fuzz/seeds/` (which git ignores):
+
+```sh
+tar --zstd -xf fuzz/seeds.tar.zst -C fuzz
+cargo +nightly fuzz run -s none steps fuzz/corpus/steps fuzz/seeds/steps -- -fork=16 -timeout=20
+```
+
+They're tied to how the targets read their bytes: a change to the
+generator makes the same bytes a different script. They still run, and
+still find what they find; redistil them (as above, into
+`fuzz/seeds/steps` and `fuzz/seeds/gadgetbridge`) when a run has grown
+the corpus a lot, or the generator has changed much, and pack them the
+same way each time, so an unchanged set packs to the same bytes:
+
+```sh
+tar -C fuzz --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+    -cf - seeds | zstd -19 -q >fuzz/seeds.tar.zst
+```
+
 Each `compare` also says how long the dev kit took to push its frame
 to the panel (if that pass pushed anything), and how long the
 simulator's panel says that takes (see below), as a check on the
