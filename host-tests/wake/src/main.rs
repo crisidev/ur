@@ -130,7 +130,10 @@ mod tests {
                         Action::Ignore
                     );
                 }
-                assert_eq!(glance(Kind::LongPress, x, y, 600, false), Action::Ignore);
+                assert_eq!(
+                    glance(Kind::LongPress, x, y, 600, false, false),
+                    Action::Ignore
+                );
             }
         }
     }
@@ -194,11 +197,11 @@ mod tests {
                 }
                 // A light tap: neither a pair's first nor its second.
                 assert_eq!(
-                    glance(Kind::Tap, at.0, at.1, 20, recent_tap),
+                    glance(Kind::Tap, at.0, at.1, 20, recent_tap, false),
                     Action::Ignore
                 );
                 assert_eq!(
-                    glance(Kind::LongPress, at.0, at.1, 600, recent_tap),
+                    glance(Kind::LongPress, at.0, at.1, 600, recent_tap, false),
                     Action::Ignore
                 );
             }
@@ -234,7 +237,10 @@ mod tests {
         for at in played.into_iter().chain(older).chain(rc1) {
             assert!(centred(at.0, at.1), "{at:?}");
             assert_eq!(off(Kind::LongPress, at, 600, true, true), Action::Next);
-            assert_eq!(glance(Kind::LongPress, at.0, at.1, 600, true), Action::Next);
+            assert_eq!(
+                glance(Kind::LongPress, at.0, at.1, 600, true, false),
+                Action::Next
+            );
         }
     }
 
@@ -261,14 +267,17 @@ mod tests {
         // at the top edge (the first of three there in 6 s).
         for at in [(46, 64), (35, 3)] {
             assert_eq!(
-                glance(Kind::LongPress, at.0, at.1, 600, false),
+                glance(Kind::LongPress, at.0, at.1, 600, false, false),
                 Action::Ignore
             );
         }
         // Likewise on a glance, 66 down, 0.6 s after it lit; it paused,
         // and nothing undid that for 24 minutes, so perhaps meant, but
         // lower than any long press the wearer certainly made.
-        assert_eq!(glance(Kind::LongPress, 48, 66, 600, false), Action::Ignore);
+        assert_eq!(
+            glance(Kind::LongPress, 48, 66, 600, false, false),
+            Action::Ignore
+        );
     }
 
     /// Two the arm made that no margin turns away: held 2.2 s at 25
@@ -305,7 +314,7 @@ mod tests {
             Action::Ignore
         );
         assert_eq!(
-            glance(Kind::Tap, 29, 3, 254, false),
+            glance(Kind::Tap, 29, 3, 254, false, false),
             Action::Wake { first_tap: false }
         );
         assert_eq!(second(Kind::LongPress, 34, 3), None);
@@ -356,7 +365,7 @@ mod tests {
     #[test]
     fn the_field_logs_long_presses_just_after_a_touch_woke_the_screen() {
         assert_eq!(
-            glance(Kind::Tap, 29, 3, 254, false),
+            glance(Kind::Tap, 29, 3, 254, false, false),
             Action::Wake { first_tap: false }
         );
         for (x, y, ms) in [(34, 3, 610), (31, 3, 2750)] {
@@ -463,19 +472,26 @@ mod tests {
     }
 
     fn tap_on_glance(held_ms: u16, recent_tap: bool) -> Action {
-        glance(Kind::Tap, MID.0, MID.1, held_ms, recent_tap)
+        glance(Kind::Tap, MID.0, MID.1, held_ms, recent_tap, false)
     }
 
-    /// On a glance, as from off: a deliberate tap wakes the screen at once
-    /// (and may be the first of a pair finished on the clock face), a light
-    /// one waits for a second, and a second tap plays or pauses.
+    /// On a glance, a heavy tap (held [`GLANCE_WAKE_TAP_MS`] or more)
+    /// wakes the screen at once (and may be the first of a pair finished
+    /// on the clock face); a deliberate but lighter one waits for a second
+    /// before it does, and a light one waits for a second only. A second
+    /// tap plays or pauses.
     #[test]
-    fn a_glance_wakes_on_a_deliberate_tap_and_plays_or_pauses_on_a_light_double_tap() {
-        assert_eq!(tap_on_glance(86, false), Action::Wake { first_tap: true });
+    fn a_glance_wakes_on_a_heavy_tap_and_plays_or_pauses_on_a_double_tap() {
+        assert_eq!(tap_on_glance(125, false), Action::Wake { first_tap: true });
         assert_eq!(
-            tap_on_glance(DELIBERATE_TAP_MS, false),
+            tap_on_glance(GLANCE_WAKE_TAP_MS, false),
             Action::Wake { first_tap: true }
         );
+        assert_eq!(
+            tap_on_glance(GLANCE_WAKE_TAP_MS - 1, false),
+            Action::WakeLater
+        );
+        assert_eq!(tap_on_glance(DELIBERATE_TAP_MS, false), Action::WakeLater);
         assert_eq!(
             tap_on_glance(DELIBERATE_TAP_MS - 1, false),
             Action::FirstTap
@@ -483,24 +499,92 @@ mod tests {
         assert_eq!(tap_on_glance(20, false), Action::FirstTap);
         // The second tap plays or pauses whatever it's held for.
         assert_eq!(tap_on_glance(20, true), Action::PlayPause);
-        assert_eq!(tap_on_glance(86, true), Action::PlayPause);
+        assert_eq!(tap_on_glance(125, true), Action::PlayPause);
+    }
+
+    /// 0.10.1-rc.1's field log, on a glance: a tap, then a hold 0.67 s
+    /// on, with the first tap held 47 ms, and double taps whose first was
+    /// held 57 and 76 ms. Each woke the screen with its first tap; now
+    /// the first two play, pause, or skip with the glance left be, as did
+    /// pairs with a first tap of 36–37 ms. The 76 ms one is heavy, and
+    /// still wakes it at once.
+    #[test]
+    fn the_field_logs_firm_first_taps_on_a_glance_leave_it_be() {
+        assert_eq!(
+            glance(Kind::Tap, 43, 48, 47, false, false),
+            Action::WakeLater
+        );
+        // The hold started 668 ms after the tap's report, less its 600.
+        assert!(follows(Kind::LongPress, 668, 600));
+        assert_eq!(
+            glance(Kind::LongPress, 40, 48, 600, true, true),
+            Action::Next
+        );
+        for held in [57, 67] {
+            assert_eq!(
+                glance(Kind::Tap, 42, 41, held, false, false),
+                Action::WakeLater
+            );
+            assert_eq!(glance(Kind::Tap, 36, 42, 39, true, true), Action::PlayPause);
+        }
+        assert_eq!(
+            glance(Kind::Tap, 36, 44, 76, false, false),
+            Action::Wake { first_tap: true }
+        );
+    }
+
+    /// After a deliberate tap on a glance, whose wake waits, anything but
+    /// its pair's second wakes the screen, as the tap would have on its
+    /// own: a swipe, a touch too late to follow it, or one at the edge,
+    /// even one that on its own would do nothing.
+    #[test]
+    fn after_a_deliberate_tap_on_a_glance_anything_else_wakes_the_screen() {
+        let woke = Action::Wake { first_tap: false };
+        for recent_tap in [false, true] {
+            assert_eq!(glance(Kind::Swipe, 40, 40, 120, recent_tap, true), woke);
+            assert_eq!(glance(Kind::Tap, 40, 2, 20, recent_tap, true), woke);
+            assert_eq!(glance(Kind::LongPress, 40, 4, 600, recent_tap, true), woke);
+        }
+        assert_eq!(glance(Kind::Tap, 40, 40, 20, false, true), woke);
+        assert_eq!(glance(Kind::Tap, 40, 40, 60, false, true), woke);
+        assert_eq!(glance(Kind::LongPress, 40, 40, 600, false, true), woke);
+    }
+
+    /// The wait for a deliberate tap's wake on a glance: over once a
+    /// second touch would no longer follow it, unless a finger is down,
+    /// which may be one.
+    #[test]
+    fn a_glance_wakes_once_no_second_touch_can_follow() {
+        for since_ms in [0, 120, DOUBLE_TAP_MS] {
+            assert!(!wake_later_due(since_ms, false));
+            assert!(follows(Kind::Tap, since_ms, 37));
+            assert!(follows(Kind::LongPress, since_ms + 600, 600));
+        }
+        for since_ms in [DOUBLE_TAP_MS + 1, 1_100, u32::MAX] {
+            assert!(wake_later_due(since_ms, false));
+            assert!(!wake_later_due(since_ms, true));
+            assert!(!follows(Kind::Tap, since_ms, 37));
+            assert!(!follows(Kind::LongPress, since_ms.saturating_add(600), 600));
+        }
     }
 
     /// The wearer is looking, so a deliberate tap at the edge wakes the
-    /// screen from a glance; but it can't start a media gesture there, nor
-    /// can a light one, which does nothing.
+    /// screen from a glance, at once, heavy or not; but it can't start a
+    /// media gesture there, nor can a light one, which does nothing.
     #[test]
     fn a_glance_wakes_on_a_tap_at_the_edge_but_no_media_gesture_starts_there() {
-        assert_eq!(
-            glance(Kind::Tap, 2, 40, 86, false),
-            Action::Wake { first_tap: false }
-        );
-        assert_eq!(glance(Kind::Tap, 40, 77, 20, false), Action::Ignore);
-        assert_eq!(glance(Kind::Tap, 78, 2, 20, true), Action::Ignore);
-        assert_eq!(
-            glance(Kind::Tap, 78, 2, 86, true),
-            Action::Wake { first_tap: false }
-        );
+        for held in [DELIBERATE_TAP_MS, 67, 125] {
+            assert_eq!(
+                glance(Kind::Tap, 2, 40, held, false, false),
+                Action::Wake { first_tap: false }
+            );
+            assert_eq!(
+                glance(Kind::Tap, 78, 2, held, true, false),
+                Action::Wake { first_tap: false }
+            );
+        }
+        assert_eq!(glance(Kind::Tap, 40, 77, 20, false, false), Action::Ignore);
+        assert_eq!(glance(Kind::Tap, 78, 2, 20, true, false), Action::Ignore);
     }
 
     /// A tap-and-hold skips on a glance, with its hold in the middle, as
@@ -510,13 +594,25 @@ mod tests {
     /// glance goes on.
     #[test]
     fn a_glance_skips_on_a_tap_and_hold_in_the_middle() {
-        assert_eq!(glance(Kind::LongPress, 40, 40, 600, true), Action::Next);
-        assert_eq!(glance(Kind::LongPress, 40, 40, 600, false), Action::Ignore);
+        assert_eq!(
+            glance(Kind::LongPress, 40, 40, 600, true, false),
+            Action::Next
+        );
+        assert_eq!(
+            glance(Kind::LongPress, 40, 40, 600, false, false),
+            Action::Ignore
+        );
         for (x, y) in just_inside() {
-            assert_eq!(glance(Kind::LongPress, x, y, 600, true), Action::Next);
+            assert_eq!(
+                glance(Kind::LongPress, x, y, 600, true, false),
+                Action::Next
+            );
         }
         for (x, y) in just_outside().into_iter().chain([(0, 0)]) {
-            assert_eq!(glance(Kind::LongPress, x, y, 600, true), Action::Ignore);
+            assert_eq!(
+                glance(Kind::LongPress, x, y, 600, true, false),
+                Action::Ignore
+            );
         }
     }
 
@@ -527,7 +623,7 @@ mod tests {
         for (x, y) in [MID, (2, 40)] {
             for recent_tap in [false, true] {
                 assert_eq!(
-                    glance(Kind::Swipe, x, y, 120, recent_tap),
+                    glance(Kind::Swipe, x, y, 120, recent_tap, false),
                     Action::Wake { first_tap: false }
                 );
             }
@@ -625,6 +721,7 @@ mod proofs {
             Action::Next => assert!(kind == Kind::LongPress && centred(x, y)),
             Action::Wake { first_tap } => assert!(kind == Kind::Tap && (phone || !first_tap)),
             Action::FirstTap => assert!(kind == Kind::Tap && held < DELIBERATE_TAP_MS),
+            Action::WakeLater => unreachable!("only a glance waits to wake"),
             Action::Ignore => {}
         }
     }
@@ -633,38 +730,68 @@ mod proofs {
     /// night):
     ///
     /// - Only a pair plays, pauses or skips, and the same pair as with
-    ///   the screen off does the same.
+    ///   the screen off does the same, however firm its first tap.
     /// - A hold on its own is ignored, and so is a light tap at the edge.
-    /// - A swipe, or a deliberate tap anywhere, wakes the screen, but a
-    ///   tap at the edge is never the first of a media gesture.
+    /// - A swipe, a heavy tap, or a deliberate tap at the edge wakes the
+    ///   screen at once; any other deliberate tap waits to. A tap at the
+    ///   edge is never the first of a media gesture.
+    /// - After a deliberate tap, whose wake waits, anything but a media
+    ///   gesture's second wakes the screen.
     #[kani::proof]
     fn a_glance_takes_the_gestures_a_dark_screen_does() {
         let (kind, held) = (any_kind(), kani::any());
         let (x, y): (i32, i32) = kani::any();
-        let recent_tap: bool = kani::any();
-        let action = glance(kind, x, y, held, recent_tap);
+        let (recent_tap, waking): (bool, bool) = kani::any();
+        let action = glance(kind, x, y, held, recent_tap, waking);
         let off = screen_off(kind, x, y, held, recent_tap, true, false);
 
         assert!(!media(action) || recent_tap);
         assert_eq!(media(action), media(off));
         assert!(!media(action) || action == off);
-        if !recent_tap {
+        if waking {
+            assert!(media(action) || action == Action::Wake { first_tap: false });
+        } else if !recent_tap {
             match kind {
                 Kind::Swipe => assert_eq!(action, Action::Wake { first_tap: false }),
                 Kind::LongPress => assert_eq!(action, Action::Ignore),
-                Kind::Tap if held >= DELIBERATE_TAP_MS => {
-                    let first_tap = inside(x, y);
-                    assert_eq!(action, Action::Wake { first_tap });
+                Kind::Tap if held >= DELIBERATE_TAP_MS && !inside(x, y) => {
+                    assert_eq!(action, Action::Wake { first_tap: false })
                 }
+                Kind::Tap if held >= GLANCE_WAKE_TAP_MS => {
+                    assert_eq!(action, Action::Wake { first_tap: true })
+                }
+                Kind::Tap if held >= DELIBERATE_TAP_MS => assert_eq!(action, Action::WakeLater),
                 Kind::Tap if inside(x, y) => assert_eq!(action, Action::FirstTap),
                 Kind::Tap => assert_eq!(action, Action::Ignore),
             }
+        }
+        // Waiting to wake is only ever a deliberate tap's, inside.
+        if action == Action::WakeLater {
+            assert!(deliberate(kind, x, y, held) && held < GLANCE_WAKE_TAP_MS);
         }
         // At the edge, a touch is no part of a media gesture, as its
         // second or as its first.
         if !inside(x, y) {
             assert!(!media(action) && action != Action::FirstTap);
             assert!(action != Action::Wake { first_tap: true });
+            assert!(action != Action::WakeLater);
+        }
+    }
+
+    /// For every wait on a deliberate tap's wake: once it's over, a touch
+    /// reported then no longer follows the tap, whatever it is; and with
+    /// no finger down, it's over once that's so.
+    #[kani::proof]
+    fn a_glance_wakes_once_nothing_can_follow() {
+        let (since, held, finger_down): (u32, u16, bool) = kani::any();
+        let kind = any_kind();
+        if wake_later_due(since, finger_down) {
+            assert!(!finger_down);
+            // A tap reported now, or a hold that started now.
+            assert!(!follows(Kind::Tap, since, held));
+            assert!(!follows(kind, since, 0));
+        } else if !finger_down {
+            assert!(follows(Kind::Tap, since, held));
         }
     }
 

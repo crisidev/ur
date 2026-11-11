@@ -4,7 +4,9 @@
 //! A touch on a dark screen is as likely a sleeve, a pocket, or bedding as
 //! a finger, so most do nothing. What does something:
 //!
-//! - A deliberate tap (see [`deliberate`]) wakes the screen, at once.
+//! - A deliberate tap (see [`deliberate`]) wakes the screen: at once with
+//!   the screen off; on a glance, at once only if heavy, and otherwise
+//!   once no second touch can follow it (see below).
 //! - Without a phone, a double tap (two taps within [`DOUBLE_TAP_MS`])
 //!   wakes it too.
 //! - While a phone is connected, two touches play, pause, or skip, without
@@ -25,19 +27,35 @@
 //! is on to use them, with looser guards (see `crate::ui`, and
 //! [`awake_long_press`]): something woke the screen to get there.
 //!
-//! A deliberate tap wakes the screen at once, so for a media gesture to
-//! leave it off, its first tap must be light (under [`DELIBERATE_TAP_MS`]).
-//! If it isn't, the second touch still counts, on the clock face the first
-//! woke to: the same gesture does the same, however firm its first tap.
+//! With the screen off, a deliberate tap wakes it at once, so for a media
+//! gesture to leave it off, its first tap must be light (under
+//! [`DELIBERATE_TAP_MS`]). If it isn't, the second touch still counts, on
+//! the clock face the first woke to: the same gesture does the same,
+//! however firm its first tap.
 //! The sealed watch's field log (0.9.0-m3.1) has the wearer's double taps
 //! from off with their first tap held 47–67 ms, so all of them woke the
 //! screen; 0.9.0's milestones tried waiting 300 ms after a deliberate tap
 //! for a second before waking, but the wearer would rather have a single
 //! tap's wake prompt, and tap lighter to stay in the dark.
 //!
-//! The same goes on a glance (see [`glance`]), where the screen is already
-//! lit and the wearer looking: a deliberate tap wakes it properly at once,
-//! and a light tap's pair plays, pauses, or skips, leaving the glance be.
+//! On a glance (see [`glance`]), where the screen is already lit and the
+//! wearer looking, a tap's pair plays, pauses, or skips, leaving the
+//! glance be, unless its first tap is heavy (held [`GLANCE_WAKE_TAP_MS`]
+//! or more): that wakes the screen properly at once, as a deliberate tap
+//! does from off. A deliberate tap short of that waits
+//! ([`Action::WakeLater`]): if a second touch follows, the pair plays,
+//! pauses, or skips, as after a light first tap; if none does, the
+//! screen wakes then (see [`wake_later_due`]), half a second after the
+//! tap. It used to wake the screen at once, as from off, but then a
+//! media gesture on a glance woke the screen whenever its first tap was
+//! firm, which to the wearer looked arbitrary: in 0.10.1-rc.1's field
+//! log, their media first taps on a glance were 36–76 ms, and those of
+//! 47 ms or more woke it. Nor can the duration alone tell the two apart:
+//! the taps that woke a glance in older field logs, before the media
+//! gestures, were mostly 47–67 ms too. So the wearer chose where heavy
+//! starts, 75 ms, and a lighter tap that woke a glance still does, a
+//! moment later; the wait costs little there, as the glance already
+//! shows the time.
 //!
 //! Guards against brushes, from the field logs (see [`deliberate`]):
 //!
@@ -101,6 +119,11 @@ pub enum Action {
     /// first of a media gesture's pair, whose second comes on the clock
     /// face it woke to (while a phone is connected; see [`second`]).
     Wake { first_tap: bool },
+    /// On a glance, a deliberate tap that isn't heavy: nothing yet, as it
+    /// may be the first of a pair, but if no second follows, wake the
+    /// screen once none can (see [`wake_later_due`]), as the tap alone
+    /// would have.
+    WakeLater,
     /// Play or pause the phone's media, leaving the screen off.
     PlayPause,
     /// Skip to the next track, leaving the screen off.
@@ -109,6 +132,13 @@ pub enum Action {
 
 /// The shortest tap that counts as [`deliberate`], in milliseconds.
 pub const DELIBERATE_TAP_MS: u16 = 40;
+/// The shortest tap that wakes the screen from a glance at once, in
+/// milliseconds (see [`glance`]): a heavy tap, as the wearer put it,
+/// longer than most of their media gestures' first taps there (36–76 ms
+/// in 0.10.1-rc.1's field log). The touch controller reports ~10 ms
+/// apart, so its taps last 37, 47, 57, 67, 76, 86 ms, and so on: this is
+/// 76 ms or more.
+pub const GLANCE_WAKE_TAP_MS: u16 = 75;
 /// How soon after a tap's lift, in milliseconds, the next touch must come
 /// for the two to be a pair (see [`follows`]): a double tap, or a
 /// tap-and-hold; on the awake clock face too.
@@ -314,31 +344,59 @@ pub fn screen_off(
 /// What a touch does on a glance, while a phone is connected (otherwise,
 /// and in the quiet night, any touch there wakes the screen properly): of
 /// `kind`, starting at (`x`, `y`) in canvas pixels, after `held_ms`.
-/// `recent_tap`: as for [`screen_off`].
+/// `recent_tap`: as for [`screen_off`]. `waking`: the tap before was a
+/// deliberate one whose wake waits for this ([`Action::WakeLater`]).
 ///
-/// A light tap's pair plays, pauses, or skips (see [`second`]), and the
-/// glance goes on. A long press on its own is ignored, as with the screen
-/// off, and so is a light tap at the edge. A swipe wakes the screen
-/// properly. Unlike with the screen off, a deliberate tap at the edge
-/// wakes it too: the wearer is looking, so it's unlikely a brush, and
-/// before the media gestures, any touch woke a glance. It can't be the
-/// first of a media gesture, though: in 0.10.0-rc.1's field log, a
-/// folded arm's 254 ms tap at the top edge of a glance woke the screen,
-/// and the arm's hold there 9 ms later would have skipped on the clock
-/// face (it played or paused, as a long press did then). Another of its
-/// holds, at the top edge with the screen off, followed a 9 ms tap there
-/// by 361 ms.
-pub fn glance(kind: Kind, x: i32, y: i32, held_ms: u16, recent_tap: bool) -> Action {
+/// A tap's pair plays, pauses, or skips (see [`second`]), and the glance
+/// goes on, unless the first tap was heavy ([`GLANCE_WAKE_TAP_MS`]),
+/// which wakes the screen at once. A deliberate tap ([`deliberate`])
+/// short of that waits, and anything after it but its pair's second wakes
+/// the screen, as the tap would have on its own. A long press on its own
+/// is ignored, as with the screen off, and so is a light tap at the edge.
+/// A swipe wakes the screen properly. Unlike with the screen off, a
+/// deliberate tap at the edge wakes it too, at once: the wearer is
+/// looking, so it's unlikely a brush, and before the media gestures, any
+/// touch woke a glance. It can't be the first of a media gesture, though
+/// (so needn't wait): in 0.10.0-rc.1's field log, a folded arm's 254 ms
+/// tap at the top edge of a glance woke the screen, and the arm's hold
+/// there 9 ms later would have skipped on the clock face (it played or
+/// paused, as a long press did then). Another of its holds, at the top
+/// edge with the screen off, followed a 9 ms tap there by 361 ms.
+pub fn glance(kind: Kind, x: i32, y: i32, held_ms: u16, recent_tap: bool, waking: bool) -> Action {
     if recent_tap && let Some(action) = second(kind, x, y) {
         return action;
+    }
+    if waking {
+        return Action::Wake { first_tap: false };
     }
     match kind {
         Kind::Swipe => Action::Wake { first_tap: false },
         Kind::LongPress => Action::Ignore,
-        Kind::Tap if held_ms >= DELIBERATE_TAP_MS => Action::Wake {
-            first_tap: inside(x, y),
-        },
+        Kind::Tap if held_ms >= DELIBERATE_TAP_MS && !inside(x, y) => {
+            Action::Wake { first_tap: false }
+        }
+        Kind::Tap if held_ms >= GLANCE_WAKE_TAP_MS => Action::Wake { first_tap: true },
+        Kind::Tap if held_ms >= DELIBERATE_TAP_MS => Action::WakeLater,
         Kind::Tap if inside(x, y) => Action::FirstTap,
         Kind::Tap => Action::Ignore,
     }
+}
+
+/// Whether a deliberate tap on a glance, whose wake waits
+/// ([`Action::WakeLater`]), wakes the screen now, `since_ms` after it was
+/// reported: once no second touch can follow it ([`follows`]).
+/// `finger_down`: a finger is on the screen.
+///
+/// A second touch must start within [`DOUBLE_TAP_MS`]: a tap lifts within
+/// it too, and a hold is reported later, once held for [`LONG_PRESS`]. So
+/// past it, with no finger down, nothing can follow; but a finger that's
+/// down may be a tap not yet lifted, or a hold not yet reported, and the
+/// wait is for that touch, whose report decides. That's 0.5 s for a tap
+/// on its own, as long as the double tap that may follow it may take; a
+/// tap-and-hold's hold, starting in time, holds the wake off until it
+/// skips, a little over a second from the tap.
+///
+/// [`LONG_PRESS`]: crate::gesture::LONG_PRESS
+pub fn wake_later_due(since_ms: u32, finger_down: bool) -> bool {
+    since_ms > DOUBLE_TAP_MS && !finger_down
 }

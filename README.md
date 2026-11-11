@@ -178,8 +178,10 @@ bar on an edge means there's more that way.
   sides, clear of a folded arm). With the screen off or on a glance, the
   hold always in the middle, nothing at the edge, and nothing in a quiet
   night; tap lightly first to leave the screen off: a firm first tap
-  wakes it, and the second touch then does the same. Without a phone
-  connected, a double tap wakes a dark screen instead.
+  wakes it, and the second touch then does the same. On a glance, only
+  a heavy first tap (75 ms or more) wakes it at once; a lighter firm tap
+  waits half a second for a second touch, and wakes it if none comes.
+  Without a phone connected, a double tap wakes a dark screen instead.
 - **A call:** tap ANSWER or DECLINE, or press the button to silence it.
 - **A ringing alarm:** tap to snooze for 9 minutes; press the button to
   stop it.

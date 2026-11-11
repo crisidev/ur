@@ -116,11 +116,14 @@
 //!   phone is connected, outside the quiet night, the screen off's media
 //!   gestures work during a glance too, and the glance stays (with what it
 //!   did in a corner, for a moment): a double tap plays or pauses, and a
-//!   tap, then a hold in the middle, is the next track. As from off, that
-//!   takes a light first tap, away from the edge: a deliberate one (held
-//!   at least [`wake::DELIBERATE_TAP_MS`]) wakes the screen at once, and
-//!   the second touch does the same on the clock face it woke to. A light
-//!   tap, or a long press, on its own does nothing.
+//!   tap, then a hold in the middle, is the next track. That takes a first
+//!   tap away from the edge, and not a heavy one: a tap held at least
+//!   [`wake::GLANCE_WAKE_TAP_MS`] wakes the screen at once, and the second
+//!   touch does the same on the clock face it woke to. A deliberate tap
+//!   short of that (see [`wake::deliberate`]) wakes the screen too, but
+//!   only once no second touch can follow it (half a second on, or once
+//!   a finger put down by then lifts), so its pair leaves the glance be.
+//!   A lighter tap, or a long press, on its own does nothing.
 //!
 //! Alarms (see [`crate::alarm`] for when they ring):
 //!
@@ -541,6 +544,14 @@ pub struct App {
     /// own (see [`wake::second`]). Cleared by the next input on the awake
     /// screen.
     woke_tap: bool,
+    /// On a glance, whether `last_tap` was a deliberate but not heavy tap
+    /// (see [`wake::GLANCE_WAKE_TAP_MS`]), whose wake waits to see whether
+    /// a second touch follows it ([`wake::Action::WakeLater`]; see
+    /// [`App::held_wake`]). Only counts
+    /// while glancing: whatever else ends the glance takes the screen
+    /// anyway, and the screen going off clears it, so it never outlives
+    /// that into the next glance.
+    glance_wake: bool,
     /// When the button was last pressed, for a double press (see
     /// [`DOUBLE_PRESS`]). Boot, until the first.
     last_press: Instant,
@@ -639,6 +650,7 @@ impl App {
             glance_until: None,
             last_tap: None,
             woke_tap: false,
+            glance_wake: false,
             last_press: Instant::from_ticks(0),
             centre_until: Instant::from_ticks(0),
             night: sleep::Night::default(),
@@ -678,6 +690,12 @@ impl App {
         // first. `on_tick` relies on it: while glancing it does nothing
         // but end the glance, so a call or an alarm ringing under one
         // would never time out, and a banner never go.
+        // A deliberate tap's wake waits only on a glance, which the
+        // screen going off ends (see `held_wake`).
+        debug_assert!(
+            !self.glance_wake || self.awake,
+            "a glance's tap in the dark"
+        );
         if self.glancing() {
             debug_assert!(self.awake, "a glance with the screen off");
             debug_assert!(self.screen == Screen::Clock, "a glance off the clock");
@@ -1139,14 +1157,18 @@ impl App {
         // (a look at the wrist is all the wearer wanted), the glance
         // showing what it did. A long press on its own, or a light tap at
         // the edge, does nothing: most likely the other arm, folded over
-        // the watch. A deliberate tap wakes the screen at once, and the
-        // touch after it then plays, pauses, or skips the same, on the
-        // clock face it woke to (see `wake::glance`). Not in the quiet
-        // night, when bedding presses on a wrist that turned in sleep
-        // could otherwise start the music; there any touch only wakes the
-        // screen, as before.
+        // the watch. A heavy tap (longer than a deliberate one from off)
+        // wakes the screen at once, and the touch after it then plays,
+        // pauses, or skips the same, on the clock face it woke to. A
+        // deliberate but lighter tap is the first of a pair, as a light
+        // one is, but if no second follows, it wakes the screen once none
+        // can (see `held_wake`), as it would have at once on its own (see
+        // `wake::glance`). Not in the quiet night, when bedding presses on
+        // a wrist that turned in sleep could otherwise start the music;
+        // there any touch only wakes the screen at once, as before.
         if let Some(until) = self.glance_until {
             let media = self.connected && !self.night.quiet();
+            let waking = core::mem::take(&mut self.glance_wake);
             let action = match event {
                 InputEvent::Touch(touch) if media => wake::glance(
                     wake_kind(touch.gesture),
@@ -1154,6 +1176,7 @@ impl App {
                     touch.y,
                     touch.held_ms,
                     self.last_tap.is_some_and(|tap| follows(tap, touch, now)),
+                    waking,
                 ),
                 _ => Action::Wake { first_tap: false },
             };
@@ -1173,9 +1196,16 @@ impl App {
                     self.last_tap = Some(now);
                     return;
                 }
-                // Anything else wakes the screen properly. After a
-                // deliberate tap, a second may then skip, on the clock face
-                // it woke to.
+                // A deliberate but not heavy tap: the glance stays for now
+                // too, and the screen wakes if no second follows.
+                Action::WakeLater => {
+                    self.last_tap = Some(now);
+                    self.glance_wake = true;
+                    return;
+                }
+                // Anything else wakes the screen properly. After a heavy
+                // tap, a second may then skip, on the clock face it woke
+                // to.
                 wake => {
                     self.glance_until = None;
                     self.last_input = now;
@@ -1237,7 +1267,9 @@ impl App {
                     wake_tap = Some(now);
                     None
                 }
-                Action::Wake { first_tap: false } => None,
+                // (Only a glance waits to wake, never the screen off; were
+                // it to, waking at once is what a deliberate tap did.)
+                Action::Wake { first_tap: false } | Action::WakeLater => None,
                 Action::PlayPause => Some(MusicCommand::PlayPause),
                 Action::Next => Some(MusicCommand::Next),
             };
@@ -1507,6 +1539,10 @@ impl App {
     /// spin until the finger lifted. The hold itself stays, for its
     /// release. (What was sent is no such worry: `on_timer` forgets it
     /// once its time is up, wherever the screen is.)
+    ///
+    /// Or, on a glance, a deliberate tap's wake, once no second touch can
+    /// follow it (see [`App::held_wake`]): not while a finger is down,
+    /// which may be that second touch, and whose event decides.
     pub fn deadline(&self, finger_down: bool) -> Option<Instant> {
         let shown = self.sent.map(|(_, until, _)| until);
         if finger_down {
@@ -1514,17 +1550,25 @@ impl App {
             let long = self.grid.long_at().filter(|_| on_grid);
             return long.into_iter().chain(shown).min();
         }
-        self.grid.deadline().into_iter().chain(shown).min()
+        let held_wake = self.held_wake();
+        self.grid
+            .deadline()
+            .into_iter()
+            .chain(shown)
+            .chain(held_wake)
+            .min()
     }
 
     /// The UI loop woke for [`App::deadline`] (or near it): sends what the
     /// grid was waiting on, if it's waited long enough, unless a finger is
     /// down (`finger_down`; see [`buttons::Grid::expire`]); or a hold's
-    /// long press, if the finger still is.
+    /// long press, if the finger still is. Or wakes the screen from a
+    /// glance for a deliberate tap (see [`App::held_wake`]).
     pub fn on_timer(&mut self, now: Instant, finger_down: bool) {
         if self.sent.is_some_and(|(_, until, _)| now >= until) {
             self.sent = None;
         }
+        self.wake_held(now, finger_down);
         // Gone from the grid (the screen off, say) without going through
         // `go_to`: nothing waits.
         if !(self.awake && self.screen == Screen::Buttons) {
@@ -1534,6 +1578,53 @@ impl App {
         if let Some(press) = self.grid.expire(now, finger_down) {
             self.send_press(press, now);
         }
+    }
+
+    /// When a deliberate tap on a glance, whose wake waits to see whether
+    /// a second touch follows it ([`wake::Action::WakeLater`]), may wake
+    /// the screen, if one waits: once a second touch would no longer
+    /// follow it (see [`wake::wake_later_due`]). Half a second, for a
+    /// lone tap: the wake comes that much later than it did from a
+    /// glance before, the price of a double tap or a tap-and-hold
+    /// leaving the glance be unless its first tap is heavy (see
+    /// `on_input`).
+    fn held_wake(&self) -> Option<Instant> {
+        let tap = self
+            .last_tap
+            .filter(|_| self.glance_wake && self.glancing())?;
+        Some(tap + Duration::from_millis(u64::from(wake::DOUBLE_TAP_MS) + 1))
+    }
+
+    /// Wakes the screen from a glance, for a deliberate tap whose wake
+    /// waits (see [`App::held_wake`]), if no second touch can now follow
+    /// it, `finger_down` saying whether a finger is on the screen.
+    fn wake_held(&mut self, now: Instant, finger_down: bool) {
+        let Some(tap) = self
+            .last_tap
+            .filter(|_| self.glance_wake && self.glancing())
+        else {
+            return;
+        };
+        let since = now.checked_duration_since(tap).unwrap_or_default();
+        let since_ms = u32::try_from(since.as_millis()).unwrap_or(u32::MAX);
+        if !wake::wake_later_due(since_ms, finger_down) {
+            return;
+        }
+        // For telling this wake from the tap's in a field log: it comes
+        // half a second or more after the tap's input line.
+        defmt::info!("glance: woken by a tap");
+        // As the tap would have woken it at once (see `on_input`), its
+        // time for a hold to be in the middle counting from it. It stays
+        // the first of a pair finished on the clock face, as a tap that
+        // wakes the screen from off is: no second can follow it by now,
+        // but one whose event was on its way, its finger already up,
+        // still counts.
+        self.glance_until = None;
+        self.glance_wake = false;
+        self.last_input = now;
+        self.centre_until = tap + CENTRE_AFTER_TOUCH_WAKE;
+        self.woke_tap = true;
+        self.last_tap = Some(tap);
     }
 
     /// Sends a grid press wherever the setting says, and shows it went.
@@ -1726,6 +1817,9 @@ impl App {
     fn screen_off(&mut self) {
         self.awake = false;
         self.editing = None;
+        // A glance's deliberate tap is moot (see `held_wake`), and the
+        // next glance starts afresh.
+        self.glance_wake = false;
     }
 
     fn stop_ringing(&mut self) {
@@ -2118,10 +2212,18 @@ impl App {
         if Route::expire(&mut self.route, now.as_millis()) {
             defmt::info!("route: no update for a while; dropped");
         }
+        // A deliberate tap on a glance whose wake waits: normally the
+        // timer's (see `deadline`), but the tick's too, should it come
+        // first.
+        self.wake_held(now, finger_down);
         // A glance has its own timer: it isn't input, so the screen timeout
-        // (which counts from the last input) would end it at once.
+        // (which counts from the last input) would end it at once. Not
+        // while a deliberate tap's wake waits, though: that may wake the
+        // screen yet, the tap having been meant to, or the tap be a media
+        // gesture's first; it's never more than a moment past the
+        // glance's time, bar a finger held on, whose touch decides.
         if let Some(until) = self.glance_until {
-            if now >= until {
+            if now >= until && self.held_wake().is_none() {
                 self.glance_until = None;
                 self.screen_off();
             }

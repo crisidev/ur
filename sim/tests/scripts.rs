@@ -400,10 +400,12 @@ fn a_hold_held_on_is_a_long_press() {
 }
 
 /// With a phone connected, a double tap plays or pauses without waking
-/// the screen (or ending a glance) only if its first tap is light. A
-/// deliberate first tap wakes it at once, and the second plays or pauses
-/// on the clock face, as it would have with the screen off. The awake
-/// clock face's own double tap plays or pauses too.
+/// the screen (or ending a glance) only if its first tap is light: with
+/// the screen off, under 40 ms, and on a glance, under 75 ms (a 60 ms
+/// one, deliberate from off, leaves the glance be). A heavier first tap
+/// wakes it at once, and the second plays or pauses on the clock face,
+/// as it would have with the screen off. The awake clock face's own
+/// double tap plays or pauses too.
 #[test]
 fn a_double_tap_plays_or_pauses_without_waking_only_after_a_light_first_tap() {
     let dir = out("double-tap");
@@ -417,7 +419,9 @@ fn a_double_tap_plays_or_pauses_without_waking_only_after_a_light_first_tap() {
          expect screen-on\nexpect not dim\nexpect buzzing\n\
          wait 11s\nglance\ntap 40,40 30\nwait 150ms\ntap 40,40 50\nexpect dim\n\
          expect buzzing\n\
-         wait 6s\nglance\ntap 40,40 60\nexpect not dim\nwait 150ms\ntap 40,40 50\n\
+         wait 6s\nglance\ntap 40,40 60\nexpect dim\nwait 150ms\ntap 40,40 50\n\
+         expect dim\nexpect buzzing\n\
+         wait 6s\nglance\ntap 40,40 90\nexpect not dim\nwait 150ms\ntap 40,40 50\n\
          expect not dim\nexpect buzzing\n\
          echo clock\nwait 2s\ntap 40,40 50\nwait 150ms\ntap 40,40 50\nexpect buzzing\n",
     )
@@ -425,10 +429,70 @@ fn a_double_tap_plays_or_pauses_without_waking_only_after_a_light_first_tap() {
     let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
     assert!(ok, "{log}");
     let (gestures, clock) = log.split_once("] clock\n").expect("the script runs on");
-    assert_eq!(gestures.matches(r#""n":"playpause""#).count(), 4, "{log}");
+    assert_eq!(gestures.matches(r#""n":"playpause""#).count(), 5, "{log}");
     assert_eq!(gestures.matches(r#""n":"next""#).count(), 0, "{log}");
     assert_eq!(clock.matches(r#""n":"playpause""#).count(), 1, "{log}");
     assert_eq!(clock.matches(r#""n":"next""#).count(), 0, "{log}");
+}
+
+/// On a glance, with a phone connected, a deliberate tap that isn't
+/// heavy (40–74 ms) waits to wake the screen until no second touch can
+/// follow it: alone, it wakes the screen half a second on, even past the
+/// glance's own time (the tick that would end the glance, aligned here
+/// by `until`, comes while it waits); with a second tap, it plays or pauses, and with a
+/// hold, skips, the glance staying either way. A lighter tap alone does
+/// nothing, and a heavy one wakes the screen at once.
+#[test]
+fn a_deliberate_tap_on_a_glance_wakes_the_screen_unless_a_second_follows() {
+    let dir = out("glance-wait");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    std::fs::write(
+        &script,
+        "time 2026-11-09 12:00:00 +01:00\nconnect\nwait 11s\n\
+         echo alone\nglance\ntap 40,40 60\nexpect dim\nwait 450ms\nexpect dim\n\
+         wait 100ms\nexpect not dim\nexpect screen-on\nwait 11s\nexpect not screen-on\n\
+         until 12:01\necho late\nglance\nwait 4500ms\ntap 40,40 60\nwait 350ms\n\
+         expect dim\nwait 350ms\nexpect not dim\nexpect screen-on\nwait 11s\n\
+         echo double\nglance\ntap 40,40 60\nwait 150ms\ntap 40,40 50\nexpect dim\n\
+         expect buzzing\nwait 1s\nexpect dim\nwait 6s\nexpect not screen-on\n\
+         echo hold\nglance\ntap 40,40 60\nwait 300ms\npress 40,40\nwait 610ms\n\
+         expect buzzing\nexpect dim\nlift\nwait 1s\nexpect dim\nwait 6s\n\
+         expect not screen-on\n\
+         echo light\nglance\ntap 40,40 30\nwait 1s\nexpect dim\nwait 5s\n\
+         expect not screen-on\n\
+         echo heavy\nglance\ntap 40,40 90\nexpect not dim\nexpect screen-on\n\
+         echo done\n",
+    )
+    .expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+    // Each section, from its echo to the next one's: how many times it
+    // played or paused, and skipped.
+    let sections = [
+        ("alone", 0, 0),
+        ("late", 0, 0),
+        ("double", 1, 0),
+        ("hold", 0, 1),
+        ("light", 0, 0),
+        ("heavy", 0, 0),
+        ("done", 0, 0),
+    ];
+    let at = |name: &str| {
+        log.find(&format!("] {name}\n"))
+            .unwrap_or_else(|| panic!("{name} echoes: {log}"))
+    };
+    for pair in sections.windows(2) {
+        let [(name, playpause, next), (following, _, _)] = pair else {
+            unreachable!("windows of two")
+        };
+        let section = &log[at(name)..at(following)];
+        let counts = (
+            section.matches(r#""n":"playpause""#).count(),
+            section.matches(r#""n":"next""#).count(),
+        );
+        assert_eq!(counts, (*playpause, *next), "{name}: {log}");
+    }
 }
 
 /// With a phone connected, a tap, then a touch held (a tap-and-hold),
@@ -438,8 +502,9 @@ fn a_double_tap_plays_or_pauses_without_waking_only_after_a_light_first_tap() {
 /// sides, a quarter from the top and bottom. A long press on its own
 /// there does nothing, not even a buzz, and leaves the screen (and a
 /// glance) as it was; nor does a pair with either touch nearer the edge,
-/// where an arm folded over the watch rests. After a deliberate tap, which
-/// wakes the screen, the hold skips on the clock face (unless the tap was
+/// where an arm folded over the watch rests. On a glance, a first tap of
+/// 60 ms, deliberate from off, still leaves the glance be. After a tap
+/// that wakes the screen, the hold skips on the clock face (unless the tap was
 /// at the edge of a glance: then it stands alone, and a tap-and-hold of
 /// the clock face's own skips). On the awake clock face, a tap-and-hold
 /// skips too, anywhere, bar for 3 s after a touch woke it (maybe the
@@ -469,7 +534,7 @@ fn a_tap_and_hold_skips_and_a_lone_long_press_does_nothing() {
          tap 40,40 30\nlong 40,61\nexpect not buzzing\ntap 40,40 30\nlong 40,19\n\
          expect not buzzing\ntap 40,4 30\nlong 40,40\nexpect not buzzing\n\
          expect not screen-on\n\
-         echo glance\nglance\ntap 40,40 30\npress 40,40\nwait 610ms\nexpect buzzing\n\
+         echo glance\nglance\ntap 40,40 60\npress 40,40\nwait 610ms\nexpect buzzing\n\
          expect dim\nlift\nwait 10s\n\
          echo glance-edge\nglance\nlong 40,40\nexpect not buzzing\n\
          tap 40,40 30\nlong 64,40\nexpect not buzzing\ntap 40,40 30\nlong 40,12\n\
