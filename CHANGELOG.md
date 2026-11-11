@@ -19,6 +19,7 @@ missing below were test builds for the dev kit.
 
 ### Changed
 
+- Send the night to Gadgetbridge, and so to Health Connect, about 47 minutes after you get up rather than 2¼ hours after you last slept: once you've been awake for 46 minutes, walked at least two minutes of them, and aren't lying still, the watch settles the night's sleep and stages for good and the next fetch gets it, with those 46 minutes (later steps still follow after the 2¼ hours); a lie-in after that is a sleep of its own, and a morning without walking, or a short nap, waits the 2¼ hours as before (introduced in 0.10.0) (79c00c8)
 - Ring smart wake early only at a stir after ten minutes of light sleep (none of them deep or REM, nor all still), or at its time if that doesn't come, rather than at the first stir in its window, which came within its first few minutes on most mornings, from deep and REM sleep as often as light: against a Garmin over four nights, rings before the time from deep sleep went from 11% to almost none, and from REM from 37% to 21%, while about a quarter of mornings now ring at the time (a7f266e)
 - Split the Settings screen in two, side by side where it was, before Info: LOOK, with THEME, FORCE and LIGHT, and BUTTON GRID, with BUTTONS, GRID and BTHOME KEY; three rows at most each, so every row is taller, about 7 mm rather than 5, for a fingertip, and none moves as another comes or goes (98b856d)
 
