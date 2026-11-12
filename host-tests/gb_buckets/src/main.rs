@@ -1893,6 +1893,10 @@ mod tests {
         /// Where the first fetch started, and the last one ended.
         from: i64,
         to: i64,
+        /// The minutes the history dropped before a fetch got to them:
+        /// from where one fetch ended to where the next began, when that
+        /// was a day or more later.
+        dropped: Vec<(i64, i64)>,
         /// Whether the last fetch held back a sleep.
         last_held_sleep: bool,
     }
@@ -1911,6 +1915,7 @@ mod tests {
         let mut last_sync_seconds = None::<i64>;
         let mut synced = None::<i64>;
         let (mut first, mut to) = (None, i64::MIN);
+        let mut dropped = Vec::new();
         let mut last_held_sleep = false;
         // Fetch times, in seconds from the first minute.
         let mut at = Vec::new();
@@ -1942,6 +1947,14 @@ mod tests {
                 if let Some(hold) = hold {
                     fetch.hold(hold.from);
                 }
+                // A fetch a day or more after the last one ended (no other
+                // came in between) finds the history has dropped what
+                // came first, up to its first whole bucket; any other gap
+                // is the property's to catch.
+                let oldest = start_of(now_minute - DAY + MINUTES);
+                if first.is_some() && to < oldest {
+                    dropped.push((to, oldest));
+                }
                 first.get_or_insert(fetch.from());
                 synced = Some(fetch.synced_through());
                 to = fetch.synced_through() + 1;
@@ -1958,6 +1971,7 @@ mod tests {
             store,
             from: first.unwrap_or(0),
             to,
+            dropped,
             last_held_sleep,
         }
     }
@@ -2067,7 +2081,8 @@ mod tests {
     /// settles it. Each stored sample's kind (which Gadgetbridge never
     /// updates) is the watch's final one, as are its steps, heart rate and
     /// movement; and it has every step from where the first fetch started
-    /// to where the last ended, the night included.
+    /// to where the last ended, the night included, but for those the
+    /// watch's day of history dropped before a fetch came for them.
     fn gets_the_settled_night(night: &Night, gaps: &[(u16, u8, bool)]) -> bool {
         let fetched = fetch_night(night, gaps);
         let full = fetched.watch.recorded();
@@ -2086,7 +2101,12 @@ mod tests {
             })
             .collect();
         let steps = fetched.store.values().map(|s| s.steps).sum::<u32>();
-        let expected = steps_in(&full, fetched.from, fetched.to);
+        let dropped: u32 = fetched
+            .dropped
+            .iter()
+            .map(|&(from, to)| steps_in(&full, from, to))
+            .sum();
+        let expected = steps_in(&full, fetched.from, fetched.to) - dropped;
         if !wrong.is_empty() || steps != expected || fetched.last_held_sleep {
             eprintln!(
                 "{night:?}\n{gaps:?}\n{} wrong, e.g. {:?}; {steps} steps of {expected}; held at the end: {}",
