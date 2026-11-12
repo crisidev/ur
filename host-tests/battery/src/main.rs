@@ -521,6 +521,112 @@ mod tests {
         let trace = replay(EVENING);
         assert_no_drop(&trace, 1);
     }
+
+    // ==========================================================================
+    // Plugged in
+    // ==========================================================================
+
+    /// Feeds `PlugIn` the power-good line, one reading a second from uptime
+    /// `start` (`true` present), and returns the seconds it lit the screen.
+    fn plug_wakes(plug: &mut PlugIn, start: u32, line: &[bool]) -> Vec<u32> {
+        (start..)
+            .zip(line)
+            .filter(|&(second, &present)| plug.update(present, second))
+            .map(|(second, _)| second)
+            .collect()
+    }
+
+    #[test]
+    fn a_boot_on_the_charger_is_no_arrival() {
+        let mut plug = PlugIn::new();
+        assert_eq!(plug_wakes(&mut plug, 0, &[true; 30]), []);
+        // Off it and back on, though, is.
+        assert_eq!(plug_wakes(&mut plug, 30, &[false, false, true, true]), [32]);
+    }
+
+    #[test]
+    fn plugging_in_lights_unplugging_doesnt() {
+        let mut plug = PlugIn::new();
+        // A boot on battery, set on the cradle at 100 s, off at 200 s.
+        let mut line = vec![false; 100];
+        line.extend([true; 100]);
+        line.extend([false; 100]);
+        assert_eq!(plug_wakes(&mut plug, 0, &line), [100]);
+    }
+
+    #[test]
+    fn a_wobbly_cradle_lights_it_once() {
+        let mut plug = PlugIn::new();
+        plug_wakes(&mut plug, 0, &[false; 10]);
+        // Contact made and broken every second or two, for a minute, then
+        // settled on.
+        let wobble: Vec<bool> = (0..60).map(|i| i % 3 != 1).collect();
+        let mut line = wobble.clone();
+        line.extend([true; 30]);
+        assert_eq!(plug_wakes(&mut plug, 10, &line), [10]);
+        // Lifted off and set back once it has: lit again.
+        assert_eq!(plug_wakes(&mut plug, 100, &[false, false, true]), [102]);
+    }
+
+    #[test]
+    fn setting_it_back_lights_it_once_settled() {
+        // Lifted off and set back 4 s after it arrived: too soon, as a
+        // bounce would be. 5 s: lit.
+        for (back, lit) in [(PLUG_SETTLE_SECS - 1, false), (PLUG_SETTLE_SECS, true)] {
+            let mut plug = PlugIn::new();
+            plug_wakes(&mut plug, 0, &[false; 10]);
+            assert!(plug.update(true, 10));
+            assert!(!plug.update(false, 11));
+            assert_eq!(plug.update(true, 10 + back), lit, "back after {back} s");
+        }
+    }
+
+    /// Whatever the line does: the screen lights only as power arrives,
+    /// never twice within `PLUG_SETTLE_SECS`, and at the first arrival.
+    #[test]
+    fn never_twice_within_the_settling_time() {
+        // A small LCG, for lines of every shape without a dependency.
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut random = move |below: u32| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((state >> 33) % u64::from(below)) as u32
+        };
+        for _ in 0..2000 {
+            let mut plug = PlugIn::new();
+            let mut previous = true;
+            let mut lit_at: Option<u32> = None;
+            let mut arrivals = 0;
+            let mut second = random(20);
+            for _ in 0..200 {
+                // Readings a second or more apart, as the UI loop takes
+                // them (at least once a second; more often, the same
+                // second).
+                second += random(4);
+                let present = random(3) != 0;
+                let lit = plug.update(present, second);
+                let arrived = present && !previous;
+                previous = present;
+                assert!(!lit || arrived, "lit without power arriving");
+                if arrived {
+                    arrivals += 1;
+                    if arrivals == 1 {
+                        assert!(lit, "the first arrival didn't light it");
+                    }
+                }
+                if lit {
+                    if let Some(at) = lit_at {
+                        assert!(
+                            second - at >= PLUG_SETTLE_SECS,
+                            "lit at {at} s and {second} s"
+                        );
+                    }
+                    lit_at = Some(second);
+                }
+            }
+        }
+    }
 }
 
 /// Kani proofs (`cargo kani` here, one at a time with `--harness`: CBMC

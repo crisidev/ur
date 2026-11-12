@@ -33,7 +33,7 @@ use core::sync::atomic::Ordering;
 use defmt::{debug, info};
 use embassy_time::{Duration, Instant};
 
-use crate::battery::Battery;
+use crate::battery::{Battery, PlugIn};
 use crate::bthome::{self, Identity};
 use crate::buttons::Press;
 use crate::canvas::{self, Canvas, Sweep};
@@ -107,6 +107,8 @@ pub trait Board {
     /// [`Battery::update`]), into `sample`.
     fn sample_battery<'a>(&'a mut self, sample: &'a mut [i16; 1]) -> impl Future<Output = ()> + 'a;
     /// Whether the battery is charging, and whether the charger has power.
+    /// Read every pass, at least once a second: the power arriving wakes
+    /// the screen (see [`PlugIn`]).
     fn charger(&mut self) -> (bool, bool);
     /// Whether the sun is up where the watch is: [`geo::is_daytime`] on the
     /// watch. (The simulator's `theme` can say otherwise, to show a theme
@@ -335,6 +337,8 @@ pub fn local_second() -> Option<i64> {
 pub struct UiLoop {
     /// Public for the simulator's status line.
     pub battery: Battery,
+    /// Whether the charger's power just arrived, to wake the screen.
+    plug_in: PlugIn,
     /// Whether the panel (and backlight) are on. It starts "asleep" so the
     /// first pass goes through the wake path: render the first frame, then
     /// turn the backlight on. (Waking an already-awake ST7789 is harmless.)
@@ -384,6 +388,7 @@ impl UiLoop {
         crate::compare::boot(now, &app);
         let ui = Self {
             battery: Battery::new(),
+            plug_in: PlugIn::new(),
             panel_awake: false,
             first_frame: true,
             // The first reading is still settling (it's smoothed); log
@@ -435,6 +440,15 @@ impl UiLoop {
         let (charging, power_present) = board.charger();
         self.battery
             .update(sample, charging, power_present, now.as_secs() as u32);
+        // Set on the charger: the screen wakes, so the wearer sees at once,
+        // from this very frame's battery, that it sits right on the cradle
+        // (see `PlugIn` for a wobbly one).
+        if self.plug_in.update(power_present, now.as_secs() as u32) {
+            #[cfg(feature = "compare")]
+            crate::compare::charger(now);
+            let woke = app.on_charger(now);
+            info!("charger: plugged in; woke the screen: {=bool}", woke);
+        }
         let battery = &self.battery;
         let report = ble::BatteryReport {
             percent: battery.percent() as u8,

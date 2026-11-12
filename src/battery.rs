@@ -2,7 +2,8 @@
 //! charge left, as the percentage the watch shows and sends (see
 //! [`Battery::percent`]); and when the battery is so nearly empty that the
 //! watch should save what it would lose and switch itself off (see
-//! [`crate::system_off`]).
+//! [`crate::system_off`]); and when the charger's power arrives, which
+//! lights the screen (see [`PlugIn`]).
 //!
 //! Hardware-free, so it's tested on the host (`host-tests/battery`).
 
@@ -377,5 +378,64 @@ impl Battery {
             (true, false) => "CHARGED",
             (false, false) => "ON BATTERY",
         }
+    }
+}
+
+// ==============================================================================
+// Plugged in
+// ==============================================================================
+//
+// Setting the watch on its cradle lights the screen, so that the wearer
+// sees at once, by the battery on the clock face, that it sits right and
+// charges; a cradle's pogo pins easily miss. That's the charger's power
+// arriving (its power-good line going active), and only that: not its
+// going, nor the charging line, which also changes when charging ends.
+//
+// The UI loop samples the line on every pass, at least once a second,
+// so the screen lights within a second of contact, without an interrupt
+// of its own. A wobbly cradle makes and breaks contact over and over, and
+// mustn't flicker the screen on each time, nor keep it on for as long as
+// it wobbles: a rise only counts if the last one, counted or not, was at
+// least [`PLUG_SETTLE_SECS`] before. So a run of bounces lights it once,
+// and lifting the watch off and setting it back again, which takes a few
+// seconds, lights it again.
+
+/// How long the charger's power must have stayed put (no new arrival)
+/// before its next arrival lights the screen again; see above.
+pub const PLUG_SETTLE_SECS: u32 = 5;
+
+/// Whether the charger's power just arrived, as a wake for the screen;
+/// see above.
+pub struct PlugIn {
+    /// The power-good line as last seen. It starts present, so that a boot
+    /// on the charger (which lights the screen anyway) isn't an arrival.
+    present: bool,
+    /// The uptime (seconds, at least 1) of the last arrival, or 0 for none
+    /// yet. (Not an `Option`, as in `Battery`: it lives in the UI task's
+    /// future, in static RAM.)
+    last_rise: u32,
+}
+
+impl PlugIn {
+    pub const fn new() -> Self {
+        Self {
+            present: true,
+            last_rise: 0,
+        }
+    }
+
+    /// Takes the power-good line's reading at `uptime_secs`, and says
+    /// whether the screen should light for it: power that just arrived,
+    /// [`PLUG_SETTLE_SECS`] or more after it last did.
+    pub fn update(&mut self, present: bool, uptime_secs: u32) -> bool {
+        let rose = present && !self.present;
+        self.present = present;
+        if !rose {
+            return false;
+        }
+        let settled =
+            self.last_rise == 0 || uptime_secs.saturating_sub(self.last_rise) >= PLUG_SETTLE_SECS;
+        self.last_rise = uptime_secs.max(1);
+        settled
     }
 }

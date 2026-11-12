@@ -12,9 +12,9 @@
 //!   flash.
 //! - [`Event`]s: everything that changes the UI's state (ticks, inputs,
 //!   and what a pass tells the App besides: whether a phone is connected,
-//!   a room sensor heard, and it's daytime), with the exact instants and
-//!   readings the UI loop handed it. The simulator replays them in order.
-//!   A ring: the reader must keep up.
+//!   a room sensor heard, it's daytime, and the charger's power arrived),
+//!   with the exact instants and readings the UI loop handed it. The
+//!   simulator replays them in order. A ring: the reader must keep up.
 //! - [`Pass`]: what the last frame was rendered with (`ui::Status`,
 //!   with the room sensor's reading and the BTHome identity, and today's
 //!   activity), and a seqlock around it, so a reader can tell a
@@ -159,6 +159,9 @@ pub mod kind {
     /// code in [`Event::x`], its gesture in [`Event::gesture`] (as
     /// [`super::ha_gesture_code`]), and [`Event::flags`] 1 if it went out.
     pub const HA_PRESS: u8 = 9;
+    /// The charger's power arrived, and the pass told the App (see
+    /// [`super::charger`]).
+    pub const CHARGER: u8 = 10;
 }
 
 /// What [`Event::phone`] says the phone sent: the content isn't kept (the
@@ -737,6 +740,12 @@ pub fn input(input: &InputEvent, at: Instant) {
         },
     };
     push(event);
+}
+
+/// The charger's power arrived, and the pass is about to tell the App
+/// (`App::on_charger`) at `at`.
+pub fn charger(at: Instant) {
+    push(event(kind::CHARGER, at));
 }
 
 /// The pass told the App, at `now`, whether a phone is connected and

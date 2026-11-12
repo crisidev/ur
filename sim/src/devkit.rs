@@ -1408,6 +1408,11 @@ impl<'a> Follower<'a> {
                 self.app.on_timer(at, finger_down);
                 None
             }
+            kind::CHARGER => {
+                eprintln!("  dev kit: the charger plugged in at {:.3} s", seconds(at));
+                self.app.on_charger(at);
+                None
+            }
             other => return Err(format!("the dev kit logged an unknown event ({other})")),
         };
         if let Some(input) = input {

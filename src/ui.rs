@@ -103,6 +103,10 @@
 //!   so only a gesture whose first tap is light stays dark; after a
 //!   deliberate one, the second touch does the same on the clock face it
 //!   woke to. See [`crate::wake`] for the guards against brushes.
+//! - Setting the watch on its charger (see [`crate::battery::PlugIn`]):
+//!   wake to the clock, as the button does, so its battery shows the
+//!   watch charges; from a glance too. A screen already on only stays
+//!   on as long again, whatever has it (see [`App::on_charger`]).
 //! - No input for [`SCREEN_TIMEOUT`] (longer on the music screen, for a
 //!   long title to scroll by; never while a banner shows, or Home
 //!   Assistant's key): turn the screen off. A long press held on (a
@@ -174,8 +178,9 @@
 //!   them in the history).
 //! - Touches don't wake the screen (pillows and bedding tap it); the button
 //!   still does, and so does turning the wrist, bar while sleep tracking
-//!   says the wearer is asleep (see `activity::motion_task`). Once it's
-//!   on, touches work as usual.
+//!   says the wearer is asleep (see `activity::motion_task`), and setting
+//!   the watch on its charger (dimly, without a buzz, as the button).
+//!   Once it's on, touches work as usual.
 //! - A double press of the button ends it: the first press wakes the
 //!   screen (dimly) as usual, and the second, rather than turning it off
 //!   again, brightens it.
@@ -1096,6 +1101,37 @@ impl App {
         who.clear();
         app.push_str(title).fits();
         who.push_str(hint).fits();
+    }
+
+    /// The charger's power just arrived (see `battery::PlugIn`): the
+    /// screen wakes to the clock face, as for the button, so the wearer
+    /// sees at once, by its battery, that the watch sits right on the
+    /// cradle. Returns whether it woke the screen.
+    ///
+    /// Not an input: nothing else happens, and the wearer needn't know
+    /// the watch's state to set it down. With the screen off, or on a
+    /// glance (the wrist turning as the watch comes off it may start one),
+    /// it wakes as for the button: in the quiet night dimly, as everything
+    /// is then, and without a buzz, as ever on waking. With it on, it only
+    /// stays on as long again, whatever has it: a ringing alarm, a call,
+    /// "find my watch", pairing or an update, the alarm editor, a
+    /// notification shown with the screen off, each go on as they were
+    /// (they hold it on themselves anyway).
+    pub fn on_charger(&mut self, now: Instant) -> bool {
+        self.last_input = now;
+        if self.awake && !self.glancing() {
+            return false;
+        }
+        // As the button wakes a dark screen, or a glance (see `on_input`):
+        // what a tap before it began is moot, and a glance's tap that
+        // waits to wake it needn't any more.
+        self.glance_until = None;
+        self.glance_wake = false;
+        self.last_tap = None;
+        self.woke_tap = false;
+        self.awake = true;
+        self.screen = Screen::Clock;
+        true
     }
 
     pub fn on_input(&mut self, event: InputEvent, now: Instant) {
