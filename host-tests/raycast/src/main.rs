@@ -874,7 +874,14 @@ mod tests {
         assert_eq!(rows_to_send(20..40, &(10..50)), 10..50);
         // Too much to spare, or not inside: padded.
         assert_eq!(rows_to_send(100..102, &(0..240)), 96..106);
-        assert_eq!(rows_to_send(5..60, &(10..50)), 1..64);
+        // RGB444 sends whole pairs of pixels: from an even row, and an
+        // even number of them.
+        let padded = if game_view::RGB444 { 0..64 } else { 1..64 };
+        assert_eq!(rows_to_send(5..60, &(10..50)), padded);
+        assert_eq!(
+            rows_to_send(7..9, &(0..240)),
+            if game_view::RGB444 { 2..14 } else { 3..13 }
+        );
         assert_eq!(rows_to_send(0..240, &(0..0)), 0..240);
     }
 
