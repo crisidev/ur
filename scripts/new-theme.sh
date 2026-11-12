@@ -492,6 +492,17 @@ text = re.sub(r"\n    /// The measure itself: the colours Last night first drew.
 main.write_text(rename(text))
 for path in [tests / "Cargo.toml", tests / "Cargo.lock"]:
     edit(path, ('name = "theme-test"', f'name = "{dashed}-theme-test"'))
+# Cargo keeps the lockfile's packages sorted by name, so the renamed one
+# moves: left where it was, the first `cargo` run rewrites the file
+# (a diff to commit) and CI's `--locked` refuses it. The rest are in
+# Cargo's order already, so a stable sort by name alone gives exactly
+# what Cargo writes (same-named packages, by version, keep their order),
+# and needs neither the network nor Cargo's registry cache, as
+# `cargo update --offline` would.
+lock = tests / "Cargo.lock"
+head, *packages = lock.read_text().split("\n[[package]]\n")
+packages.sort(key=lambda block: re.match(r'name = "([^"]+)"', block)[1])
+lock.write_text("\n[[package]]\n".join([head, *packages]))
 
 print(f"src/themes/{ident}/ and host-tests/{ident}/ written, and {display} listed.")
 EOF
