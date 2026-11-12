@@ -74,8 +74,14 @@ const SIMPLE_EMOJI: &[(&str, &str)] = &[
 /// know (and with everything, should the library throw). So both shapes
 /// reach the watch from this mock, but not for the same emoji as from a
 /// phone.
+///
+/// Each is the emoji's first alias in the library's `emoji.json`, as
+/// Gadgetbridge's transformer writes: 👍's is `+1`, not `thumbsup`; a
+/// flag's is its country code; even ® has one.
 const EMOJI_ALIASES: &[(&str, &str)] = &[
-    ("\u{1F44D}", ":thumbsup:"),
+    ("\u{1F44D}", ":+1:"),
+    ("\u{1F1F3}\u{1F1F4}", ":no:"),
+    ("\u{AE}", ":registered:"),
     ("\u{1F3E1}", ":house_with_garden:"),
     ("\u{1F389}", ":tada:"),
     ("\u{1F525}", ":fire:"),
