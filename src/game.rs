@@ -18,7 +18,9 @@
 //! UI loop switches back before the canvas draws again.
 //!
 //! For now, the frame is a test pattern, to check the panel's order and
-//! measure what the bus allows.
+//! measure what the bus allows, with the last second's frame rate and
+//! times drawn over it ([`Stats`]), for a sealed watch without a probe
+//! to read the log.
 //!
 //! [`Order::Columns`]: crate::display::Order::Columns
 
@@ -152,6 +154,7 @@ pub async fn frame(display: &mut Display, batch: &mut [u8], game: &mut Game, sta
     let (sending, rest) = batch.split_at_mut(STRIP);
     let making = &mut rest[..STRIP];
     let tick = game.tick;
+    let readout = &stats.readout;
     let mut fill_cycles = 0u32;
     display
         .stream(
@@ -162,7 +165,9 @@ pub async fn frame(display: &mut Display, batch: &mut [u8], game: &mut Game, sta
             |i, strip| {
                 let start = cycles::now();
                 for (c, column) in strip.as_chunks_mut::<COLUMN>().0.iter_mut().enumerate() {
-                    test_column(i * STRIP_COLUMNS + c, tick, column);
+                    let x = i * STRIP_COLUMNS + c;
+                    test_column(x, tick, column);
+                    readout.draw(x, column);
                 }
                 fill_cycles = fill_cycles.wrapping_add(cycles::now().wrapping_sub(start));
             },
@@ -202,9 +207,11 @@ fn test_column(x: usize, tick: u16, column: &mut [u8; COLUMN]) {
 }
 
 /// Frame times, logged once a second (at `debug`: build with
-/// `DEFMT_LOG=info,ur::game=debug` to see them).
+/// `DEFMT_LOG=info,ur::game=debug` to see them), and drawn over the test
+/// pattern ([`Readout`]).
 #[derive(Default)]
 pub struct Stats {
+    readout: Readout,
     since: Option<Instant>,
     frames: u32,
     /// Sums and maxima, in microseconds; filling's from CPU cycles.
@@ -237,11 +244,130 @@ impl Stats {
                 (COLUMN * VIEW_W) as u32,
                 STRIP as u32,
             );
+            self.readout = Readout::of(
+                self.frames * 10_000 / ms,
+                self.frame_us / self.frames,
+                self.frame_max,
+                self.fill_us / self.frames,
+            );
             *self = Self {
+                readout: core::mem::take(&mut self.readout),
                 since: Some(now),
                 ..Self::default()
             };
         }
+    }
+}
+
+/// The last second's [`Stats`] as text, drawn into the viewport's top
+/// left (in the small font at 2×, white on black) as its columns are
+/// made: frames a second, a frame's milliseconds (average and most), and
+/// the CPU's part of them (filling the strips).
+#[derive(Default)]
+struct Readout {
+    lines: [[u8; Self::CHARS]; 3],
+}
+
+impl Readout {
+    const CHARS: usize = 18;
+    const SCALE: usize = 2;
+    /// A character's advance, in pixels: three, and a gap.
+    const ADVANCE: usize = 4 * Self::SCALE;
+    const LINE: usize = 6 * Self::SCALE;
+    /// Where the text starts, inside the test pattern's bands.
+    const X: usize = 8;
+    const Y: usize = 8;
+    const W: usize = Self::CHARS * Self::ADVANCE;
+    const H: usize = 3 * Self::LINE;
+
+    /// From frames a second in tenths, and times in microseconds.
+    fn of(fps_x10: u32, frame_us: u32, frame_max: u32, fill_us: u32) -> Self {
+        let mut readout = Self::default();
+        let tenths = |line: &mut Line, n: u32| {
+            line.number(n / 10);
+            line.push(b'.');
+            line.number(n % 10);
+        };
+        let mut line = Line::default();
+        tenths(&mut line, fps_x10);
+        line.text(b" FPS");
+        readout.lines[0] = line.done();
+        let mut line = Line::default();
+        line.text(b"MS ");
+        tenths(&mut line, frame_us / 100);
+        line.text(b" MAX ");
+        tenths(&mut line, frame_max / 100);
+        readout.lines[1] = line.done();
+        let mut line = Line::default();
+        line.text(b"CPU ");
+        tenths(&mut line, fill_us / 100);
+        line.text(b" MS");
+        readout.lines[2] = line.done();
+        readout
+    }
+
+    /// Draws over column `x` of the viewport.
+    fn draw(&self, x: usize, column: &mut [u8; COLUMN]) {
+        const WHITE: [u8; 2] = [0xff, 0xff];
+        const BLACK: [u8; 2] = [0, 0];
+        let Some(dx) = x.checked_sub(Self::X).filter(|&dx| dx < Self::W) else {
+            return;
+        };
+        let (char_at, glyph_x) = (dx / Self::ADVANCE, dx % Self::ADVANCE / Self::SCALE);
+        let pixels = column.as_chunks_mut::<2>().0;
+        for (l, line) in self.lines.iter().enumerate() {
+            let rows = match line[char_at] {
+                0 => [0; 5],
+                c => crate::font::small_glyph(char::from(c)),
+            };
+            let top = Self::Y + l * Self::LINE;
+            for (dy, pixel) in pixels[top..top + Self::LINE].iter_mut().enumerate() {
+                let row = dy / Self::SCALE;
+                let lit = glyph_x < 3 && row < 5 && rows[row] >> (2 - glyph_x) & 1 != 0;
+                *pixel = if lit { WHITE } else { BLACK };
+            }
+        }
+    }
+}
+
+const _: () = assert!(Readout::X + Readout::W <= VIEW_W);
+const _: () = assert!(Readout::Y + Readout::H <= VIEW_H);
+
+/// A line of [`Readout`] being written; what doesn't fit is dropped.
+#[derive(Default)]
+struct Line {
+    bytes: [u8; Readout::CHARS],
+    len: usize,
+}
+
+impl Line {
+    fn push(&mut self, b: u8) {
+        if let Some(slot) = self.bytes.get_mut(self.len) {
+            *slot = b;
+            self.len += 1;
+        }
+    }
+
+    fn text(&mut self, text: &[u8]) {
+        text.iter().for_each(|&b| self.push(b));
+    }
+
+    fn number(&mut self, mut n: u32) {
+        let mut digits = [0u8; 10];
+        let mut i = digits.len();
+        loop {
+            i -= 1;
+            digits[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            if n == 0 {
+                break;
+            }
+        }
+        self.text(&digits[i..]);
+    }
+
+    fn done(self) -> [u8; Readout::CHARS] {
+        self.bytes
     }
 }
 
