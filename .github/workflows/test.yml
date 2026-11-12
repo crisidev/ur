@@ -53,7 +53,7 @@ jobs:
   # queued behind them. Each crate still fails on its own: the loop
   # carries on, and ends by naming every crate that failed.
   host-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     name: host-tests
     # One target directory for all of them, so the dependencies they share
     # (bolero, quickcheck, heapless, ...) build once. Cargo keeps each
@@ -102,7 +102,7 @@ jobs:
   # gb_buckets' and snapshot's in November 2026. All 32 crates' proofs
   # compile in ~20 s on a desktop; verifying them takes most of an hour.
   kani:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     name: kani
     # As verify.yml's, so the two share the cache entry below (its key and
     # paths must match exactly).
@@ -147,7 +147,7 @@ jobs:
   # toolchain and the cache, and each was mostly setup.
   sim:
     needs: features
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     name: sim
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
@@ -228,7 +228,7 @@ jobs:
   # nightly (libFuzzer), pinned as verify.yml pins it. Both targets in one
   # job: they share the build, and each runs its seeds in under a minute.
   sim-fuzz-seeds:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     name: sim / fuzz seeds
     env:
       NIGHTLY: nightly-2026-11-06
@@ -254,7 +254,7 @@ jobs:
           cargo "+$NIGHTLY" fuzz run -s none gadgetbridge seeds/gadgetbridge -- -runs=0
   firmware:
     needs: features
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     name: firmware
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
