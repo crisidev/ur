@@ -481,7 +481,7 @@ mod tests {
             let mut seen = [0; 4];
             for column in texture {
                 for v in 0..32 {
-                    seen[(column >> (2 * v) & 0b11) as usize] += 1;
+                    seen[game_view::texel(column, v)] += 1;
                 }
             }
             assert!(seen.iter().all(|&n| n > 0), "texture {kind}: {seen:?}");

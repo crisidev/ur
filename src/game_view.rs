@@ -133,14 +133,22 @@ pub static BACKGROUND: [u16; HEIGHT] = {
 
 /// A texture: [`TEXTURE`] columns, left to right as seen, of two bits a
 /// texel, top first from the lowest bits, each its kind's colour (the
-/// four in [`PALETTE`] from `4 * (kind - 1)`).
-pub type Texture = [u64; TEXTURE];
+/// four in [`PALETTE`] from `4 * (kind - 1)`). In halves of 32 bits: the
+/// M4 shifts a 64-bit number only in software, a call a pixel.
+pub type Texture = [[u32; 2]; TEXTURE];
+
+/// Which of its kind's colours column `texels` of a texture has at row
+/// `v` (below [`TEXTURE`]).
+#[inline(always)]
+pub fn texel(texels: &[u32; 2], v: usize) -> usize {
+    (texels[v / 16] >> (2 * (v % 16)) & 0b11) as usize
+}
 
 /// By kind of wall, from 1.
 pub static TEXTURES: [Texture; 4] = [texture(0), texture(1), texture(2), texture(3)];
 
 const fn texture(index: usize) -> Texture {
-    let mut texture = [0; TEXTURE];
+    let mut texture = [[0; 2]; TEXTURE];
     let mut u = 0;
     while u < TEXTURE {
         let mut v = 0;
@@ -151,7 +159,7 @@ const fn texture(index: usize) -> Texture {
                 2 => metal(u, v),
                 _ => wood(u, v),
             };
-            texture[u] |= (texel & 0b11) << (2 * v);
+            texture[u][v / 16] |= (texel as u32 & 0b11) << (2 * (v % 16));
             v += 1;
         }
         u += 1;
@@ -282,8 +290,8 @@ pub fn view_column(
         let mut v = ((drawn.start as f32 + 0.5 - top) * step * 65536.0) as u32;
         let step = (step * 65536.0) as u32;
         for color in &mut colors[drawn.start - send.start..drawn.end - send.start] {
-            let row = (v >> 16).min(TEXTURE as u32 - 1);
-            *color = shades[(texels >> (2 * row) & 0b11) as usize].to_ne_bytes();
+            let row = ((v >> 16) as usize).min(TEXTURE - 1);
+            *color = shades[texel(&texels, row)].to_ne_bytes();
             v += step;
         }
     }

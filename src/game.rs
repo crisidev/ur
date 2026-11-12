@@ -113,12 +113,14 @@ impl Game {
         self.bumped = false;
         self.whole = true;
         cycles::enable();
+        cache(true);
     }
 
     pub fn stop(&mut self) {
         if core::mem::take(&mut self.playing) {
             defmt::info!("game: paused");
             cycles::disable();
+            cache(false);
         }
     }
 
@@ -270,6 +272,17 @@ impl Stats {
             };
         }
     }
+}
+
+/// Turns the CPU's instruction cache on or off. Off from reset, and
+/// nothing else turns it on: without it, every instruction comes from
+/// flash, with wait states at 64 MHz, and drawing a column took twice
+/// as long as its instructions say. On only while the game plays, so
+/// that the rest of the firmware runs as it always has.
+fn cache(on: bool) {
+    embassy_nrf::pac::NVMC
+        .icachecnf()
+        .write(|w| w.set_cacheen(on));
 }
 
 /// The CPU's cycle counter (DWT's CYCCNT), for timing what the CPU does:
