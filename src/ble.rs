@@ -13,7 +13,9 @@
 //! pairs (Android prompts for the passkey, and gives up after 30 s). Bonds
 //! are kept in flash so the phone needn't pair again. A client that stays
 //! unencrypted gets a banner on the watch pointing at the README's FAQ (see
-//! `not_paired`).
+//! `not_paired`; at most every few minutes), and is disconnected once it
+//! can no longer pair, so it doesn't hold a connection slot (see
+//! [`crate::unpaired`]).
 //!
 //! Pairing is also what an attacker in range would go for, so: a pairing
 //! that didn't use the passkey ("just works") leaves no bond behind; one
@@ -56,6 +58,7 @@ use crate::geo::{self, GpsPolicy, Location};
 use crate::link::{self, Link, Verdict};
 use crate::packet_pool::Pool;
 use crate::phone::{PhoneEvent, Unpaired};
+use crate::unpaired::Stay;
 use crate::{activity, clock, dfu, gb_buckets, storage};
 
 /// The advertised and GAP device name. Gadgetbridge's Bangle.js support
@@ -830,9 +833,10 @@ async fn serve(
     // `Instant` in this future, which is in RAM twice (once per slot), and
     // RAM is that scarce.
     let mut security = Security::Pending;
-    // Whether a pairing has shown its passkey and not yet ended: one the
-    // client cuts short by leaving counts as failed.
-    let mut pairing = false;
+    // Whether a pairing has shown its passkey and not yet ended (one the
+    // client cuts short by leaving counts as failed), and how long the
+    // client may stay without authenticating the link (see `unpaired`).
+    let mut stay = Stay::new(Instant::now().as_millis());
     // Whether the phone listens to the UART: see `link`, and `judge_uart`.
     let mut uart = link::Watch::default();
 
@@ -847,15 +851,19 @@ async fn serve(
                 core::future::pending().await
             }
         };
-        // The GPS, security, and update deadlines share a branch
+        // The GPS, security, cut-off, and update deadlines share a branch
         // (`select4` has only four); which one passed is sorted out below.
         let deadline = async {
             let security_deadline =
                 (security == Security::Pending).then_some(last_traffic + SECURITY_GRACE);
             let uart_deadline = uart.due().map(Instant::from_millis);
+            let cut_off = stay
+                .cut_off_at(authenticated(conn))
+                .map(Instant::from_millis);
             let deadlines = gps_deadline.into_iter().chain(security_deadline);
             match deadlines
                 .chain(uart_deadline)
+                .chain(cut_off)
                 .chain(update.stalls_at())
                 .min()
             {
@@ -906,13 +914,16 @@ async fn serve(
                     // Encrypted without the passkey ("just works", from a
                     // client that can't show or type one) is no better:
                     // our services need `authenticated`.
-                    let authenticated = conn
-                        .raw()
-                        .security_level()
-                        .is_ok_and(|l| l == SecurityLevel::EncryptedAuthenticated);
-                    if !authenticated && PASSKEY.lock(Cell::get).is_none() {
+                    if !authenticated(conn) && PASSKEY.lock(Cell::get).is_none() {
                         not_paired(conn, &mut security);
                     }
+                }
+                // A client that never paired (or whose pairing stalled)
+                // can't use anything of ours, and holds a slot the phone
+                // or an updater may need.
+                if stay.check(authenticated(conn), now.as_millis()) {
+                    warn!("ble: not paired in time; disconnecting");
+                    conn.raw().disconnect();
                 }
                 if update.stalls_at().is_some_and(|at| at <= now) {
                     update.abandon("stalled").await;
@@ -1102,7 +1113,7 @@ async fn serve(
                     continue;
                 }
                 info!("ble: pairing; showing passkey");
-                pairing = true;
+                stay.pairing_started(Instant::now().as_millis());
                 make_room_for_bond(stack, conn);
                 show_passkey(Some(passkey.value()));
             }
@@ -1116,7 +1127,7 @@ async fn serve(
                     bond.is_some()
                 );
                 show_passkey(None);
-                pairing = false;
+                stay.pairing_ended(Instant::now().as_millis());
                 if security_level == SecurityLevel::EncryptedAuthenticated {
                     PAIRING_FAILURES.lock(|cell| cell.set((0, Instant::now())));
                     uart.authenticated(Instant::now().as_millis());
@@ -1142,7 +1153,7 @@ async fn serve(
             GattConnectionEvent::PairingFailed(e) => {
                 warn!("ble: pairing failed: {}", e);
                 show_passkey(None);
-                pairing = false;
+                stay.pairing_ended(Instant::now().as_millis());
                 pairing_failed(stack).await;
                 not_paired(conn, &mut security);
             }
@@ -1190,7 +1201,7 @@ async fn serve(
         }
     };
     update.abandon("left").await;
-    if pairing {
+    if stay.pairing() {
         pairing_failed(stack).await;
     }
     if security == Security::Told {
@@ -1247,6 +1258,14 @@ fn not_paired(conn: &GattConnection<'_, '_, Pool>, security: &mut Security) {
     let _ = crate::INPUT.try_send(crate::InputEvent::Phone(PhoneEvent::Unpaired(why)));
 }
 
+/// Whether the link is encrypted with a passkey bond: what all our
+/// services need (see [`UartService`]).
+fn authenticated(conn: &GattConnection<'_, '_, Pool>) -> bool {
+    conn.raw()
+        .security_level()
+        .is_ok_and(|l| l == SecurityLevel::EncryptedAuthenticated)
+}
+
 /// Judges, at its deadline, whether the phone listens to the UART, and
 /// disconnects one that doesn't, once (see [`link`]): Gadgetbridge then
 /// reconnects, and subscribes afresh over a link that's paired by now.
@@ -1260,10 +1279,7 @@ fn judge_uart(
     updating: bool,
 ) {
     let link = Link {
-        authenticated: conn
-            .raw()
-            .security_level()
-            .is_ok_and(|l| l == SecurityLevel::EncryptedAuthenticated),
+        authenticated: authenticated(conn),
         subscribed: server.uart.tx.should_notify(conn),
         talking,
         updating,

@@ -587,6 +587,10 @@ pub struct App {
     /// Bitmaps" (see [`PhoneEvent::TextAsBitmaps`]): once is enough, when
     /// every message may carry them.
     told_bitmaps: bool,
+    /// When the "NOT PAIRED" and "PAIRING LOST" banners may show again:
+    /// a client that won't pair reconnects every minute or so, all day
+    /// (see [`crate::unpaired`]).
+    unpaired_banners: crate::unpaired::Banners,
     /// The button grid's setting, as stored (`main` saves it when it
     /// changes).
     pub buttons: buttons::Setting,
@@ -662,6 +666,7 @@ impl App {
             media_hint: None,
             route: None,
             told_bitmaps: false,
+            unpaired_banners: crate::unpaired::Banners::default(),
             buttons: buttons::Setting::Off,
             grid_layout: buttons::Layout::default(),
             grid: buttons::Grid::default(),
@@ -1916,7 +1921,14 @@ impl App {
                 self.notifications.push(app, who, arrived);
                 return self.show_banner(Shows::Newest, now);
             }
-            PhoneEvent::Unpaired(why) => return self.show_banner(Shows::Unpaired(why), now),
+            // Not every time, though: the Info screen's phone row says so
+            // meanwhile, for as long as the client stays.
+            PhoneEvent::Unpaired(why) => {
+                if self.unpaired_banners.due(why as usize, now.as_millis()) {
+                    self.show_banner(Shows::Unpaired(why), now);
+                }
+                return;
+            }
             // After the message that carried the images (see `ble`), so
             // this replaces its banner rather than the other way round:
             // what it said is in the history, as well as we could show it.

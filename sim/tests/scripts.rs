@@ -1421,3 +1421,28 @@ fn a_notification_wake_always_ends() {
     let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
     assert!(ok, "{log}");
 }
+
+/// A client that won't pair, reconnecting (as `ble` cuts it off after
+/// 40 s): its NOT PAIRED banner shows, and buzzes, at most once every five
+/// minutes, while the wearer's own phone saying PAIRING LOST meanwhile
+/// still shows at once (see `unpaired::Banners`).
+#[test]
+fn a_client_that_wont_pair_is_shown_every_five_minutes() {
+    let dir = out("unpaired");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    std::fs::write(
+        &script,
+        "connect\nwait 30s\n\
+         unpaired not-paired\nexpect screen-on\nwait 45s\nunpaired off\n\
+         unpaired not-paired\nexpect not screen-on\nwait 45s\nunpaired off\n\
+         unpaired not-paired\nexpect not screen-on\nwait 45s\nunpaired off\n\
+         unpaired pairing-lost\nexpect screen-on\nwait 45s\nunpaired off\n\
+         wait 150s\nunpaired not-paired\nexpect screen-on\n",
+    )
+    .expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+    assert_eq!(log.matches("input: unpaired: NOT PAIRED").count(), 4, "{log}");
+    assert_eq!(log.matches("buzz: notify").count(), 3, "{log}");
+}

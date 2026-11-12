@@ -133,6 +133,7 @@ mod themes;
 mod touch;
 mod ui;
 mod ui_loop;
+mod unpaired;
 mod version;
 mod wake;
 

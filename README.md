@@ -397,6 +397,13 @@ it's there, and forget it in Android's Bluetooth settings (Android may
 still hold InfiniTime's pairing). Then add it in Gadgetbridge, choose
 Pair, and type the 6-digit passkey the watch shows.
 
+The watch disconnects a device that hasn't started pairing within 40
+seconds, so it can't hold a connection the phone needs, and says "NOT
+PAIRED" at most every five minutes, however often the device comes back.
+Info's PHONE row shows it whenever one is connected. If it isn't yours
+(a phone that paired with the watch under InfiniTime, say), forget the
+watch on that device to stop it.
+
 ### C02: The watch says "PAIRING LOST"
 
 The watch remembers pairing with this phone, but the phone has forgotten

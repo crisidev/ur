@@ -42,7 +42,8 @@ pub enum PhoneEvent {
         on: bool,
     },
     /// A client connected but never secured the link (see
-    /// `ble::not_paired`). Shown like a notification.
+    /// `ble::not_paired`). Shown like a notification, but each kind at
+    /// most every five minutes (see `unpaired::Banners`).
     Unpaired(Unpaired),
     /// The phone sent text with Gadgetbridge's "Text as Bitmaps" images in
     /// it (see `gb::Images`), which we can't show: tell the wearer how to
@@ -62,7 +63,8 @@ pub enum PhoneEvent {
 }
 
 /// Why a connected client can't use the watch: its link never became
-/// encrypted.
+/// encrypted. `as usize`, the kind of banner `unpaired::Banners` keeps
+/// apart.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format)]
 pub enum Unpaired {
     /// Not a device we have a bond with: it has to pair.

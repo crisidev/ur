@@ -129,6 +129,9 @@ mod sun;
 mod temperature;
 #[path = "../../src/themes/mod.rs"]
 mod themes;
+#[path = "../../src/unpaired.rs"]
+#[allow(dead_code)]
+mod unpaired;
 
 /// What every built-in theme must have, whatever it draws: a scheme at
 /// least, and schemes with names and IDs (see `palette::id`) of their own

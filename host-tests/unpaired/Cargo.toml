@@ -1,0 +1,17 @@
+[package]
+name = "unpaired-test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Host-side tests for `src/unpaired.rs` (included via `#[path]`). Not part
+# of the firmware workspace: run `cargo test` from this directory.
+[workspace]
+
+[dependencies]
+
+# CI runs the host tests with `--release`; keep the arithmetic checks and
+# the module's own `debug_assert!`s.
+[profile.release]
+overflow-checks = true
+debug-assertions = true
