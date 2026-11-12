@@ -1443,6 +1443,10 @@ fn a_client_that_wont_pair_is_shown_every_five_minutes() {
     .expect("the target dir is writable");
     let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
     assert!(ok, "{log}");
-    assert_eq!(log.matches("input: unpaired: NOT PAIRED").count(), 4, "{log}");
+    assert_eq!(
+        log.matches("input: unpaired: NOT PAIRED").count(),
+        4,
+        "{log}"
+    );
     assert_eq!(log.matches("buzz: notify").count(), 3, "{log}");
 }
