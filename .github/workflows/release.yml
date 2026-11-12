@@ -41,7 +41,22 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+*"
+  # To release a tag that's already pushed, with this workflow as it is on
+  # the branch it's run from rather than as it was at the tag: for when
+  # the tag's own run failed for reasons outside the tagged code (v0.11.0's
+  # did, on a new runner image), since a pushed tag is never moved. The
+  # code built is still exactly the tag's; the attestation records which
+  # workflow built it.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "An existing version tag to release, e.g. v0.11.0"
+        required: true
+        type: string
 name: release
+env:
+  # The tag being released: the one pushed, or the one asked for.
+  TAG: ${{ inputs.tag || github.ref_name }}
 jobs:
   plan:
     runs-on: ubuntu-24.04
@@ -50,9 +65,9 @@ jobs:
       prerelease: ${{ steps.plan.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
       - id: plan
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
           if [[ $TAG != "v$version" ]]; then
@@ -73,6 +88,8 @@ jobs:
       artifact-metadata: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
       - name: Install the pinned toolchain
         run: rustup toolchain install
       - name: build and package
@@ -121,7 +138,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.plan.outputs.version }}
-          TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
         run: |
           # The tag's message names what's new (see CONTRIBUTING), so it
@@ -189,7 +205,6 @@ jobs:
       - name: create release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
           VERSION: ${{ needs.plan.outputs.version }}
           PRERELEASE: ${{ needs.plan.outputs.prerelease }}
         run: |
