@@ -26,9 +26,10 @@
 //! same every frame, so only walls need sending: in each column, the rows
 //! its wall covers now, and those it covered last frame, which go back to
 //! ceiling and floor. Where the walls were is kept in the canvas's other
-//! buffer, also lent. Over it all, the HUD ([`Hud`]): the time, and, for
-//! now, the last second's frame rate and times, for a sealed watch
-//! without a probe to read the log; their rows are sent when they change.
+//! buffer, also lent. Over it all, the HUD ([`Hud`]): the time, and, with
+//! the `game-stats` feature, the last second's frame rate and times (see
+//! [`Stats`]), for a sealed watch without a probe to read the log; their
+//! rows are sent when they change.
 
 use embassy_time::{Duration, Instant};
 
@@ -194,7 +195,7 @@ pub async fn frame(
     let readout_changed = core::mem::take(&mut stats.readout_changed);
     let hud = Hud {
         time,
-        readout: &stats.readout,
+        readout: cfg!(feature = "game-stats").then_some(&stats.readout),
         time_changed: whole || time_changed,
         readout_changed: whole || readout_changed,
     };
@@ -219,8 +220,8 @@ pub async fn frame(
 }
 
 /// Frame times, logged once a second (at `debug`: build with
-/// `DEFMT_LOG=info,ur::game=debug` to see them), and drawn over the view
-/// ([`Readout`]).
+/// `DEFMT_LOG=info,ur::game=debug` to see them), and, with the
+/// `game-stats` feature, drawn over the view ([`Readout`]).
 #[derive(Default)]
 pub struct Stats {
     readout: Readout,

@@ -367,11 +367,12 @@ fn pack(colors: &mut [[u8; 2]]) {
     }
 }
 
-/// What's drawn over the view: the time, centred at the top, and the
-/// [`Readout`] at the bottom left.
+/// What's drawn over the view: the time, centred at the top, and, if
+/// there's one (`game`'s `game-stats` feature), the [`Readout`] at the
+/// bottom left.
 pub struct Hud<'a> {
     pub time: Option<(u8, u8)>,
-    pub readout: &'a Readout,
+    pub readout: Option<&'a Readout>,
     /// Whether each changed since the last frame.
     pub time_changed: bool,
     pub readout_changed: bool,
@@ -391,7 +392,8 @@ impl Hud<'_> {
     /// The rows of column `x` that changed since the last frame.
     fn changed(&self, x: usize) -> impl Iterator<Item = Range<usize>> {
         let time = self.time_changed && Self::TIME.0.contains(&x);
-        let readout = self.readout_changed && Readout::AREA.0.contains(&x);
+        let readout =
+            self.readout.is_some() && self.readout_changed && Readout::AREA.0.contains(&x);
         let time = time.then_some(Self::TIME.1);
         time.into_iter().chain(readout.then_some(Readout::AREA.1))
     }
@@ -427,11 +429,13 @@ impl Hud<'_> {
                 }
             }
         }
-        if Readout::AREA.0.contains(&x) {
+        if let Some(readout) = self.readout
+            && Readout::AREA.0.contains(&x)
+        {
             let dx = (x - Readout::X) / Readout::SCALE;
             for y in Readout::AREA.1.start.max(rows.start)..Readout::AREA.1.end.min(rows.end) {
                 let dy = (y - Readout::Y) / Readout::SCALE;
-                let line = self.readout.lines.get(dy / 6);
+                let line = readout.lines.get(dy / 6);
                 let lit = line.is_some_and(|line| glyph_lit(line, dx, dy % 6));
                 colors[y - rows.start] = if lit { white } else { black };
             }

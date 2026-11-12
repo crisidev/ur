@@ -549,6 +549,17 @@ python3 scripts/flash-stress.py target/thumbv7em-none-eabihf/release/ur --minute
 below.) Its saves stay behind under a key of their own
 (`storage::key::STRESS`), harmless to a normal build.
 
+The `game` feature adds a raycaster, last in the line of screens below
+the clock (see `src/game.rs`); `game-stats` draws its frame rate and
+times over it too, for a watch without a probe, whose log can't be read
+(with a probe, `DEFMT_LOG=info,ur::game=debug` logs them). Either builds
+an update to send over Bluetooth like any other (see the README):
+
+```sh
+DEFMT_LOG=info cargo build --release --features game-stats
+python3 scripts/package.py target/thumbv7em-none-eabihf/release/ur
+```
+
 A build with the `wedge-i2c` feature checks that the sensors come back
 from a stuck bus by themselves, as they must when a reset (a probe's, a
 watchdog's, an update's) leaves one holding it: for its first 5 s, it

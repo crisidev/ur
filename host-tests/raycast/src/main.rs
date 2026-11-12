@@ -34,8 +34,7 @@ fn main() {
         };
     }
     let mut panel = panel::Panel::new();
-    let readout = game_view::Readout::of(197, 50_612, 57_100, 8_300, 38_880);
-    panel.frame(&player, true, Some((12, 34)), &readout, true);
+    panel.frame(&player, true, Some((12, 34)), None, true);
     std::fs::write(out, panel.ppm()).unwrap();
 }
 
@@ -414,12 +413,19 @@ mod tests {
     /// however the player moves, and whatever the HUD does.
     #[test]
     fn changed_rows_are_enough() {
+        for stats in [false, true] {
+            changed_rows_are_enough_with(stats);
+        }
+    }
+
+    /// With or without the frame readout (`game-stats`).
+    fn changed_rows_are_enough_with(stats: bool) {
         let mut rng = Rng(0x1234_5678_9abc_def1);
         let mut player = Player::START;
         let mut panel = Panel::new();
         let mut readout = Readout::of(0, 0, 0, 0, 0);
         let mut time = None;
-        panel.frame(&player, true, time, &readout, true);
+        panel.frame(&player, true, time, stats.then_some(&readout), true);
         let (mut sent, mut frames) = (0, 0);
         let mut held = Input::default();
         for i in 0..400 {
@@ -438,10 +444,16 @@ mod tests {
             if readout_changed {
                 readout = Readout::of(rng.next() as u32 % 300, 50_000, 60_000, 8_000, 30_000);
             }
-            sent += panel.frame_changing(&player, time, &readout, time_changed, readout_changed);
+            sent += panel.frame_changing(
+                &player,
+                time,
+                stats.then_some(&readout),
+                time_changed,
+                readout_changed,
+            );
             frames += 1;
             let mut whole = Panel::new();
-            whole.frame(&player, true, time, &readout, true);
+            whole.frame(&player, true, time, stats.then_some(&readout), true);
             assert!(panel.pixels == whole.pixels, "frame {i}, at {player:?}");
         }
         // And it's worth it: well under every pixel, on average.
@@ -455,13 +467,13 @@ mod tests {
     fn columns_share_windows() {
         let readout = Readout::of(0, 0, 0, 0, 0);
         let mut panel = Panel::new();
-        panel.frame(&Player::START, true, None, &readout, true);
+        panel.frame(&Player::START, true, None, Some(&readout), true);
         assert_eq!(panel.windows, 1);
         // Up against a wall, a step back: every column changes, all of it.
         let mut p = player(1.5, 1.0 + RADIUS + 0.01, 3.0 * FRAC_PI_2);
-        panel.frame(&p, true, None, &readout, true);
+        panel.frame(&p, true, None, Some(&readout), true);
         step(&MAP, &mut p, Input { turn: 0, walk: -1 }, 0.02);
-        panel.frame_changing(&p, None, &readout, false, false);
+        panel.frame_changing(&p, None, Some(&readout), false, false);
         assert!(panel.windows <= 3, "{} windows", panel.windows);
         // A random walk: far fewer windows than columns.
         let mut rng = Rng(0x0dd_ba11);
@@ -473,7 +485,7 @@ mod tests {
                 walk: rng.sign(),
             };
             step(&MAP, &mut p, held, 0.05);
-            panel.frame_changing(&p, None, &readout, false, false);
+            panel.frame_changing(&p, None, Some(&readout), false, false);
             windows += panel.windows;
             frames += 1;
         }

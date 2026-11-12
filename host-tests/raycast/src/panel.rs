@@ -29,7 +29,7 @@ impl Panel {
         player: &Player,
         whole: bool,
         time: Option<(u8, u8)>,
-        readout: &Readout,
+        readout: Option<&Readout>,
         changed: bool,
     ) -> usize {
         self.send(player, whole, time, readout, changed, changed)
@@ -41,7 +41,7 @@ impl Panel {
         &mut self,
         player: &Player,
         time: Option<(u8, u8)>,
-        readout: &Readout,
+        readout: Option<&Readout>,
         time_changed: bool,
         readout_changed: bool,
     ) -> usize {
@@ -53,7 +53,7 @@ impl Panel {
         player: &Player,
         whole: bool,
         time: Option<(u8, u8)>,
-        readout: &Readout,
+        readout: Option<&Readout>,
         time_changed: bool,
         readout_changed: bool,
     ) -> usize {

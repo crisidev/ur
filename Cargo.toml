@@ -98,6 +98,10 @@ flash-stress = []
 # what it costs (flash, a little RAM) is for those who build it. The
 # simulator doesn't have it.
 game = []
+# The game, with the last second's frame rate and times drawn over it,
+# to measure it on a watch without a probe (they're also in the log, at
+# `debug`, with `game` alone).
+game-stats = ["game"]
 # Wedge the sensor bus for the first 5 s after boot, so that touch, the
 # accelerometer and the heart-rate sensor all have to recover from it; see
 # `wedge_task` in `src/i2c.rs`. Only for dev kits: it implies `debug-input`
