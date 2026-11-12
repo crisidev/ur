@@ -1,13 +1,42 @@
 //! Host tests for the firmware's `raycast` module, the `game` feature's
-//! world: the map, moving through it, and casting rays across it.
-//! `cargo test` runs them.
+//! world: the map, moving through it, and casting rays across it; and
+//! for `game_view`, how it looks. `cargo test` runs them.
+//!
+//! `cargo run --release -- view.ppm [x y angle]` draws the view from the
+//! start (or there), as the watch would, to look at.
 
 #[path = "../../../src/raycast.rs"]
 #[allow(dead_code)]
 mod raycast;
 
+#[path = "../../../src/game_view.rs"]
+#[allow(dead_code)]
+mod game_view;
+
+#[path = "../../../src/font.rs"]
+#[allow(dead_code)]
+mod font;
+
+mod panel;
+
 fn main() {
-    println!("run `cargo test`");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let Some(out) = args.first() else {
+        println!("run `cargo test`, or `cargo run -- view.ppm [x y angle]`");
+        return;
+    };
+    let mut player = raycast::Player::START;
+    if let [_, x, y, angle] = &args[..] {
+        player = raycast::Player {
+            x: x.parse().unwrap(),
+            y: y.parse().unwrap(),
+            angle: angle.parse().unwrap(),
+        };
+    }
+    let mut panel = panel::Panel::new();
+    let readout = game_view::Readout::of(197, 50_612, 57_100, 8_300, 38_880);
+    panel.frame(&player, true, Some((12, 34)), &readout, true);
+    std::fs::write(out, panel.ppm()).unwrap();
 }
 
 #[cfg(test)]
@@ -371,6 +400,91 @@ mod tests {
                 "step {i}: {before:?} to {p:?}"
             );
             assert!((0.0..TAU).contains(&p.angle), "step {i}: {p:?}");
+        }
+    }
+
+    // ==========================================================================
+    // The view
+    // ==========================================================================
+
+    use super::game_view::{self, BACKGROUND, Readout, SHADED, SHADES, SIZE, TEXTURES};
+    use super::panel::Panel;
+
+    /// Frames sent only where they changed show what whole ones would,
+    /// however the player moves, and whatever the HUD does.
+    #[test]
+    fn changed_rows_are_enough() {
+        let mut rng = Rng(0x1234_5678_9abc_def1);
+        let mut player = Player::START;
+        let mut panel = Panel::new();
+        let mut readout = Readout::of(0, 0, 0, 0, 0);
+        let mut time = None;
+        panel.frame(&player, true, time, &readout, true);
+        let (mut sent, mut frames) = (0, 0);
+        let mut held = Input::default();
+        for i in 0..400 {
+            if i % 15 == 0 {
+                held = Input {
+                    turn: rng.sign(),
+                    walk: rng.sign(),
+                };
+            }
+            step(&MAP, &mut player, held, 0.05);
+            let time_changed = rng.next().is_multiple_of(20);
+            if time_changed {
+                time = Some(((rng.next() % 24) as u8, (rng.next() % 60) as u8));
+            }
+            let readout_changed = rng.next().is_multiple_of(10);
+            if readout_changed {
+                readout = Readout::of(rng.next() as u32 % 300, 50_000, 60_000, 8_000, 30_000);
+            }
+            sent += panel.frame_changing(&player, time, &readout, time_changed, readout_changed);
+            frames += 1;
+            let mut whole = Panel::new();
+            whole.frame(&player, true, time, &readout, true);
+            assert!(panel.pixels == whole.pixels, "frame {i}, at {player:?}");
+        }
+        // And it's worth it: well under every pixel, on average.
+        let average = sent / frames;
+        assert!(average < SIZE * SIZE * 2 / 3, "{average} pixels a frame");
+    }
+
+    #[test]
+    fn far_is_darker() {
+        // RGB565's channels, roughly comparable (RGB444's are coarser:
+        // shades may round to the same).
+        let light = |c: &u16| (c >> 11) + (c >> 5 & 0x3f) / 2 + (c & 0x1f);
+        if !game_view::RGB444 {
+            for pair in SHADED.windows(2) {
+                for (near, far) in pair[0].iter().zip(&pair[1]) {
+                    assert!(light(far) <= light(near), "{near:x} to {far:x}");
+                }
+            }
+            for (lit, dark) in SHADED[0].iter().zip(&SHADED[SHADES - 1]) {
+                assert!(light(dark) < light(lit), "{lit:x} to {dark:x}");
+            }
+        }
+        assert_eq!(game_view::shade(0.0, false), 0);
+        assert_eq!(game_view::shade(0.0, true), 1);
+        assert_eq!(game_view::shade(1000.0, false), SHADES - 1);
+        assert_eq!(game_view::shade(1000.0, true), SHADES - 1);
+        // The ceiling and floor: darkest at the horizon, lightest at the
+        // edges, top and bottom.
+        assert_ne!(BACKGROUND[0], BACKGROUND[SIZE / 2 - 1]);
+        assert_ne!(BACKGROUND[SIZE - 1], BACKGROUND[SIZE / 2]);
+    }
+
+    /// Every texture uses all four of its colours, and none is all one.
+    #[test]
+    fn textures_have_their_colours() {
+        for (kind, texture) in TEXTURES.iter().enumerate() {
+            let mut seen = [0; 4];
+            for column in texture {
+                for v in 0..32 {
+                    seen[(column >> (2 * v) & 0b11) as usize] += 1;
+                }
+            }
+            assert!(seen.iter().all(|&n| n > 0), "texture {kind}: {seen:?}");
         }
     }
 }

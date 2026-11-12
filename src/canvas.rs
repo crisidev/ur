@@ -36,9 +36,11 @@ const BYTES: usize = WIDTH * HEIGHT / 2;
 /// once was) halved the transfers of a full-width flush, but cost 1.4 KB of
 /// RAM to save ~40 transfers' setup on the rare full-frame push.
 const BATCH: usize = WIDTH * SCALE * SCALE * 2;
-/// The bytes [`Canvas::lend`] lends.
+/// The bytes [`Canvas::lend`] lends, of the batch and front buffers.
 #[cfg(feature = "game")]
 pub const LENT: usize = BATCH;
+#[cfg(feature = "game")]
+pub const LENT_FRONT: usize = BYTES;
 
 /// The QR code's modules, in panel pixels; its side, with the standard
 /// quiet zone of four modules; and where it starts, centred on the panel
@@ -350,14 +352,16 @@ impl Canvas {
     // Pushing to the panel
     // ==========================================================================
 
-    /// Lends the batch buffer, for drawing to the panel without the
-    /// canvas (see `crate::game`), which costs no RAM of its own. The
-    /// panel then no longer shows what the canvas last sent, so the next
-    /// flush sends everything.
+    /// Lends the batch and front buffers, for drawing to the panel
+    /// without the canvas (see `crate::game`), which costs no RAM of its
+    /// own. The panel then no longer shows what the canvas last sent, so
+    /// the next flush sends everything, and makes `front` anew as it
+    /// goes; nothing else reads it until then. What's lent is left as it
+    /// was between lendings, until the canvas next draws.
     #[cfg(feature = "game")]
-    pub fn lend(&mut self) -> &mut [u8; LENT] {
+    pub fn lend(&mut self) -> (&mut [u8; LENT], &mut [u8; LENT_FRONT]) {
         self.front_valid = false;
-        &mut self.batch
+        (&mut self.batch, &mut self.front)
     }
 
     /// Sends every changed region of the canvas to the panel.
@@ -648,8 +652,9 @@ async fn start_pixels(display: &mut Display, rows: Range<usize>, columns: Range<
     // `Display::set_order`).
     #[cfg(feature = "game")]
     debug_assert!(
-        display.order() == crate::display::Order::Rows,
-        "the canvas drawing in the game's order"
+        display.order() == crate::display::Order::Rows
+            && display.format() == crate::display::Format::Rgb565,
+        "the canvas drawing in the game's order or format"
     );
     let panel = |r: Range<usize>| (r.start * SCALE) as u16..(r.end * SCALE) as u16;
     display.start_pixels(panel(columns), panel(rows)).await;

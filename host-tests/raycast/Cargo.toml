@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-# Host-side tests for `src/raycast.rs` (included via `#[path]`), the
-# `game` feature's world. Not part of the firmware workspace: run `cargo
-# test` from this directory.
+# Host-side tests for `src/raycast.rs` and `src/game_view.rs` (included
+# via `#[path]`), the `game` feature's world and how it looks. Not part of
+# the firmware workspace: run `cargo test` from this directory.
 [workspace]
 
 [dependencies]

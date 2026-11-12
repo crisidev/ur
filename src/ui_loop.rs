@@ -590,7 +590,7 @@ impl UiLoop {
         // `Canvas::lend` left it to send everything with its next flush.
         #[cfg(feature = "game")]
         if self.game_shown && !app.playing() {
-            board.display().set_order(crate::display::Order::Rows).await;
+            crate::game::leave(board.display()).await;
             self.game_shown = false;
         }
         // Apply screen power changes. Waking renders before the backlight
@@ -670,10 +670,7 @@ impl UiLoop {
             #[cfg(feature = "game")]
             if app.playing() {
                 if !self.game_shown {
-                    board
-                        .display()
-                        .set_order(crate::display::Order::Columns)
-                        .await;
+                    crate::game::enter(board.display(), &mut app.game).await;
                     self.game_shown = true;
                 }
                 self.game_frame(app, board, canvas).await;
@@ -764,9 +761,10 @@ impl UiLoop {
     #[cfg(feature = "game")]
     async fn game_frame(&mut self, app: &mut App, board: &mut impl Board, canvas: &mut Canvas) {
         app.game_step(Instant::now(), board.finger_at());
+        let (batch, front) = canvas.lend();
         crate::game::frame(
             board.display(),
-            canvas.lend(),
+            (batch, front),
             &mut app.game,
             &mut self.game_stats,
         )

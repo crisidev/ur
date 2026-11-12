@@ -1,72 +1,63 @@
 //! A raycaster game (the `game` feature), on a screen of its own at the
 //! end of the line below the clock (see `crate::ui`).
 //!
-//! The screen shows a title until tapped; then the game plays in a
-//! 162×120 viewport in the middle of the panel, until the button pauses
-//! it (back to the title; the button again goes to the clock, as
-//! everywhere). Whatever else wants the screen (a call, an alarm, "find
-//! my watch", pairing, an update, a notification's banner, the screen
-//! going off) pauses it too, as does [`IDLE`] without a finger on it.
+//! The screen shows a title until tapped; then the game plays on the
+//! whole panel, until the button pauses it (back to the title; the button
+//! again goes to the clock, as everywhere). Whatever else wants the
+//! screen (a call, an alarm, "find my watch", pairing, an update, a
+//! notification's banner, the screen going off) pauses it too, as does
+//! [`IDLE`] without a finger on it.
 //!
-//! The viewport doesn't go through the canvas, which would cost a
-//! framebuffer: the canvas draws what's around it once (see [`draw`]),
-//! then each frame is sent straight to the panel a column at a time
-//! ([`frame`]), each column made while the one before goes out, in two
-//! buffers borrowed from the canvas ([`Canvas::lend`]). For that the
-//! panel takes pixels column by column ([`Order::Columns`]), so that a
-//! column is one 240-byte transfer, under SPIM's 255-byte DMA limit; the
-//! UI loop switches back before the canvas draws again.
+//! The world, and how the player moves in it, is [`crate::raycast`]'s,
+//! and how it looks [`crate::game_view`]'s; this sends it, a column at a time,
+//! and steers by where a finger is held ([`Input::from_touch`]): the left
+//! and right thirds of the screen turn, the top and bottom ones walk
+//! forward and back. Walking into a wall knocks (`Pattern::BUMP`).
 //!
-//! The world, and how the player moves in it, is [`crate::raycast`]'s;
-//! this draws it, a ray a column, and steers by where a finger is held
-//! ([`Input::from_touch`]): the left and right thirds of the screen turn,
-//! the top and bottom ones walk forward and back. Walking into a wall
-//! knocks (`Pattern::BUMP`).
+//! Frames don't go through the canvas, which would cost a framebuffer:
+//! each is sent straight to the panel a column at a time, each column
+//! made while the one before goes out, in two buffers borrowed from the
+//! canvas ([`Canvas::lend`]). For that the panel takes pixels column by
+//! column ([`Order::Columns`]), and the UI loop switches back ([`leave`])
+//! before the canvas draws again.
 //!
-//! For now, walls are flat colours, and the last second's frame rate
-//! and times are drawn over the view ([`Stats`]), for a sealed watch
-//! without a probe to read the log.
-//!
-//! [`Order::Columns`]: crate::display::Order::Columns
-
-use core::ops::Range;
+//! The whole panel is more than the bus can send many times a second
+//! (115 KB a frame, 8 MHz: under 9). But the ceiling and floor are the
+//! same every frame, so only walls need sending: in each column, the rows
+//! its wall covers now, and those it covered last frame, which go back to
+//! ceiling and floor. Where the walls were is kept in the canvas's other
+//! buffer, also lent. Over it all, the HUD ([`Hud`]): the time, and, for
+//! now, the last second's frame rate and times, for a sealed watch
+//! without a probe to read the log; their rows are sent when they change.
 
 use embassy_time::{Duration, Instant};
 
 use crate::canvas::{self, Canvas, Color};
-use crate::display::Display;
+use crate::display::{Display, Format, Order};
 use crate::font;
+use crate::game_view::{self as view, Hud, Readout, view_column};
 use crate::motor::{self, Pattern};
-use crate::raycast::{self, Camera, Input, MAP, Player, Side};
+use crate::raycast::{self, Camera, Input, MAP, Player};
 
-/// The viewport, in panel pixels: centred, and on the canvas's 3× grid,
-/// so that [`draw`] can frame it exactly.
-pub const VIEW_X: Range<u16> = 39..201;
-pub const VIEW_Y: Range<u16> = 60..180;
-const VIEW_W: usize = (VIEW_X.end - VIEW_X.start) as usize;
-const VIEW_H: usize = (VIEW_Y.end - VIEW_Y.start) as usize;
-/// One column of the viewport, in bytes.
-const COLUMN: usize = VIEW_H * 2;
-/// Columns to a strip of [`Display::stream`]. One is a strip per DMA
-/// transfer (at most 255 bytes), so that the whole of it goes out while
-/// the next is made; more save each transfer's overhead, but stall after
-/// the first 255 bytes until the next is made. Two strips must fit in
-/// the canvas's batch (see [`Canvas::lend`]): up to 3.
-const STRIP_COLUMNS: usize = 1;
-const STRIP: usize = COLUMN * STRIP_COLUMNS;
-const _: () = assert!(VIEW_W.is_multiple_of(STRIP_COLUMNS));
-const _: () = assert!(2 * STRIP <= canvas::LENT, "two strips in the batch");
-const _: () = assert!((VIEW_X.start as usize).is_multiple_of(canvas::SCALE));
-const _: () = assert!((VIEW_X.end as usize).is_multiple_of(canvas::SCALE));
-const _: () = assert!((VIEW_Y.start as usize).is_multiple_of(canvas::SCALE));
-const _: () = assert!((VIEW_Y.end as usize).is_multiple_of(canvas::SCALE));
+/// The panel's width and height, in pixels: the view's.
+const PANEL: usize = canvas::WIDTH * canvas::SCALE;
+const _: () = assert!(view::SIZE == PANEL);
 
-/// The panel's width and height, in pixels.
-const PANEL: u16 = (canvas::WIDTH * canvas::SCALE) as u16;
+/// How pixels go to the panel (see [`view::RGB444`]).
+const FORMAT: Format = if view::RGB444 {
+    Format::Rgb444
+} else {
+    Format::Rgb565
+};
 
-/// The viewport in canvas pixels.
-const CELL_X: Range<i32> = VIEW_X.start as i32 / 3..VIEW_X.end as i32 / 3;
-const CELL_Y: Range<i32> = VIEW_Y.start as i32 / 3..VIEW_Y.end as i32 / 3;
+/// A column's colours, two bytes each as they're made, before they're
+/// packed to [`FORMAT`] (see [`view_column`]).
+const COLUMN: usize = PANEL * 2;
+const _: () = assert!(2 * COLUMN <= canvas::LENT, "two columns in the batch");
+/// Where the walls were, each column's first row and the one after its
+/// last (see [`view_column`]).
+const WALLS: usize = PANEL * 2;
+const _: () = assert!(WALLS <= canvas::LENT_FRONT, "the walls in the front buffer");
 
 /// How long without a finger on the screen pauses the game. The screen
 /// then goes off as after any input, `ui`'s timeout later.
@@ -92,6 +83,11 @@ pub struct Game {
     bumped: bool,
     /// Kept while paused: a game picks up where it left off.
     player: Player,
+    /// Whether the next frame sends every pixel: the panel shows
+    /// something else (the title), and where the walls were means nothing.
+    whole: bool,
+    /// The time the HUD shows, as hours and minutes, if known.
+    shown_time: Option<(u8, u8)>,
 }
 
 impl Game {
@@ -103,6 +99,8 @@ impl Game {
             stepped: Instant::from_ticks(0),
             bumped: false,
             player: Player::START,
+            whole: true,
+            shown_time: None,
         }
     }
 
@@ -113,6 +111,7 @@ impl Game {
         self.frame_due = now;
         self.stepped = now;
         self.bumped = false;
+        self.whole = true;
         cycles::enable();
     }
 
@@ -131,7 +130,7 @@ impl Game {
         }
         let seconds = (now - self.stepped).as_micros() as f32 / 1e6;
         self.stepped = now;
-        let input = Input::from_touch(finger_at, PANEL);
+        let input = Input::from_touch(finger_at, PANEL as u16);
         let bumped = raycast::step(&MAP, &mut self.player, input, seconds);
         if bumped && !self.bumped {
             motor::buzz(Pattern::BUMP);
@@ -145,110 +144,97 @@ impl Game {
     }
 }
 
-/// Draws the screen around the viewport, and in it, unless `playing`,
-/// the title.
-pub fn draw(canvas: &mut Canvas, playing: bool) {
+/// Draws the title, and how to play.
+pub fn draw(canvas: &mut Canvas) {
     canvas.clear(Color::BACKGROUND);
     let centre = |canvas: &mut Canvas, y, text: &str, color| {
         let x = (canvas::WIDTH as i32 - font::small_text_width(text)) / 2;
         canvas.text(x, y, text, color);
     };
-    centre(canvas, 8, "RAYCAST", Color::ACCENT);
-    // A frame one canvas pixel outside the viewport.
-    let (x, y) = (CELL_X.start - 1, CELL_Y.start - 1);
-    let (w, h) = (CELL_X.len() as i32 + 2, CELL_Y.len() as i32 + 2);
-    canvas.fill_rect(x, y, w, h, Color::TRACK);
-    canvas.fill_rect(
-        CELL_X.start,
-        CELL_Y.start,
-        CELL_X.len() as i32,
-        CELL_Y.len() as i32,
-        Color::BACKGROUND,
-    );
-    if playing {
-        centre(canvas, 68, "BUTTON: PAUSE", Color::TEXT_FAINT);
-    } else {
-        centre(canvas, 37, "TAP TO PLAY", Color::TEXT);
-        centre(canvas, 68, "BUTTON: BACK", Color::TEXT_FAINT);
-    }
+    centre(canvas, 10, "RAYCAST", Color::ACCENT);
+    centre(canvas, 26, "TAP TO PLAY", Color::TEXT);
+    centre(canvas, 42, "HOLD LEFT, RIGHT: TURN", Color::TEXT_FAINT);
+    centre(canvas, 50, "HOLD TOP, BOTTOM: WALK", Color::TEXT_FAINT);
+    centre(canvas, 66, "BUTTON: PAUSE, BACK", Color::TEXT_FAINT);
 }
 
-/// Draws a frame into the viewport, and keeps the time it took in
-/// `stats`. The panel must take pixels in [`Order::Columns`].
-///
-/// [`Order::Columns`]: crate::display::Order::Columns
-pub async fn frame(display: &mut Display, batch: &mut [u8], game: &mut Game, stats: &mut Stats) {
+/// Readies the panel for frames: column by column, in [`FORMAT`].
+pub async fn enter(display: &mut Display, game: &mut Game) {
+    display.set_order(Order::Columns).await;
+    display.set_format(FORMAT).await;
+    game.whole = true;
+}
+
+/// Puts the panel back as the canvas expects it.
+pub async fn leave(display: &mut Display) {
+    display.set_format(Format::Rgb565).await;
+    display.set_order(Order::Rows).await;
+}
+
+/// Draws a frame, and keeps the time it took in `stats`. The panel must
+/// be ready for it ([`enter`]). `lent` is the canvas's (see
+/// [`Canvas::lend`]), whose front buffer must be as the last frame left
+/// it, unless it's the first since [`enter`] or [`Game::start`].
+pub async fn frame(
+    display: &mut Display,
+    lent: (&mut [u8], &mut [u8]),
+    game: &mut Game,
+    stats: &mut Stats,
+) {
     let started = Instant::now();
-    let (sending, rest) = batch.split_at_mut(STRIP);
-    let making = &mut rest[..STRIP];
-    let camera = Camera::new(&game.player, VIEW_W, VIEW_H);
-    let readout = &stats.readout;
+    let (batch, front) = lent;
+    let (sending, rest) = batch.split_at_mut(COLUMN);
+    let making = &mut rest[..COLUMN];
+    let walls = front[..WALLS].as_chunks_mut::<2>().0;
+    let whole = core::mem::take(&mut game.whole);
+    let time = crate::clock::now().map(|t| (t.hour, t.minute));
+    let time_changed = time != core::mem::replace(&mut game.shown_time, time);
+    let readout_changed = core::mem::take(&mut stats.readout_changed);
+    let hud = Hud {
+        time,
+        readout: &stats.readout,
+        time_changed: whole || time_changed,
+        readout_changed: whole || readout_changed,
+    };
+    let camera = Camera::new(&game.player, PANEL, PANEL);
     let mut fill_cycles = 0u32;
+    let mut pixels = 0u32;
     display
-        .stream(
-            VIEW_X,
-            VIEW_Y,
-            (sending, making),
-            VIEW_W / STRIP_COLUMNS,
-            |i, strip| {
-                let start = cycles::now();
-                for (c, column) in strip.as_chunks_mut::<COLUMN>().0.iter_mut().enumerate() {
-                    let x = i * STRIP_COLUMNS + c;
-                    view_column(&camera, x, column);
-                    readout.draw(x, column);
-                }
-                fill_cycles = fill_cycles.wrapping_add(cycles::now().wrapping_sub(start));
-            },
-        )
+        .stream_columns(0..PANEL as u16, (sending, making), |x, column| {
+            let start = cycles::now();
+            let x = usize::from(x);
+            let rows = view_column(&camera, x, column, &mut walls[x], whole, &hud);
+            pixels += rows.len() as u32;
+            fill_cycles = fill_cycles.wrapping_add(cycles::now().wrapping_sub(start));
+            rows.start as u16..rows.end as u16
+        })
         .await;
     let ended = Instant::now();
     game.frame_due = ended + FRAME_GAP;
-    stats.add(ended, ended - started, fill_cycles);
-}
-
-/// Column `x` of the view: ceiling, the wall its ray hits, and floor.
-/// For now in flat colours: a kind of wall each, darker on its north and
-/// south faces, for the corners to show.
-fn view_column(camera: &Camera, x: usize, column: &mut [u8; COLUMN]) {
-    const fn rgb(r: u16, g: u16, b: u16) -> [u8; 2] {
-        ((r >> 3) << 11 | (g >> 2) << 5 | b >> 3).to_be_bytes()
-    }
-    const CEILING: [u8; 2] = rgb(40, 40, 48);
-    const FLOOR: [u8; 2] = rgb(72, 64, 56);
-    /// By kind of wall (see `raycast::MAP`), lit and shaded.
-    const WALLS: [[[u8; 2]; 2]; raycast::WALL_KINDS as usize] = [
-        [rgb(160, 160, 168), rgb(112, 112, 120)],
-        [rgb(176, 64, 48), rgb(124, 44, 32)],
-        [rgb(56, 112, 176), rgb(40, 80, 124)],
-        [rgb(64, 152, 72), rgb(44, 108, 52)],
-    ];
-    let hit = raycast::cast(&MAP, camera, raycast::across(x, VIEW_W));
-    let shades = &WALLS[usize::from(hit.wall - 1) % WALLS.len()];
-    let wall = shades[usize::from(hit.side == Side::NorthSouth)];
-    let rows = raycast::wall_rows(hit.distance, VIEW_H);
-    let pixels = column.as_chunks_mut::<2>().0;
-    pixels[..rows.start].fill(CEILING);
-    pixels[rows.clone()].fill(wall);
-    pixels[rows.end..].fill(FLOOR);
+    let bytes = FORMAT.bytes(pixels as usize) as u32;
+    stats.add(ended, ended - started, fill_cycles, bytes);
 }
 
 /// Frame times, logged once a second (at `debug`: build with
-/// `DEFMT_LOG=info,ur::game=debug` to see them), and drawn over the test
-/// pattern ([`Readout`]).
+/// `DEFMT_LOG=info,ur::game=debug` to see them), and drawn over the view
+/// ([`Readout`]).
 #[derive(Default)]
 pub struct Stats {
     readout: Readout,
+    /// Whether the readout changed since a frame last drew it.
+    readout_changed: bool,
     since: Option<Instant>,
     frames: u32,
-    /// Sums and maxima, in microseconds; filling's from CPU cycles.
+    /// Sums and maxima, in microseconds; making columns' from CPU cycles.
     frame_us: u32,
     frame_max: u32,
     fill_us: u32,
     fill_max: u32,
+    bytes: u32,
 }
 
 impl Stats {
-    fn add(&mut self, now: Instant, took: Duration, fill_cycles: u32) {
+    fn add(&mut self, now: Instant, took: Duration, fill_cycles: u32, bytes: u32) {
         let frame = took.as_micros() as u32;
         let fill = fill_cycles / cycles::PER_MICRO;
         let since = *self.since.get_or_insert(now);
@@ -257,143 +243,32 @@ impl Stats {
         self.frame_max = self.frame_max.max(frame);
         self.fill_us += fill;
         self.fill_max = self.fill_max.max(fill);
+        self.bytes += bytes;
         if now - since >= Duration::from_secs(1) {
             let ms = (now - since).as_millis() as u32;
             defmt::debug!(
-                "game: {=u32}.{=u32} fps; frame {=u32} us (max {=u32}), filling {=u32} us (max {=u32}), {=u32} B a frame in {=u32} B strips",
+                "game: {=u32}.{=u32} fps; frame {=u32} us (max {=u32}), making {=u32} us (max {=u32}), {=u32} B a frame",
                 self.frames * 1000 / ms,
                 self.frames * 10_000 / ms % 10,
                 self.frame_us / self.frames,
                 self.frame_max,
                 self.fill_us / self.frames,
                 self.fill_max,
-                (COLUMN * VIEW_W) as u32,
-                STRIP as u32,
-            );
-            self.readout = Readout::of(
-                self.frames * 10_000 / ms,
-                self.frame_us / self.frames,
-                self.frame_max,
-                self.fill_us / self.frames,
+                self.bytes / self.frames,
             );
             *self = Self {
-                readout: core::mem::take(&mut self.readout),
+                readout: Readout::of(
+                    self.frames * 10_000 / ms,
+                    self.frame_us / self.frames,
+                    self.frame_max,
+                    self.fill_us / self.frames,
+                    self.bytes / self.frames,
+                ),
+                readout_changed: true,
                 since: Some(now),
                 ..Self::default()
             };
         }
-    }
-}
-
-/// The last second's [`Stats`] as text, drawn into the viewport's top
-/// left (in the small font at 2×, white on black) as its columns are
-/// made: frames a second, a frame's milliseconds (average and most), and
-/// the CPU's part of them (filling the strips).
-#[derive(Default)]
-struct Readout {
-    lines: [[u8; Self::CHARS]; 3],
-}
-
-impl Readout {
-    const CHARS: usize = 18;
-    const SCALE: usize = 2;
-    /// A character's advance, in pixels: three, and a gap.
-    const ADVANCE: usize = 4 * Self::SCALE;
-    const LINE: usize = 6 * Self::SCALE;
-    /// Where the text starts, inside the test pattern's bands.
-    const X: usize = 8;
-    const Y: usize = 8;
-    const W: usize = Self::CHARS * Self::ADVANCE;
-    const H: usize = 3 * Self::LINE;
-
-    /// From frames a second in tenths, and times in microseconds.
-    fn of(fps_x10: u32, frame_us: u32, frame_max: u32, fill_us: u32) -> Self {
-        let mut readout = Self::default();
-        let tenths = |line: &mut Line, n: u32| {
-            line.number(n / 10);
-            line.push(b'.');
-            line.number(n % 10);
-        };
-        let mut line = Line::default();
-        tenths(&mut line, fps_x10);
-        line.text(b" FPS");
-        readout.lines[0] = line.done();
-        let mut line = Line::default();
-        line.text(b"MS ");
-        tenths(&mut line, frame_us / 100);
-        line.text(b" MAX ");
-        tenths(&mut line, frame_max / 100);
-        readout.lines[1] = line.done();
-        let mut line = Line::default();
-        line.text(b"CPU ");
-        tenths(&mut line, fill_us / 100);
-        line.text(b" MS");
-        readout.lines[2] = line.done();
-        readout
-    }
-
-    /// Draws over column `x` of the viewport.
-    fn draw(&self, x: usize, column: &mut [u8; COLUMN]) {
-        const WHITE: [u8; 2] = [0xff, 0xff];
-        const BLACK: [u8; 2] = [0, 0];
-        let Some(dx) = x.checked_sub(Self::X).filter(|&dx| dx < Self::W) else {
-            return;
-        };
-        let (char_at, glyph_x) = (dx / Self::ADVANCE, dx % Self::ADVANCE / Self::SCALE);
-        let pixels = column.as_chunks_mut::<2>().0;
-        for (l, line) in self.lines.iter().enumerate() {
-            let rows = match line[char_at] {
-                0 => [0; 5],
-                c => crate::font::small_glyph(char::from(c)),
-            };
-            let top = Self::Y + l * Self::LINE;
-            for (dy, pixel) in pixels[top..top + Self::LINE].iter_mut().enumerate() {
-                let row = dy / Self::SCALE;
-                let lit = glyph_x < 3 && row < 5 && rows[row] >> (2 - glyph_x) & 1 != 0;
-                *pixel = if lit { WHITE } else { BLACK };
-            }
-        }
-    }
-}
-
-const _: () = assert!(Readout::X + Readout::W <= VIEW_W);
-const _: () = assert!(Readout::Y + Readout::H <= VIEW_H);
-
-/// A line of [`Readout`] being written; what doesn't fit is dropped.
-#[derive(Default)]
-struct Line {
-    bytes: [u8; Readout::CHARS],
-    len: usize,
-}
-
-impl Line {
-    fn push(&mut self, b: u8) {
-        if let Some(slot) = self.bytes.get_mut(self.len) {
-            *slot = b;
-            self.len += 1;
-        }
-    }
-
-    fn text(&mut self, text: &[u8]) {
-        text.iter().for_each(|&b| self.push(b));
-    }
-
-    fn number(&mut self, mut n: u32) {
-        let mut digits = [0u8; 10];
-        let mut i = digits.len();
-        loop {
-            i -= 1;
-            digits[i] = b'0' + (n % 10) as u8;
-            n /= 10;
-            if n == 0 {
-                break;
-            }
-        }
-        self.text(&digits[i..]);
-    }
-
-    fn done(self) -> [u8; Readout::CHARS] {
-        self.bytes
     }
 }
 

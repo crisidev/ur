@@ -28,19 +28,20 @@ needs nothing special; LFS stores it.
   `on_time` (`power`'s hourly split),
   `minute_ring` (`activity`'s history as the clock moves), `dfu_slot`
   (where `dfu` erases and writes an update), `rtt_ring` (which bytes
-  `field_log` reads of the log's buffer), `raycast` (the `game`
-  feature's world), and `bthome`'s encoding) are pure logic, tested on the computer, as are retro's
+  `field_log` reads of the log's buffer), `raycast` and `game_view`
+  (the `game` feature's world, and how it looks), and `bthome`'s
+  encoding) are pure logic, tested on the computer, as are retro's
   colours (`palette`, and `themes/retro/schemes.rs`: that those with
   different meanings differ in every colour scheme).
 - `src/themes/<name>/`: a theme each, how every screen looks; see
   [Themes](#themes).
 - `host-tests/<module>/`: one crate per hardware-free module (`sleep`'s
   covers `stages` too, `gb`'s `phone`, `gb_buckets`'s `sleep_hold`,
-  `aranet`'s `bthome_sensor`, and `dfu`'s is of `dfu_slot`), which
-  includes the firmware's source file with `#[path]` and tests it on the
-  host; `packet_pool`'s does the same for the Bluetooth host's packet
-  buffers, which aren't pure logic but build there. Some also replay
-  real data (see [Field logs](#field-logs)).
+  `aranet`'s `bthome_sensor`, `raycast`'s `game_view`, and `dfu`'s is
+  of `dfu_slot`), which includes the firmware's source file with
+  `#[path]` and tests it on the host; `packet_pool`'s does the same
+  for the Bluetooth host's packet buffers, which aren't pure logic but
+  build there. Some also replay real data (see [Field logs](#field-logs)).
 - `sim/`: a simulator that runs the UI on the computer; see
   [The simulator](#the-simulator).
 - `scripts/`: packaging (`package.py`, `release.sh`), flashing and

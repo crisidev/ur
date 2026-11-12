@@ -705,4 +705,6 @@ mod coverage;
 #[cfg(feature = "game")]
 mod game;
 #[cfg(feature = "game")]
+mod game_view;
+#[cfg(feature = "game")]
 mod raycast;

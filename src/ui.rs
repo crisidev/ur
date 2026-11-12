@@ -2851,7 +2851,7 @@ impl App {
             // Not the theme's: the game looks the same in every one, bar
             // its colours.
             #[cfg(feature = "game")]
-            Screen::Game => crate::game::draw(canvas, self.playing()),
+            Screen::Game => crate::game::draw(canvas),
         }
         match self.place() {
             // Notifications nobody has seen. The clock face has no other

@@ -95,12 +95,38 @@ pub enum Order {
     Columns,
 }
 
+/// How pixels are sent (COLMOD; see [`Display::set_format`]).
+#[cfg(feature = "game")]
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum Format {
+    /// Two bytes a pixel, big-endian: what the canvas sends, and what
+    /// every other part of the firmware assumes.
+    Rgb565,
+    /// Three bytes to two pixels (`RG BR GB`), 4 bits a channel: a
+    /// quarter less to send.
+    Rgb444,
+}
+
+#[cfg(feature = "game")]
+impl Format {
+    /// The bytes `pixels` pixels take, an even number of them in
+    /// [`Format::Rgb444`].
+    pub const fn bytes(self, pixels: usize) -> usize {
+        match self {
+            Self::Rgb565 => pixels * 2,
+            Self::Rgb444 => pixels * 3 / 2,
+        }
+    }
+}
+
 pub struct Display {
     /// The bus, while we're using it (see the module docs).
     held: Option<spi::Guard>,
-    /// See [`Display::set_order`].
+    /// See [`Display::set_order`] and [`Display::set_format`].
     #[cfg(feature = "game")]
     order: Order,
+    #[cfg(feature = "game")]
+    format: Format,
     cs: Output<'static>,
     /// Low for command bytes, high for parameters and pixel data.
     dc: Output<'static>,
@@ -126,6 +152,8 @@ impl Display {
             held: None,
             #[cfg(feature = "game")]
             order: Order::Rows,
+            #[cfg(feature = "game")]
+            format: Format::Rgb565,
             cs,
             dc,
             last_sleep_change: Instant::now(),
@@ -311,69 +339,94 @@ impl Display {
         self.order
     }
 
-    /// Fills a window with `strips` strips of pixels, each made by `fill`
-    /// (given its index, and a buffer to fill whole) while the one before
-    /// it goes out: two buffers, `buffers`, of the strip's size, take
-    /// turns. The window's pixels in the current [`Order`], big-endian
-    /// RGB565, and the strips must add up to it.
+    /// Switches how pixels are sent (COLMOD). Like [`Display::set_order`],
+    /// what switches away from [`Format::Rgb565`] switches back before
+    /// anything else draws; a reset (which runs [`Display::new`]) does
+    /// too, and sleep keeps it.
+    #[cfg(feature = "game")]
+    pub async fn set_format(&mut self, format: Format) {
+        if format == self.format {
+            return;
+        }
+        let colmod = match format {
+            Format::Rgb565 => 0x55,
+            Format::Rgb444 => 0x53,
+        };
+        self.command(COLMOD, &[colmod]).await;
+        self.format = format;
+        defmt::debug!("display: {}", format);
+    }
+
+    #[cfg(feature = "game")]
+    pub fn format(&self) -> Format {
+        self.format
+    }
+
+    /// Sends one column's run of pixels each, in [`Order::Columns`], for
+    /// every column in `columns`: `fill` makes column `x`'s, into the
+    /// start of the buffer it's given, and says which rows it made (an
+    /// even number of them in [`Format::Rgb444`]; none sends nothing).
+    /// It makes each while the one before goes out: two buffers,
+    /// `buffers`, each big enough for a whole column, take turns.
     ///
-    /// The bus is held throughout, as for any window, so the SPI flash
-    /// waits for the whole of it.
+    /// Each column is a window of its own, with the bus held only for
+    /// it, so the SPI flash, and every other task, gets turns between
+    /// them. A window costs its commands (11 bytes, sent blocking), so
+    /// only for runs that vary in where they are, as a raycaster's do.
     ///
     /// SPIM's DMA moves at most 255 bytes at a time (embassy-nrf starts
     /// each piece once the last is done, from its interrupt's wake-up),
-    /// and `fill` runs without yielding: so with strips of up to 255
-    /// bytes, the whole strip goes out while the next is made. Longer
-    /// ones stall after their first piece until `fill` returns.
-    ///
-    /// Every strip's transfer is an await, so other tasks run between
-    /// strips.
+    /// and `fill` runs without yielding: a column's first piece goes out
+    /// while the next is made, and the rest after.
     #[cfg(feature = "game")]
-    pub async fn stream(
+    pub async fn stream_columns(
         &mut self,
         columns: Range<u16>,
-        rows: Range<u16>,
         buffers: (&mut [u8], &mut [u8]),
-        strips: usize,
-        mut fill: impl FnMut(usize, &mut [u8]),
+        mut fill: impl FnMut(u16, &mut [u8]) -> Range<u16>,
     ) {
+        debug_assert!(self.order == Order::Columns);
         let (mut sending, mut making) = buffers;
-        debug_assert_eq!(sending.len(), making.len(), "strips of one size");
-        debug_assert_eq!(
-            sending.len() * strips,
-            columns.len() * rows.len() * 2,
-            "strips that fill the window"
-        );
-        self.start_pixels(columns, rows).await;
-        if strips > 0 {
-            fill(0, sending);
-        }
-        for strip in 0..strips {
-            let bus = self
-                .held
-                .as_mut()
-                .expect("the bus is locked around every transfer");
-            let next = strip + 1;
-            if next < strips {
-                // The next strip is made while this one goes out. But not
-                // at once: on the nRF52832, embassy-nrf's workaround for
-                // anomaly 109 makes a transfer's first poll start a
-                // transfer of nothing, and only the poll after its
-                // STARTED interrupt starts the real one. Yielding first
-                // gets that poll in before `fill` holds the CPU.
-                let make = async {
-                    embassy_futures::yield_now().await;
-                    fill(next, &mut *making)
-                };
-                embassy_futures::join::join(spi::write(bus, sending), make).await;
+        let Some(mut x) = columns.clone().next() else {
+            return;
+        };
+        let mut rows = fill(x, sending);
+        loop {
+            let bytes = self.format.bytes(rows.len());
+            debug_assert!(self.format != Format::Rgb444 || rows.len().is_multiple_of(2));
+            let next = x + 1;
+            let more = next < columns.end;
+            // The next column is made while this one goes out. But not at
+            // once: on the nRF52832, embassy-nrf's workaround for anomaly
+            // 109 makes a transfer's first poll start a transfer of
+            // nothing, and only the poll after its STARTED interrupt
+            // starts the real one. Yielding first gets that poll in before
+            // `fill` holds the CPU.
+            let make = async {
+                embassy_futures::yield_now().await;
+                more.then(|| fill(next, &mut *making))
+            };
+            let next_rows = if rows.is_empty() {
+                make.await
             } else {
-                spi::write(bus, sending).await;
-            }
-            #[cfg(feature = "compare")]
-            crate::compare::pixels(sending.len());
+                self.start_pixels(x..next, rows).await;
+                let bus = self
+                    .held
+                    .as_mut()
+                    .expect("the bus is locked around every transfer");
+                let (_, next_rows) =
+                    embassy_futures::join::join(spi::write(bus, &sending[..bytes]), make).await;
+                #[cfg(feature = "compare")]
+                crate::compare::pixels(bytes);
+                self.end_pixels();
+                next_rows
+            };
+            let Some(next_rows) = next_rows else {
+                return;
+            };
             core::mem::swap(&mut sending, &mut making);
+            (x, rows) = (next, next_rows);
         }
-        self.end_pixels();
     }
 
     /// Sends a command and its parameters.
