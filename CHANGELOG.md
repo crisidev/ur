@@ -18,6 +18,8 @@ missing below were test builds for the dev kit.
 
 ### Changed
 
+- Never measure the heart rate on the charger, charging or full: its LED stays dark there, a try under way stops within a second and counts as neither a reading nor a failure, and the clock face says OFF for the heart rate; taken off, the watch measures again two minutes later, or after 10 seconds if the clock face is looked at (f95500e, b3c315a)
+
 ### Deprecated
 
 ### Removed
