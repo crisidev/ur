@@ -39,7 +39,8 @@ use crate::rtt_ring;
 use crate::spi_flash::{self, SpiFlash};
 use crate::spi_flash::{FLASH, SECTOR};
 
-/// The top half of the 4 MiB SPI flash: about two days of debug-level logs.
+/// The top half of the 4 MiB SPI flash: about 20 hours of a worn watch's
+/// debug-level logs (0.11.0-rc.2's, ~110 KB an hour awake and ~70 asleep).
 pub const REGION: core::ops::Range<u32> = 0x20_0000..0x40_0000;
 pub const SECTORS: u32 = (REGION.end - REGION.start) / SECTOR;
 

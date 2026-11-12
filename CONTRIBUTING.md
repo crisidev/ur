@@ -689,9 +689,10 @@ Some host-test crates replay decoded logs, to tune against real wrists:
   to N s`. And every awake session logs the accelerometer's samples
   (`accel: [x, y, z, …]`, every 2 s, ~12 Hz, in 1/64 g), to find a walk's
   cadence and the readings that lock onto it. That's ~46 bytes a second
-  of session, plus the longer sessions' own lines: ~0.4 MB a day more,
-  so the 2 MB holds ~22 hours, not ~26. Fetch the log at least once a
-  day.
+  of session, plus the longer sessions' own lines. On 0.11.0-rc.2's
+  first night on a worn watch, the log took ~110 KB an hour awake and
+  ~70 asleep, so the 2 MB holds about 20 hours. Fetch the log at least
+  twice a day.
 
 Steps come from the accelerometer's own counter, which a log can't
 replay. A capture build, `UR_ACTIVITY_LOG=trace scripts/release.sh --pre
