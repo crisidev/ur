@@ -19,3 +19,18 @@ rustflags = ["-C", "target-cpu=cortex-m4"]
 
 [env]
 DEFMT_LOG = "info"
+# The Nordic crates (nrf-sdc-sys, nrf-mpsl-sys) generate their bindings
+# with bindgen, which parses the headers with libclang (the newest one
+# installed) but takes the include paths from the `clang` on PATH, passed
+# as `-isystem`. When those are different LLVM releases, as on GitHub's
+# Ubuntu 26.04 image (libclang 22, `clang` 21), libclang's own `stdint.h`
+# include_next's the other release's, whose include guard it has already
+# set, so `uint32_t` and friends are never defined and bindgen fails.
+# `-ffreestanding`, which firmware is (there's no C library), makes
+# clang's `stdint.h` define the types itself instead of deferring to a
+# hosted one, so any pair works, and an installed newlib can't sneak into
+# the bindings either. The bindings come out as they did without it; they
+# differ between libclang releases only in doc comments (23 adds some to
+# macros), and the firmware built is the same with any of them. A value
+# of this variable in the environment takes precedence over this one.
+BINDGEN_EXTRA_CLANG_ARGS_thumbv7em_none_eabihf = "-ffreestanding"

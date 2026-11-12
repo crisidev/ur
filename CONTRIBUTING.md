@@ -66,6 +66,14 @@ that target the default, and `build.rs` passes the linker scripts (`link.x` from
 release profile is what runs on watches; unoptimised builds are too large
 and slow.
 
+The Bluetooth stack's crates (`nrf-sdc-sys`, `nrf-mpsl-sys`) generate
+their bindings to Nordic's C headers with [bindgen] as they build, which
+needs libclang (Debian and Ubuntu: `libclang-dev`; Arch: `clang`). Any
+recent release does. Where several are installed (GitHub's Ubuntu 26.04
+runners have three), bindgen's libclang and the `clang` on your `PATH`
+may be different releases; `.cargo/config.toml` parses the headers
+freestanding, which makes that work.
+
 To build what a release ships, both variants, packaged for the
 bootloader, into `dist/`:
 
@@ -813,6 +821,7 @@ tests' Cargo.lock, and the pinned toolchain quarterly.
 [pinetime-bootloader]: https://github.com/InfiniTimeOrg/pinetime-mcuboot-bootloader
 [rustup]: https://rustup.rs
 [defmt]: https://defmt.ferrous-systems.com
+[bindgen]: https://rust-lang.github.io/rust-bindgen/
 [defmt-print]: https://crates.io/crates/defmt-print
 [RTT]: https://defmt.ferrous-systems.com/setup
 [ESP32-C3]: https://www.espressif.com/en/products/socs/esp32-c3
