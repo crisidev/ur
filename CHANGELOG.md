@@ -22,6 +22,8 @@ missing below were test builds for the dev kit.
 
 ### Fixed
 
+- Show the day's colour schemes and daytime brightness by day where the sun sets after local midnight, which had the night's all day: Tromsø the weeks either side of the midnight sun, Reykjavik around midsummer, and anywhere while the phone's time zone is hours from the last location the watch had (1f7bfb3)
+
 ### Security
 
 ## [0.11.0] - 2026-11-12
