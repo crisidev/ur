@@ -1781,7 +1781,10 @@ mod tests {
             };
             let evidence: Vec<_> = (read..=now).map(|t| self.evidence(t)).collect();
             let mut out = vec![Class::Unknown; evidence.len()];
-            sleep::classify(before, &evidence, &mut out);
+            let before_evidence = read
+                .checked_sub(1)
+                .map_or(sleep::Minute::default(), |t| self.evidence(t));
+            sleep::classify(before, before_evidence, &evidence, &mut out);
             self.kinds[rewrite..=now].copy_from_slice(&out[rewrite - read..]);
 
             let oldest = (now + 1).saturating_sub(DAY as usize);
@@ -2152,6 +2155,25 @@ mod tests {
                 ],
                 8_363_050_808_684_161_274,
                 vec![(5240, 0, false), (35480, 7, false), (9329, 53, false)],
+            ),
+            // Lying still, then the watch switched off: the classifier
+            // smoothed the oldest minute it read over itself and the one
+            // after only, and so found a stillness long enough for sleep
+            // that no pass before had, and made the window's oldest
+            // minute sleep (see `sleep::classify`).
+            (
+                vec![
+                    (Active, 37),
+                    (Lounging, 17),
+                    (Asleep, 28),
+                    (Off, 16),
+                    (DeepAsleep, 23),
+                    (Rem, 71),
+                    (Lounging, 35),
+                    (OffWrist, 300),
+                ],
+                1,
+                vec![(3744, 0, false)],
             ),
         ];
         for (spans, seed, gaps) in cases {

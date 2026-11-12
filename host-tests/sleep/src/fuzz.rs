@@ -219,7 +219,7 @@ fn any_minutes_classify_as_their_evidence_says() {
                 .collect();
             let before = Kind::from_bits(before % 8);
             let mut kinds = vec![Kind::Unknown; minutes.len()];
-            sleep::classify(before, &minutes, &mut kinds);
+            sleep::classify(before, sleep::Minute::default(), &minutes, &mut kinds);
 
             let n = minutes.len();
             for (t, (minute, &kind)) in minutes.iter().zip(&kinds).enumerate() {

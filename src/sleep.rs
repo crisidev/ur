@@ -146,12 +146,21 @@ pub const CONTEXT: usize = 30;
 // ==============================================================================
 
 /// Classifies `minutes` (oldest first) into `out`, given the class of the
-/// minute just before them (final, from an earlier pass).
-pub fn classify(before: Kind, minutes: &[Minute], out: &mut [Kind]) {
+/// minute just before them (final, from an earlier pass), and its evidence
+/// (unseen if there's none).
+///
+/// That minute's evidence is only the oldest's neighbour, for the
+/// smoothing (see [`is_still`]). Without it, the oldest was smoothed over
+/// itself and the minute after only, so it could be still at one pass and
+/// not at the pass before, which had its neighbour: a stillness then grew
+/// by a minute just by the window sliding on, enough to pass for sleep,
+/// and the window's oldest minute, after it, turned to sleep once at that
+/// pass and for good, long after it had gone to Gadgetbridge as awake.
+pub fn classify(before: Kind, before_evidence: Minute, minutes: &[Minute], out: &mut [Kind]) {
     assert_eq!(minutes.len(), out.len(), "one class per minute");
     let n = minutes.len();
 
-    let still = |t: usize| is_still(minutes, t);
+    let still = |t: usize| is_still(before_evidence, minutes, t);
     // The length of the run of minutes from `t` for which `f` holds.
     let run = |t: usize, f: &dyn Fn(usize) -> bool| (t..n).take_while(|&u| f(u)).count();
     // The length of the stillness from `t`, bridging stirs of up to `STIR`
@@ -251,10 +260,11 @@ pub fn classify(before: Kind, minutes: &[Minute], out: &mut [Kind]) {
 /// Whether minute `t` of `minutes` is still: seen, stepless, and with its
 /// movement averaged with each neighbour's below [`STILL_LIMIT`], so one
 /// twitchy minute in the middle of stillness (or one still minute while
-/// active) doesn't flip the verdict.
-fn is_still(minutes: &[Minute], t: usize) -> bool {
+/// active) doesn't flip the verdict. `before` is the oldest's neighbour
+/// (unseen if none).
+fn is_still(before: Minute, minutes: &[Minute], t: usize) -> bool {
     still_among(
-        t.checked_sub(1).map(|i| minutes[i]),
+        Some(t.checked_sub(1).map_or(before, |i| minutes[i])),
         minutes[t],
         minutes.get(t + 1).copied(),
     )
@@ -320,9 +330,9 @@ pub fn unsettled_onset(minutes: &[Minute]) -> Option<usize> {
     }
     let still = |t: usize| {
         if t + 2 >= n {
-            is_still(ending, t - tail)
+            is_still(Minute::default(), ending, t - tail)
         } else {
-            is_still(minutes, t)
+            is_still(Minute::default(), minutes, t)
         }
     };
 

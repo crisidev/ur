@@ -207,7 +207,10 @@ fn parse(path: &str) -> Night {
             kinds[start - 1]
         };
         let mut out = vec![Kind::Unknown; now + 1 - start];
-        sleep::classify(before, &evidence[start..=now], &mut out);
+        let before_evidence = start
+            .checked_sub(1)
+            .map_or(Default::default(), |t| evidence[t]);
+        sleep::classify(before, before_evidence, &evidence[start..=now], &mut out);
         kinds[window..=now].copy_from_slice(&out[window - start..]);
         let mut record = Record {
             kinds: &mut kinds,

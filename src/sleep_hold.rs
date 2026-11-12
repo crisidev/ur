@@ -173,13 +173,15 @@
 //! but for the same untidiness: the classifier can still turn an awake
 //! minute near its window's far end into sleep (a stillness, say, that
 //! reads differently once the window no longer starts before it). That
-//! didn't happen on simulated nights (see `host-tests/gb_buckets`), only
-//! on days made of random stretches of anything, with the watch switched
-//! off right after lying still; nor, once settling held back the naps
-//! after it (it did happen without that, in a nap after getting up, and
-//! without the window's age, in a few still minutes of an evening).
-//! Ruling it out would hold every fetch back by the whole window, and so
-//! the day's steps by 90 minutes.
+//! didn't happen on 2 million simulated nights (see
+//! `host-tests/gb_buckets`), once the classifier smoothed the oldest
+//! minute it reads with the one before, as every other (without that, it
+//! did a few times in a million, lying still with the watch switched off
+//! after); nor, once settling held back the naps after it (it did happen
+//! without that, in a nap after getting up, and without the window's
+//! age, in a few still minutes of an evening). Ruling it out would hold
+//! every fetch back by the whole window, and so the day's steps by 90
+//! minutes.
 //!
 //! **A hold can't last for ever**: from [`CAP`] minutes back, a fetch sends
 //! whatever the watch has, settled or not. Otherwise a sleep that never

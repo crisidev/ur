@@ -190,7 +190,7 @@ fn heart_rates(seed: u64, truth: &[Truth]) -> Vec<u8> {
 /// Classifies everything at once.
 fn batch(minutes: &[Minute]) -> Vec<Kind> {
     let mut out = vec![Kind::Unknown; minutes.len()];
-    sleep::classify(Kind::Unknown, minutes, &mut out);
+    sleep::classify(Kind::Unknown, Minute::default(), minutes, &mut out);
     out
 }
 
@@ -258,7 +258,10 @@ fn settling(minutes: &[Minute], heart: &[u8]) -> (Vec<Kind>, Vec<bool>, Vec<(usi
             kinds[read - 1]
         };
         let mut out = vec![Kind::Unknown; now + 1 - read];
-        sleep::classify(before, &minutes[read..=now], &mut out);
+        let before_evidence = read
+            .checked_sub(1)
+            .map_or(Minute::default(), |t| minutes[t]);
+        sleep::classify(before, before_evidence, &minutes[read..=now], &mut out);
         kinds[rewrite..=now].copy_from_slice(&out[rewrite - read..]);
         if let Some((start, end, _)) = last_sleep(&kinds[..=now])
             && settled.restaged(now as i64, start as i64, end as i64)
