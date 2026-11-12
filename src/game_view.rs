@@ -242,14 +242,16 @@ const fn wood(u: usize, v: usize) -> u64 {
 }
 
 /// Makes column `x` of the view into `column`, and says which rows: those
-/// whose pixels changed since the last frame, but every one if `whole`.
-/// `wall` is where the wall in this column was last frame, and becomes
-/// where it is now.
+/// whose pixels changed since the last frame, but every one if `whole`,
+/// and maybe more ([`rows_to_send`]). `wall` is where the wall in this
+/// column was last frame, and becomes where it is now; `sent` is the rows
+/// the column before sent, and becomes this one's.
 pub fn view_column(
     camera: &Camera,
     x: usize,
     column: &mut [u8],
     wall: &mut [u8; 2],
+    sent: &mut Range<usize>,
     whole: bool,
     hud: &Hud,
 ) -> Range<usize> {
@@ -258,25 +260,28 @@ pub fn view_column(
     let was = usize::from(wall[0])..usize::from(wall[1]);
     // The rows go up to `SIZE`, 240: they fit.
     *wall = [rows.start as u8, rows.end as u8];
-    let mut send = if whole { 0..SIZE } else { union(&was, &rows) };
-    for changed in hud.changed(x) {
-        send = union(&send, &changed);
+    let mut changed = if whole { 0..SIZE } else { union(&was, &rows) };
+    for hud in hud.changed(x) {
+        changed = union(&changed, &hud);
     }
+    let send = rows_to_send(changed, sent);
+    *sent = send.clone();
     if send.is_empty() {
         return send;
     }
-    // Whole pairs of pixels, for RGB444's three bytes to two.
-    if RGB444 {
-        send = send.start & !1..((send.end + 1) & !1).min(SIZE);
-    }
     let colors = &mut column.as_chunks_mut::<2>().0[..send.len()];
     // Ceiling and floor where there's no wall.
-    for (color, y) in colors.iter_mut().zip(send.clone()) {
-        *color = BACKGROUND[y].to_ne_bytes();
+    let drawn = send.start.max(rows.start)..send.end.min(rows.end);
+    let (above, below) = if drawn.is_empty() {
+        (send.clone(), 0..0)
+    } else {
+        (send.start..drawn.start, drawn.end..send.end)
+    };
+    for y in above.chain(below) {
+        colors[y - send.start] = BACKGROUND[y].to_ne_bytes();
     }
     // The wall: its texture's column, stretched over its height, and
     // shaded for its distance.
-    let drawn = send.start.max(rows.start)..send.end.min(rows.end);
     if !drawn.is_empty() {
         let kind = usize::from(hit.wall - 1) % TEXTURES.len();
         let u = ((hit.along * TEXTURE as f32) as usize).min(TEXTURE - 1);
@@ -297,6 +302,35 @@ pub fn view_column(
     }
     hud.draw(x, send.clone(), colors);
     pack(colors);
+    send
+}
+
+/// Rows a window takes beyond what a column needs, and still serves it:
+/// see [`rows_to_send`].
+const SLACK: usize = 24;
+/// Rows a new window takes beyond what its first column needs, each way.
+const PAD: usize = 4;
+
+/// The rows to send for a column whose `changed` rows must be, after a
+/// column that sent `sent`. Sending more is never wrong, only slower: a
+/// new window costs about what 80 more pixels would (see
+/// `Display::stream_columns`), so a column sends the one before's rows,
+/// for both to share a window, when that covers it with up to [`SLACK`]
+/// to spare; or else what it needs, with [`PAD`] more each way, for the
+/// columns after to fit in. In whole pairs of pixels, for RGB444's three
+/// bytes to two. None for none.
+pub fn rows_to_send(changed: Range<usize>, sent: &Range<usize>) -> Range<usize> {
+    if changed.is_empty() {
+        return changed;
+    }
+    if sent.start <= changed.start && changed.end <= sent.end && sent.len() - changed.len() <= SLACK
+    {
+        return sent.clone();
+    }
+    let mut send = changed.start.saturating_sub(PAD)..(changed.end + PAD).min(SIZE);
+    if RGB444 {
+        send = send.start & !1..((send.end + 1) & !1).min(SIZE);
+    }
     send
 }
 

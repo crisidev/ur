@@ -76,6 +76,11 @@ const SLEEP_SETTLE: Duration = Duration::from_millis(120);
 /// row shows it. The panel scans top to bottom, so the bottom lags.
 pub const REFRESH: Duration = Duration::from_millis(20);
 
+/// The most columns one window of [`Display::stream_columns`] takes,
+/// holding the bus.
+#[cfg(feature = "game")]
+pub const WINDOW_COLUMNS: u16 = 32;
+
 /// MADCTL's row/column exchange (MV): the controller swaps its column and
 /// row address counters, so pixels fill a window column by column rather
 /// than row by row (see [`Order`]).
@@ -369,15 +374,20 @@ impl Display {
     /// It makes each while the one before goes out: two buffers,
     /// `buffers`, each big enough for a whole column, take turns.
     ///
-    /// Each column is a window of its own, with the bus held only for
-    /// it, so the SPI flash, and every other task, gets turns between
-    /// them. A window costs its commands (11 bytes, sent blocking), so
-    /// only for runs that vary in where they are, as a raycaster's do.
+    /// A window costs its commands (11 bytes, sent blocking, and the
+    /// bus's lock): on the watch, about 170 µs, a third of a full
+    /// column's pixels. So one is opened from a column to the right edge,
+    /// and the columns after it go on into it for as long as they make the
+    /// same rows; a column that makes others opens another (the
+    /// controller takes a new window at any point). Making the same rows
+    /// when it can is `fill`'s part. But one stays open for at most
+    /// [`WINDOW_COLUMNS`], holding the bus: then the SPI flash, waiting
+    /// for it, gets a turn.
     ///
-    /// SPIM's DMA moves at most 255 bytes at a time (embassy-nrf starts
-    /// each piece once the last is done, from its interrupt's wake-up),
-    /// and `fill` runs without yielding: a column's first piece goes out
-    /// while the next is made, and the rest after.
+    /// SPIM's DMA moves at most 255 bytes at a time: each piece of a
+    /// column is started by the one before's interrupt
+    /// ([`spi::write_chained`]), so a column goes out whole while the
+    /// next is made, however long `fill` runs without yielding.
     #[cfg(feature = "game")]
     pub async fn stream_columns(
         &mut self,
@@ -391,6 +401,9 @@ impl Display {
             return;
         };
         let mut rows = fill(x, sending);
+        // The window open, if one is: its rows, and the columns left in
+        // it before it's closed.
+        let mut open: Option<(Range<u16>, u16)> = None;
         loop {
             let bytes = self.format.bytes(rows.len());
             debug_assert!(self.format != Format::Rgb444 || rows.len().is_multiple_of(2));
@@ -407,25 +420,43 @@ impl Display {
                 more.then(|| fill(next, &mut *making))
             };
             let next_rows = if rows.is_empty() {
+                // Nothing here, so the window can't go on past it.
+                if open.take().is_some() {
+                    self.end_pixels();
+                }
                 make.await
             } else {
-                self.start_pixels(x..next, rows).await;
+                open = match open.take() {
+                    Some((open_rows, left)) if open_rows == rows && left > 0 => {
+                        Some((open_rows, left - 1))
+                    }
+                    was => {
+                        if was.is_some() {
+                            self.end_pixels();
+                        }
+                        self.start_pixels(x..columns.end, rows.clone()).await;
+                        Some((rows, WINDOW_COLUMNS - 1))
+                    }
+                };
                 let bus = self
                     .held
                     .as_mut()
                     .expect("the bus is locked around every transfer");
                 let (_, next_rows) =
-                    embassy_futures::join::join(spi::write(bus, &sending[..bytes]), make).await;
+                    embassy_futures::join::join(spi::write_chained(bus, &sending[..bytes]), make)
+                        .await;
                 #[cfg(feature = "compare")]
                 crate::compare::pixels(bytes);
-                self.end_pixels();
                 next_rows
             };
             let Some(next_rows) = next_rows else {
-                return;
+                break;
             };
             core::mem::swap(&mut sending, &mut making);
             (x, rows) = (next, next_rows);
+        }
+        if open.is_some() {
+            self.end_pixels();
         }
     }
 

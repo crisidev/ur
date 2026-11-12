@@ -201,11 +201,12 @@ pub async fn frame(
     let camera = Camera::new(&game.player, PANEL, PANEL);
     let mut fill_cycles = 0u32;
     let mut pixels = 0u32;
+    let mut sent = 0..0;
     display
         .stream_columns(0..PANEL as u16, (sending, making), |x, column| {
             let start = cycles::now();
             let x = usize::from(x);
-            let rows = view_column(&camera, x, column, &mut walls[x], whole, &hud);
+            let rows = view_column(&camera, x, column, &mut walls[x], &mut sent, whole, &hud);
             pixels += rows.len() as u32;
             fill_cycles = fill_cycles.wrapping_add(cycles::now().wrapping_sub(start));
             rows.start as u16..rows.end as u16

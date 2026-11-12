@@ -163,7 +163,10 @@ use crate::themes::Theme as _;
 use crate::ui_loop::{Board, Stored, UiLoop, Wake};
 
 bind_interrupts!(struct Irqs {
-    SPI2 => spim::InterruptHandler<peripherals::SPI2>;
+    SPI2 =>
+        #[cfg(feature = "game")]
+        spi::Chained,
+        spim::InterruptHandler<peripherals::SPI2>;
     TWISPI1 => twim::InterruptHandler<peripherals::TWISPI1>;
     SAADC => saadc::InterruptHandler;
     RNG => rng::InterruptHandler<peripherals::RNG>;

@@ -9,6 +9,9 @@ pub struct Panel {
     pub pixels: Vec<u16>,
     /// Where each column's wall was (`game`'s lent front buffer).
     walls: Vec<[u8; 2]>,
+    /// Windows the last frame opened, as `Display::stream_columns`
+    /// would (without its limit on a window's columns).
+    pub windows: usize,
 }
 
 impl Panel {
@@ -16,6 +19,7 @@ impl Panel {
         Self {
             pixels: vec![0; SIZE * SIZE],
             walls: vec![[0; 2]; SIZE],
+            windows: 0,
         }
     }
 
@@ -62,8 +66,22 @@ impl Panel {
         let camera = Camera::new(player, SIZE, SIZE);
         let mut column = [0u8; SIZE * 2];
         let mut sent = 0;
+        let mut last = 0..0;
+        self.windows = 0;
         for x in 0..SIZE {
-            let rows = view_column(&camera, x, &mut column, &mut self.walls[x], whole, &hud);
+            let before = last.clone();
+            let rows = view_column(
+                &camera,
+                x,
+                &mut column,
+                &mut self.walls[x],
+                &mut last,
+                whole,
+                &hud,
+            );
+            if !rows.is_empty() && rows != before {
+                self.windows += 1;
+            }
             sent += rows.len();
             let colors: Vec<u16> = if RGB444 {
                 assert!(

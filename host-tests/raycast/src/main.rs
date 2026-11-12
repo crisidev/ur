@@ -449,6 +449,53 @@ mod tests {
         assert!(average < SIZE * SIZE * 2 / 3, "{average} pixels a frame");
     }
 
+    /// Columns share windows wherever they can: one for a whole frame,
+    /// and few in a frame of walls close by.
+    #[test]
+    fn columns_share_windows() {
+        let readout = Readout::of(0, 0, 0, 0, 0);
+        let mut panel = Panel::new();
+        panel.frame(&Player::START, true, None, &readout, true);
+        assert_eq!(panel.windows, 1);
+        // Up against a wall, a step back: every column changes, all of it.
+        let mut p = player(1.5, 1.0 + RADIUS + 0.01, 3.0 * FRAC_PI_2);
+        panel.frame(&p, true, None, &readout, true);
+        step(&MAP, &mut p, Input { turn: 0, walk: -1 }, 0.02);
+        panel.frame_changing(&p, None, &readout, false, false);
+        assert!(panel.windows <= 3, "{} windows", panel.windows);
+        // A random walk: far fewer windows than columns.
+        let mut rng = Rng(0x0dd_ba11);
+        let (mut windows, mut frames) = (0, 0);
+        let mut p = Player::START;
+        for i in 0..300 {
+            let held = Input {
+                turn: if i % 40 < 20 { 1 } else { rng.sign() },
+                walk: rng.sign(),
+            };
+            step(&MAP, &mut p, held, 0.05);
+            panel.frame_changing(&p, None, &readout, false, false);
+            windows += panel.windows;
+            frames += 1;
+        }
+        assert!(
+            windows / frames < SIZE / 4,
+            "{} windows a frame",
+            windows / frames
+        );
+    }
+
+    #[test]
+    fn sending_more_to_share_a_window() {
+        use game_view::rows_to_send;
+        assert_eq!(rows_to_send(0..0, &(10..50)), 0..0);
+        // Inside, with little to spare: the same.
+        assert_eq!(rows_to_send(20..40, &(10..50)), 10..50);
+        // Too much to spare, or not inside: padded.
+        assert_eq!(rows_to_send(100..102, &(0..240)), 96..106);
+        assert_eq!(rows_to_send(5..60, &(10..50)), 1..64);
+        assert_eq!(rows_to_send(0..240, &(0..0)), 0..240);
+    }
+
     #[test]
     fn far_is_darker() {
         // RGB565's channels, roughly comparable (RGB444's are coarser:
