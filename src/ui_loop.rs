@@ -119,6 +119,9 @@ pub trait Board {
     fn daytime(&mut self) -> bool;
     /// Whether a finger is on the screen (`touch::finger_down`).
     fn finger_down(&mut self) -> bool;
+    /// Where on the screen a finger is, if one is (`touch::finger_at`).
+    #[cfg(feature = "game")]
+    fn finger_at(&mut self) -> Option<(u8, u8)>;
 
     /// The panel, for the canvas to push pixels through.
     fn display(&mut self) -> &mut Display;
@@ -760,7 +763,7 @@ impl UiLoop {
     /// The game's next frame, straight to the panel (see [`crate::game`]).
     #[cfg(feature = "game")]
     async fn game_frame(&mut self, app: &mut App, board: &mut impl Board, canvas: &mut Canvas) {
-        app.game_step(Instant::now(), board.finger_down());
+        app.game_step(Instant::now(), board.finger_at());
         crate::game::frame(
             board.display(),
             canvas.lend(),

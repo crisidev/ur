@@ -294,6 +294,11 @@ impl Board for Hardware {
         touch::finger_down()
     }
 
+    #[cfg(feature = "game")]
+    fn finger_at(&mut self) -> Option<(u8, u8)> {
+        touch::finger_at()
+    }
+
     fn display(&mut self) -> &mut Display {
         &mut self.display
     }
@@ -699,3 +704,5 @@ async fn main(spawner: Spawner) {
 mod coverage;
 #[cfg(feature = "game")]
 mod game;
+#[cfg(feature = "game")]
+mod raycast;

@@ -973,11 +973,11 @@ impl App {
     /// A frame's input for the game: a finger down is input, holding the
     /// screen on (see `screen_timeout`).
     #[cfg(feature = "game")]
-    pub fn game_step(&mut self, now: Instant, finger_down: bool) {
-        if finger_down {
+    pub fn game_step(&mut self, now: Instant, finger_at: Option<(u8, u8)>) {
+        if finger_at.is_some() {
             self.last_input = now;
         }
-        self.game.step(now, finger_down);
+        self.game.step(now, finger_at);
     }
 
     /// Whether the game has the screen, which then shows no handles: the

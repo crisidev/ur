@@ -28,8 +28,8 @@ needs nothing special; LFS stores it.
   `on_time` (`power`'s hourly split),
   `minute_ring` (`activity`'s history as the clock moves), `dfu_slot`
   (where `dfu` erases and writes an update), `rtt_ring` (which bytes
-  `field_log` reads of the log's buffer), and `bthome`'s
-  encoding) are pure logic, tested on the computer, as are retro's
+  `field_log` reads of the log's buffer), `raycast` (the `game`
+  feature's world), and `bthome`'s encoding) are pure logic, tested on the computer, as are retro's
   colours (`palette`, and `themes/retro/schemes.rs`: that those with
   different meanings differ in every colour scheme).
 - `src/themes/<name>/`: a theme each, how every screen looks; see

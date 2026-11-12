@@ -67,7 +67,7 @@ jobs:
         run: rustup toolchain install
       # actions/cache, not Swatinem/rust-cache: rust-cache prunes a target
       # directory down to one workspace's dependencies before saving, and
-      # with 37 workspaces sharing one, each would prune the others'. An
+      # with 38 workspaces sharing one, each would prune the others'. An
       # exact key and no fallback: a fallback would carry every superseded
       # dependency build forward forever (nothing prunes this one), so a
       # change to any of these files builds from scratch once, a few

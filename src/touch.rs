@@ -130,6 +130,21 @@ pub fn finger_down() -> bool {
     DOWN.load(Ordering::Relaxed)
 }
 
+/// Where the finger last was on the panel, `x` in the high byte (see
+/// [`finger_at`]).
+#[cfg(feature = "game")]
+static AT: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::new(0);
+
+/// Where a finger on the screen is, in panel pixels, if one is: for the
+/// game, which is steered by where it's held, not by gestures. (Up to a
+/// lift's [`crate::gesture::REJOIN_WINDOW`] after it lifts, its last
+/// place.)
+#[cfg(feature = "game")]
+pub fn finger_at() -> Option<(u8, u8)> {
+    let [x, y] = AT.load(Ordering::Relaxed).to_be_bytes();
+    finger_down().then_some((x, y))
+}
+
 /// Whether the chip should be asleep, as last asked (see [`set_asleep`]).
 static ASLEEP: AtomicBool = AtomicBool::new(false);
 /// A change to [`ASLEEP`], for the task.
@@ -324,6 +339,10 @@ pub async fn touch_task(
             debug!("touch: ignoring an off-panel position");
         }
 
+        #[cfg(feature = "game")]
+        if on_panel && !lifted {
+            AT.store(u16::from_be_bytes([x as u8, y as u8]), Ordering::Relaxed);
+        }
         match (&mut tracking, lifted) {
             (_, false) if !on_panel => {}
             (None, false) => tracking = Some(Tracking::new((x, y))),

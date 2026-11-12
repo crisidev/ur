@@ -17,10 +17,15 @@
 //! column is one 240-byte transfer, under SPIM's 255-byte DMA limit; the
 //! UI loop switches back before the canvas draws again.
 //!
-//! For now, the frame is a test pattern, to check the panel's order and
-//! measure what the bus allows, with the last second's frame rate and
-//! times drawn over it ([`Stats`]), for a sealed watch without a probe
-//! to read the log.
+//! The world, and how the player moves in it, is [`crate::raycast`]'s;
+//! this draws it, a ray a column, and steers by where a finger is held
+//! ([`Input::from_touch`]): the left and right thirds of the screen turn,
+//! the top and bottom ones walk forward and back. Walking into a wall
+//! knocks (`Pattern::BUMP`).
+//!
+//! For now, walls are flat colours, and the last second's frame rate
+//! and times are drawn over the view ([`Stats`]), for a sealed watch
+//! without a probe to read the log.
 //!
 //! [`Order::Columns`]: crate::display::Order::Columns
 
@@ -31,6 +36,8 @@ use embassy_time::{Duration, Instant};
 use crate::canvas::{self, Canvas, Color};
 use crate::display::Display;
 use crate::font;
+use crate::motor::{self, Pattern};
+use crate::raycast::{self, Camera, Input, MAP, Player, Side};
 
 /// The viewport, in panel pixels: centred, and on the canvas's 3× grid,
 /// so that [`draw`] can frame it exactly.
@@ -54,6 +61,9 @@ const _: () = assert!((VIEW_X.end as usize).is_multiple_of(canvas::SCALE));
 const _: () = assert!((VIEW_Y.start as usize).is_multiple_of(canvas::SCALE));
 const _: () = assert!((VIEW_Y.end as usize).is_multiple_of(canvas::SCALE));
 
+/// The panel's width and height, in pixels.
+const PANEL: u16 = (canvas::WIDTH * canvas::SCALE) as u16;
+
 /// The viewport in canvas pixels.
 const CELL_X: Range<i32> = VIEW_X.start as i32 / 3..VIEW_X.end as i32 / 3;
 const CELL_Y: Range<i32> = VIEW_Y.start as i32 / 3..VIEW_Y.end as i32 / 3;
@@ -75,8 +85,13 @@ pub struct Game {
     last_touch: Instant,
     /// When the next frame is due, while playing.
     pub frame_due: Instant,
-    /// Frames drawn, for the test pattern's movement.
-    tick: u16,
+    /// When the player last moved: a step covers the time since.
+    stepped: Instant,
+    /// Whether the player was up against a wall then: a bump only knocks
+    /// as it starts, not for as long as it lasts.
+    bumped: bool,
+    /// Kept while paused: a game picks up where it left off.
+    player: Player,
 }
 
 impl Game {
@@ -85,7 +100,9 @@ impl Game {
             playing: false,
             last_touch: Instant::from_ticks(0),
             frame_due: Instant::from_ticks(0),
-            tick: 0,
+            stepped: Instant::from_ticks(0),
+            bumped: false,
+            player: Player::START,
         }
     }
 
@@ -94,6 +111,8 @@ impl Game {
         self.playing = true;
         self.last_touch = now;
         self.frame_due = now;
+        self.stepped = now;
+        self.bumped = false;
         cycles::enable();
     }
 
@@ -104,11 +123,20 @@ impl Game {
         }
     }
 
-    /// A frame's worth of input: whether a finger is down.
-    pub fn step(&mut self, now: Instant, finger_down: bool) {
-        if finger_down {
+    /// Moves the player, by where a finger is (in panel pixels), if one
+    /// is, for the time since the last step.
+    pub fn step(&mut self, now: Instant, finger_at: Option<(u8, u8)>) {
+        if finger_at.is_some() {
             self.last_touch = now;
         }
+        let seconds = (now - self.stepped).as_micros() as f32 / 1e6;
+        self.stepped = now;
+        let input = Input::from_touch(finger_at, PANEL);
+        let bumped = raycast::step(&MAP, &mut self.player, input, seconds);
+        if bumped && !self.bumped {
+            motor::buzz(Pattern::BUMP);
+        }
+        self.bumped = bumped;
     }
 
     /// Whether it's gone [`IDLE`] without a touch.
@@ -153,7 +181,7 @@ pub async fn frame(display: &mut Display, batch: &mut [u8], game: &mut Game, sta
     let started = Instant::now();
     let (sending, rest) = batch.split_at_mut(STRIP);
     let making = &mut rest[..STRIP];
-    let tick = game.tick;
+    let camera = Camera::new(&game.player, VIEW_W, VIEW_H);
     let readout = &stats.readout;
     let mut fill_cycles = 0u32;
     display
@@ -166,7 +194,7 @@ pub async fn frame(display: &mut Display, batch: &mut [u8], game: &mut Game, sta
                 let start = cycles::now();
                 for (c, column) in strip.as_chunks_mut::<COLUMN>().0.iter_mut().enumerate() {
                     let x = i * STRIP_COLUMNS + c;
-                    test_column(x, tick, column);
+                    view_column(&camera, x, column);
                     readout.draw(x, column);
                 }
                 fill_cycles = fill_cycles.wrapping_add(cycles::now().wrapping_sub(start));
@@ -174,36 +202,34 @@ pub async fn frame(display: &mut Display, batch: &mut [u8], game: &mut Game, sta
         )
         .await;
     let ended = Instant::now();
-    game.tick = game.tick.wrapping_add(1);
     game.frame_due = ended + FRAME_GAP;
     stats.add(ended, ended - started, fill_cycles);
 }
 
-/// A test pattern's column `x`, at frame `tick`: a red band along the
-/// top and a green one down the left (to see the order's right), a white
-/// cross through the middle, and grey diagonal stripes moving right.
-fn test_column(x: usize, tick: u16, column: &mut [u8; COLUMN]) {
+/// Column `x` of the view: ceiling, the wall its ray hits, and floor.
+/// For now in flat colours: a kind of wall each, darker on its north and
+/// south faces, for the corners to show.
+fn view_column(camera: &Camera, x: usize, column: &mut [u8; COLUMN]) {
     const fn rgb(r: u16, g: u16, b: u16) -> [u8; 2] {
         ((r >> 3) << 11 | (g >> 2) << 5 | b >> 3).to_be_bytes()
     }
-    const RED: [u8; 2] = rgb(255, 0, 0);
-    const GREEN: [u8; 2] = rgb(0, 255, 0);
-    const WHITE: [u8; 2] = rgb(255, 255, 255);
-    const LIGHT: [u8; 2] = rgb(96, 96, 96);
-    const DARK: [u8; 2] = rgb(32, 32, 32);
-    for (y, pixel) in column.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-        *pixel = if y < 6 {
-            RED
-        } else if x < 6 {
-            GREEN
-        } else if x == VIEW_W / 2 || y == VIEW_H / 2 {
-            WHITE
-        } else if ((x + y + usize::from(tick)) / 8).is_multiple_of(2) {
-            LIGHT
-        } else {
-            DARK
-        };
-    }
+    const CEILING: [u8; 2] = rgb(40, 40, 48);
+    const FLOOR: [u8; 2] = rgb(72, 64, 56);
+    /// By kind of wall (see `raycast::MAP`), lit and shaded.
+    const WALLS: [[[u8; 2]; 2]; raycast::WALL_KINDS as usize] = [
+        [rgb(160, 160, 168), rgb(112, 112, 120)],
+        [rgb(176, 64, 48), rgb(124, 44, 32)],
+        [rgb(56, 112, 176), rgb(40, 80, 124)],
+        [rgb(64, 152, 72), rgb(44, 108, 52)],
+    ];
+    let hit = raycast::cast(&MAP, camera, raycast::across(x, VIEW_W));
+    let shades = &WALLS[usize::from(hit.wall - 1) % WALLS.len()];
+    let wall = shades[usize::from(hit.side == Side::NorthSouth)];
+    let rows = raycast::wall_rows(hit.distance, VIEW_H);
+    let pixels = column.as_chunks_mut::<2>().0;
+    pixels[..rows.start].fill(CEILING);
+    pixels[rows.clone()].fill(wall);
+    pixels[rows.end..].fill(FLOOR);
 }
 
 /// Frame times, logged once a second (at `debug`: build with

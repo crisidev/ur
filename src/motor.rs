@@ -63,6 +63,9 @@ impl Pattern {
     /// The next turn is near (see [`crate::route`]): two taps, so it isn't
     /// taken for a notification.
     pub const TURN: Self = Self::new(&[60, 120, 60], None);
+    /// The game's player walked into a wall (see `crate::game`): a knock.
+    #[cfg(feature = "game")]
+    pub const BUMP: Self = Self::new(&[25], None);
     /// Incoming call: rings until stopped.
     pub const RING: Self = Self::new(&[400, 600], Some(0));
     /// Timers: two quick pulses and a pause, so it's not mistaken for a
