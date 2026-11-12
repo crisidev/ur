@@ -14,7 +14,7 @@ missing below were test builds for the dev kit.
 
 ### Added
 
-- Light the screen within a second of setting the watch on its charger, so it's plain at once that it charges (dimly, without a buzz, in a quiet night; a wobbly cradle lights it once); then, every 5 minutes there, outside a quiet night and not over anything on screen, show a dim glance with the charge and the time to full (an estimate that errs long, by up to about 20 minutes), until one says FULL (8bb97c0, 523b654)
+- Light the screen within a second of setting the watch on its charger, so it's plain at once that it charges (dimly, without a buzz, in a quiet night; a wobbly cradle lights it once); then, every 5 minutes there, outside a quiet night and not over anything on screen, show a dim glance with the charge and the time to full (an estimate that errs long, by up to about 20 minutes); and once the charge is done, buzz twice and show FULL on the whole screen for a few seconds, in each theme's own drawing (Retro's a big bolt, Living Tokyo's its city under a full moon, struck by lightning), so it's plain the watch can come off: once a charge, not for a watch set on the charger full, after any alarm, call, "find my watch", pairing, update or alarm editor on screen has ended, and in a quiet night dark and silent until the first time the screen is woken after it; the button puts it away (8bb97c0, 523b654, 101db71)
 
 ### Changed
 
