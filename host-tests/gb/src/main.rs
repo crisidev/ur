@@ -1050,6 +1050,214 @@ mod tests {
         assert_eq!(t::<4>("Ola  K").to_string(), "Ola\u{2026}");
     }
 
+    /// Gadgetbridge's emoji shortcodes (`:tada:`, its default for a
+    /// Bangle.js) are left out as the emoji would be, and colons in text
+    /// that isn't one are left alone (see `phone::Shortcode`).
+    #[test]
+    fn shortcodes_as_shown() {
+        for (sent, shown) in [
+            // As the emoji would be: spaces collapse, none before the
+            // punctuation after.
+            ("Familien :house_with_garden:: Nils", "Familien: Nils"),
+            (
+                "Familien :house_with_garden: (12 messages): Åse",
+                "Familien (12 messages): Åse",
+            ),
+            (
+                ":tada::birthday: Bursdagsgjengen 2026",
+                "Bursdagsgjengen 2026",
+            ),
+            ("Bra :+1:!", "Bra!"),
+            ("Kari :-1: :100: :1234:", "Kari"),
+            ("Norge :no:", "Norge"),
+            ("Acme:registered: Bank", "Acme Bank"),
+            // Joined emoji the library lacks, as their parts.
+            ("Team :man::computer: Ur", "Team Ur"),
+            ("Tid for :e-mail: og :non-potable_water:", "Tid for og"),
+            // Up against a word on one side.
+            ("Kari:cherry_blossom:", "Kari"),
+            (":tada:Kari", "Kari"),
+            ("Hei:blush:Kari", "Hei:blush:Kari"),
+            // Only shortcodes: nothing.
+            (":tada:", ""),
+            (" :tada:  :birthday: ", ""),
+            (
+                ":black_right_pointing_double_triangle_with_vertical_bar: Nils",
+                "Nils",
+            ),
+            // Colons in text.
+            ("Re: lunch", "Re: lunch"),
+            ("Møte 10:30", "Møte 10:30"),
+            ("Alarm 12:30:45", "Alarm 12:30:45"),
+            ("Alarm 12:30:45:tada:", "Alarm 12:30:45"),
+            ("Re:Lunch: Kari", "Re:Lunch: Kari"),
+            ("a:b:c", "a:b:c"),
+            ("prod:db:down", "prod:db:down"),
+            (
+                "https://ci.example.org:8080/ur",
+                "https://ci.example.org:8080/ur",
+            ),
+            ("std::vec", "std::vec"),
+            ("Familien: Nils", "Familien: Nils"),
+            ("1:2:3", "1:2:3"),
+            ("::", "::"),
+            (":", ":"),
+            (":_:", ":_:"),
+            (":tada", ":tada"),
+            // Not of the library's shape: too long, or other characters.
+            (
+                ":black_right_pointing_double_triangle_with_vertical_bars:",
+                ":black_right_pointing_double_triangle_with_vertical_bars:",
+            ),
+            (":Tada:", ":Tada:"),
+            (":ta da:", ":ta da:"),
+            (":tæda:", ":tæda:"),
+            // Emoticons are text.
+            ("Takk <3 :-D", "Takk <3 :-D"),
+        ] {
+            assert_eq!(t::<64>(sent).to_string(), shown, "{sent:?}");
+        }
+    }
+
+    /// A shortcode left out gives back the room it took: a name that
+    /// fits shows whole, however long the shortcodes on the way, and one
+    /// that doesn't is cut where it would have been without them.
+    #[test]
+    fn shortcodes_take_no_room() {
+        assert_eq!(t::<8>("Ola Kari:tada:").to_string(), "Ola Kari");
+        assert_eq!(t::<8>("Ola Kari :tada:").to_string(), "Ola Kari");
+        assert_eq!(t::<8>("Ola :birthday_cake: Kari").to_string(), "Ola Kari");
+        assert_eq!(
+            t::<8>("Ola :birthday_cake: Karin").to_string(),
+            "Ola Kar\u{2026}"
+        );
+        assert_eq!(t::<8>(":tada: Ola Kari :tada:").to_string(), "Ola Kari");
+        // Text after all: cut as it would have been.
+        assert_eq!(t::<8>("Ola :tadaa Kari").to_string(), "Ola :ta\u{2026}");
+        assert_eq!(t::<8>("Ola Kari:tada:x").to_string(), "Ola Kar\u{2026}");
+        assert_eq!(t::<8>("Ola Kari:x").to_string(), "Ola Kar\u{2026}");
+        // One that `LineBuffer` cut short goes, before its ellipsis.
+        assert_eq!(t::<40>("Ola :house_wi\u{2026}").to_string(), "Ola\u{2026}");
+        assert_eq!(t::<40>("Ola:house_wi\u{2026}").to_string(), "Ola\u{2026}");
+    }
+
+    /// Gadgetbridge's shortcodes (as the mock writes them) show as the
+    /// emoji they stand for would have, for text made of words, colons,
+    /// and emoji, but those `phone::Shortcode` says stay as text: before
+    /// what an alias is made of (`:+1:12`), or between two letters or
+    /// digits (`Kari:+1:Ola`).
+    #[test]
+    fn shortcodes_show_as_their_emoji() {
+        const PIECES: &[&str] = &[
+            "Kari",
+            "Ola",
+            "Åse",
+            "12",
+            "10:30",
+            "Re:",
+            ":",
+            "!",
+            "(",
+            ")",
+            "-",
+            "x",
+            " ",
+            " ",
+            "\u{1F44D}",
+            "\u{1F3E1}",
+            "\u{1F389}",
+            "\u{1F525}",
+            "\u{2705}",
+            "\u{1F64F}",
+            "\u{1F1F3}\u{1F1F4}",
+        ];
+        fn emoji(piece: &str) -> bool {
+            piece.chars().next().is_some_and(|c| u32::from(c) > 0x2000)
+        }
+        fn property(picks: Vec<u8>) -> TestResult {
+            let pieces: Vec<&str> = picks
+                .iter()
+                .map(|&pick| PIECES[usize::from(pick) % PIECES.len()])
+                .collect();
+            let mut text = String::new();
+            for (i, piece) in pieces.iter().enumerate() {
+                if emoji(piece) {
+                    let before = pieces[..i].last().and_then(|p| p.chars().last());
+                    let after = pieces.get(i + 1).and_then(|p| p.chars().next());
+                    let word = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric());
+                    let alias = after.is_some_and(|c| {
+                        c.is_ascii_lowercase() || c.is_ascii_digit() || "_-+".contains(c)
+                    });
+                    if alias || (word(before) && word(after)) {
+                        return TestResult::discard();
+                    }
+                }
+                text.push_str(piece);
+            }
+            let ascii = gbmock::text::emoji_to_ascii(&text);
+            // At sizes it fills, and spills from, mid-shortcode.
+            TestResult::from_bool(
+                t::<3>(&ascii) == t::<3>(&text)
+                    && t::<5>(&ascii) == t::<5>(&text)
+                    && t::<8>(&ascii) == t::<8>(&text)
+                    && t::<12>(&ascii) == t::<12>(&text)
+                    && t::<40>(&ascii) == t::<40>(&text),
+            )
+        }
+        // Up to 24 pieces: longer runs are mostly discarded.
+        QuickCheck::new()
+            .tests(5000)
+            .rng(quickcheck::Gen::new(24))
+            .quickcheck(property as fn(Vec<u8>) -> TestResult);
+    }
+
+    /// Text thick with colons, alias characters and ellipses, kept at
+    /// sizes it fills and spills from: `TextBuilder::finish`'s own
+    /// check holds (see the Kani proof below, for any characters but
+    /// fewer of them), and `is_empty` says what `finish` will.
+    #[test]
+    fn colons_build_a_text_that_needs_no_length() {
+        fn build<const N: usize>(text: &[char]) {
+            let mut builder = TextBuilder::<N>::new();
+            text.iter().for_each(|&c| builder.push(c));
+            let empty = builder.is_empty();
+            let text = builder.finish();
+            assert_eq!(text.is_empty(), empty, "{text:?}");
+            assert!(text.chars().count() <= N);
+        }
+        fn property(picks: Vec<u8>) -> bool {
+            const ALPHABET: &[char] = &[
+                ':',
+                ':',
+                'a',
+                'z',
+                '1',
+                '0',
+                '+',
+                '-',
+                '_',
+                'K',
+                ' ',
+                '!',
+                '\u{2026}',
+                '\u{1F389}',
+            ];
+            let text: Vec<char> = picks
+                .iter()
+                .map(|&pick| ALPHABET[usize::from(pick) % ALPHABET.len()])
+                .collect();
+            build::<2>(&text);
+            build::<3>(&text);
+            build::<5>(&text);
+            build::<8>(&text);
+            true
+        }
+        QuickCheck::new()
+            .tests(20000)
+            .rng(quickcheck::Gen::new(16))
+            .quickcheck(property as fn(Vec<u8>) -> bool);
+    }
+
     /// The decoder against Gadgetbridge's encoder (ported above), for any
     /// text: what reaches the screen is what `TextBuilder` makes of the
     /// text (tested below). Text with a NUL in it is left out: that starts

@@ -73,7 +73,8 @@ const UNREAD: [&[u8]; 4] = [b"\"subject\"", b"\"body\"", b"\"tel\"", b"\"actions
 /// so that text cut short never passes for whole, even where what comes
 /// before shows as less than fits (emoji, which `TextBuilder` leaves out).
 ///
-/// TODO: a title of 21 emoji or more before the name (12 bytes each)
+/// TODO: a title of 21 emoji or more before the name (12 bytes each),
+/// or a dozen or so of Gadgetbridge's shortcodes for them (`:tada: `),
 /// shows as `…` alone; cutting at what `TextBuilder` keeps, rather than
 /// at bytes, would show the name, at the cost of a decoder in here.
 const CUT: &[u8] = b"\\u2026";
@@ -509,8 +510,9 @@ fn phone_event(kind: &str, object: Object<'_>, bitmaps: &mut bool) -> Option<Pho
             // SMS's number, a mail's sender). Messaging apps mostly leave
             // it empty and put who it's from in the title, so the title
             // stands in whenever `sender` would show nothing: empty,
-            // blank, or only emoji (see `TextBuilder::is_empty`). Both
-            // are read either way, for images.
+            // blank, or only emoji or their shortcodes (see
+            // `TextBuilder::is_empty`). Both are read either way, for
+            // images.
             let title: TextBuilder<40> = shown(object, "title", bitmaps);
             let sender: TextBuilder<40> = shown(object, "sender", bitmaps);
             let who = if sender.is_empty() { title } else { sender };

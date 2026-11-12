@@ -972,7 +972,8 @@ fn a_long_notification_beyond_latin1_arrives() {
 /// and Gadgetbridge then converts them itself
 /// (`BangleJSDeviceSupport.java:1388-1390`). So the watch's own handling
 /// of emoji (leaving them out) only ever sees those Gadgetbridge's
-/// library doesn't know.
+/// library doesn't know; the shortcodes for the rest it leaves out the
+/// same way (see `phone::Shortcode`), and the emoticons stay, as text.
 #[test]
 fn emoji_arrive_as_ascii_by_default() {
     let mut gb = connected();
@@ -991,7 +992,7 @@ fn emoji_arrive_as_ascii_by_default() {
         else {
             panic!("a notification");
         };
-        assert_eq!(who.to_string(), "Familien :house_with_garden:: Nils <3");
+        assert_eq!(who.to_string(), "Familien: Nils <3");
     })
     .expect("it fits");
 }

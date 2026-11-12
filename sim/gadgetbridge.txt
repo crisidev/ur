@@ -10,8 +10,11 @@ gb GB({"t":"is_gps_active"})
 gb GB({"t":"gps","lat":59.9127,"lon":10.7461,"alt":23.0,"speed":0.0,"time":1794150001234,"satellites":0,"hdop":13.23,"externalSource":true,"gpsSource":"network"})
 expect clock
 
-# A message, its sender's accents escaped as Gadgetbridge escapes them.
-gb GB({"t":"notify","id":1762436801,"src":"Signal","title":"\xc5se Nordmann","subject":"","body":"Are we still on for Saturday? #plans","sender":"","tel":"","reply":true})
+# A message, its sender's accents escaped as Gadgetbridge escapes them,
+# and her emoji (\ud83d\udc4b\ud83d\udc99) as Gadgetbridge sends them by
+# default, as shortcodes, which the watch leaves out as it would the emoji:
+# the screenshot is of `\xc5se Nordmann` alone.
+gb GB({"t":"notify","id":1762436801,"src":"Signal","title":"\xc5se Nordmann :wave::blue_heart:","subject":"","body":"Are we still on for Saturday? #plans","sender":"","tel":"","reply":true})
 expect screen-on
 expect buzzing
 shot notification.png
