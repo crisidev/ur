@@ -121,6 +121,9 @@ mod stages;
 #[path = "../../src/storage.rs"]
 #[allow(dead_code)]
 mod storage;
+#[path = "../../src/sun.rs"]
+#[allow(dead_code)]
+mod sun;
 #[path = "../../src/temperature.rs"]
 #[allow(dead_code)]
 mod temperature;

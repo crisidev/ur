@@ -3,7 +3,8 @@
 //! The location comes from the phone's GPS via Gadgetbridge, but only rarely
 //! (see [`GpsPolicy`]), and is saved in flash. Until the first fix, it's
 //! home: Oslo. Sunrise and sunset are computed on the watch from the location
-//! and date, and the theme switches between dark and light with them.
+//! and date (in [`crate::sun`]), and the theme switches between dark and
+//! light with them.
 
 use core::cell::Cell;
 use core::sync::atomic::{AtomicU8, Ordering};
@@ -11,9 +12,9 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::{Duration, Instant};
-use libm::{acosf, sqrtf};
 
-use crate::clock::{self, DateTime};
+use crate::clock;
+use crate::sun::{self, Sun};
 
 // ==============================================================================
 // Location
@@ -245,38 +246,17 @@ impl GpsPolicy {
 // Sunrise and sunset
 // ==============================================================================
 
-/// Sunrise and sunset, in minutes after local midnight; `sunrise == sunset`
-/// is polar night, and `0..1440` polar day.
-#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct Sun {
-    pub sunrise: u16,
-    pub sunset: u16,
-}
-
-impl Sun {
-    fn contains(&self, minute_of_day: u16) -> bool {
-        // TODO: this takes the sun to rise before it sets, within the
-        // local day (`debug_assert!(self.sunrise <= self.sunset)`), which
-        // `compute_sun` doesn't promise: each is a time of day, and a sun
-        // that sets after local midnight sets "before" it rose, so that
-        // no minute counts as daytime. That's Tromsø on 16 May and 25-26
-        // July (01:12 to 00:09: the nights around the midnight sun),
-        // Reykjavik around midsummer, and anywhere while the time zone
-        // is hours from the location's (the phone's zone changes on
-        // landing; a new fix can take a day): the dark theme all day.
-        // Then the day is the minutes *outside* `sunset..sunrise`.
-        (self.sunrise..self.sunset).contains(&minute_of_day)
-    }
-}
-
 /// Today's sun at the current location, or `None` without wall-clock time.
 pub fn sun() -> Option<Sun> {
     let now = clock::now()?;
     let offset = clock::utc_offset_minutes()?;
-    Some(compute_sun(&now, location(), offset))
+    let (latitude, longitude) = location().degrees();
+    let today = now.days_since_epoch();
+    Some(sun::compute(today, latitude, longitude, offset))
 }
 
-/// Whether it's between sunrise and sunset. Without wall-clock time, it's
+/// Whether it's between sunrise and sunset (round past midnight, where the
+/// sun sets after it; see [`Sun`]). Without wall-clock time, it's
 /// treated as night: the dark theme is the safe default when the screen
 /// might light up in a dark room.
 pub fn is_daytime() -> bool {
@@ -285,239 +265,4 @@ pub fn is_daytime() -> bool {
     };
     let Some(sun) = sun() else { return false };
     sun.contains(u16::from(now.hour) * 60 + u16::from(now.minute))
-}
-
-/// The "sunrise equation" (Wikipedia's complete version), accurate to a
-/// minute or two at mid latitudes: checked against published Oslo times for
-/// the solstices (03:53/22:43, 09:18/15:12).
-///
-/// All in `f32` and integers: the M4F's FPU does single precision only,
-/// and `f64`'s soft-float routines (with `libm`'s `sinf` and `cosf`, which
-/// compute in `f64` too) cost ~8 KB of flash. A Julian date's 2.4 million
-/// days would leave an `f32` a quarter-day resolution, so the whole days
-/// stay integers: the mean anomaly's daily turn is taken modulo 360° in
-/// integer hundred-millionths of a degree (exact), and they cancel out of
-/// the time of day. What's left in `f32` is under a day, or under a few
-/// turns of angle: the times come out within ~0.02 s of the `f64`
-/// equation's (which itself is off by a minute or two).
-///
-/// TODO: cache per (date, location, offset) if this ever shows up in
-/// profiles; it's a few dozen float operations, once per frame.
-fn compute_sun(today: &DateTime, location: Location, offset_minutes: i16) -> Sun {
-    let (latitude, longitude) = location.degrees();
-
-    // Days since the J2000 epoch, at local solar noon of today's date:
-    // the equation's `ceil(julian_noon - 2_451_545 + 0.0008)`, where
-    // `julian_noon` is the date's whole Julian day number,
-    // `days_since_epoch + 2_440_588`. Then the mean solar time, `n` days
-    // plus the part of one that the longitude takes.
-    let n = today.days_since_epoch() - 10_956;
-    let part = -longitude / 360.0;
-
-    // Where the sun is along its (elliptical) path: the mean anomaly,
-    // 357.5291° + 0.98560028° a day, the whole days' share exactly (in
-    // 1e-8 degrees, `n` would have to pass 9e10 to overflow).
-    let whole_days = (35_752_910_000 + 98_560_028 * n).rem_euclid(36_000_000_000) as f32 / 1e8;
-    // (0.98560028 to an `f32`: the part is under a day, so that rounding
-    // is under 1e-8°.)
-    let anomaly = wrap(whole_days + 0.985_600_3 * part, 360.0);
-    let center =
-        1.9148 * sin_deg(anomaly) + 0.02 * sin_deg(2.0 * anomaly) + 0.0003 * sin_deg(3.0 * anomaly);
-    let ecliptic_longitude = wrap(anomaly + center + 180.0 + 102.9372, 360.0);
-    // The solar transit (local noon), in days after the `n`th's J2000 noon.
-    let transit = part + 0.0053 * sin_deg(anomaly) - 0.0069 * sin_deg(2.0 * ecliptic_longitude);
-
-    // The hour angle at which the sun's upper edge crosses the horizon,
-    // including atmospheric refraction (the −0.833°).
-    let sin_declination = sin_deg(ecliptic_longitude) * sin_deg(23.4397);
-    // cos(asin(x)); the declination is within ±23.44°, so its cosine is
-    // positive.
-    let cos_declination = sqrtf(1.0 - sin_declination * sin_declination);
-    let cos_hour_angle = (sin_deg(-0.833) - sin_deg(latitude) * sin_declination)
-        / (sin_deg(90.0 - latitude) * cos_declination);
-    if cos_hour_angle > 1.0 {
-        return Sun {
-            sunrise: 0,
-            sunset: 0,
-        };
-    }
-    if cos_hour_angle < -1.0 {
-        return Sun {
-            sunrise: 0,
-            sunset: 24 * 60,
-        };
-    }
-    let hour_angle = acosf(cos_hour_angle).to_degrees();
-
-    // A Julian date's days start at noon, and J2000's whole days are
-    // whole days after the Unix epoch's (2_451_545 - 2_440_587.5 =
-    // 10_957.5), so only the half day and the parts are left of the time
-    // of day.
-    let local_minute = |days: f32| {
-        let seconds = (0.5 + days) * 86_400.0 + f32::from(offset_minutes) * 60.0;
-        (wrap(seconds, 86_400.0) / 60.0) as u16
-    };
-    let sun = Sun {
-        sunrise: local_minute(transit - hour_angle / 360.0),
-        sunset: local_minute(transit + hour_angle / 360.0),
-    };
-    // Times of day, both: `wrap` saw to that. (Only polar day's sunset,
-    // above, is the day's end itself.)
-    debug_assert!(sun.sunrise < 24 * 60 && sun.sunset < 24 * 60);
-    sun
-}
-
-/// `x` modulo `m`, in `0..m`, for `x` within a few `m` of it (`fmodf`'s
-/// generality costs flash).
-fn wrap(mut x: f32, m: f32) -> f32 {
-    // "Within a few": each loop takes a turn per `m`, and a float far
-    // enough out doesn't change at all when `m` is added to it, so the
-    // loop would never end (and nothing else would run: the watchdog
-    // resets the watch, and the next frame does it again). `compute_sun`
-    // stays within ~31 `m` even for a location and offset no phone sends
-    // (any `i32`s from flash, any `i16`). A NaN ends both loops at once.
-    debug_assert!(x.is_nan() || (-64.0 * m..=64.0 * m).contains(&x));
-    while x < 0.0 {
-        x += m;
-    }
-    while x >= m {
-        x -= m;
-    }
-    x
-}
-
-/// The sine of an angle in degrees, within a few turns of zero, to an
-/// `f32`'s precision; [`compute_sun`] says why not `libm`'s.
-fn sin_deg(degrees: f32) -> f32 {
-    // "A few turns": what keeps the steps below exact. `compute_sun`
-    // asks for under three, or up to seven of a latitude that isn't one
-    // (any `i32` of millionths, from flash).
-    debug_assert!(degrees.is_nan() || (-8.0 * 360.0..=8.0 * 360.0).contains(&degrees));
-    // Into −180°..180°, then −90°..90° by sin(180° − x) = sin(x). Every
-    // step is exact: each subtracts floats within a factor of two of each
-    // other (Sterbenz's lemma), so an angle of a few turns loses nothing.
-    let turns = (degrees / 360.0) as i32 as f32;
-    let mut x = degrees - 360.0 * turns;
-    if x > 180.0 {
-        x -= 360.0;
-    } else if x < -180.0 {
-        x += 360.0;
-    }
-    if x > 90.0 {
-        x = 180.0 - x;
-    } else if x < -90.0 {
-        x = -180.0 - x;
-    }
-    // Taylor's series to x¹¹, whose remainder within ±π/2 is under 6e-8.
-    let r = x.to_radians();
-    let r2 = r * r;
-    // r (1 − r²/(2·3) (1 − r²/(4·5) (… (1 − r²/(10·11))))), inside out.
-    let mut factor = 1.0;
-    for k in [11.0f32, 9.0, 7.0, 5.0, 3.0] {
-        factor = 1.0 - r2 / (k * (k - 1.0)) * factor;
-    }
-    r * factor
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Published Oslo times for the 2025 solstices (in summer time, then
-    /// winter time), which the `f64` equation this replaced also gave.
-    #[test]
-    fn oslo_at_the_solstices() {
-        let date = |month, day| DateTime {
-            year: 2025,
-            month,
-            day,
-            hour: 12,
-            minute: 0,
-            second: 0,
-        };
-        let summer = compute_sun(&date(6, 21), HOME, 120);
-        assert_eq!((summer.sunrise, summer.sunset), (3 * 60 + 53, 22 * 60 + 43));
-        let winter = compute_sun(&date(12, 21), HOME, 60);
-        assert_eq!((winter.sunrise, winter.sunset), (9 * 60 + 18, 15 * 60 + 12));
-    }
-
-    /// Anywhere, any day, in any time zone: sunrise and sunset are times
-    /// of day (or polar day's `0..1440`), and computing them ends. That
-    /// goes for the locations and offsets nothing sends, too (the
-    /// location is read from flash unchecked): `wrap`'s and `sin_deg`'s
-    /// assertions about what they're asked hold throughout.
-    #[test]
-    fn the_sun_rises_and_sets_within_the_day_everywhere() {
-        // Coarse steps, plus the edges: the poles, the polar circles (where
-        // the hour angle's cosine passes ±1), the date line, and the
-        // integers' ends.
-        let step = |from: i32, to: i32, by: usize| (from..=to).step_by(by);
-        let latitudes = step(-90_000_000, 90_000_000, 2_500_000).chain([
-            -66_560_000,
-            66_560_000,
-            89_999_999,
-            i32::MIN,
-            i32::MAX,
-        ]);
-        let longitudes: Vec<i32> = step(-180_000_000, 180_000_000, 15_000_000)
-            .chain([179_999_999, i32::MIN, i32::MAX])
-            .collect();
-        let offsets = [-18 * 60, -12 * 60, -60, 0, 345, 12 * 60, 18 * 60]
-            .into_iter()
-            .chain([i16::MIN, i16::MAX]);
-        // Every tenth day of 2025, and the calendar's ends.
-        let days: Vec<DateTime> = (0..36)
-            .map(|i| (2025, 1 + i / 3, 1 + 10 * (i % 3)))
-            .chain([
-                (1970, 1, 1),
-                (2020, 2, 29),
-                (2099, 12, 31),
-                (u16::MAX, 12, 31),
-            ])
-            .map(|(year, month, day)| DateTime {
-                year,
-                month,
-                day,
-                hour: 12,
-                minute: 0,
-                second: 0,
-            })
-            .collect();
-        for latitude_micro in latitudes {
-            for &longitude_micro in &longitudes {
-                let location = Location {
-                    latitude_micro,
-                    longitude_micro,
-                };
-                for offset in offsets.clone() {
-                    for day in &days {
-                        let sun = compute_sun(day, location, offset);
-                        let polar_day = (sun.sunrise, sun.sunset) == (0, 24 * 60);
-                        assert!(
-                            polar_day || (sun.sunrise < 24 * 60 && sun.sunset < 24 * 60),
-                            "{latitude_micro} {longitude_micro} {offset} {}-{}-{}: {} to {}",
-                            day.year,
-                            day.month,
-                            day.day,
-                            sun.sunrise,
-                            sun.sunset,
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    /// To a few `f32` steps, for every angle the equation takes.
-    #[test]
-    fn sine_in_degrees() {
-        for tenth in -10_800..=10_800 {
-            let degrees = tenth as f32 / 10.0;
-            let expected = (f64::from(degrees)).to_radians().sin();
-            assert!(
-                (f64::from(sin_deg(degrees)) - expected).abs() < 3e-7,
-                "{degrees}"
-            );
-        }
-    }
 }

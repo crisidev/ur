@@ -1,0 +1,23 @@
+[package]
+name = "sun-test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Host-side tests for `src/sun.rs` (included via `#[path]`). Not part of
+# the firmware workspace: run `cargo test` from this directory.
+[workspace]
+
+[dependencies]
+libm = "0.2.16"
+
+# `cargo kani` builds with `--cfg kani`, for the proofs in `src/main.rs`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+# CI runs the host tests with `--release`; keep the arithmetic checks and
+# the module's own `debug_assert!`s, so that a broken invariant fails a
+# test here, not only under `cargo test`.
+[profile.release]
+overflow-checks = true
+debug-assertions = true

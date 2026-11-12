@@ -29,8 +29,8 @@
 //!   setup until it works.
 //! - [`ble`] / [`gb`] / [`link`]: Bluetooth, speaking Gadgetbridge's Bangle.js
 //!   protocol, and keeping its link working.
-//! - [`clock`] / [`geo`]: wall-clock time and location, both from the phone,
-//!   and the sunrise/sunset derived from them.
+//! - [`clock`] / [`geo`] / [`sun`]: wall-clock time and location, both from
+//!   the phone, and the sunrise/sunset derived from them.
 //! - [`temperature`] / [`aranet`] / [`bthome_sensor`]: the room's
 //!   temperature for the clock face, from a nearby room sensor (an Aranet4
 //!   air monitor, or a BTHome thermometer; their readings get a screen of
@@ -126,6 +126,7 @@ mod spi_flash;
 mod stages;
 mod step_counter;
 mod storage;
+mod sun;
 mod system_off;
 mod temperature;
 mod themes;
