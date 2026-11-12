@@ -152,8 +152,12 @@ watch comes off; 0% is where it switches itself off.
 contact (dimly in a quiet night), so you see at once that it charges.
 Every 5 minutes there, outside a quiet night and not over anything on
 screen, a dim glance shows the charge and how long until full (FULL IN
-0:40, a rough guess that errs long), once more when it's full, and then
-no more. The heart rate isn't measured there (the clock face says OFF,
+0:40, a rough guess that errs long). Once the charge is done, the watch
+buzzes twice and shows FULL, big, for a few seconds (the button puts it
+away), so you know it can come off: once a charge, after any alarm,
+call or update on screen has finished; in a quiet night it waits, dark
+and silent, for the first time you wake the screen after the night. A
+watch set on the charger full says nothing. The heart rate isn't measured there (the clock face says OFF,
 and its LED stays dark); taken off, the watch measures again two
 minutes later, or after 10 seconds if you look at the clock face.
 

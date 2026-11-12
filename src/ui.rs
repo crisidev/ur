@@ -107,6 +107,13 @@
 //!   wake to the clock, as the button does, so its battery shows the
 //!   watch charges; from a glance too. A screen already on only stays
 //!   on as long again, whatever has it (see [`App::on_charger`]).
+//! - The charge finishing there, having charged the watch (see
+//!   [`crate::battery::FullCharge`]): two taps of the motor, and the
+//!   theme's full charge screen, lit as usual, for [`BANNER_TIME`]; the
+//!   button or a touch ends it sooner, to the screen beneath, and lifting
+//!   the watch off ends it too. It waits for an alarm, a call, "find my
+//!   watch", pairing, an update, or the editor to end (see
+//!   [`App::on_charged`]).
 //! - No input for [`SCREEN_TIMEOUT`] (longer on the music screen, for a
 //!   long title to scroll by; never while a banner shows, or Home
 //!   Assistant's key): turn the screen off. A long press held on (a
@@ -184,6 +191,9 @@
 //!   says the wearer is asleep (see `activity::motion_task`), and setting
 //!   the watch on its charger (dimly, without a buzz, as the button).
 //!   Once it's on, touches work as usual.
+//! - The charge finishing neither buzzes nor lights the screen: its
+//!   screen waits for the first proper wake after the night, and shows
+//!   then without the buzz (see [`App::on_charged`]).
 //! - A double press of the button ends it: the first press wakes the
 //!   screen (dimly) as usual, and the second, rather than turning it off
 //!   again, brightens it.
@@ -213,6 +223,7 @@
 //! | No room sensor scans in the background | Yields already: the clock face, or the Air screen, scans (see [`aranet::Nearby::due`]) | |
 //! | Media gestures | Yields already: the awake clock face's work as by day | |
 //! | Navigation's turns don't buzz or glance | Kept | No one navigates in bed; up and walking, the night soon ends |
+//! | The full charge's screen waits, silent | Kept: it shows once the night is over, on a screen the wearer woke | Even dim, it would light the room; asleep, no one would see it |
 //! | Sleep tracking, and when the night ends | Kept: using the watch only counts through the wrist's movement | See [`sleep::Night`] on [`sleep::QUIET_AWAKE`] |
 
 use core::num::NonZeroU32;
@@ -621,6 +632,28 @@ pub struct App {
     /// touch that woke the screen (from off, or a glance): in the quiet
     /// night that's as likely bedding as a finger.
     holding: bool,
+    /// The full charge's screen: waiting to show, or showing (see
+    /// [`App::on_charged`]).
+    charged: Charged,
+}
+
+/// The full charge's screen (see [`App::on_charged`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Charged {
+    None,
+    /// Due, but something has the screen, or it's the quiet night: it
+    /// shows once nothing has. `night` once the quiet night held it back:
+    /// then it waits for the wearer to wake the screen, and shows without
+    /// a buzz.
+    Waiting {
+        night: bool,
+    },
+    /// On screen until `until`; `woke` if it lit the screen for itself,
+    /// which goes off again after it.
+    Showing {
+        until: Instant,
+        woke: bool,
+    },
 }
 
 /// How long the grid shows a press it sent.
@@ -681,6 +714,7 @@ impl App {
             sent: None,
             ha_presses: heapless::Vec::new(),
             holding: false,
+            charged: Charged::None,
         }
     }
 
@@ -736,6 +770,14 @@ impl App {
         // (`on_tick`). And an alarm closes the editor as it starts to ring
         // (it couldn't be opened under one: the ringing takes the touch).
         debug_assert!(!self.ringing_any() || self.awake, "ringing in the dark");
+        // The full charge's screen is on screen, lit, and not dimly: it
+        // takes over a glance or a notification's own wake as it shows
+        // (`show_charged`), and the screen going off ends it.
+        if let Charged::Showing { .. } = self.charged {
+            debug_assert!(self.awake, "the full charge in the dark");
+            debug_assert!(!self.glancing(), "the full charge on a glance");
+            debug_assert!(!self.brief_wake, "the full charge in a notification's wake");
+        }
         debug_assert!(self.ringing.is_none() || self.editing.is_none());
         // The editor is only open with the screen on, over Alarms, where
         // it opens: the screen going off closes it (`screen_off`), and
@@ -843,9 +885,16 @@ impl App {
             && self.screen == Screen::Clock
             && !self.glancing()
             && !self.brief_wake
+            && !self.showing_charged()
             && self.call.is_none()
             && self.ringing.is_none()
             && self.finding.is_none()
+    }
+
+    /// Whether the full charge's screen is showing (see
+    /// [`App::on_charged`]). Public for the simulator's `expect`.
+    pub fn showing_charged(&self) -> bool {
+        matches!(self.charged, Charged::Showing { .. })
     }
 
     pub fn set_daytime(&mut self, daytime: bool) {
@@ -874,6 +923,7 @@ impl App {
     pub fn showing_air(&self) -> bool {
         self.awake
             && self.screen == Screen::Air
+            && !self.showing_charged()
             && self.call.is_none()
             && self.ringing.is_none()
             && self.finding.is_none()
@@ -1145,6 +1195,101 @@ impl App {
         !self.night.quiet() && self.glance(now)
     }
 
+    /// The watch just became fully charged on its cradle (see
+    /// `battery::FullCharge`): it buzzes, and the screen says so, so the
+    /// wearer knows it can come off. Returns whether it showed now.
+    ///
+    /// It's the theme's [`Theme::charged`], with the whole screen, at the
+    /// usual brightness (not the dim look: it's for being seen across a
+    /// room), for [`BANNER_TIME`], as a notification shows; if it lit the
+    /// screen, the screen goes off again after it. The button or a touch
+    /// ends it sooner, to the screen beneath (the clock face, if it lit
+    /// the screen), and does nothing else; so does lifting the watch off
+    /// the cradle (see [`App::set_charger`]), as the wearer has it in hand.
+    /// The buzz is [`Pattern::TURN`]'s two taps: short, as a charge
+    /// finishing is no call or alarm, and unlike a notification's one, so
+    /// that it's heard as something else from across the room.
+    ///
+    /// It waits for what has the screen: a ringing alarm, a call, "find my
+    /// watch", pairing or an update, or the alarm editor; then shows as
+    /// they end, if the watch is still on the cradle. In the quiet night,
+    /// it neither buzzes nor lights the screen, as a charge glance
+    /// doesn't: a watch charging by the bed mustn't wake anyone. It waits
+    /// for the first time the wearer wakes the screen after the night
+    /// (the button, a tap on a glance, the morning's alarm stopped; not a
+    /// glance alone, nor a notification's own wake), and shows then,
+    /// without the buzz, as they're looking; or for nothing, if the watch
+    /// left the cradle first. Not dimly at once instead: that would
+    /// still light the room, and the wearer, asleep, wouldn't see it.
+    pub fn on_charged(&mut self, now: Instant) -> bool {
+        self.charged = Charged::Waiting {
+            night: self.night.quiet(),
+        };
+        self.show_charged(now)
+    }
+
+    /// Shows the full charge's screen, if it's waiting and nothing keeps
+    /// it from showing (see [`App::on_charged`]). Returns whether it did.
+    fn show_charged(&mut self, now: Instant) -> bool {
+        let Charged::Waiting { night } = self.charged else {
+            return false;
+        };
+        if self.ringing_any() || self.takeover || self.editing.is_some() {
+            return false;
+        }
+        if self.night.quiet() {
+            self.charged = Charged::Waiting { night: true };
+            return false;
+        }
+        // After the night, only on a screen the wearer woke.
+        let dark = !self.awake || self.glancing() || self.brief_wake;
+        if night && dark {
+            return false;
+        }
+        // It has the screen to itself, as a call does: a glance, or a
+        // notification's own wake, ends, and it takes over the latter's
+        // turning the screen off after.
+        if !self.awake {
+            self.screen = Screen::Clock;
+            self.last_tap = None;
+            self.woke_tap = false;
+        }
+        self.awake = true;
+        self.glance_until = None;
+        self.glance_wake = false;
+        self.brief_wake = false;
+        self.charged = Charged::Showing {
+            until: now + BANNER_TIME,
+            woke: dark,
+        };
+        if !night {
+            motor::buzz(Pattern::TURN);
+        }
+        defmt::info!("charger: full, shown (lit the screen: {=bool})", dark);
+        true
+    }
+
+    /// Whether the charger has power, as of this pass: off it, the full
+    /// charge's screen that waits is dropped, as it has nothing more to
+    /// say; one showing ends, to the clock face's usual time (or what was
+    /// beneath it), as the wearer has the watch in hand.
+    pub fn set_charger(&mut self, power_present: bool, now: Instant) {
+        if power_present {
+            return;
+        }
+        match self.charged {
+            Charged::None => {}
+            Charged::Waiting { .. } => {
+                defmt::info!("charger: off before the full charge showed");
+                self.charged = Charged::None;
+            }
+            Charged::Showing { .. } => {
+                self.charged = Charged::None;
+                self.last_input = now;
+            }
+        }
+    }
+
     /// Starts a glance (see the module docs), if the screen is off.
     /// Returns whether it did.
     fn glance(&mut self, now: Instant) -> bool {
@@ -1158,6 +1303,15 @@ impl App {
     }
 
     pub fn on_input(&mut self, event: InputEvent, now: Instant) {
+        self.input(event, now);
+        // What the input ended (a call, a ringing alarm, the editor), or
+        // the screen it woke after the quiet night, may let the full
+        // charge's screen show (see `on_charged`): now, rather than a
+        // frame of what's beneath first.
+        self.show_charged(now);
+    }
+
+    fn input(&mut self, event: InputEvent, now: Instant) {
         let event = match event {
             InputEvent::Phone(event) => return self.on_phone(event, now),
             // Only while the screen is off; it's not a user input as such
@@ -1185,6 +1339,14 @@ impl App {
             }
             other => other,
         };
+        // The full charge's screen: the button or a touch only ends it,
+        // to the screen beneath, for its usual time (see `on_charged`).
+        if self.showing_charged() && matches!(event, InputEvent::Button | InputEvent::Touch(_)) {
+            self.charged = Charged::None;
+            self.last_input = now;
+            self.last_tap = None;
+            return;
+        }
         // In the quiet night, a double press of the button ends it: the
         // wearer is up, and wants the watch as by day, without waiting for
         // `Night` to see them awake for a while. The first press did what
@@ -1885,6 +2047,11 @@ impl App {
     fn screen_off(&mut self) {
         self.awake = false;
         self.editing = None;
+        // As does the full charge's screen, if anything ever puts the
+        // screen out under it (see `check`).
+        if self.showing_charged() {
+            self.charged = Charged::None;
+        }
         // A glance's deliberate tap is moot (see `held_wake`), and the
         // next glance starts afresh.
         self.glance_wake = false;
@@ -2293,6 +2460,24 @@ impl App {
         // timer's (see `deadline`), but the tick's too, should it come
         // first.
         self.wake_held(now, finger_down);
+        // The full charge's screen: one waiting shows once nothing keeps
+        // it (see `on_charged`); one showing gives way to whatever takes
+        // the screen (it has been seen, and buzzed), and ends after its
+        // time, putting out the screen it lit, or giving back the one it
+        // covered for the usual time.
+        self.show_charged(now);
+        if let Charged::Showing { until, woke } = self.charged {
+            if self.ringing_any() || self.takeover {
+                self.charged = Charged::None;
+            } else if now >= until {
+                self.charged = Charged::None;
+                if woke {
+                    self.screen_off();
+                } else {
+                    self.last_input = now;
+                }
+            }
+        }
         // A glance has its own timer: it isn't input, so the screen timeout
         // (which counts from the last input) would end it at once. Not
         // while a deliberate tap's wake waits, though: that may wake the
@@ -2347,7 +2532,11 @@ impl App {
         // in the meantime.) One still waiting to be seen (under the alarm
         // editor, say) isn't showing.
         let banner_showing = self.banner.as_ref().is_some_and(|b| b.until != UNSEEN);
-        if self.awake && !banner_showing && now - self.last_input >= self.screen_timeout() {
+        if self.awake
+            && !banner_showing
+            && !self.showing_charged()
+            && now - self.last_input >= self.screen_timeout()
+        {
             self.screen_off();
         }
     }
@@ -2434,6 +2623,10 @@ impl App {
         }
         if let Some(since) = self.finding {
             theme.find(canvas, now - since);
+            return;
+        }
+        if self.showing_charged() {
+            theme.charged(canvas, status);
             return;
         }
         if self.glancing() {

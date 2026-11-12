@@ -701,6 +701,7 @@ pub struct Follower<'a> {
     connected: bool,
     air: bool,
     daytime: bool,
+    charger: bool,
     sent: VecDeque<Sent>,
     /// What the simulator's UI asked to send the phone (its lines), while
     /// the dev kit's was connected, since the last check.
@@ -744,6 +745,7 @@ impl<'a> Follower<'a> {
             connected: false,
             air: false,
             daytime: false,
+            charger: false,
             sent: VecDeque::new(),
             outbox: Vec::new(),
             ha_presses: VecDeque::new(),
@@ -762,6 +764,7 @@ impl<'a> Follower<'a> {
         self.app = boot_app(boot);
         self.replayed = 0;
         (self.connected, self.air, self.daytime) = (false, false, false);
+        self.charger = false;
         self.sent.clear();
         self.outbox.clear();
         self.ha_presses.clear();
@@ -908,6 +911,20 @@ impl<'a> Follower<'a> {
                     .map_err(|_| "battery: MV?")?;
                 let [x, y] = mv.to_le_bytes();
                 self.inject(13, x, y, 0)?;
+                // The charger's lines, as the simulator's own `battery`
+                // sets them (left as they were without; `measured`, the
+                // dev kit's own again).
+                let lines = match arg(1) {
+                    None => None,
+                    Some("measured") => Some(0),
+                    Some("charging") => Some(1),
+                    Some("charged") => Some(2),
+                    Some("unplugged") => Some(3),
+                    Some(other) => return Err(format!("battery: {other}?")),
+                };
+                if let Some(lines) = lines {
+                    self.inject(25, lines, 0, 0)?;
+                }
             }
             "wait" => {
                 let wait = script::duration(arg(0).ok_or("wait: needs a duration")?)?;
@@ -1311,6 +1328,7 @@ impl<'a> Follower<'a> {
             self.app.set_connected(self.connected);
             self.app.set_air(self.air);
             self.app.set_daytime(self.daytime);
+            self.app.set_charger(self.charger, at);
         }
         let input = match event.kind {
             kind::TICK => {
@@ -1348,15 +1366,17 @@ impl<'a> Follower<'a> {
             kind::PHONE => Some(InputEvent::Phone(self.phone(event)?)),
             kind::STATE => {
                 let flag = |f| event.flags & f != 0;
-                let (connected, air, daytime) = (
+                let (connected, air, daytime, charger) = (
                     flag(compare::state::CONNECTED),
                     flag(compare::state::AIR),
                     flag(compare::state::DAYTIME),
+                    flag(compare::state::CHARGER),
                 );
                 for (what, was, is) in [
                     ("a phone connected", self.connected, connected),
                     ("a room sensor heard", self.air, air),
                     ("daytime", self.daytime, daytime),
+                    ("on the charger", self.charger, charger),
                 ] {
                     if was != is {
                         let no = if is { "" } else { "no longer " };
@@ -1364,9 +1384,11 @@ impl<'a> Follower<'a> {
                     }
                 }
                 (self.connected, self.air, self.daytime) = (connected, air, daytime);
+                self.charger = charger;
                 self.app.set_connected(connected);
                 self.app.set_air(air);
                 self.app.set_daytime(daytime);
+                self.app.set_charger(charger, at);
                 None
             }
             kind::HA_PRESS => {
@@ -1416,6 +1438,11 @@ impl<'a> Follower<'a> {
             kind::CHARGE_GLANCE => {
                 eprintln!("  dev kit: a glance on the charger at {:.3} s", seconds(at));
                 self.app.charge_glance(at);
+                None
+            }
+            kind::CHARGED => {
+                eprintln!("  dev kit: full on the charger at {:.3} s", seconds(at));
+                self.app.on_charged(at);
                 None
             }
             other => return Err(format!("the dev kit logged an unknown event ({other})")),

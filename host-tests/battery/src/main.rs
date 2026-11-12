@@ -651,25 +651,216 @@ mod tests {
     fn charge_glances_every_few_minutes_until_full() {
         let every = CHARGE_GLANCE_EVERY_SECS;
         let mut glances = ChargeGlances::new();
-        assert!(!glances.due(false, 10));
+        assert!(!glances.due(false, false, 10));
         // Set on the charger at 100 s: the first a while later.
-        assert!(!glances.due(true, 100));
-        assert!(!glances.due(true, 100 + every - 1));
-        assert!(glances.due(true, 100 + every));
-        glances.after(100 + every, false);
-        assert!(!glances.due(true, 101 + every));
+        assert!(!glances.due(true, false, 100));
+        assert!(!glances.due(true, false, 100 + every - 1));
+        assert!(glances.due(true, false, 100 + every));
+        glances.after(100 + every);
+        assert!(!glances.due(true, false, 101 + every));
         // Due again, but the screen was on: skipped, the next a while on.
-        assert!(glances.due(true, 100 + 2 * every));
-        glances.after(100 + 2 * every, false);
-        assert!(!glances.due(true, 100 + 3 * every - 1));
-        // Full: that one's the last.
-        assert!(glances.due(true, 100 + 3 * every));
-        glances.after(100 + 3 * every, true);
-        assert!(!glances.due(true, 100 + 10 * every));
+        assert!(glances.due(true, false, 100 + 2 * every));
+        glances.after(100 + 2 * every);
+        assert!(!glances.due(true, false, 100 + 3 * every - 1));
+        // Full: no more, the full charge's screen says so.
+        assert!(!glances.due(true, true, 100 + 3 * every));
+        assert!(!glances.due(true, true, 100 + 10 * every));
         // Off the charger and back: they start over.
-        assert!(!glances.due(false, 100 + 10 * every));
-        assert!(!glances.due(true, 101 + 10 * every));
-        assert!(glances.due(true, 101 + 11 * every));
+        assert!(!glances.due(false, false, 100 + 10 * every));
+        assert!(!glances.due(true, false, 101 + 10 * every));
+        assert!(glances.due(true, false, 101 + 11 * every));
+    }
+
+    // ==========================================================================
+    // Fully charged
+    // ==========================================================================
+
+    /// The charger's state, as the lines say it.
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Line {
+        Off,
+        Charging,
+        Done,
+    }
+    use Line::*;
+
+    /// Feeds `FullCharge` a reading a second from uptime `start`, `secs`
+    /// of `line`, at `percent` shown, and returns the seconds it said the
+    /// watch became full.
+    fn became_full(
+        full: &mut FullCharge,
+        start: u32,
+        secs: u32,
+        line: Line,
+        percent: u8,
+    ) -> Vec<u32> {
+        (start..start + secs)
+            .filter(|&second| full.update(line == Charging, line != Off, percent, second))
+            .collect()
+    }
+
+    /// A charge as it goes: on the cradle at 70% at 100 s, charging for
+    /// an hour and a half, then done.
+    fn charged(full: &mut FullCharge) -> Vec<u32> {
+        became_full(full, 0, 100, Off, 70);
+        let mut at = became_full(full, 100, 5400, Charging, 70);
+        at.extend(became_full(full, 5500, 600, Done, 99));
+        at
+    }
+
+    #[test]
+    fn a_charge_becomes_full_once() {
+        let mut full = FullCharge::new();
+        assert_eq!(charged(&mut full), [5500]);
+        assert!(full.full());
+        // The cell sags overnight and the charger tops it up: not again.
+        assert_eq!(became_full(&mut full, 6100, 900, Charging, 100), []);
+        assert_eq!(became_full(&mut full, 7000, 600, Done, 100), []);
+        assert!(full.full());
+    }
+
+    #[test]
+    fn a_full_watch_set_on_the_cradle_never_became_full() {
+        // Off it at 100% (it had been full), the charger topping it up for
+        // twenty minutes.
+        let mut full = FullCharge::new();
+        became_full(&mut full, 0, 100, Off, 100);
+        assert_eq!(became_full(&mut full, 100, 1200, Charging, 100), []);
+        assert_eq!(became_full(&mut full, 1300, 60, Done, 100), []);
+        assert!(full.full());
+        // Or with the charger not charging at all: full from 10 s in.
+        let mut full = FullCharge::new();
+        became_full(&mut full, 0, 100, Off, 99);
+        assert_eq!(became_full(&mut full, 100, FULL_START_SECS, Done, 99), []);
+        assert!(!full.full());
+        assert_eq!(became_full(&mut full, 110, 1, Done, 99), []);
+        assert!(full.full());
+        // And when the cell sags, hours later, and is topped up: still not.
+        assert_eq!(became_full(&mut full, 111, 1200, Charging, 99), []);
+        assert_eq!(became_full(&mut full, 1311, 60, Done, 100), []);
+    }
+
+    #[test]
+    fn a_boot_on_a_full_cradle_never_became_full() {
+        let mut full = FullCharge::new();
+        assert_eq!(became_full(&mut full, 0, 600, Done, 100), []);
+        // Nor below 100%, as a boot under load can read.
+        let mut full = FullCharge::new();
+        assert_eq!(became_full(&mut full, 0, 600, Done, 97), []);
+        assert!(full.full());
+    }
+
+    #[test]
+    fn a_boot_while_charging_becomes_full() {
+        let mut full = FullCharge::new();
+        assert_eq!(became_full(&mut full, 0, 1200, Charging, 90), []);
+        assert_eq!(became_full(&mut full, 1200, 10, Done, 98), [1200]);
+    }
+
+    #[test]
+    fn set_back_at_the_buzz_it_is_full_still() {
+        let mut full = FullCharge::new();
+        assert_eq!(charged(&mut full), [5500]);
+        // Lifted off at the buzz, at 99% (the percentage then catching up
+        // a point at a time), and set back: the charger may run a while.
+        assert_eq!(became_full(&mut full, 6100, 30, Off, 99), []);
+        assert_eq!(became_full(&mut full, 6130, 300, Charging, 99), []);
+        assert_eq!(became_full(&mut full, 6430, 60, Done, 100), []);
+        // Worn down a point, and on the cradle again: that's a charge.
+        assert_eq!(became_full(&mut full, 6490, 3600, Off, 98), []);
+        assert_eq!(became_full(&mut full, 10090, 600, Charging, 98), []);
+        assert_eq!(became_full(&mut full, 10690, 60, Done, 100), [10690]);
+    }
+
+    #[test]
+    fn the_charging_line_may_follow_the_power() {
+        // The first readings on the cradle have power, not yet charging.
+        let mut full = FullCharge::new();
+        became_full(&mut full, 0, 100, Off, 40);
+        assert_eq!(became_full(&mut full, 100, 3, Done, 40), []);
+        assert!(!full.full());
+        assert_eq!(became_full(&mut full, 103, 3600, Charging, 40), []);
+        assert_eq!(became_full(&mut full, 3703, 10, Done, 99), [3703]);
+    }
+
+    #[test]
+    fn a_wobbly_cradle_becomes_full_once() {
+        let mut full = FullCharge::new();
+        became_full(&mut full, 0, 100, Off, 60);
+        // Contact broken for a moment every few minutes, charging between.
+        let mut at = Vec::new();
+        let mut second = 100;
+        for _ in 0..20 {
+            at.extend(became_full(&mut full, second, 300, Charging, 60));
+            at.extend(became_full(&mut full, second + 300, 1, Off, 60));
+            second += 301;
+        }
+        at.extend(became_full(&mut full, second, 300, Charging, 95));
+        second += 300;
+        at.extend(became_full(&mut full, second, 120, Done, 99));
+        let done = second;
+        // And on after it's full.
+        for _ in 0..5 {
+            at.extend(became_full(&mut full, second + 120, 1, Off, 99));
+            at.extend(became_full(&mut full, second + 121, 2, Charging, 99));
+            at.extend(became_full(&mut full, second + 123, 120, Done, 99));
+            second += 123;
+        }
+        assert_eq!(at, [done]);
+    }
+
+    /// Whatever the lines do: it never says full twice on one stay, nor
+    /// without the charger having charged on it, nor on one that started
+    /// at or over the percentage of the last done.
+    #[test]
+    fn full_once_a_stay_and_only_from_charging() {
+        // A small LCG, as below.
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut random = move |below: u32| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((state >> 33) % u64::from(below)) as u32
+        };
+        for _ in 0..2000 {
+            let mut full = FullCharge::new();
+            let mut second = random(20);
+            let mut percent = random(101) as u8;
+            let mut stay_fired = false;
+            let mut charged = false;
+            let mut started_at: Option<u8> = None;
+            let mut last_done: u8 = 100;
+            let mut was_done = false;
+            for _ in 0..300 {
+                second += 1 + random(30);
+                let line = [Off, Charging, Done][random(3) as usize];
+                percent = match line {
+                    Off => percent.saturating_sub(random(2) as u8),
+                    _ => (percent + random(2) as u8).min(100),
+                };
+                let fired = full.update(line == Charging, line != Off, percent, second);
+                if line == Off {
+                    (stay_fired, charged, started_at, was_done) = (false, false, None, false);
+                    continue;
+                }
+                let start = *started_at.get_or_insert(percent);
+                charged |= line == Charging;
+                if fired {
+                    assert!(!stay_fired, "full twice on one stay");
+                    assert!(charged, "full without charging");
+                    assert_eq!(line, Done);
+                    assert!(
+                        start < last_done,
+                        "full from {start}%, done last at {last_done}%"
+                    );
+                    stay_fired = true;
+                }
+                if line == Done && full.full() && !was_done {
+                    last_done = percent;
+                    was_done = true;
+                }
+            }
+        }
     }
 
     // ==========================================================================

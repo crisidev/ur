@@ -129,7 +129,8 @@ tap                               # snooze
   so the button grid's presses can't go to Home Assistant).
 - **The wearer and the watch:** `battery` (and charging; the percentage
   starts over from it, as after a reboot; plugging in wakes the screen,
-  and glances show the time to full, as on the watch), `steps`,
+  glances show the time to full, and `charged` after charging shows the
+  full charge's screen, as on the watch), `steps`,
   `heart`, `temperature`, `asleep`, `movement`, `light-sleep`, `last-night`,
   `demo-day` (a day of steps and heart rates so far), `alarm`, `smart`,
   `timer`, `theme`, and `version` (what the Info screen says the
@@ -278,7 +279,9 @@ writes `NAME.png`: the simulator's frame, the dev kit's, and where they
 differ (magenta), side by side; the run fails if any differ. The script
 can only do what a dev kit can be made to do (`scripts/screenshot.py`'s
 inputs: `button`, `glance`, gestures, `press`/`lift`, `notify N [HOURS]`,
-`media`, `steps`, `battery`, `find on|off`, `asleep on|off`), plus `wait`, `compare`, and `expect` (of
+`media`, `steps`, `battery` (its charger's lines too, faked, and
+`battery MV measured` for its own again), `find on|off`, `asleep
+on|off`), plus `wait`, `compare`, and `expect` (of
 `screen-on`, `dim`, `quiet-night`). With the screen
 off, the dev kit's panel keeps an old frame, and `compare` skips it. A
 phone connected to the dev kit may play music: the dev kit exports the

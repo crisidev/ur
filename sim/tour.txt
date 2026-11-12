@@ -411,3 +411,87 @@ wait 12s
 expect screen-on
 shot 24-quiet-grid-held.png
 lift
+
+# ==============================================================================
+# Fully charged
+# ==============================================================================
+
+# On the charger in the quiet night, the charge finishing neither buzzes
+# nor lights the screen: it waits for the first wake after the night,
+# here the double press that ends it, and shows then, without a buzz.
+# (Set on the charger, the screen wakes, dimly; it's been on it since the
+# battery ran out, above.)
+button
+battery 3990 unplugged
+wait 6s
+battery 3990 charging
+expect dim
+wait 11s
+expect not screen-on
+battery 4190 charged
+expect not screen-on
+expect not buzzing
+asleep off
+button 2
+expect not quiet-night
+expect charged
+expect not dim
+expect not buzzing
+# Its few seconds over, the clock face it covered.
+wait 5s
+expect not charged
+expect clock
+
+# Outside the quiet night, it buzzes and lights the screen at once, at the
+# usual brightness, for a few seconds, then the screen goes off again; the
+# button puts it away sooner. The charger topping the cell up again later,
+# as it sags, says nothing more.
+battery 3990 unplugged
+wait 6s
+battery 3990 charging
+wait 11s
+expect not screen-on
+battery 4190 charged
+expect charged
+expect buzzing
+expect not dim
+wait 5s
+expect not charged
+expect not screen-on
+battery 4190 charging
+wait 2s
+battery 4190 charged
+expect not screen-on
+expect not buzzing
+battery 3990 unplugged
+wait 6s
+battery 3990 charging
+button
+expect not screen-on
+battery 4190 charged
+expect charged
+button
+expect not charged
+expect clock
+
+# It waits for a call to end; and goes unshown if the watch leaves the
+# cradle meanwhile.
+battery 3990 unplugged
+wait 6s
+battery 3990 charging
+call "Nora Lindqvist"
+battery 4190 charged
+expect not charged
+call over
+expect charged
+expect buzzing
+button
+battery 3990 unplugged
+wait 6s
+battery 3990 charging
+find on
+battery 4190 charged
+expect not charged
+battery 4190 unplugged
+find off
+expect not charged

@@ -12,10 +12,10 @@
 //!   flash.
 //! - [`Event`]s: everything that changes the UI's state (ticks, inputs,
 //!   and what a pass tells the App besides: whether a phone is connected,
-//!   a room sensor heard, it's daytime, the charger's power arrived, and
-//!   a glance on it showed), with the exact instants and readings the UI
-//!   loop handed it. The simulator replays them in order. A ring: the
-//!   reader must keep up.
+//!   a room sensor heard, it's daytime, and the charger has power; that
+//!   its power arrived, a glance on it showed, and it became full), with
+//!   the exact instants and readings the UI loop handed it. The simulator
+//!   replays them in order. A ring: the reader must keep up.
 //! - [`Pass`]: what the last frame was rendered with (`ui::Status`,
 //!   with the room sensor's reading and the BTHome identity, and today's
 //!   activity), and a seqlock around it, so a reader can tell a
@@ -165,6 +165,9 @@ pub mod kind {
     pub const CHARGER: u8 = 10;
     /// A glance on the charger showed (see [`super::charge_glance`]).
     pub const CHARGE_GLANCE: u8 = 11;
+    /// The watch became full on the charger, and the pass told the App
+    /// (see [`super::charged`]).
+    pub const CHARGED: u8 = 12;
 }
 
 /// What [`Event::phone`] says the phone sent: the content isn't kept (the
@@ -199,11 +202,13 @@ pub mod flag {
 }
 
 /// [`kind::STATE`] flags: what the pass last told the App
-/// (`App::set_connected`, `App::set_air`, `App::set_daytime`).
+/// (`App::set_connected`, `App::set_air`, `App::set_daytime`,
+/// `App::set_charger`).
 pub mod state {
     pub const CONNECTED: u8 = 1;
     pub const AIR: u8 = 2;
     pub const DAYTIME: u8 = 4;
+    pub const CHARGER: u8 = 8;
 }
 
 #[repr(C)]
@@ -760,14 +765,22 @@ pub fn charge_glance(at: Instant) {
     push(event(kind::CHARGE_GLANCE, at));
 }
 
-/// The pass told the App, at `now`, whether a phone is connected and
-/// whether a room sensor was heard lately: logged if either changed, so
-/// a reader replaying the events tells its App the same in between.
-pub fn state(now: Instant, connected: bool, air: bool) {
+/// The watch became full on the charger, and the pass is about to tell
+/// the App (`App::on_charged`) at `at`.
+pub fn charged(at: Instant) {
+    push(event(kind::CHARGED, at));
+}
+
+/// The pass told the App, at `now`, whether a phone is connected,
+/// whether a room sensor was heard lately, and whether the charger has
+/// power: logged if any changed, so a reader replaying the events tells
+/// its App the same in between.
+pub fn state(now: Instant, connected: bool, air: bool, charger: bool) {
     update_state(now, |flags| {
         (flags & state::DAYTIME)
             | (u8::from(connected) * state::CONNECTED)
             | (u8::from(air) * state::AIR)
+            | (u8::from(charger) * state::CHARGER)
     });
 }
 

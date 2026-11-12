@@ -2,8 +2,10 @@
 //! charge left, as the percentage the watch shows and sends (see
 //! [`Battery::percent`]); and when the battery is so nearly empty that the
 //! watch should save what it would lose and switch itself off (see
-//! [`crate::system_off`]); and when the charger's power arrives, which
-//! lights the screen (see [`PlugIn`]).
+//! [`crate::system_off`]); when the charger's power arrives, which
+//! lights the screen (see [`PlugIn`]); how long the charge has to go (see
+//! [`Battery::to_full`]); and when it's done, having charged the watch
+//! (see [`FullCharge`]).
 //!
 //! Hardware-free, so it's tested on the host (`host-tests/battery`).
 
@@ -548,11 +550,13 @@ pub enum ToFull {
 // Every [`CHARGE_GLANCE_EVERY_SECS`] on the charger, the screen shows a
 // glance (dim, at the low backlight, for a few seconds, without a buzz)
 // with the charge and the time to full, so someone passing sees how long
-// it has to go; and once it's full, one last that says so, then no more
-// until it's set on the charger again. Not over anything on screen, nor
-// in the quiet night: a watch by the bed mustn't light the room every few
-// minutes. One that can't show is skipped, rather than shown as soon as
-// it can be: right after the wearer put the screen off, say.
+// it has to go; until the charger says it's full (see `FullCharge`), when
+// they stop until it's set on the charger again: what says it's full is
+// the full charge's own screen, if it became full there. Not over
+// anything on screen, nor in the quiet night: a watch by the bed mustn't
+// light the room every few minutes. One that can't show is skipped,
+// rather than shown as soon as it can be: right after the wearer put the
+// screen off, say.
 
 /// How often a glance shows on the charger; see above.
 pub const CHARGE_GLANCE_EVERY_SECS: u32 = 5 * 60;
@@ -561,22 +565,18 @@ pub const CHARGE_GLANCE_EVERY_SECS: u32 = 5 * 60;
 pub struct ChargeGlances {
     /// The uptime (seconds) the next is due at, or 0 off the charger.
     next: u32,
-    /// The last showed "full": no more until the charger comes off.
-    done: bool,
 }
 
 impl ChargeGlances {
     pub const fn new() -> Self {
-        Self {
-            next: 0,
-            done: false,
-        }
+        Self { next: 0 }
     }
 
-    /// Takes whether the charger has power at `uptime_secs`, and says
-    /// whether a glance is due. If one is, say what came of it with
+    /// Takes whether the charger has power at `uptime_secs`, and whether
+    /// it has been full on this stay (`full`, [`FullCharge::full`]), and
+    /// says whether a glance is due. If one is, say so with
     /// [`ChargeGlances::after`].
-    pub fn due(&mut self, power_present: bool, uptime_secs: u32) -> bool {
+    pub fn due(&mut self, power_present: bool, full: bool, uptime_secs: u32) -> bool {
         if !power_present {
             *self = Self::new();
             return false;
@@ -585,14 +585,125 @@ impl ChargeGlances {
             self.next = uptime_secs + CHARGE_GLANCE_EVERY_SECS;
             return false;
         }
-        !self.done && uptime_secs >= self.next
+        !full && uptime_secs >= self.next
     }
 
-    /// The glance that was due, at `uptime_secs`, showed "full"
-    /// (`showed_full`), or something else, or couldn't show: either way,
-    /// the next is due a while from now.
-    pub fn after(&mut self, uptime_secs: u32, showed_full: bool) {
+    /// The glance that was due, at `uptime_secs`, showed or couldn't:
+    /// either way, the next is due a while from now.
+    pub fn after(&mut self, uptime_secs: u32) {
         self.next = uptime_secs + CHARGE_GLANCE_EVERY_SECS;
-        self.done = showed_full;
+    }
+}
+
+// ==============================================================================
+// Fully charged
+// ==============================================================================
+//
+// When the charger says it's done, having charged the watch on this stay
+// on the cradle, the watch buzzes and says so on its screen (see
+// `ui::App::on_charged`), so the wearer knows it can come off. Once a
+// stay, as it became full: [`FullCharge`] says when. The charger's lines
+// alone would say it too often:
+//
+// - The SGM40561 starts charging again when the cell sags below its
+//   recharge threshold, and then says it's done again: on one stay, only
+//   the first done counts.
+// - A watch set on the cradle full (or booted on it, full) never became
+//   full there, though the charger may still top it up for a while: the
+//   cell at rest reads a little under the charger's 4.2 V (2026-11-09:
+//   the sealed watch, from 97% at rest, still charging 22 minutes in). So
+//   a stay that starts with the percentage at or over what it showed the
+//   last time the charger said done (100% after a boot) counts as full
+//   from the start. That's the percentage, as it never rises off the
+//   charger: one lifted off at the buzz, at 98% still (at done it steps
+//   up to 100 a point at a time), and set back is as full as it was.
+// - Nor does a stay whose charger hasn't charged by
+//   [`FULL_START_SECS`] in: that's one already full by the charger's own
+//   reckoning (or booted on it once done), and a recharge later, after a
+//   sag, mustn't count as becoming full. The few seconds' grace is for
+//   the charging line to follow the power, as the two are read at the
+//   same instant of a pass.
+// - A wobbly cradle breaks contact for moments: each comes back as a
+//   new stay, and, unless it had become full already, the stay that
+//   reaches done is the one that counts. One that had is at its
+//   percentage still, so it starts full.
+//
+// The rest (the quiet night, what may be on screen, the watch leaving
+// the cradle before it could show) is the UI's.
+
+/// How long into a stay the charger may take to start charging, for the
+/// stay to count as charging the watch rather than starting full; see
+/// above.
+pub const FULL_START_SECS: u32 = 10;
+
+/// When the watch became fully charged on the cradle; see above.
+pub struct FullCharge {
+    /// The uptime (seconds, at least 1) this stay on the charger began,
+    /// or 0 off it.
+    since: u32,
+    /// This stay started below full (see above), so its done may count.
+    below: bool,
+    /// The charger has charged on this stay, starting in time.
+    charged: bool,
+    /// The charger has said done on this stay (after charging, or by
+    /// [`FULL_START_SECS`] in).
+    full: bool,
+    /// The percentage shown when the charger last said done, after a
+    /// boot 100: a stay that starts at or over it starts full.
+    full_from: u8,
+}
+
+impl FullCharge {
+    pub const fn new() -> Self {
+        Self {
+            since: 0,
+            below: false,
+            charged: false,
+            full: false,
+            full_from: 100,
+        }
+    }
+
+    /// Takes the charger's lines, and the percentage shown (after
+    /// [`Battery::update`] took them), at `uptime_secs`, and says whether
+    /// the watch just became full on this stay: the charger said done,
+    /// for the first time on a stay that charged it from below full.
+    pub fn update(
+        &mut self,
+        charging: bool,
+        power_present: bool,
+        percent: u8,
+        uptime_secs: u32,
+    ) -> bool {
+        if !power_present {
+            *self = Self {
+                full_from: self.full_from,
+                ..Self::new()
+            };
+            return false;
+        }
+        // A stay begins: on the cradle, or booted on it.
+        if self.since == 0 {
+            self.since = uptime_secs.max(1);
+            self.below = percent < self.full_from;
+        }
+        let started = uptime_secs.saturating_sub(self.since) >= FULL_START_SECS;
+        if charging {
+            self.charged |= !started && !self.full;
+            return false;
+        }
+        // Done, or not started yet.
+        if self.full || !(self.charged || started) {
+            return false;
+        }
+        self.full = true;
+        self.full_from = percent.min(100);
+        self.below && self.charged
+    }
+
+    /// Whether the charger has said it's full on this stay (see above):
+    /// no more glances with the time to full.
+    pub fn full(&self) -> bool {
+        self.full
     }
 }

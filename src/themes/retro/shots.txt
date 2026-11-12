@@ -77,7 +77,8 @@ wait 6s
 # On the charger: setting it there wakes the screen to the clock, which
 # says the heart rate is OFF (it isn't measured there), and a glance (one
 # shows by itself every 5 minutes there) shows how long the charge has to
-# go.
+# go. Once the charger says it's done, the full charge's screen takes over
+# (with a buzz) for a few seconds.
 battery 4000 charging
 wait 1s
 expect clock
@@ -89,6 +90,11 @@ glance
 wait 1s
 expect dim
 shot dim-charging.png
+battery 4190 charged
+expect charged
+expect not dim
+shot charged.png
+shot charged-handheld.png handheld
 battery 3990 unplugged
 wait 6s
 

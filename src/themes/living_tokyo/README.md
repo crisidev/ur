@@ -12,7 +12,9 @@ second and stays still in the dim look. No weather.
 
 Every other screen is, for now, a copy of [Retro](../retro/)'s, in
 Tokyo Night's colours, to be restyled in the city's look; bar the glance
-on the charger, which shows the clock face's moon, big.
+on the charger, which shows the clock face's moon, big, and the full
+charge's screen: the city under a full moon, struck by lightning, with
+FULL in neon.
 
 ## Colour schemes
 
@@ -55,9 +57,12 @@ says.)
 
 ## On the charger
 
-| On the charger (LIVING TOKYO) |
-|---|
-| <img src="shots/clock-charging.png" width="120" alt="The clock face on the charger: the moon waxing, in green; the beacon dark; and the heart rate's sign reading OFF, unlit"> |
+Once the charge is done, the full charge's screen takes over for a few
+seconds, with a buzz.
+
+| On the charger (LIVING TOKYO) | Full |
+|---|---|
+| <img src="shots/clock-charging.png" width="120" alt="The clock face on the charger: the moon waxing, in green; the beacon dark; and the heart rate's sign reading OFF, unlit"> | <img src="shots/charged.png" width="120" alt="Fully charged: the city at night under a big full moon, lightning in yellow and white striking a distant roof, and FULL in magenta neon on a dark sign in front of the buildings"> |
 
 ## The dim look
 

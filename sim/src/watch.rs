@@ -538,6 +538,9 @@ impl Watch {
             self.log("off");
             return;
         }
+        // What the pass itself set off: the full charge's buzz (see
+        // `App::on_charged`), as the charger said done.
+        self.after_event();
         if touch::asleep() {
             // The controller's asleep: whatever was in progress is moot,
             // bar a long press's release (see `Tracking::lost`); one

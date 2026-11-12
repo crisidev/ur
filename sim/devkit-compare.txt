@@ -6,8 +6,9 @@
 #         --out ../tmp/compare devkit-compare.txt
 #
 # What it changes on the dev kit (the theme, an alarm, the battery
-# reading) it changes back. (No `steps`: they'd go into the dev kit's
-# activity, which a paired phone syncs to Gadgetbridge.) With
+# reading and the charger's lines) it changes back. (No `steps`: they'd
+# go into the dev kit's activity, which a paired phone syncs to
+# Gadgetbridge.) With
 # a phone connected to the dev kit, it can't run: the phone's own messages
 # can't be followed.
 
@@ -214,5 +215,26 @@ compare 28-settings-buttons-off
 button
 wait 1s
 
-battery 0
+# On the charger, its lines faked (a dev kit may sit on no cradle): the
+# screen wakes as the power arrives; once the charger says it's done, the
+# full charge's screen, with a buzz, which the button puts away.
+wait 11s
+expect not screen-on
+battery 3700 charging
+wait 1s
+expect screen-on
+compare 29-charger-wake
+wait 11s
+expect not screen-on
+battery 4190 charged
+wait 1s
+expect screen-on
+compare 30-charged
+button
+wait 1s
+compare 31-charged-dismissed
+button
+wait 1s
+
+battery 0 measured
 wait 1s

@@ -33,7 +33,7 @@ use core::sync::atomic::Ordering;
 use defmt::{debug, info};
 use embassy_time::{Duration, Instant};
 
-use crate::battery::{Battery, ChargeGlances, PlugIn, ToFull};
+use crate::battery::{Battery, ChargeGlances, FullCharge, PlugIn, ToFull};
 use crate::bthome::{self, Identity};
 use crate::buttons::Press;
 use crate::canvas::{self, Canvas, Sweep};
@@ -341,6 +341,8 @@ pub struct UiLoop {
     plug_in: PlugIn,
     /// When to show a glance on the charger, with the time to full.
     charge_glances: ChargeGlances,
+    /// When the watch became full on the charger, to say so.
+    full_charge: FullCharge,
     /// Whether the panel (and backlight) are on. It starts "asleep" so the
     /// first pass goes through the wake path: render the first frame, then
     /// turn the backlight on. (Waking an already-awake ST7789 is harmless.)
@@ -392,6 +394,7 @@ impl UiLoop {
             battery: Battery::new(),
             plug_in: PlugIn::new(),
             charge_glances: ChargeGlances::new(),
+            full_charge: FullCharge::new(),
             panel_awake: false,
             first_frame: true,
             // The first reading is still settling (it's smoothed); log
@@ -459,15 +462,30 @@ impl UiLoop {
             let woke = app.on_charger(now);
             info!("charger: plugged in; woke the screen: {=bool}", woke);
         }
+        // Full, having charged there: the watch buzzes and says so, so it
+        // can come off (see `battery::FullCharge`, and `App::on_charged`
+        // for when it waits).
+        let percent = self.battery.percent() as u8;
+        if self
+            .full_charge
+            .update(charging, power_present, percent, uptime)
+        {
+            #[cfg(feature = "compare")]
+            crate::compare::charged(now);
+            let shown = app.on_charged(now);
+            info!("charger: full; shown at once: {=bool}", shown);
+        }
         // And every few minutes there, until full, a glance with the time
         // to full (see `battery::ChargeGlances`).
-        if self.charge_glances.due(power_present, uptime) {
+        let full = self.full_charge.full();
+        if self.charge_glances.due(power_present, full, uptime) {
             let to_full = self.battery.to_full(uptime);
             let shown = app.charge_glance(now);
             if shown {
                 #[cfg(feature = "compare")]
                 crate::compare::charge_glance(now);
-                // The minutes it said, or 0 once soon, 1000 once full.
+                // The minutes it said, or 0 once soon, 1000 if full (in
+                // the moment before `FullCharge` says so).
                 let minutes = match to_full {
                     Some(ToFull::Minutes(minutes)) => minutes,
                     Some(ToFull::Soon) | None => 0,
@@ -475,8 +493,7 @@ impl UiLoop {
                 };
                 info!("charger: glance, {=u16} min to full", minutes);
             }
-            let full = shown && to_full == Some(ToFull::Full);
-            self.charge_glances.after(uptime, full);
+            self.charge_glances.after(uptime);
         }
         let battery = &self.battery;
         let report = ble::BatteryReport {
@@ -528,11 +545,12 @@ impl UiLoop {
                 .is_some_and(|s| now_ms.saturating_sub(s.heard) < aranet::RECENT)
         });
         app.set_air(air);
+        app.set_charger(power_present, now);
         // Whatever the last wake did, and the phone or a sensor going
         // just now, the UI is in a state it can draw (and time out of).
         app.check();
         #[cfg(feature = "compare")]
-        crate::compare::state(now, connected, air);
+        crate::compare::state(now, connected, air, power_present);
         // Apply screen power changes. Waking renders before the backlight
         // comes on, so the old frame never flashes up.
         if app.awake {
