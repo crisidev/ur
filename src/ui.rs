@@ -1925,6 +1925,8 @@ impl App {
             // meanwhile, for as long as the client stays.
             PhoneEvent::Unpaired(why) => {
                 if self.unpaired_banners.due(why as usize, now.as_millis()) {
+                    // The rest are held back: `ble` logs each connection.
+                    defmt::info!("ui: banner: {}", why);
                     self.show_banner(Shows::Unpaired(why), now);
                 }
                 return;
