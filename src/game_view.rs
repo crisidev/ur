@@ -13,7 +13,9 @@ use crate::font;
 use crate::raycast::{self, Camera, MAP, Side};
 
 /// Whether the game sends 12 bits a pixel rather than 16: a quarter less
-/// over the bus, for a coarser picture (see `Display::set_format`).
+/// over the bus, for a coarser picture (see `Display::set_format`). Off:
+/// tried on the watch (2026-11-12), RGB565's smooth ceiling and floor
+/// were worth more than RGB444's speed, which bands them.
 pub const RGB444: bool = false;
 
 /// A colour in the panel's format, from 8 bits a channel.
