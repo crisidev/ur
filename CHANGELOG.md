@@ -14,6 +14,8 @@ missing below were test builds for the dev kit.
 
 ### Added
 
+- Light the screen within a second of setting the watch on its charger, so it's plain at once that it charges (dimly, without a buzz, in a quiet night; a wobbly cradle lights it once); then, every 5 minutes there, outside a quiet night and not over anything on screen, show a dim glance with the charge and the time to full (an estimate that errs long, by up to about 20 minutes), until one says FULL (8bb97c0, 523b654)
+
 ### Changed
 
 ### Deprecated
