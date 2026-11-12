@@ -128,7 +128,8 @@ tap                               # snooze
   `passkey`, `update`, `slots full` (both Bluetooth connections in use,
   so the button grid's presses can't go to Home Assistant).
 - **The wearer and the watch:** `battery` (and charging; the percentage
-  starts over from it, as after a reboot), `steps`,
+  starts over from it, as after a reboot; plugging in wakes the screen,
+  and glances show the time to full, as on the watch), `steps`,
   `heart`, `temperature`, `asleep`, `movement`, `light-sleep`, `last-night`,
   `demo-day` (a day of steps and heart rates so far), `alarm`, `smart`,
   `timer`, `theme`, and `version` (what the Info screen says the

@@ -217,6 +217,14 @@ fn render_sky(canvas: &mut Canvas, battery: &Battery) {
         canvas.pixel(x, y, color);
     }
 
+    moon(canvas, MOON_X, MOON_Y, MOON_D, battery);
+}
+
+/// The moon as the battery, `d` across, from `(left, top)`: waxing from
+/// new (empty) to full (charged), in the "good" colour while charging and
+/// the "bad" one below 20%, with its outline always there. The clock
+/// face's, and the glance's on the charger, bigger.
+pub(super) fn moon(canvas: &mut Canvas, left: i32, top: i32, d: i32, battery: &Battery) {
     let percent = battery.percent() as i32;
     let color = if battery.charging {
         Color::GOOD
@@ -225,16 +233,16 @@ fn render_sky(canvas: &mut Canvas, battery: &Battery) {
     } else {
         Color::TEXT
     };
-    disc(canvas, MOON_X, MOON_Y, MOON_D, color);
+    disc(canvas, left, top, d, color);
     // The shadow slides off to the right as the battery fills up.
-    let shadow = MOON_X + percent.min(100) * MOON_D / 100;
-    disc(canvas, shadow, MOON_Y, MOON_D, Color::BACKGROUND);
+    let shadow = left + percent.min(100) * d / 100;
+    disc(canvas, shadow, top, d, Color::BACKGROUND);
     // An outline, so that the moon is still there on an empty battery.
-    for y in 0..MOON_D {
-        for x in 0..MOON_D {
-            let inner = |x: i32, y: i32| in_disc(x - 1, y - 1, MOON_D - 2);
-            if in_disc(x, y, MOON_D) && !inner(x, y) {
-                canvas.pixel(MOON_X + x, MOON_Y + y, color);
+    for y in 0..d {
+        for x in 0..d {
+            let inner = |x: i32, y: i32| in_disc(x - 1, y - 1, d - 2);
+            if in_disc(x, y, d) && !inner(x, y) {
+                canvas.pixel(left + x, top + y, color);
             }
         }
     }

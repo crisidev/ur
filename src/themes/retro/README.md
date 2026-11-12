@@ -44,9 +44,9 @@ yellow, and deep and REM sleep its cyan and magenta.
 
 ## The dim look
 
-| A glance | A notification, with the screen off |
-|---|---|
-| <img src="shots/dim-glance.png" width="120" alt="A glance: the hours above the minutes, big, white on black"> | <img src="shots/dim-notification.png" width="120" alt="A notification that arrived with the screen off: the app in red, and who it's from, big, in white"> |
+| A glance | A notification, with the screen off | A glance on the charger |
+|---|---|---|
+| <img src="shots/dim-glance.png" width="120" alt="A glance: the hours above the minutes, big, white on black"> | <img src="shots/dim-notification.png" width="120" alt="A notification that arrived with the screen off: the app in red, and who it's from, big, in white"> | <img src="shots/dim-charging.png" width="120" alt="On the charger: the time small in red; the battery, three times the clock face's, with its red bolt and 66%; then FULL IN in red, and 1:12, big, in white"> |
 
 These are `shots.txt`'s, which the simulator's tests check (see
 [AUTHORING-THEMES.md](../../../AUTHORING-THEMES.md#the-readme-and-its-screenshots)).

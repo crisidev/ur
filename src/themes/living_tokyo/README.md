@@ -10,7 +10,8 @@ second and stays still in the dim look. No weather.
 (`theme-living_tokyo`.)
 
 Every other screen is, for now, a copy of [Retro](../retro/)'s, in
-Tokyo Night's colours, to be restyled in the city's look.
+Tokyo Night's colours, to be restyled in the city's look; bar the glance
+on the charger, which shows the clock face's moon, big.
 
 ## Colour schemes
 
@@ -53,9 +54,9 @@ says.)
 
 ## The dim look
 
-| A glance | A notification, with the screen off |
-|---|---|
-| <img src="shots/dim-glance.png" width="120" alt="A glance: the hours above the minutes, big, white on black"> | <img src="shots/dim-notification.png" width="120" alt="A notification that arrived with the screen off: the app in red, and who it's from, big, in white"> |
+| A glance | A notification, with the screen off | A glance on the charger |
+|---|---|---|
+| <img src="shots/dim-glance.png" width="120" alt="A glance: the hours above the minutes, big, white on black"> | <img src="shots/dim-notification.png" width="120" alt="A notification that arrived with the screen off: the app in red, and who it's from, big, in white"> | <img src="shots/dim-charging.png" width="120" alt="On the charger: the time small in red; the moon, big, waxing to the charge, among red stars, with 66% under it; then FULL IN in red, and 1:12, big, in white"> |
 
 These are `shots.txt`'s, drawn in a build with every theme (where
 FORCE is a choice), which the simulator's tests check (see

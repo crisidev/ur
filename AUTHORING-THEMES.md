@@ -169,7 +169,7 @@ without touching the rest:
 |---|---|
 | `mod.rs` | The `Theme` impl (which file draws which screen), every tap area, the layout's constants, the handles, and what several files draw: the big digits, and the media actions' icons |
 | `clock.rs` | The clock face, and its battery |
-| `glance.rs` | A glance: the time, or the next turn |
+| `glance.rs` | A glance: the time, the next turn, or the charge and the time to full on the charger |
 | `past.rs` | Today, and Last night |
 | `alarms.rs` | Alarms, the phone's alarms, the editor, an alarm ringing, and "find my watch" |
 | `messages.rs` | A notification, its banner, a call, and music |
@@ -325,7 +325,7 @@ Each draws its screen from scratch: clear the canvas first, then draw.
 | Method | The screen |
 |---|---|
 | `clock` | The clock face (`Face`: the status, the next alarm, media, unseen notifications, whether it's in the dim look) |
-| `glance` | A glance: the time, or the next turn while the phone navigates, and what a media gesture just did; always in the dim look |
+| `glance` | A glance: the time, the next turn while the phone navigates, or on the charger the charge (`status.battery`) and the time to full (`charge`; `helpers::to_full` words it), and what a media gesture just did; always in the dim look |
 | `today`, `last_night` | The day's steps and heart rate by the hour; last night's sleep |
 | `alarms`, `phone_alarms` | The alarms, smart wake and timers; the phone's alarms, read-only |
 | `notification` | A notification with the whole screen: a page of the history, or one that arrived with the screen off (in the dim look) |
@@ -480,8 +480,8 @@ Then a few screenshots:
 - the clock face in each of its schemes (so each side's too);
 - for each side it has (night, day), in one scheme of it: Last night,
   and LOOK (Settings);
-- the dim look: a glance, and a notification that came with the screen
-  off. Once, if its dim look is the same in every scheme (as Retro's
+- the dim look: a glance, a notification that came with the screen
+  off, and a glance on the charger. Once, if its dim look is the same in every scheme (as Retro's
   is, and a copy of Retro's); a side each if not.
 
 Those are all: every committed screenshot is a Git LFS object, and so

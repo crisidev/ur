@@ -1413,6 +1413,11 @@ impl<'a> Follower<'a> {
                 self.app.on_charger(at);
                 None
             }
+            kind::CHARGE_GLANCE => {
+                eprintln!("  dev kit: a glance on the charger at {:.3} s", seconds(at));
+                self.app.charge_glance(at);
+                None
+            }
             other => return Err(format!("the dev kit logged an unknown event ({other})")),
         };
         if let Some(input) = input {
@@ -1616,7 +1621,8 @@ impl<'a> Follower<'a> {
             pass.battery_percent,
             pass.charging != 0,
             pass.power_present != 0,
-        );
+        )
+        .topping_up_from(pass.topping_up_since);
         let status = Status {
             uptime_secs: pass.uptime_secs,
             local_time: (pass.has_time != 0).then_some(DateTime {

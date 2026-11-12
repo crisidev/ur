@@ -1,20 +1,22 @@
-//! Retro's glance: what a look at the wrist shows, the time alone, or the
-//! next turn while the phone navigates, and, just after a media gesture,
-//! what it did.
+//! Retro's glance: what a look at the wrist shows, the time alone, the
+//! next turn while the phone navigates, or on the charger, how long it has
+//! to go; and, just after a media gesture, what it did.
 
 use super::{BACKGROUND, action_icon, draw_digit};
 use crate::canvas::{Canvas, Color};
 use crate::font;
 use crate::route::Turn;
-use crate::themes::Glance;
-use crate::themes::helpers::hhmm;
+use crate::themes::helpers::{hhmm, percent as percent_text, to_full as to_full_text};
+use crate::themes::{Glance, ToFull};
 use crate::ui::Status;
 
-/// A glance: the time alone, or the next turn while the phone navigates.
+/// A glance: the time alone, the next turn while the phone navigates, or
+/// the charge on the charger.
 pub(super) fn render_glance(canvas: &mut Canvas, glance: &Glance) {
-    match glance.route {
-        Some(step) => render_route_glance(canvas, glance.status, step),
-        None => render_time_glance(canvas, glance.status),
+    match (glance.route, glance.charge) {
+        (Some(step), _) => render_route_glance(canvas, glance.status, step),
+        (None, Some(to_full)) => render_charge_glance(canvas, glance.status, to_full),
+        (None, None) => render_time_glance(canvas, glance.status),
     }
     // Just after a media gesture, what it did, in the top right corner,
     // which both layouts leave free.
@@ -139,4 +141,88 @@ fn render_route_glance(canvas: &mut Canvas, status: &Status, step: &crate::route
         // Too long even for two lines (one very long word): its start.
         _ => canvas.text_cut(2, STREET_Y, &step.street, Color::TEXT_DIM),
     }
+}
+
+/// The glance on the charger: how long it has to go, big, under the
+/// battery as the clock face draws it, three times the size, with its
+/// percentage beside it. The time stays, smaller, at the top, as on the
+/// route's glance: a look at a watch on its charger is for when it's
+/// ready, and the time.
+///
+/// From the top: the time (2×, 10 px), the battery (3×, 15 px) and its
+/// percentage (2×) side by side, the label (1×) and the time to full (3×),
+/// with the gaps between them about even, and as much room at the bottom
+/// as at the top.
+fn render_charge_glance(canvas: &mut Canvas, status: &Status, to_full: ToFull) {
+    canvas.clear(BACKGROUND);
+    const TIME_Y: i32 = 3;
+    const BATTERY_Y: i32 = 20;
+    const LABEL_Y: i32 = 45;
+    const VALUE_Y: i32 = 53;
+    let centred = |canvas: &mut Canvas, y: i32, text: &str, scale: i32, color: Color| {
+        let width = font::small_text_width(text) * scale;
+        canvas.text_scaled(40 - width / 2, y, text, color, scale);
+    };
+    if let Some(t) = &status.local_time {
+        let time = hhmm(i64::from(t.hour) * 60 + i64::from(t.minute));
+        centred(canvas, TIME_Y, &time, 2, Color::TEXT_DIM);
+    }
+
+    // The clock face's battery (10×5, a 1×3 nub, 8×3 inside), at 3×. Not
+    // its charging animation (the fill creeping up to full): the bolt
+    // says it's charging, and in a few seconds' look, a still fill says
+    // how far it's got.
+    const SCALE: i32 = 3;
+    let battery = status.battery;
+    let percent = battery.percent();
+    let text = percent_text(percent);
+    let text_w = font::small_text_width(&text) * 2;
+    let left = (80 - (11 * SCALE + 4 + text_w)) / 2;
+    canvas.fill_rect(left, BATTERY_Y, 10 * SCALE, 5 * SCALE, Color::TEXT);
+    canvas.fill_rect(
+        left + 10 * SCALE,
+        BATTERY_Y + SCALE,
+        SCALE,
+        3 * SCALE,
+        Color::TEXT,
+    );
+    canvas.fill_rect(
+        left + SCALE,
+        BATTERY_Y + SCALE,
+        8 * SCALE,
+        3 * SCALE,
+        BACKGROUND,
+    );
+    let fill = (percent * 8).div_ceil(100) as i32;
+    canvas.fill_rect(
+        left + SCALE,
+        BATTERY_Y + SCALE,
+        fill * SCALE,
+        3 * SCALE,
+        Color::GOOD,
+    );
+    // The bolt, as on the clock face, over the battery's middle while
+    // charging.
+    if battery.charging {
+        let bolt_x = left + 5 * SCALE - font::BOLT_W as i32;
+        canvas.sprite(
+            bolt_x,
+            BATTERY_Y + 3,
+            font::BOLT_W,
+            &font::BOLT,
+            2,
+            Color::HEART,
+        );
+    }
+    canvas.text_scaled(
+        left + 11 * SCALE + 4,
+        BATTERY_Y + (5 * SCALE - 10) / 2,
+        &text,
+        Color::TEXT,
+        2,
+    );
+
+    let (label, value) = to_full_text(to_full);
+    centred(canvas, LABEL_Y, label, 1, Color::TEXT_DIM);
+    centred(canvas, VALUE_Y, &value, 3, Color::TEXT);
 }

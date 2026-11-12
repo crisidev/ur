@@ -207,6 +207,9 @@ pub struct Battery {
     /// [`Battery::critical`]. (Not an `Option`: that's 4 bytes more, of
     /// static RAM, in the UI task's future.)
     low_since: u32,
+    /// Since when (uptime seconds, at least 1) the charger has been at its
+    /// constant voltage, or 0 if it isn't; see [`Battery::to_full`].
+    topping_up_since: u32,
 }
 
 impl Battery {
@@ -219,6 +222,7 @@ impl Battery {
             best: 0,
             step_tick: 0,
             low_since: 0,
+            topping_up_since: 0,
         }
     }
 
@@ -256,6 +260,11 @@ impl Battery {
             self.best = 0;
         }
         let since_step = u32::from(tick.wrapping_sub(self.step_tick)) * TICK_SECS;
+        if !charging {
+            self.topping_up_since = 0;
+        } else if self.topping_up_since == 0 && self.millivolts() >= TOPPING_UP_MV {
+            self.topping_up_since = uptime_secs.max(1);
+        }
         if charging || power_present {
             let (cap, step) = self.charging_cap();
             if self.shown == NOT_YET {
@@ -339,7 +348,24 @@ impl Battery {
             best: 0,
             step_tick: 0,
             low_since: 0,
+            topping_up_since: 0,
         }
+    }
+
+    /// Since when the charger has been at constant voltage (see
+    /// [`Battery::to_full`]), or 0: for `compare` to hand the simulator,
+    /// which sets it with [`Battery::topping_up_from`].
+    #[allow(dead_code, reason = "only `compare` builds read it")]
+    pub fn topping_up_since(&self) -> u32 {
+        self.topping_up_since
+    }
+
+    /// This [`Battery::measured`], at constant voltage since uptime
+    /// `since` (or not, for 0), as a dev kit's was.
+    #[cfg(not(target_os = "none"))]
+    pub const fn topping_up_from(mut self, since: u32) -> Self {
+        self.topping_up_since = since;
+        self
     }
 
     pub fn millivolts(&self) -> u32 {
@@ -370,6 +396,25 @@ impl Battery {
             self.low_since = uptime_secs.max(1);
         }
         uptime_secs.saturating_sub(self.low_since) >= CRITICAL_FOR_SECS
+    }
+
+    /// How long until the charger is done, while it's on (see "Time to
+    /// full" below), at `uptime_secs`; `None` off it.
+    pub fn to_full(&self, uptime_secs: u32) -> Option<ToFull> {
+        if !self.charging {
+            return self.power_present.then_some(ToFull::Full);
+        }
+        let secs = if self.topping_up_since != 0 {
+            let topping_up = uptime_secs.saturating_sub(self.topping_up_since);
+            TOPPING_UP_FOR_SECS.checked_sub(topping_up)
+        } else {
+            let points = u32::from(CONSTANT_CURRENT_TO.saturating_sub(self.percent() as u8));
+            Some(points * ETA_STEP_SECS + TOPPING_UP_FOR_SECS)
+        };
+        Some(match secs {
+            Some(secs) if secs > 0 => ToFull::Minutes(secs.div_ceil(60) as u16),
+            _ => ToFull::Soon,
+        })
     }
 
     pub fn status(&self) -> &'static str {
@@ -437,5 +482,117 @@ impl PlugIn {
             self.last_rise == 0 || uptime_secs.saturating_sub(self.last_rise) >= PLUG_SETTLE_SECS;
         self.last_rise = uptime_secs.max(1);
         settled
+    }
+}
+
+// ==============================================================================
+// Time to full
+// ==============================================================================
+//
+// On the charger, the watch says how long it has to go (see
+// `ChargeGlances`), from the two phases of the charger's (SGM40561's)
+// cycle:
+//
+// - At constant current (~93 mA; see "What the watch shows" above), the
+//   percentage shown rises a point per [`CHARGING_STEP_SECS`], which
+//   matches the cell: on 2026-11-10 and 11, the sealed watch's showed 8–9
+//   points per 10-minute line, 67–75 s a point. Until the voltage reaches
+//   [`TOPPING_UP_MV`], that's how long the rest of this phase takes, to
+//   where the voltage gets there, [`CONSTANT_CURRENT_TO`] shown (85–88%
+//   in both logs); at [`ETA_STEP_SECS`] a point, the slower end, to err
+//   long.
+// - At constant voltage, the current tapers off until the charger says
+//   it's done, which the voltage can't foretell (it sits at 4.19–4.21 V
+//   throughout). It took 26–36 minutes from crossing `TOPPING_UP_MV` on
+//   2026-11-11 (from 64%), and 39–49 on 2026-11-10 (from 68%), the
+//   10-minute lines leaving each that uncertain; and on 2026-11-09 the
+//   charger was still at it 22 minutes in, from 97% at rest. So this phase
+//   is taken to last [`TOPPING_UP_FOR_SECS`], counted from when the
+//   voltage reached `TOPPING_UP_MV`; once that's past and the charger is
+//   still at it, it's "soon".
+//
+// Replayed through this (`host-tests/battery`), the two logs' charges say
+// 74 minutes to full at the start, against 56–66 (2026-11-11), and 69
+// against 61–71 (2026-11-10); 10 minutes before the end, 22 and 8
+// against 1–11. So it's up to 20 minutes long, and at worst a couple
+// short, and never before the charger can have been done. TODO: the
+// charger's done is now logged ("charger: charged"), so field logs can
+// fit both phases (and a charge from low, which neither log has)
+// better.
+
+/// The percentage shown when the voltage reaches [`TOPPING_UP_MV`],
+/// charging; see above.
+const CONSTANT_CURRENT_TO: u8 = 87;
+
+/// Seconds a point, at constant current, for the time to full; see above.
+const ETA_STEP_SECS: u32 = 75;
+
+/// How long the charger stays at constant voltage; see above.
+pub const TOPPING_UP_FOR_SECS: u32 = 45 * 60;
+
+/// How long the charger has to go (see [`Battery::to_full`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ToFull {
+    /// About this many minutes (rounded up).
+    Minutes(u16),
+    /// Past when it should have been done; it isn't yet.
+    Soon,
+    /// The charger says it's done.
+    Full,
+}
+
+// ==============================================================================
+// Glances on the charger
+// ==============================================================================
+//
+// Every [`CHARGE_GLANCE_EVERY_SECS`] on the charger, the screen shows a
+// glance (dim, at the low backlight, for a few seconds, without a buzz)
+// with the charge and the time to full, so someone passing sees how long
+// it has to go; and once it's full, one last that says so, then no more
+// until it's set on the charger again. Not over anything on screen, nor
+// in the quiet night: a watch by the bed mustn't light the room every few
+// minutes. One that can't show is skipped, rather than shown as soon as
+// it can be: right after the wearer put the screen off, say.
+
+/// How often a glance shows on the charger; see above.
+pub const CHARGE_GLANCE_EVERY_SECS: u32 = 5 * 60;
+
+/// When a glance on the charger is due; see above.
+pub struct ChargeGlances {
+    /// The uptime (seconds) the next is due at, or 0 off the charger.
+    next: u32,
+    /// The last showed "full": no more until the charger comes off.
+    done: bool,
+}
+
+impl ChargeGlances {
+    pub const fn new() -> Self {
+        Self {
+            next: 0,
+            done: false,
+        }
+    }
+
+    /// Takes whether the charger has power at `uptime_secs`, and says
+    /// whether a glance is due. If one is, say what came of it with
+    /// [`ChargeGlances::after`].
+    pub fn due(&mut self, power_present: bool, uptime_secs: u32) -> bool {
+        if !power_present {
+            *self = Self::new();
+            return false;
+        }
+        if self.next == 0 {
+            self.next = uptime_secs + CHARGE_GLANCE_EVERY_SECS;
+            return false;
+        }
+        !self.done && uptime_secs >= self.next
+    }
+
+    /// The glance that was due, at `uptime_secs`, showed "full"
+    /// (`showed_full`), or something else, or couldn't show: either way,
+    /// the next is due a while from now.
+    pub fn after(&mut self, uptime_secs: u32, showed_full: bool) {
+        self.next = uptime_secs + CHARGE_GLANCE_EVERY_SECS;
+        self.done = showed_full;
     }
 }

@@ -74,6 +74,19 @@ expect dim
 shot dim-notification.png
 wait 6s
 
+# On the charger: setting it there wakes the screen to the clock, and a
+# glance (one shows by itself every 5 minutes there) shows how long the
+# charge has to go.
+battery 4000 charging
+wait 11s
+expect not screen-on
+glance
+wait 1s
+expect dim
+shot dim-charging.png
+battery 3990 unplugged
+wait 6s
+
 # Midday, with the day's readings so far.
 until 12:30
 demo-day

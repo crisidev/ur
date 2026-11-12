@@ -6,7 +6,8 @@
 //! module (see AUTHORING-THEMES.md).
 //!
 //! - Formatting: a time, a countdown, a duration, a date, tenths, a
-//!   percentage, volts, hex, a Bluetooth address, in the watch's words.
+//!   percentage, volts, the time to full, hex, a Bluetooth address, in the
+//!   watch's words.
 //! - Text: one line cut to fit with an ellipsis, centred lines, and how
 //!   far text overflows its room (for `Theme::call_overflow` and the
 //!   like; the marquee's own timing is `crate::canvas`'s, shared with
@@ -30,6 +31,29 @@ use crate::ui::Fits;
 // ==============================================================================
 // Formatting
 // ==============================================================================
+
+/// The time to full on the charger, as a label and its value: "FULL IN"
+/// "0:40" (hours and minutes), "FULL" "SOON" once that's past, or ""
+/// "FULL" once the charger says so.
+pub fn to_full(to_full: crate::battery::ToFull) -> (&'static str, heapless::String<8>) {
+    use crate::battery::ToFull;
+    let mut text = heapless::String::new();
+    let label = match to_full {
+        ToFull::Minutes(minutes) => {
+            write!(text, "{}:{:02}", minutes / 60, minutes % 60).fits();
+            "FULL IN"
+        }
+        ToFull::Soon => {
+            text.push_str("SOON").fits();
+            "FULL"
+        }
+        ToFull::Full => {
+            text.push_str("FULL").fits();
+            ""
+        }
+    };
+    (label, text)
+}
 
 /// Time left, as short as it reads well: "M:SS" under 10 minutes (where
 /// seconds matter), "42 MIN" under an hour, "2H05" beyond.

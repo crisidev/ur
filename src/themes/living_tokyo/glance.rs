@@ -1,20 +1,22 @@
 //! Living Tokyo's glance: what a look at the wrist shows, the time alone,
-//! or the next turn while the phone navigates, and, just after a media
-//! gesture, what it did.
+//! the next turn while the phone navigates, or on the charger, how long it
+//! has to go; and, just after a media gesture, what it did.
 
 use super::{BACKGROUND, action_icon, draw_digit};
 use crate::canvas::{Canvas, Color};
 use crate::font;
 use crate::route::Turn;
-use crate::themes::Glance;
-use crate::themes::helpers::hhmm;
+use crate::themes::helpers::{hhmm, percent as percent_text, to_full as to_full_text};
+use crate::themes::{Glance, ToFull};
 use crate::ui::Status;
 
-/// A glance: the time alone, or the next turn while the phone navigates.
+/// A glance: the time alone, the next turn while the phone navigates, or
+/// the charge on the charger.
 pub(super) fn render_glance(canvas: &mut Canvas, glance: &Glance) {
-    match glance.route {
-        Some(step) => render_route_glance(canvas, glance.status, step),
-        None => render_time_glance(canvas, glance.status),
+    match (glance.route, glance.charge) {
+        (Some(step), _) => render_route_glance(canvas, glance.status, step),
+        (None, Some(to_full)) => render_charge_glance(canvas, glance.status, to_full),
+        (None, None) => render_time_glance(canvas, glance.status),
     }
     // Just after a media gesture, what it did, in the top right corner,
     // which both layouts leave free.
@@ -139,4 +141,60 @@ fn render_route_glance(canvas: &mut Canvas, status: &Status, step: &crate::route
         // Too long even for two lines (one very long word): its start.
         _ => canvas.text_cut(2, STREET_Y, &step.street, Color::TEXT_DIM),
     }
+}
+
+/// A few stars round the moon on the charger's glance, clear of it and
+/// of the text.
+const STARS: [(i32, i32); 7] = [
+    (9, 19),
+    (16, 31),
+    (6, 38),
+    (62, 18),
+    (70, 27),
+    (57, 36),
+    (74, 40),
+];
+
+/// The glance on the charger: the clock face's moon, the battery, big in
+/// a patch of night sky, waxing as it charges, with its percentage under
+/// it, and how long the charge has to go, big, below. The time stays,
+/// smaller, at the top, as on the route's glance.
+///
+/// From the top: the time (2×, 10 px), the moon (19 px across) between
+/// stars, its percentage (1×), the label (1×) and the time to full (3×).
+fn render_charge_glance(canvas: &mut Canvas, status: &Status, to_full: ToFull) {
+    canvas.clear(BACKGROUND);
+    const TIME_Y: i32 = 3;
+    const MOON_D: i32 = 19;
+    const MOON_Y: i32 = 17;
+    const PERCENT_Y: i32 = MOON_Y + MOON_D + 3;
+    const LABEL_Y: i32 = PERCENT_Y + 9;
+    const VALUE_Y: i32 = LABEL_Y + 8;
+    let centred = |canvas: &mut Canvas, y: i32, text: &str, scale: i32, color: Color| {
+        let width = font::small_text_width(text) * scale;
+        canvas.text_scaled(40 - width / 2, y, text, color, scale);
+    };
+    if let Some(t) = &status.local_time {
+        let time = hhmm(i64::from(t.hour) * 60 + i64::from(t.minute));
+        centred(canvas, TIME_Y, &time, 2, Color::TEXT_DIM);
+    }
+    for (i, &(x, y)) in STARS.iter().enumerate() {
+        let color = if i % 3 == 0 {
+            Color::TEXT_DIM
+        } else {
+            Color::TEXT_FAINT
+        };
+        canvas.pixel(x, y, color);
+    }
+    super::clock::moon(canvas, 40 - MOON_D / 2, MOON_Y, MOON_D, status.battery);
+    centred(
+        canvas,
+        PERCENT_Y,
+        &percent_text(status.battery.percent()),
+        1,
+        Color::TEXT,
+    );
+    let (label, value) = to_full_text(to_full);
+    centred(canvas, LABEL_Y, label, 1, Color::TEXT_DIM);
+    centred(canvas, VALUE_Y, &value, 3, Color::TEXT);
 }

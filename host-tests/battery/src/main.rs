@@ -523,6 +523,156 @@ mod tests {
     }
 
     // ==========================================================================
+    // Time to full
+    // ==========================================================================
+
+    /// The sealed watch's two charges that ran until the charger was done
+    /// (its 10-minute lines, as `MORNING`), each to the last line still
+    /// charging, with the window in which the charger was done: until the
+    /// next line, which says it isn't charging.
+    ///
+    /// 2026-11-11 (0.11.0-rc.2, `tmp/hc-1112/dec.log`): on battery at
+    /// 15:41:51, charging at 15:51:51 (taken as plugged in at 15:46), done
+    /// by 16:51:51.
+    const NOV_11: (&[(u32, u32, bool)], (u32, u32)) = (
+        &[
+            (15 * 60 + 32, 3882, false),
+            (15 * 60 + 42, 3881, false),
+            (15 * 60 + 46, 3881, false),
+            (15 * 60 + 46, 3960, true),
+            (15 * 60 + 52, 3979, true),
+            (16 * 60 + 2, 4038, true),
+            (16 * 60 + 12, 4113, true),
+            (16 * 60 + 22, 4176, true),
+            (16 * 60 + 32, 4185, true),
+            (16 * 60 + 42, 4188, true),
+        ],
+        (16 * 60 + 42, 16 * 60 + 52),
+    );
+    /// 2026-11-10 (`tmp/b010/rc5.log`): booted on the charger at 21:02,
+    /// done by 22:12:58.
+    const NOV_10: (&[(u32, u32, bool)], (u32, u32)) = (
+        &[
+            (21 * 60 + 2, 4010, true),
+            (21 * 60 + 3, 4015, true),
+            (21 * 60 + 13, 4065, true),
+            (21 * 60 + 23, 4143, true),
+            (21 * 60 + 33, 4194, true),
+            (21 * 60 + 43, 4207, true),
+            (21 * 60 + 53, 4207, true),
+            (22 * 60 + 3, 4209, true),
+        ],
+        (22 * 60 + 3, 22 * 60 + 13),
+    );
+
+    /// Replays `log` as `replay` does, and returns the time to full each
+    /// minute (local minute, and the minutes it said) while charging.
+    fn replay_to_full(log: &[(u32, u32, bool)]) -> Vec<(u32, ToFull)> {
+        let mut battery = Battery::new();
+        let start = log[0].0 * 60;
+        let mut out = Vec::new();
+        for pair in log.windows(2) {
+            let ((m0, mv0, _), (m1, mv1, charging)) = (pair[0], pair[1]);
+            for second in m0 * 60..m1 * 60 {
+                let along = f64::from(second - m0 * 60) / f64::from((m1 - m0) * 60);
+                let mv = f64::from(mv0) + (f64::from(mv1) - f64::from(mv0)) * along;
+                let uptime = second - start + 60;
+                battery.update(raw(mv.round() as u32), charging, charging, uptime);
+                if charging && second % 60 == 0 {
+                    let to_full = battery.to_full(uptime).expect("on the charger");
+                    out.push((second / 60, to_full));
+                }
+            }
+        }
+        out
+    }
+
+    /// Along each charge, the time to full errs long, if at all: never
+    /// before the charger can have been done, and no more than 25 minutes
+    /// after it must have been.
+    #[test]
+    fn the_time_to_full_errs_long() {
+        for (name, (log, (earliest, latest))) in [("11-11", NOV_11), ("11-10", NOV_10)] {
+            let trace = replay_to_full(log);
+            assert!(!trace.is_empty());
+            for &(minute, to_full) in &trace {
+                let ToFull::Minutes(eta) = to_full else {
+                    panic!("{name} {minute}: {to_full:?} while charging, early on");
+                };
+                let done = minute + u32::from(eta);
+                assert!(
+                    done >= earliest && done <= latest + 25,
+                    "{name} at {}:{:02}: full at {}:{:02}, against {}:{:02}–{}:{:02}",
+                    minute / 60,
+                    minute % 60,
+                    done / 60,
+                    done % 60,
+                    earliest / 60,
+                    earliest % 60,
+                    latest / 60,
+                    latest % 60,
+                );
+            }
+            // How far off it was, for the module's notes.
+            let (first, last) = (trace[0], trace[trace.len() - 1]);
+            for (minute, to_full) in [first, last] {
+                if let ToFull::Minutes(eta) = to_full {
+                    println!(
+                        "{name} at {}:{:02}: {eta} min, against {}–{}",
+                        minute / 60,
+                        minute % 60,
+                        earliest.saturating_sub(minute),
+                        latest - minute
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn to_full_by_the_charger_lines() {
+        // Off the charger: nothing to say.
+        let battery = settled(3900, false);
+        assert_eq!(battery.to_full(200), None);
+        // On it, not charging: done.
+        let battery = settled(4190, true);
+        assert_eq!(battery.to_full(200), Some(ToFull::Full));
+        // At constant voltage from boot (uptime 1 s): its 45 minutes from
+        // then; and once those are past, soon, rather than a time gone by.
+        let mut battery = Battery::new();
+        for second in 0..200 {
+            battery.update(raw(4200), true, true, second);
+        }
+        assert!(matches!(battery.to_full(200), Some(ToFull::Minutes(42))));
+        assert_eq!(battery.to_full(1 + TOPPING_UP_FOR_SECS), Some(ToFull::Soon));
+    }
+
+    #[test]
+    fn charge_glances_every_few_minutes_until_full() {
+        let every = CHARGE_GLANCE_EVERY_SECS;
+        let mut glances = ChargeGlances::new();
+        assert!(!glances.due(false, 10));
+        // Set on the charger at 100 s: the first a while later.
+        assert!(!glances.due(true, 100));
+        assert!(!glances.due(true, 100 + every - 1));
+        assert!(glances.due(true, 100 + every));
+        glances.after(100 + every, false);
+        assert!(!glances.due(true, 101 + every));
+        // Due again, but the screen was on: skipped, the next a while on.
+        assert!(glances.due(true, 100 + 2 * every));
+        glances.after(100 + 2 * every, false);
+        assert!(!glances.due(true, 100 + 3 * every - 1));
+        // Full: that one's the last.
+        assert!(glances.due(true, 100 + 3 * every));
+        glances.after(100 + 3 * every, true);
+        assert!(!glances.due(true, 100 + 10 * every));
+        // Off the charger and back: they start over.
+        assert!(!glances.due(false, 100 + 10 * every));
+        assert!(!glances.due(true, 101 + 10 * every));
+        assert!(glances.due(true, 101 + 11 * every));
+    }
+
+    // ==========================================================================
     // Plugged in
     // ==========================================================================
 

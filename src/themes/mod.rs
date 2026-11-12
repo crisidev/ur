@@ -42,6 +42,7 @@ use embassy_time::{Duration, Instant};
 
 use crate::alarm;
 use crate::aranet::Sighting;
+pub use crate::battery::ToFull;
 use crate::bthome::Identity;
 use crate::buttons::{self, Press};
 use crate::canvas::Canvas;
@@ -302,6 +303,10 @@ pub struct Glance<'a> {
     pub route: Option<&'a route::Step>,
     /// What a media gesture just did, for a moment.
     pub media: Option<MediaAction>,
+    /// On the charger: how long it has to go, shown with the charge
+    /// (`status.battery`) instead of the time alone (but not instead of
+    /// the next turn).
+    pub charge: Option<ToFull>,
 }
 
 /// The music screen's.

@@ -115,7 +115,10 @@
 //! - Turning the wrist to look (see [`crate::glance`]) while the screen is
 //!   off: a glance, just the time in white on black at a low backlight, for
 //!   [`GLANCE_TIME`]. While the phone navigates, the next turn instead,
-//!   with the time smaller above it. A tap or press during it (one is
+//!   with the time smaller above it. On the charger, the charge and the
+//!   time to full, with the time smaller above them; and one shows by
+//!   itself every few minutes there, until full, outside the quiet night
+//!   (see [`crate::battery::ChargeGlances`]). A tap or press during it (one is
 //!   enough: the wearer is looking) wakes the screen properly. While a
 //!   phone is connected, outside the quiet night, the screen off's media
 //!   gestures work during a glance too, and the glance stays (with what it
@@ -1134,6 +1137,26 @@ impl App {
         true
     }
 
+    /// A glance on the charger is due (see `battery::ChargeGlances`): one
+    /// shows, with the charge and the time to full, as a glance at the
+    /// wrist would, if the screen is off, outside the quiet night. Returns
+    /// whether it showed.
+    pub fn charge_glance(&mut self, now: Instant) -> bool {
+        !self.night.quiet() && self.glance(now)
+    }
+
+    /// Starts a glance (see the module docs), if the screen is off.
+    /// Returns whether it did.
+    fn glance(&mut self, now: Instant) -> bool {
+        if self.awake {
+            return false;
+        }
+        self.awake = true;
+        self.screen = Screen::Clock;
+        self.glance_until = Some(now + GLANCE_TIME);
+        true
+    }
+
     pub fn on_input(&mut self, event: InputEvent, now: Instant) {
         let event = match event {
             InputEvent::Phone(event) => return self.on_phone(event, now),
@@ -1141,11 +1164,7 @@ impl App {
             // (an arm swing can look the same), so it doesn't hold the
             // screen on.
             InputEvent::Glance => {
-                if !self.awake {
-                    self.awake = true;
-                    self.screen = Screen::Clock;
-                    self.glance_until = Some(now + GLANCE_TIME);
-                }
+                self.glance(now);
                 return;
             }
             // A long press's finger lifting: only a button grid hold's
@@ -2422,6 +2441,7 @@ impl App {
                 status,
                 route: self.route.as_ref().map(|route| &route.step),
                 media: self.media_hint.map(|(action, _)| action),
+                charge: status.battery.to_full(status.uptime_secs as u32),
             };
             theme.glance(canvas, &glance);
             return;

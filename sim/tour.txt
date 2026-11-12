@@ -304,6 +304,30 @@ expect not buzzing
 wait 1s
 shot 19-morning.png
 
+# Set on the charger, the screen wakes to the clock face, charging; the
+# contact wobbling straight after doesn't light it again. Every 5 minutes
+# there, a dim glance says how long it has to go.
+wait 11s
+expect not screen-on
+battery 3990 charging
+expect screen-on
+expect clock
+button
+expect not screen-on
+battery 3990 unplugged
+battery 3990 charging
+expect not screen-on
+wait 5m
+wait 1s
+expect screen-on
+expect dim
+wait 6s
+expect not screen-on
+battery 3990 unplugged
+button
+wait 1s
+expect clock
+
 # ==============================================================================
 # Switching off
 # ==============================================================================

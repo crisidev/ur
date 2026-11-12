@@ -12,9 +12,10 @@
 //!   flash.
 //! - [`Event`]s: everything that changes the UI's state (ticks, inputs,
 //!   and what a pass tells the App besides: whether a phone is connected,
-//!   a room sensor heard, it's daytime, and the charger's power arrived),
-//!   with the exact instants and readings the UI loop handed it. The
-//!   simulator replays them in order. A ring: the reader must keep up.
+//!   a room sensor heard, it's daytime, the charger's power arrived, and
+//!   a glance on it showed), with the exact instants and readings the UI
+//!   loop handed it. The simulator replays them in order. A ring: the
+//!   reader must keep up.
 //! - [`Pass`]: what the last frame was rendered with (`ui::Status`,
 //!   with the room sensor's reading and the BTHome identity, and today's
 //!   activity), and a seqlock around it, so a reader can tell a
@@ -162,6 +163,8 @@ pub mod kind {
     /// The charger's power arrived, and the pass told the App (see
     /// [`super::charger`]).
     pub const CHARGER: u8 = 10;
+    /// A glance on the charger showed (see [`super::charge_glance`]).
+    pub const CHARGE_GLANCE: u8 = 11;
 }
 
 /// What [`Event::phone`] says the phone sent: the content isn't kept (the
@@ -243,6 +246,8 @@ pub struct Pass {
     pub passkey: u32,
     /// Or [`NONE_U32`].
     pub steps: u32,
+    /// `Battery::topping_up_since`, for the time to full on the charger.
+    pub topping_up_since: u32,
     /// `Status::local_time`, if `has_time`.
     pub year: u16,
     pub month: u8,
@@ -517,6 +522,7 @@ const PASS: Pass = Pass {
     battery_mv: 0,
     passkey: 0,
     steps: 0,
+    topping_up_since: 0,
     year: 0,
     month: 0,
     day: 0,
@@ -748,6 +754,12 @@ pub fn charger(at: Instant) {
     push(event(kind::CHARGER, at));
 }
 
+/// A glance on the charger was due, and `App::charge_glance` at `at`
+/// showed it. (One that didn't show changed nothing, so isn't logged.)
+pub fn charge_glance(at: Instant) {
+    push(event(kind::CHARGE_GLANCE, at));
+}
+
 /// The pass told the App, at `now`, whether a phone is connected and
 /// whether a room sensor was heard lately: logged if either changed, so
 /// a reader replaying the events tells its App the same in between.
@@ -827,6 +839,7 @@ pub fn rendering(now: Instant, status: &Status, daytime: bool, today: Option<Day
             battery_mv: status.battery.millivolts(),
             passkey: status.passkey.unwrap_or(NONE_U32),
             steps: status.steps.unwrap_or(NONE_U32),
+            topping_up_since: status.battery.topping_up_since(),
             year: time.map_or(0, |t| t.year),
             month: time.map_or(0, |t| t.month),
             day: time.map_or(0, |t| t.day),

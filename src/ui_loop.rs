@@ -33,7 +33,7 @@ use core::sync::atomic::Ordering;
 use defmt::{debug, info};
 use embassy_time::{Duration, Instant};
 
-use crate::battery::{Battery, PlugIn};
+use crate::battery::{Battery, ChargeGlances, PlugIn, ToFull};
 use crate::bthome::{self, Identity};
 use crate::buttons::Press;
 use crate::canvas::{self, Canvas, Sweep};
@@ -339,6 +339,8 @@ pub struct UiLoop {
     pub battery: Battery,
     /// Whether the charger's power just arrived, to wake the screen.
     plug_in: PlugIn,
+    /// When to show a glance on the charger, with the time to full.
+    charge_glances: ChargeGlances,
     /// Whether the panel (and backlight) are on. It starts "asleep" so the
     /// first pass goes through the wake path: render the first frame, then
     /// turn the backlight on. (Waking an already-awake ST7789 is harmless.)
@@ -389,6 +391,7 @@ impl UiLoop {
         let ui = Self {
             battery: Battery::new(),
             plug_in: PlugIn::new(),
+            charge_glances: ChargeGlances::new(),
             panel_awake: false,
             first_frame: true,
             // The first reading is still settling (it's smoothed); log
@@ -438,16 +441,39 @@ impl UiLoop {
         board.sample_battery(&mut samples).await;
         let sample = debug::battery_sample().unwrap_or(samples[0]);
         let (charging, power_present) = board.charger();
-        self.battery
-            .update(sample, charging, power_present, now.as_secs() as u32);
+        let uptime = now.as_secs() as u32;
+        // For fitting the time to full (see `battery`) from field logs.
+        if self.battery.charging && !charging && power_present {
+            info!("charger: charged");
+        }
+        self.battery.update(sample, charging, power_present, uptime);
         // Set on the charger: the screen wakes, so the wearer sees at once,
         // from this very frame's battery, that it sits right on the cradle
         // (see `PlugIn` for a wobbly one).
-        if self.plug_in.update(power_present, now.as_secs() as u32) {
+        if self.plug_in.update(power_present, uptime) {
             #[cfg(feature = "compare")]
             crate::compare::charger(now);
             let woke = app.on_charger(now);
             info!("charger: plugged in; woke the screen: {=bool}", woke);
+        }
+        // And every few minutes there, until full, a glance with the time
+        // to full (see `battery::ChargeGlances`).
+        if self.charge_glances.due(power_present, uptime) {
+            let to_full = self.battery.to_full(uptime);
+            let shown = app.charge_glance(now);
+            if shown {
+                #[cfg(feature = "compare")]
+                crate::compare::charge_glance(now);
+                // The minutes it said, or 0 once soon, 1000 once full.
+                let minutes = match to_full {
+                    Some(ToFull::Minutes(minutes)) => minutes,
+                    Some(ToFull::Soon) | None => 0,
+                    Some(ToFull::Full) => 1000,
+                };
+                info!("charger: glance, {=u16} min to full", minutes);
+            }
+            let full = shown && to_full == Some(ToFull::Full);
+            self.charge_glances.after(uptime, full);
         }
         let battery = &self.battery;
         let report = ble::BatteryReport {

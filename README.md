@@ -148,6 +148,13 @@ percentage climbs on the charger no faster than the cell fills, and
 reads 100% only once charging is done, so it doesn't drop when the
 watch comes off; 0% is where it switches itself off.
 
+**On the charger,** the screen lights up as soon as the watch makes
+contact (dimly in a quiet night), so you see at once that it charges.
+Every 5 minutes there, outside a quiet night and not over anything on
+screen, a dim glance shows the charge and how long until full (FULL IN
+0:40, a rough guess that errs long), once more when it's full, and then
+no more.
+
 **Notifications** show the app and who it's from (the sender, or the
 title without one), never what it says, and without emoji (nor the
 `:shortcodes:` Gadgetbridge sends in their place, here or in a
