@@ -89,10 +89,13 @@
 //!   [`sleep::unsettled_onset`]), which settling would cut short, dating
 //!   the sleep from the settling rather than from going still.
 //! - **A sleep that began before the classifier's window**, as a night
-//!   does: not a few still minutes among the window's oldest that it has
-//!   only just found to be sleep, and may take back at its next pass
-//!   (the untidiness below), which a fetch has likely sent as awake
-//!   already. A nap of under 45 minutes or so waits the 2¼ hours.
+//!   does, with at least [`sleep::RESUME`] minutes asleep before it: not
+//!   a few still minutes among the window's oldest that it has only just
+//!   found to be sleep, and may take back at its next pass (the
+//!   untidiness below), which a fetch has likely sent as awake already;
+//!   nor the minute or two such a find leaves behind as the window slides
+//!   on. A nap of under 55 minutes or so goes later: once ten of its
+//!   minutes asleep are older than the window, or after the 2¼ hours.
 //!
 //! The minutes after the settling go as they come too, but for any a nap
 //! may yet claim. They can't join the night, but the classifier, sliding
@@ -287,13 +290,21 @@ pub fn settles(
     // A sleep that began before the classifier's window, as a night does:
     // not one the window has only just found among its oldest minutes,
     // which the next pass may take back (see below), and whose minutes
-    // were likely sent already, as awake.
+    // were likely sent already, as awake. With at least `RESUME` minutes
+    // asleep before the window, the least sleep the classifier ever
+    // finds: a minute or two there may be all that's left of such a find
+    // that the next pass took back, as the window slid on while its
+    // oldest minute was sleep (seen on simulated evenings dozing on the
+    // sofa: it found sleep, took it back, then found it again, and a
+    // settling then would keep the window's sleep for good, after the
+    // minutes went to Gadgetbridge as awake).
     let oldest = (last + 1 - CAP).max(settled.first_unsettled());
     let (start, _, _) =
         sleep::last_sleep((last + 1 - oldest) as usize, |i| kind(oldest + i as i64))?;
-    if oldest + start as i64 > newest - sleep::WINDOW as i64 {
-        return None;
-    }
+    let window = newest - sleep::WINDOW as i64 + 1;
+    (oldest + start as i64..window)
+        .filter(|&minute| kind(minute).is_sleep())
+        .nth(sleep::RESUME - 1)?;
     Some(last)
 }
 

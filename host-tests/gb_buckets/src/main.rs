@@ -1422,7 +1422,9 @@ mod tests {
 
     /// A sleep entirely within the classifier's window (a nap, or a few
     /// still minutes the window has only just found to be sleep, which it
-    /// may take back) isn't settled early; one that began before it is.
+    /// may take back) isn't settled early; one that began before it is,
+    /// with at least `RESUME` minutes asleep there, not just what's left
+    /// of a sleep the window found and took back.
     #[test]
     fn only_a_sleep_older_than_the_window_settles() {
         let newest = NOON + 60;
@@ -1437,7 +1439,12 @@ mod tests {
         };
         let walking = |minute: i64| if minute < NOON { STILL } else { WALKING };
         let window = newest - sleep::WINDOW as i64 + 1;
-        for (start, settled) in [(window, false), (window - 1, true)] {
+        let resume = sleep::RESUME as i64;
+        for (start, settled) in [
+            (window, false),
+            (window - resume + 1, false),
+            (window - resume, true),
+        ] {
             assert_eq!(
                 settles(newest, Settled::NONE, sleep_from(start), walking).is_some(),
                 settled,
@@ -1445,6 +1452,14 @@ mod tests {
                 start - NOON
             );
         }
+        // A minute asleep long before the window, then a wake within a
+        // night, then the window's sleep: what a pass leaves of a sleep it
+        // found among the window's oldest minutes and then took back.
+        let left_over = |minute: i64| {
+            let sleep = (window..NOON).contains(&minute) || minute == window - 40;
+            if sleep { Class::Light } else { Class::Awake }
+        };
+        assert!(settles(newest, Settled::NONE, left_over, walking).is_none());
     }
 
     /// Once settled, nothing before is held back, and no sleep; nor the
@@ -2121,6 +2136,22 @@ mod tests {
                 ],
                 14_983_726_151_220_855_959,
                 vec![(34192, 0, false), (19107, 0, false)],
+            ),
+            // A doze in the evening, then the watch taken off: the
+            // classifier found sleep among its window's oldest minutes,
+            // took it back, and found it again, and the watch settled
+            // then, keeping that sleep for good (see
+            // `sleep_hold::settles`).
+            (
+                vec![
+                    (Active, 205),
+                    (Lounging, 106),
+                    (Rem, 33),
+                    (Lounging, 43),
+                    (OffWrist, 300),
+                ],
+                8_363_050_808_684_161_274,
+                vec![(5240, 0, false), (35480, 7, false), (9329, 53, false)],
             ),
         ];
         for (spans, seed, gaps) in cases {
