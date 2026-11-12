@@ -153,7 +153,9 @@ contact (dimly in a quiet night), so you see at once that it charges.
 Every 5 minutes there, outside a quiet night and not over anything on
 screen, a dim glance shows the charge and how long until full (FULL IN
 0:40, a rough guess that errs long), once more when it's full, and then
-no more.
+no more. The heart rate isn't measured there (the clock face says OFF,
+and its LED stays dark); taken off, the watch measures again two
+minutes later, or after 10 seconds if you look at the clock face.
 
 **Notifications** show the app and who it's from (the sender, or the
 title without one), never what it says, and without emoji (nor the

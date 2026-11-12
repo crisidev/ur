@@ -469,6 +469,9 @@ async fn main(spawner: Spawner) {
     // Charger status lines, both active-low with external pull-ups.
     let charging = Input::new(p.P0_12, Pull::None);
     let power_present = Input::new(p.P0_19, Pull::None);
+    // Before the heart-rate task starts, so that a boot on the charger
+    // never lights its LED (the UI loop keeps it up to date from here).
+    heart_reading::set_charger(power_present.is_low());
 
     // Battery voltage arrives on AIN7 (P0.31) through a 1:2 divider. The
     // divider is high-impedance, so give the sample-and-hold capacitor plenty

@@ -1,7 +1,8 @@
 //! The heart rate as the rest of the firmware sees it: the latest reading
 //! (and whether it's recent enough to show), and whether someone's waiting
 //! for one: looking at the clock face, or at Gadgetbridge's live activity
-//! (see [`crate::live`]).
+//! (see [`crate::live`]); and whether the watch is on its charger, where
+//! nothing is measured (see [`set_charger`]).
 //!
 //! This is the hardware-free half of [`crate::heart`], which drives the
 //! sensor and publishes what it measures here. It's a module of its own so
@@ -27,8 +28,12 @@ static WATCHING: AtomicBool = AtomicBool::new(false);
 /// Whether Gadgetbridge's live activity wants the heart rate; set by the
 /// UI loop.
 static LIVE: AtomicBool = AtomicBool::new(false);
+/// Whether the charger's power is present; set by the UI loop, and by
+/// `main` at boot, before the heart-rate task starts.
+static CHARGER: AtomicBool = AtomicBool::new(false);
 /// Raised when [`WATCHING`] or [`LIVE`] becomes true, to start a session
-/// right away, and when `activity::still` changes (see [`wake`]).
+/// right away, when [`CHARGER`] changes, to stop or resume, and when
+/// `activity::still` changes (see [`wake`]).
 pub static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// Whether the last session saw skin; for sleep tracking, which must tell
@@ -70,6 +75,21 @@ pub fn set_live(live: bool) {
     if live && !was {
         WAKE.signal(());
     }
+}
+
+/// Tells the heart-rate task whether the charger's power is present
+/// (`Board::charger`): it measures nothing while it is, and stops a
+/// session under way (see `heart_schedule`'s "The charger"). Cheap; the
+/// UI loop calls it every pass, at least once a second.
+pub fn set_charger(present: bool) {
+    if CHARGER.swap(present, Ordering::Relaxed) != present {
+        WAKE.signal(());
+    }
+}
+
+/// Whether the charger's power is present, as last told.
+pub fn on_charger() -> bool {
+    CHARGER.load(Ordering::Relaxed)
 }
 
 /// Has the heart-rate task look again at what it's waiting for: the wrist

@@ -29,7 +29,10 @@ records on to 90 s (`heart: recording on`, then `heart: recorded to`),
 its later readings logged as `record-only` but not counted, so its
 segment holds all 90 s, its outcome the first reading. (The same logs'
 `accel:` lines, the accelerometer's samples through each session, aren't
-extracted here.)
+extracted here.) A session that the charger's power stopped before it read
+(`heart: on the charger; stopped`, 0.11.1 on) is left out, every segment
+of it: neither a reading nor a failure, its last samples a cradle's or a
+hand's; one that had read is kept, its outcome that reading.
 
 Usage: python -I scripts/ppg_sessions.py HEALTH_CONNECT_DB DECODED_LOG OUT
 
@@ -108,6 +111,9 @@ carried, carried_flag = None, None
 arm, round_, length = None, None, None
 # Whether a session that read is recording on (see above).
 recording = False
+# Where the session in progress's segments start in `segments`, and how many
+# sessions the charger stopped (see above).
+session_first, charged = 0, 0
 # When the last background session was due: its samples follow within a
 # second or two.
 due_at = float("-inf")
@@ -147,6 +153,8 @@ for n, base, up, line in log:
         drive, period = int(m[1]), float(m[2])
     elif m := re.search(r"heart: samples \[([\d, ]*)\]", line):
         if current is None:
+            if not carried:
+                session_first = len(segments)
             current = {"t": base + up - 1, "samples": [], "movement": [], "outcome": "-",
                        "asleep": asleep, "background": up - due_at < 3,
                        "drive": drive, "brighter": False, "cont": False,
@@ -177,6 +185,14 @@ for n, base, up, line in log:
     elif current and "switching to level" in line:
         segments.append(current)
         carried, carried_flag, current = current, "cont", None
+    elif "INFO  heart: on the charger; stopped" in line:
+        # Before it read: none of it. (Once it had, its segment is closed
+        # already, or closes at `recorded to`.)
+        if current and not current.get("read") and not recording:
+            del segments[session_first:]
+            charged += 1
+        if not recording:
+            current, carried = None, None
     elif re.search(r"INFO  heart: (no reading|not on|gave up|stopped|too much)", line):
         if current:
             if re.search(r"no reading|gave up|stopped", line):
@@ -200,4 +216,5 @@ with open(sys.argv[3], "w") as out:
         out.write(f"{s['t']:.0f} {garmin(mid)} {s['period']:.1f} {s['outcome']} "
                   + " ".join(map(str, s["samples"])) + " | " + " ".join(s["movement"])
                   + " | " + " ".join(flags) + "\n")
-print(f"{len(segments)} segments, {sum(len(s['samples']) for s in segments)} samples")
+print(f"{len(segments)} segments, {sum(len(s['samples']) for s in segments)} samples"
+      + (f"; {charged} sessions the charger stopped left out" if charged else ""))

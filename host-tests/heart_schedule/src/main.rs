@@ -162,7 +162,8 @@ mod tests {
         // (20 bytes until counting interruptions took one more, and
         // alignment three more; 28 with when the last reading came, 32
         // with the LED experiment's rounds, and no fewer for dropping
-        // the interruptions again.)
+        // the interruptions again; the charger's byte fits in what was
+        // padding.)
         assert!(size_of::<Schedule>() <= 32);
     }
 
@@ -1050,6 +1051,164 @@ mod tests {
         assert_eq!(schedule.begin(false), (7, Arm::Dim));
     }
 
+    // ==========================================================================
+    // The charger
+    // ==========================================================================
+
+    /// A schedule backed off an hour for a watch off the wrist, as one on
+    /// its way to the charger is: five failures off the wrist, the last
+    /// ending at the time returned.
+    fn off_the_wrist() -> (Schedule, u32) {
+        let mut schedule = Schedule::new();
+        schedule.ended(30, 13, Outcome::Reading(60), true, awake(0));
+        let mut t = 30;
+        for _ in 0..5 {
+            let (due, _) = schedule.due(0, false);
+            t = t.max(due) + 10;
+            schedule.ended(t, 10, Outcome::OffWrist, true, awake(0));
+        }
+        assert_eq!(
+            schedule.due(0, false),
+            (t + MAX_FAILED_INTERVAL, Why::Retry)
+        );
+        (schedule, t)
+    }
+
+    /// On the charger, nothing is measured, and nothing about the schedule
+    /// changes: when the next session would be due, and why, and the
+    /// budget, stay as they were for as long as it charges.
+    #[test]
+    fn the_charger_holds_every_session_back_and_changes_nothing() {
+        let (mut schedule, t) = off_the_wrist();
+        let (due, moved) = (schedule.due(0, false), schedule.due(MOVED_POLLS, false));
+        let budget = schedule.budget(t + 100);
+        assert_eq!(schedule.charger(t + 100, true), Charger::Arrived);
+        for later in [101, 200, 1000, 3 * HOUR] {
+            assert_eq!(schedule.charger(t + later, true), Charger::On);
+        }
+        assert_eq!(schedule.due(0, false), due);
+        assert_eq!(schedule.due(MOVED_POLLS, false), moved);
+        assert_eq!(schedule.budget(t + 100), budget);
+        // Away from it all along, it's the same as never having been told.
+        let (mut away, _) = off_the_wrist();
+        assert_eq!(away.charger(t + 100, false), Charger::Away);
+        assert_eq!(away.due(0, false), due);
+    }
+
+    /// A session the charger cut short, without a reading, isn't a failure
+    /// (nor off the wrist, nor calm): only its LED time comes out of the
+    /// budget. And it tells the schedule of the charger, so the wait
+    /// after it isn't another arrival.
+    #[test]
+    fn a_session_cut_short_by_the_charger_only_spends_its_led() {
+        let mut schedule = Schedule::new();
+        schedule.ended(100, 13, Outcome::Reading(60), true, awake(0));
+        schedule.ended(400, 30, Outcome::CalmNoReading, true, awake(0));
+        let due = schedule.due(0, false);
+        assert_eq!(due, (400 + FAILED_INTERVAL, Why::Retry));
+        let budget = schedule.budget(700);
+        let _ = schedule.begin(false);
+        schedule.cut_short(700, 20);
+        assert_eq!(schedule.due(0, false), due);
+        assert_eq!(schedule.budget(700), budget - 20);
+        assert_eq!(schedule.charger(701, true), Charger::On);
+        // Even one that cut short a background session's very first try
+        // after boot: the first is still due at once, off the charger.
+        let mut schedule = Schedule::new();
+        let _ = schedule.begin(false);
+        schedule.cut_short(5, 3);
+        assert_eq!(schedule.due(0, false), (0, Why::First));
+        assert_eq!(schedule.budget(5), LED_BUDGET - 3);
+    }
+
+    /// Taken off the charger, nothing is measured for `CHARGER_SETTLE`;
+    /// then the schedule starts over: a session two minutes after the
+    /// power went, the back-off from the minimum after it, whatever it was
+    /// backing off from before the charge (an hour off the wrist, here).
+    #[test]
+    fn off_the_charger_it_settles_then_starts_over() {
+        let (mut schedule, t) = off_the_wrist();
+        assert_eq!(schedule.charger(t + 100, true), Charger::Arrived);
+        let off = t + 2 * HOUR;
+        assert_eq!(schedule.charger(off, false), Charger::Left(CHARGER_SETTLE));
+        assert_eq!(schedule.charger(off + 3, false), Charger::Settling(7));
+        assert_eq!(schedule.charger(off + 9, false), Charger::Settling(1));
+        assert_eq!(schedule.charger(off + 10, false), Charger::Away);
+        assert_eq!(schedule.charger(off + 11, false), Charger::Away);
+        assert_eq!(schedule.due(0, false), (off + MIN_INTERVAL, Why::Rest));
+        // Movement can't bring it sooner, as the power going counts as the
+        // last session.
+        assert_eq!(
+            schedule.due(MOVED_POLLS, false),
+            (off + MIN_INTERVAL, Why::Moved)
+        );
+        // Asleep (a nap after a charge), as asleep.
+        assert_eq!(schedule.due(0, true), (off + MIN_INTERVAL, Why::Asleep));
+        // The last reading was hours ago: overdue, so it starts at once,
+        // calm or not.
+        assert_eq!(
+            schedule.start(off + MIN_INTERVAL, off + MIN_INTERVAL, 0),
+            Start::Busy
+        );
+        // And a reading backs off from the minimum, as after movement.
+        let at = off + MIN_INTERVAL + 13;
+        schedule.ended(at, 13, Outcome::Reading(62), true, awake(0));
+        assert_eq!(schedule.due(0, false), (at + 2 * MIN_INTERVAL, Why::Rest));
+    }
+
+    /// A watch that boots on the charger (an update, or charged back from
+    /// empty) measures nothing until it's off, and then two minutes on,
+    /// not at once: it's likely in a hand.
+    #[test]
+    fn a_boot_on_the_charger_waits_until_it_is_off() {
+        let mut schedule = Schedule::new();
+        assert_eq!(schedule.charger(1, true), Charger::Arrived);
+        assert_eq!(schedule.charger(900, true), Charger::On);
+        assert_eq!(schedule.charger(1000, false), Charger::Left(CHARGER_SETTLE));
+        assert_eq!(schedule.charger(1010, false), Charger::Away);
+        assert_eq!(schedule.due(0, false), (1000 + MIN_INTERVAL, Why::Rest));
+    }
+
+    /// A wobbly cradle, making and breaking contact: each break settles
+    /// afresh, and contact back within the settling time is the same
+    /// charge, not another arrival (whose log line would come with every
+    /// wobble).
+    #[test]
+    fn a_wobbly_cradle_is_one_charge() {
+        let mut schedule = Schedule::new();
+        schedule.ended(100, 13, Outcome::Reading(60), true, awake(0));
+        assert_eq!(schedule.charger(200, true), Charger::Arrived);
+        assert_eq!(schedule.charger(201, false), Charger::Left(CHARGER_SETTLE));
+        assert_eq!(schedule.charger(202, true), Charger::On);
+        assert_eq!(schedule.charger(203, false), Charger::Left(CHARGER_SETTLE));
+        assert_eq!(schedule.charger(209, false), Charger::Settling(4));
+        assert_eq!(schedule.charger(210, true), Charger::On);
+        assert_eq!(schedule.charger(500, false), Charger::Left(CHARGER_SETTLE));
+        assert_eq!(schedule.charger(510, false), Charger::Away);
+        assert_eq!(schedule.due(0, false), (500 + MIN_INTERVAL, Why::Rest));
+        // Set down again later, it's a new arrival.
+        assert_eq!(schedule.charger(600, true), Charger::Arrived);
+    }
+
+    /// The charger ends a round of tries under way, as a reading would:
+    /// the tries after a charge are on the other arm, in a round of their
+    /// own (see `Arm`).
+    #[test]
+    fn the_charger_ends_a_round() {
+        let mut schedule = Schedule::new();
+        assert_eq!(schedule.begin(false), (1, Arm::Dim));
+        schedule.ended(30, 30, Outcome::NoReading, true, awake(0));
+        assert_eq!(schedule.begin(false), (1, Arm::Dim));
+        schedule.cut_short(340, 10);
+        assert_eq!(schedule.charger(3000, false), Charger::Left(CHARGER_SETTLE));
+        assert_eq!(schedule.begin(false), (2, Arm::Bright));
+        // An arrival between sessions ends it too.
+        schedule.ended(3200, 30, Outcome::NoReading, true, awake(0));
+        assert_eq!(schedule.charger(3300, true), Charger::Arrived);
+        assert_eq!(schedule.charger(5000, false), Charger::Left(CHARGER_SETTLE));
+        assert_eq!(schedule.begin(false), (3, Arm::Dim));
+    }
+
     /// An hour without a reading, the budget refills twice as fast, into a
     /// bucket twice as deep; a reading puts it back.
     #[test]
@@ -1861,6 +2020,70 @@ mod proofs {
         assert_eq!(due_since, Some(found));
         if second - found >= CALM_WAIT {
             assert!(start.is_some());
+        }
+    }
+
+    /// From any consistent state, the charger (see `Schedule::charger`)
+    /// leaves the schedule consistent, and changes nothing but what it
+    /// says it does. On it, settling after it, or away from it, when the
+    /// next session is due and why, and the budget, are as they were; and
+    /// whether it's on is whether its power is present. Taken off it, the
+    /// next session is due `MIN_INTERVAL` after the power went, unless the
+    /// budget holds it back (no sooner, either way), after
+    /// `CHARGER_SETTLE`. A session the charger cut short (`cut_short`)
+    /// takes its LED seconds out of the budget, and is, to when the next
+    /// is due, a watched session without a reading.
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn the_charger_changes_only_what_it_says() {
+        let mut schedule = any_consistent();
+        let (now, present, led_seconds): (u32, bool, u32) = kani::any();
+        kani::assume(schedule.as_of() <= now && now < UPTIME);
+        let (active_polls, asleep): (u8, bool) = kani::any();
+        let before = schedule.clone();
+        let (was_at, was_why) = before.due(active_polls, asleep);
+
+        if kani::any() {
+            schedule.cut_short(now, led_seconds);
+            assert!(schedule.consistent() && schedule.as_of() <= now);
+            let left = before.budget(now).saturating_sub(led_seconds);
+            assert_eq!(schedule.budget(now), left);
+            // To when the next is due, it's a watched session without a
+            // reading: the LED time spent, and nothing else.
+            let mut watched = before.clone();
+            let wrist = Before {
+                active_polls,
+                stepless_polls: kani::any(),
+                asleep,
+            };
+            watched.ended(now, led_seconds, Outcome::NoReading, false, wrist);
+            assert_eq!(
+                schedule.due(active_polls, asleep),
+                watched.due(active_polls, asleep)
+            );
+            return;
+        }
+
+        let charger = schedule.charger(now, present);
+        assert!(schedule.consistent() && schedule.as_of() <= now);
+        assert_eq!(present, matches!(charger, Charger::Arrived | Charger::On));
+        assert_eq!(schedule.budget(now), before.budget(now));
+        let (at, why) = schedule.due(active_polls, asleep);
+        match charger {
+            Charger::Left(wait) => {
+                assert_eq!(wait, CHARGER_SETTLE);
+                assert!(at >= now + MIN_INTERVAL);
+                if why != Why::Budget {
+                    assert_eq!(at, now + MIN_INTERVAL);
+                }
+            }
+            Charger::Settling(wait) => {
+                assert!(0 < wait && wait <= CHARGER_SETTLE);
+                assert_eq!((at, why), (was_at, was_why));
+            }
+            Charger::Away | Charger::Arrived | Charger::On => {
+                assert_eq!((at, why), (was_at, was_why));
+            }
         }
     }
 

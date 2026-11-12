@@ -25,7 +25,11 @@
 //!   since then someone is looking at the number, and
 //! - while Gadgetbridge's live activity asks for it (see [`crate::live`]
 //!   and [`crate::heart_reading::set_live`]), continuously too, for as long
-//!   as it asks.
+//!   as it asks;
+//!
+//! but never on the charger (see `heart_schedule`'s "The charger"): no
+//! session starts while its power is present, and one under way stops
+//! within a second of it arriving.
 //!
 //! Between sessions the sensor is fully off: no LED, no oscillator. (Should
 //! switching it off fail, that's tried again every second until it works.)
@@ -50,9 +54,9 @@ use embedded_hal_async::i2c::I2c;
 use crate::activity;
 // What the rest of the firmware reads and sets lives there, free of
 // hardware, so the simulator runs it too.
-use crate::heart_reading::{WAKE, publish, watching};
+use crate::heart_reading::{WAKE, on_charger, publish, watching};
 pub use crate::heart_reading::{wake, worn};
-use crate::heart_schedule::{self, Arm, Before, Outcome, Schedule, Start};
+use crate::heart_schedule::{self, Arm, Before, Charger, Outcome, Schedule, Start};
 #[cfg(feature = "field-log")]
 use crate::heart_schedule::{Length, Lengths};
 use crate::i2c::Device;
@@ -516,6 +520,31 @@ pub async fn heart_task(i2c: Device) {
             if maybe_lit {
                 maybe_lit = !retry_off(&mut hrs).await;
             }
+            // Never on the charger, whoever's watching. The UI loop wakes
+            // this when its power comes or goes; the timer is only a
+            // backstop.
+            let charger = match schedule.charger(uptime(), on_charger()) {
+                Charger::Away => None,
+                Charger::Arrived => {
+                    info!("heart: on the charger");
+                    // Not worn, for sleep tracking and the temperature:
+                    // no session will say so while it charges.
+                    crate::heart_reading::set_worn(Some(false));
+                    Some(RECHECK_SECS)
+                }
+                Charger::On => Some(RECHECK_SECS),
+                Charger::Left(wait) => {
+                    info!("heart: off the charger");
+                    Some(wait)
+                }
+                Charger::Settling(wait) => Some(wait),
+            };
+            if let Some(wait) = charger {
+                due_since = None;
+                let wait = if maybe_lit { 1 } else { wait };
+                select(Timer::after_secs(u64::from(wait)), WAKE.wait()).await;
+                continue;
+            }
             if watching() {
                 break None;
             }
@@ -635,14 +664,23 @@ pub async fn heart_task(i2c: Device) {
             Some(reading) => {
                 level = usize::from(reading.level);
                 peak = reading.skin_peak;
-                Ok(Ended::Measured(reading.bpm))
+                // (Still saying when it was the charger that ended it.)
+                match outcome {
+                    Ok(Ended::Charger(_)) => Ok(Ended::Charger(Some(reading.bpm))),
+                    _ => Ok(Ended::Measured(reading.bpm)),
+                }
             }
             None => outcome,
         };
-        if matches!(outcome, Ok(Ended::Measured(_))) {
+        if matches!(outcome, Ok(Ended::Measured(_) | Ended::Charger(Some(_)))) {
             good_level = level;
         }
-        if !matches!(outcome, Ok(Ended::NoContact | Ended::TooBright) | Err(())) && peak > 0 {
+        // (Not the light on a cradle, or in the hand that put it there.)
+        if !matches!(
+            outcome,
+            Ok(Ended::NoContact | Ended::TooBright | Ended::Charger(_)) | Err(())
+        ) && peak > 0
+        {
             skin_peak = peak;
         }
         // A few tries at once, then every second (see `maybe_lit`). Only
@@ -659,6 +697,11 @@ pub async fn heart_task(i2c: Device) {
         let led_seconds = started.elapsed().as_millis().div_ceil(1000) as u32;
         match outcome {
             Ok(Ended::Measured(_)) => {}
+            // A clear line, for field-log analyses to leave it out (see
+            // `scripts/ppg_sessions.py`).
+            Ok(Ended::Charger(_)) => {
+                info!("heart: on the charger; stopped after {} s", led_seconds)
+            }
             Ok(Ended::TimedOut { calm: false }) => {
                 info!("heart: no reading after {} s", led_seconds)
             }
@@ -681,16 +724,27 @@ pub async fn heart_task(i2c: Device) {
         // flooding in, means the sensor isn't against anything. Light
         // without a pulse proves nothing: a desk reflects the LED too (the
         // dev kit lying on one times out exactly like a busy wrist).
-        let (worn, outcome) = match outcome {
-            Ok(Ended::Measured(bpm)) => (Some(true), Outcome::Reading(bpm)),
-            Ok(Ended::NoContact | Ended::TooBright) => (Some(false), Outcome::OffWrist),
-            Ok(Ended::TimedOut { calm: true }) => (None, Outcome::CalmNoReading),
-            Ok(Ended::TimedOut { calm: false }) | Err(()) => (None, Outcome::NoReading),
-        };
-        crate::heart_reading::set_worn(worn);
         // At the lowest drive, `spent` is `led_seconds`, short of the
         // moments around the LED's switching on and off.
         let spent = spent.max(led_seconds);
+        let (worn, outcome) = match outcome {
+            // What it read before the charger came stands.
+            Ok(Ended::Measured(bpm) | Ended::Charger(Some(bpm))) => {
+                (Some(true), Outcome::Reading(bpm))
+            }
+            Ok(Ended::NoContact | Ended::TooBright) => (Some(false), Outcome::OffWrist),
+            Ok(Ended::TimedOut { calm: true }) => (None, Outcome::CalmNoReading),
+            Ok(Ended::TimedOut { calm: false }) | Err(()) => (None, Outcome::NoReading),
+            // Without a reading, it's nothing to the schedule but its LED
+            // time (see `Schedule::cut_short`), which also hears of the
+            // charger, so the wait below won't take this for an arrival.
+            Ok(Ended::Charger(None)) => {
+                crate::heart_reading::set_worn(Some(false));
+                schedule.cut_short(uptime(), spent);
+                continue;
+            }
+        };
+        crate::heart_reading::set_worn(worn);
         #[cfg(not(feature = "field-log"))]
         schedule.ended(uptime(), spent, outcome, background, before);
         #[cfg(feature = "field-log")]
@@ -709,7 +763,9 @@ pub async fn heart_task(i2c: Device) {
         // Deliberately no retrying while Gadgetbridge asks, in case the
         // watch goes on a wrist meanwhile: not measuring off the wrist is
         // what's wanted, and reopening the chart tries again.
-        while watching() {
+        //
+        // On the charger, the wait below looks after it instead.
+        while watching() && !on_charger() {
             Timer::after_secs(1).await;
             if maybe_lit {
                 maybe_lit = !retry_off(&mut hrs).await;
@@ -846,6 +902,11 @@ enum Ended {
     TimedOut { calm: bool },
     /// Almost no light comes back even at the highest level.
     NoContact,
+    /// The charger's power arrived (see [`heart_reading::on_charger`]);
+    /// with the session's reading, if it had one by then.
+    ///
+    /// [`heart_reading::on_charger`]: crate::heart_reading::on_charger
+    Charger(Option<u8>),
     /// The ADC clips even at the lowest level: ambient light is getting in.
     TooBright,
 }
@@ -914,6 +975,17 @@ async fn measure(
         ticker.next().await;
         let now = Instant::now();
         let elapsed = now - started;
+        // On the charger: off at once, whatever the session was doing (the
+        // UI loop looks at the charger at least once a second). The last
+        // part-second goes into the log, as for any end.
+        if on_charger() {
+            trace!(
+                "heart: samples {=[?]} movement {}",
+                second.as_slice(),
+                activity::movement()
+            );
+            return Ok(Ended::Charger(measured));
+        }
         // A phase that ran out without a reading on a calm wrist may go on
         // brighter (see `heart_schedule::brighter`).
         let brighter = budget

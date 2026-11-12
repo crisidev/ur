@@ -49,6 +49,12 @@
 //! looking, so `heart` measures right away), but their readings count as
 //! measurements, and their LED time comes out of the budget.
 //!
+//! **Never on the charger** (see [`Schedule::charger`]): no session starts
+//! while its power is present, scheduled or watched, and one under way
+//! stops, counting for nothing but its LED time. Taken off, the watch
+//! measures again [`CHARGER_SETTLE`] later, and the schedule starts over,
+//! a session due [`MIN_INTERVAL`] after.
+//!
 //! A few rules about the sessions themselves live here too, being as
 //! hardware-free: a due background session waits up to two minutes for the
 //! wrist to be calm for a few seconds ([`START_CALM_POLLS`],
@@ -381,6 +387,15 @@ pub const OVERDUE_RETRY: u32 = CALM_RETRY_INTERVAL;
 /// Consecutive failures counted (beyond this the wait is capped anyway).
 const MAX_FAILURES: u8 = 5;
 
+/// Seconds without the charger's power before the heart rate is measured
+/// again (see [`Schedule::charger`]). A wobbly cradle makes and breaks
+/// contact for a second or two at a time (see `battery::PlugIn`, which
+/// waits 5 s for it), and the clock face it lights would start a session
+/// at each break; and lifting the watch off and strapping it on takes
+/// longer than this, so a session sooner would mostly find a hand, or the
+/// air, and back off for being off the wrist.
+pub const CHARGER_SETTLE: u32 = 10;
+
 // Intervals are stored as `u16` to keep the heart task's state small.
 const _: () = assert!(MAX_FAILED_INTERVAL <= u16::MAX as u32);
 const _: () = assert!(OVERDUE_BUDGET <= u16::MAX as u32);
@@ -456,6 +471,35 @@ pub struct Before {
     pub asleep: bool,
 }
 
+/// What the charger means for measuring now (see [`Schedule::charger`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Charger {
+    /// Not on it, nor just off it: measure as usual.
+    Away,
+    /// Just set on it (its power present, where it wasn't): measure
+    /// nothing.
+    Arrived,
+    /// On it: measure nothing.
+    On,
+    /// Just taken off it: measure nothing for this many seconds more
+    /// ([`CHARGER_SETTLE`]).
+    Left(u32),
+    /// Taken off it a moment ago: measure nothing for this many seconds
+    /// more.
+    Settling(u32),
+}
+
+/// Where the watch was, as to the charger, when last told (see
+/// [`Schedule::charger`]). A byte, in what was `Schedule`'s padding.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Power {
+    Away,
+    On,
+    /// Taken off at `Schedule::last`, and not yet [`CHARGER_SETTLE`] ago
+    /// when last told.
+    Left,
+}
+
 /// A resting heart rate estimate.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Resting {
@@ -470,7 +514,8 @@ struct Resting {
 /// await, so it lives in that task's static future, where RAM is tight.
 #[derive(Clone, Debug)]
 pub struct Schedule {
-    /// When the last counted session ended.
+    /// When the last counted session ended, or the watch was taken off the
+    /// charger, whichever was later (see [`Schedule::charger`]).
     last: u32,
     /// When the last reading came (0: none since boot), for [`OVERDUE`].
     last_reading: u32,
@@ -502,6 +547,8 @@ pub struct Schedule {
     in_round: bool,
     armed: bool,
     bright: bool,
+    /// The charger, as last told (see [`Schedule::charger`]).
+    power: Power,
 }
 
 impl Default for Schedule {
@@ -535,6 +582,7 @@ impl Schedule {
             armed: false,
             // So that the first round to choose is dim, as before.
             bright: true,
+            power: Power::Away,
         }
     }
 
@@ -777,7 +825,9 @@ impl Schedule {
         let tokens = u32::from(self.tokens);
         let budget = tokens <= LED_BUDGET
             || (tokens <= OVERDUE_BUDGET && self.refilled_at > self.overdue_from());
-        counted && read && failed && elevated && budget
+        // Taken off the charger, the schedule started over from then.
+        let charger = self.power != Power::Left || self.interval != 0;
+        counted && read && failed && elevated && budget && charger
     }
 
     /// The latest time the schedule has been told of: every later call's
@@ -802,6 +852,7 @@ impl Schedule {
         let mut flag = || any() & 1 != 0;
         let (off_wrist, elevated, in_round, armed, bright) =
             (flag(), flag(), flag(), flag(), flag());
+        let power = [Power::Away, Power::On, Power::Left][(any() % 3) as usize];
         Self {
             last: any(),
             last_reading: any(),
@@ -818,6 +869,7 @@ impl Schedule {
             in_round,
             armed,
             bright,
+            power,
         }
     }
 
@@ -902,6 +954,96 @@ impl Schedule {
         let (tokens, at) = self.refilled(now);
         self.tokens = tokens as u16;
         self.refilled_at = at;
+    }
+}
+
+// ==============================================================================
+// The charger
+// ==============================================================================
+//
+// The heart rate LED is never on while the watch is on its charger (the
+// user's rule, for 0.11.1): there's no wrist there, and a cradle under a
+// lit LED reads as skin without a pulse at best. "On the charger" is its
+// power being present (`Board::charger`), charging or full: the watch on
+// the cradle either way. `heart` tells the schedule what it is before
+// every session, and stops a session under way within a second of the
+// power arriving.
+
+impl Schedule {
+    /// Tells the schedule, at `now`, whether the charger's power is
+    /// `present`; returns what that means for measuring (see [`Charger`]).
+    ///
+    /// On the charger, nothing is measured, and nothing about the
+    /// schedule changes: the back-off, the budget, and the LED experiment's
+    /// round stay as they were, as no session says anything about a wrist
+    /// there. Except that its arrival ends a round of tries under way, as a
+    /// reading would (see [`Arm`]): tries before and after a charge are on
+    /// different wrists, as far as the experiment goes, and a round made of
+    /// both would compare nothing.
+    ///
+    /// Taken off it, nothing is measured for [`CHARGER_SETTLE`], and then
+    /// the schedule starts over, as if a reading had come as the power
+    /// went: a background session due [`MIN_INTERVAL`] after that, unless
+    /// movement or the budget say otherwise, and the back-off from there.
+    /// What it was backing off from before the charge (failures off the
+    /// wrist on the way to the cradle, typically, an hour apart by then)
+    /// no longer describes the wrist: the watch has most likely just gone
+    /// back on it, so a reading soon is worth having, but not at once, as
+    /// it may still be in a hand. Whether a reading is overdue stays as it
+    /// was, from the last real one: after a long charge it usually is, and
+    /// then that first session doesn't wait for calm (see
+    /// [`Schedule::start`]), and the doubled budget stands until a reading
+    /// comes.
+    pub fn charger(&mut self, now: u32, present: bool) -> Charger {
+        debug_assert!(self.as_of() <= now, "told at {now}: {self:?}");
+        let settling = self.power == Power::Left && now < self.last.saturating_add(CHARGER_SETTLE);
+        let charger = match (self.power, present) {
+            (Power::On, true) => Charger::On,
+            // A wobbly cradle's contact back within the settling time is
+            // the same charge: no new arrival.
+            (_, true) if settling => {
+                self.power = Power::On;
+                Charger::On
+            }
+            (_, true) => {
+                self.power = Power::On;
+                self.in_round = false;
+                Charger::Arrived
+            }
+            (Power::On, false) => {
+                self.power = Power::Left;
+                self.last = now;
+                self.interval = MIN_INTERVAL as u16;
+                self.failures = 0;
+                self.off_wrist = false;
+                self.calm_failures = 0;
+                self.elevated = false;
+                Charger::Left(CHARGER_SETTLE)
+            }
+            (_, false) if settling => Charger::Settling(self.last + CHARGER_SETTLE - now),
+            (_, false) => {
+                self.power = Power::Away;
+                Charger::Away
+            }
+        };
+        self.check();
+        charger
+    }
+
+    /// Records a session that the charger cut short at `now`, having had
+    /// the LED on for `led_seconds` (as for [`Schedule::ended`]), without a
+    /// reading: they come out of the budget, and that's all. It wasn't a
+    /// failure, nor off the wrist, as far as the back-off goes (the wrist
+    /// it was on, if any, is the one taken off to charge), and its round
+    /// ends with the charge (see [`Schedule::charger`], which this tells of
+    /// the power).
+    pub fn cut_short(&mut self, now: u32, led_seconds: u32) {
+        debug_assert!(self.as_of() <= now, "cut short at {now}: {self:?}");
+        self.refill(now);
+        self.tokens = self
+            .tokens
+            .saturating_sub(led_seconds.min(u32::from(u16::MAX)) as u16);
+        let _ = self.charger(now, true);
     }
 }
 

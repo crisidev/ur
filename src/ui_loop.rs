@@ -447,6 +447,9 @@ impl UiLoop {
             info!("charger: charged");
         }
         self.battery.update(sample, charging, power_present, uptime);
+        // No heart rate on the charger (see `heart_schedule`'s "The
+        // charger"), whether it's charging or full.
+        heart::set_charger(power_present);
         // Set on the charger: the screen wakes, so the wearer sees at once,
         // from this very frame's battery, that it sits right on the cradle
         // (see `PlugIn` for a wobbly one).
