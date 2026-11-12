@@ -93,6 +93,11 @@ coverage = ["compare"]
 # erases and writes never overrun their radio timeslots; see
 # `src/flash_stress.rs`. Only for dev kits.
 flash-stress = []
+# A raycaster game, at the end of the line of screens below the clock;
+# see `src/game.rs`. Off by default, and not in releases: it's a toy, and
+# what it costs (flash, a little RAM) is for those who build it. The
+# simulator doesn't have it.
+game = []
 # Wedge the sensor bus for the first 5 s after boot, so that touch, the
 # accelerometer and the heart-rate sensor all have to recover from it; see
 # `wedge_task` in `src/i2c.rs`. Only for dev kits: it implies `debug-input`

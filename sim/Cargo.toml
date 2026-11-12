@@ -36,8 +36,8 @@ themes-all = ["theme-retro", "theme-living_tokyo"]
 
 [lints.rust]
 # The firmware's own features, which the modules included from it check
-# (`compare`'s hooks in `ui_loop`): never on here.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("compare"))'] }
+# (`compare`'s hooks in `ui_loop`, `game`'s screen in `ui`): never on here.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("compare", "game"))'] }
 
 [dependencies]
 aes = "0.8.4"

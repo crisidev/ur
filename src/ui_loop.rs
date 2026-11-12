@@ -87,6 +87,9 @@ pub fn timer_at(app: &App, finger_down: bool) -> Option<Instant> {
         .animating()
         .then(|| Instant::now() + canvas::MARQUEE_FRAME);
     let due = app.deadline(finger_down);
+    // The game's next frame, while it plays.
+    #[cfg(feature = "game")]
+    let frame = frame.or(app.playing().then_some(app.game.frame_due));
     frame.into_iter().chain(due).min()
 }
 
@@ -380,6 +383,16 @@ pub struct UiLoop {
     battery_sent: Option<u8>,
     /// Gadgetbridge's live activity, while it asks (see [`live`]).
     live: live::Live,
+    /// Whether the panel is set up for the game's frames: its frame drawn
+    /// round the viewport, and taking pixels by column (see
+    /// [`crate::game`]).
+    #[cfg(feature = "game")]
+    game_shown: bool,
+    /// Whether this wake is only for the game's next frame.
+    #[cfg(feature = "game")]
+    frame_only: bool,
+    #[cfg(feature = "game")]
+    game_stats: crate::game::Stats,
 }
 
 impl UiLoop {
@@ -413,6 +426,12 @@ impl UiLoop {
             location_seen: 0,
             battery_sent: None,
             live: live::Live::new(),
+            #[cfg(feature = "game")]
+            game_shown: false,
+            #[cfg(feature = "game")]
+            frame_only: false,
+            #[cfg(feature = "game")]
+            game_stats: crate::game::Stats::default(),
         };
         (app, ui)
     }
@@ -428,6 +447,18 @@ impl UiLoop {
         board: &mut impl Board,
         canvas: &mut Canvas,
     ) -> Option<Reason> {
+        // A wake only for the game's next frame draws just that: the
+        // rest waits for the next tick, a second at most.
+        #[cfg(feature = "game")]
+        {
+            let takeover =
+                ble::PASSKEY.lock(Cell::get).is_some() || dfu::PROGRESS.lock(Cell::get).is_some();
+            app.settle_game(takeover);
+            if core::mem::take(&mut self.frame_only) && self.game_shown && app.playing() {
+                self.game_frame(app, board, canvas).await;
+                return None;
+            }
+        }
         let now = Instant::now();
         let now_ms = now.as_millis();
         self.temperature(board, now, now_ms);
@@ -551,6 +582,14 @@ impl UiLoop {
         app.check();
         #[cfg(feature = "compare")]
         crate::compare::state(now, connected, air, power_present);
+        // Out of the game (paused, or anything else on screen, or the
+        // screen going off): the panel back as the canvas expects it.
+        // `Canvas::lend` left it to send everything with its next flush.
+        #[cfg(feature = "game")]
+        if self.game_shown && !app.playing() {
+            board.display().set_order(crate::display::Order::Rows).await;
+            self.game_shown = false;
+        }
         // Apply screen power changes. Waking renders before the backlight
         // comes on, so the old frame never flashes up.
         if app.awake {
@@ -598,23 +637,44 @@ impl UiLoop {
                 board.set_idle(false).await;
             }
             canvas.set_palette(app.palette());
-            // Nothing between this and the render may await: see
-            // `compare::rendering`.
-            #[cfg(feature = "compare")]
-            crate::compare::rendering(now, &status, daytime, activity::today());
-            app.render(canvas, &status, now);
-            match app.take_transition() {
-                // Waking straight into a transition would animate over a
-                // stale frame; just show the new one.
-                Some(sweep) if self.panel_awake => canvas.transition(board.display(), sweep).await,
-                _ if self.first_frame => {
-                    canvas.transition(board.display(), Sweep::LeftToRight).await
+            // While the game plays, what's round its viewport is drawn
+            // once, as it starts, and then only the viewport.
+            #[cfg(feature = "game")]
+            let canvas_drawn = self.game_shown;
+            #[cfg(not(feature = "game"))]
+            let canvas_drawn = false;
+            if !canvas_drawn {
+                // Nothing between this and the render may await: see
+                // `compare::rendering`.
+                #[cfg(feature = "compare")]
+                crate::compare::rendering(now, &status, daytime, activity::today());
+                app.render(canvas, &status, now);
+                match app.take_transition() {
+                    // Waking straight into a transition would animate over
+                    // a stale frame; just show the new one.
+                    Some(sweep) if self.panel_awake => {
+                        canvas.transition(board.display(), sweep).await
+                    }
+                    _ if self.first_frame => {
+                        canvas.transition(board.display(), Sweep::LeftToRight).await
+                    }
+                    _ => canvas.flush(board.display()).await,
                 }
-                _ => canvas.flush(board.display()).await,
+                self.first_frame = false;
+                #[cfg(feature = "compare")]
+                crate::compare::rendered();
             }
-            self.first_frame = false;
-            #[cfg(feature = "compare")]
-            crate::compare::rendered();
+            #[cfg(feature = "game")]
+            if app.playing() {
+                if !self.game_shown {
+                    board
+                        .display()
+                        .set_order(crate::display::Order::Columns)
+                        .await;
+                    self.game_shown = true;
+                }
+                self.game_frame(app, board, canvas).await;
+            }
             // Light only a finished frame: after waking, the output is blank
             // until shown (see `Display::sleep`); after a redraw in the dark,
             // the panel's scan needs a refresh to reach the bottom rows.
@@ -695,6 +755,19 @@ impl UiLoop {
         board.pet_watchdog();
         clock::checkpoint();
         None
+    }
+
+    /// The game's next frame, straight to the panel (see [`crate::game`]).
+    #[cfg(feature = "game")]
+    async fn game_frame(&mut self, app: &mut App, board: &mut impl Board, canvas: &mut Canvas) {
+        app.game_step(Instant::now(), board.finger_down());
+        crate::game::frame(
+            board.display(),
+            canvas.lend(),
+            &mut app.game,
+            &mut self.game_stats,
+        )
+        .await;
     }
 
     /// Gadgetbridge's live activity (see [`live`]): what it asked for
@@ -816,6 +889,10 @@ impl UiLoop {
         wake: Wake,
     ) -> impl Future<Output = ()> + 'a {
         let before = Settings::of(app);
+        #[cfg(feature = "game")]
+        {
+            self.frame_only = matches!(wake, Wake::Timer) && app.playing();
+        }
         match wake {
             Wake::Timer => {
                 // Maybe only a frame; then this does nothing.

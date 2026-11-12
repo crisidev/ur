@@ -36,6 +36,9 @@ const BYTES: usize = WIDTH * HEIGHT / 2;
 /// once was) halved the transfers of a full-width flush, but cost 1.4 KB of
 /// RAM to save ~40 transfers' setup on the rare full-frame push.
 const BATCH: usize = WIDTH * SCALE * SCALE * 2;
+/// The bytes [`Canvas::lend`] lends.
+#[cfg(feature = "game")]
+pub const LENT: usize = BATCH;
 
 /// The QR code's modules, in panel pixels; its side, with the standard
 /// quiet zone of four modules; and where it starts, centred on the panel
@@ -347,6 +350,16 @@ impl Canvas {
     // Pushing to the panel
     // ==========================================================================
 
+    /// Lends the batch buffer, for drawing to the panel without the
+    /// canvas (see `crate::game`), which costs no RAM of its own. The
+    /// panel then no longer shows what the canvas last sent, so the next
+    /// flush sends everything.
+    #[cfg(feature = "game")]
+    pub fn lend(&mut self) -> &mut [u8; LENT] {
+        self.front_valid = false;
+        &mut self.batch
+    }
+
     /// Sends every changed region of the canvas to the panel.
     pub async fn flush(&mut self, display: &mut Display) {
         // Whether anything was sent, which may have covered a QR code, and
@@ -631,6 +644,13 @@ async fn stream(
 
 /// Opens a panel window covering the given canvas rectangle.
 async fn start_pixels(display: &mut Display, rows: Range<usize>, columns: Range<usize>) {
+    // The canvas sends rows; the game switches back before it draws (see
+    // `Display::set_order`).
+    #[cfg(feature = "game")]
+    debug_assert!(
+        display.order() == crate::display::Order::Rows,
+        "the canvas drawing in the game's order"
+    );
     let panel = |r: Range<usize>| (r.start * SCALE) as u16..(r.end * SCALE) as u16;
     display.start_pixels(panel(columns), panel(rows)).await;
 }

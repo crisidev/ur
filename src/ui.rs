@@ -356,6 +356,10 @@ enum Screen {
     HaQr,
     /// The same, as text, with the watch's address: a tap on the QR code.
     HaKey,
+    /// The raycaster (see [`crate::game`]): its title, or the game itself
+    /// while it plays.
+    #[cfg(feature = "game")]
+    Game,
 }
 
 /// The most screens in a line: the notifications', or the one on the
@@ -635,6 +639,9 @@ pub struct App {
     /// The full charge's screen: waiting to show, or showing (see
     /// [`App::on_charged`]).
     charged: Charged,
+    /// The raycaster's state, playing or paused.
+    #[cfg(feature = "game")]
+    pub game: crate::game::Game,
 }
 
 /// The full charge's screen (see [`App::on_charged`]).
@@ -715,6 +722,8 @@ impl App {
             ha_presses: heapless::Vec::new(),
             holding: false,
             charged: Charged::None,
+            #[cfg(feature = "game")]
+            game: crate::game::Game::new(),
         }
     }
 
@@ -929,6 +938,57 @@ impl App {
             && self.finding.is_none()
     }
 
+    /// Whether the game plays on screen: started, and nothing else wants
+    /// the screen (see [`crate::game`]).
+    #[cfg(feature = "game")]
+    pub fn playing(&self) -> bool {
+        self.game.playing
+            && self.awake
+            && self.screen == Screen::Game
+            && !self.glancing()
+            && !self.night.quiet()
+            && !self.takeover
+            && self.call.is_none()
+            && self.ringing.is_none()
+            && self.finding.is_none()
+            && self.editing.is_none()
+            && self.banner.is_none()
+            && !self.showing_charged()
+    }
+
+    /// Pauses the game if something else wants the screen: `takeover`
+    /// says pairing or an update does, as of now (the UI's own idea of
+    /// that, `takeover`, waits for the next tick). And leaves its screen
+    /// in the quiet night, which has none.
+    #[cfg(feature = "game")]
+    pub fn settle_game(&mut self, takeover: bool) {
+        if self.game.playing && (takeover || !self.playing()) {
+            self.game.stop();
+        }
+        if self.night.quiet() && self.screen == Screen::Game {
+            self.screen = Screen::Clock;
+        }
+    }
+
+    /// A frame's input for the game: a finger down is input, holding the
+    /// screen on (see `screen_timeout`).
+    #[cfg(feature = "game")]
+    pub fn game_step(&mut self, now: Instant, finger_down: bool) {
+        if finger_down {
+            self.last_input = now;
+        }
+        self.game.step(now, finger_down);
+    }
+
+    /// Whether the game has the screen, which then shows no handles: the
+    /// swipes they'd point to are the game's.
+    fn game_shown(&self) -> bool {
+        #[cfg(feature = "game")]
+        return self.playing();
+        #[cfg(not(feature = "game"))]
+        false
+    }
+
     /// Media info is only meaningful while connected: forget it on
     /// disconnect (which also removes the music screen).
     pub fn set_connected(&mut self, connected: bool) {
@@ -1058,6 +1118,12 @@ impl App {
                 // nothing (see `nav::swipe`).
                 if self.air {
                     add(Screen::Air);
+                }
+                // Last, as the least used; not in the quiet night, which
+                // isn't for games, and whose dim look it wouldn't keep.
+                #[cfg(feature = "game")]
+                if !self.night.quiet() {
+                    add(Screen::Game);
                 }
             }
         }
@@ -1622,6 +1688,16 @@ impl App {
             return;
         }
 
+        // While the game plays, touches are its own (it reads the finger
+        // each frame, not these), and the button pauses it.
+        #[cfg(feature = "game")]
+        if self.playing() {
+            if let InputEvent::Button = event {
+                self.game.stop();
+            }
+            return;
+        }
+
         match event {
             InputEvent::Phone(_) | InputEvent::Glance => unreachable!("handled above"),
             // Only ever a reason to wake up, handled above.
@@ -1648,6 +1724,12 @@ impl App {
                     self.go_to(Screen::Settings(Page::Grid), Sweep::LeftToRight)
                 }
                 (Gesture::Tap | Gesture::LongPress, Screen::Buttons) => self.on_grid(touch, now),
+                #[cfg(feature = "game")]
+                (Gesture::Tap, Screen::Game) => {
+                    // Seen, if a banner showed; it would pause the game.
+                    self.banner = None;
+                    self.game.start(now);
+                }
                 (Gesture::SwipeLeft, _) => self.navigate(nav::Swipe::Left),
                 (Gesture::SwipeRight, _) => self.navigate(nav::Swipe::Right),
                 (Gesture::SwipeUp, _) => self.navigate(nav::Swipe::Up),
@@ -2052,6 +2134,8 @@ impl App {
         if self.showing_charged() {
             self.charged = Charged::None;
         }
+        #[cfg(feature = "game")]
+        self.game.stop();
         // A glance's deliberate tap is moot (see `held_wake`), and the
         // next glance starts afresh.
         self.glance_wake = false;
@@ -2532,6 +2616,12 @@ impl App {
         // in the meantime.) One still waiting to be seen (under the alarm
         // editor, say) isn't showing.
         let banner_showing = self.banner.as_ref().is_some_and(|b| b.until != UNSEEN);
+        // A game left alone pauses; the screen goes off a timeout after.
+        #[cfg(feature = "game")]
+        if self.game.playing && self.game.idle(now) {
+            self.game.stop();
+            self.last_input = now;
+        }
         if self.awake
             && !banner_showing
             && !self.showing_charged()
@@ -2568,6 +2658,9 @@ impl App {
                 SCREEN_TIMEOUT.max(marquee_cycle(overflow))
             }
             (Screen::HaQr | Screen::HaKey, _) => Duration::MAX,
+            // Until the game pauses for want of a touch (see `on_tick`).
+            #[cfg(feature = "game")]
+            (Screen::Game, _) if self.game.playing => crate::game::IDLE,
             _ => SCREEN_TIMEOUT,
         };
         crate::gesture::screen_timeout(timeout, self.holding)
@@ -2755,6 +2848,10 @@ impl App {
             Screen::Storage => theme.storage_prompt(canvas),
             Screen::HaQr => theme.bthome_qr(canvas, status.bthome.as_ref()),
             Screen::HaKey => theme.bthome_key(canvas, status.bthome.as_ref()),
+            // Not the theme's: the game looks the same in every one, bar
+            // its colours.
+            #[cfg(feature = "game")]
+            Screen::Game => crate::game::draw(canvas, self.playing()),
         }
         match self.place() {
             // Notifications nobody has seen. The clock face has no other
@@ -2762,7 +2859,8 @@ impl App {
             // the layout from.
             Place::Clock if self.notifications.unseen => theme.handles(canvas, Handles::Unseen),
             Place::Line { side, index }
-                if !matches!(self.screen, Screen::Storage | Screen::HaQr | Screen::HaKey) =>
+                if !matches!(self.screen, Screen::Storage | Screen::HaQr | Screen::HaKey)
+                    && !self.game_shown() =>
             {
                 let count = self.line(side).len();
                 theme.handles(canvas, Handles::Line { side, index, count });

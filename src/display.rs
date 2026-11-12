@@ -76,9 +76,31 @@ const SLEEP_SETTLE: Duration = Duration::from_millis(120);
 /// row shows it. The panel scans top to bottom, so the bottom lags.
 pub const REFRESH: Duration = Duration::from_millis(20);
 
+/// MADCTL's row/column exchange (MV): the controller swaps its column and
+/// row address counters, so pixels fill a window column by column rather
+/// than row by row (see [`Order`]).
+#[cfg(feature = "game")]
+const MADCTL_MV: u8 = 0x20;
+
+/// The order the pixels of a window are sent in (see
+/// [`Display::set_order`]).
+#[cfg(feature = "game")]
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum Order {
+    /// Left to right, then top to bottom: what the canvas sends, and what
+    /// every other part of the firmware assumes.
+    Rows,
+    /// Top to bottom, then left to right: a raycaster's column of pixels
+    /// is one run of the stream (see `crate::game`).
+    Columns,
+}
+
 pub struct Display {
     /// The bus, while we're using it (see the module docs).
     held: Option<spi::Guard>,
+    /// See [`Display::set_order`].
+    #[cfg(feature = "game")]
+    order: Order,
     cs: Output<'static>,
     /// Low for command bytes, high for parameters and pixel data.
     dc: Output<'static>,
@@ -102,6 +124,8 @@ impl Display {
 
         let mut display = Self {
             held: None,
+            #[cfg(feature = "game")]
+            order: Order::Rows,
             cs,
             dc,
             last_sleep_change: Instant::now(),
@@ -231,6 +255,13 @@ impl Display {
         self.held = Some(spi::BUS.get().await.lock().await);
         #[cfg(feature = "compare")]
         crate::compare::window();
+        // With the counters exchanged, CASET's addresses run down the
+        // panel and RASET's across it.
+        #[cfg(feature = "game")]
+        let (columns, rows) = match self.order {
+            Order::Rows => (columns, rows),
+            Order::Columns => (rows, columns),
+        };
         self.command(CASET, &range(columns)).await;
         self.command(RASET, &range(rows)).await;
         // Leave CS asserted and DC in data mode for the pixel stream.
@@ -250,6 +281,99 @@ impl Display {
     pub fn end_pixels(&mut self) {
         self.cs.set_high();
         self.held = None;
+    }
+
+    /// Switches the order windows are filled in (MADCTL's MV bit). The
+    /// panel's contents stay as they are: only what's sent from now on
+    /// lands differently. Windows keep their meaning (`columns` across
+    /// the panel, `rows` down it) either way; only the order of the
+    /// pixels within one changes.
+    ///
+    /// Everything but the game sends [`Order::Rows`], so whatever switches
+    /// to [`Order::Columns`] switches back before anything else draws.
+    /// The canvas checks (see `Canvas::flush`).
+    #[cfg(feature = "game")]
+    pub async fn set_order(&mut self, order: Order) {
+        if order == self.order {
+            return;
+        }
+        let madctl = match order {
+            Order::Rows => 0x00,
+            Order::Columns => MADCTL_MV,
+        };
+        self.command(MADCTL, &[madctl]).await;
+        self.order = order;
+        defmt::debug!("display: {} order", order);
+    }
+
+    #[cfg(feature = "game")]
+    pub fn order(&self) -> Order {
+        self.order
+    }
+
+    /// Fills a window with `strips` strips of pixels, each made by `fill`
+    /// (given its index, and a buffer to fill whole) while the one before
+    /// it goes out: two buffers, `buffers`, of the strip's size, take
+    /// turns. The window's pixels in the current [`Order`], big-endian
+    /// RGB565, and the strips must add up to it.
+    ///
+    /// The bus is held throughout, as for any window, so the SPI flash
+    /// waits for the whole of it.
+    ///
+    /// SPIM's DMA moves at most 255 bytes at a time (embassy-nrf starts
+    /// each piece once the last is done, from its interrupt's wake-up),
+    /// and `fill` runs without yielding: so with strips of up to 255
+    /// bytes, the whole strip goes out while the next is made. Longer
+    /// ones stall after their first piece until `fill` returns.
+    ///
+    /// Every strip's transfer is an await, so other tasks run between
+    /// strips.
+    #[cfg(feature = "game")]
+    pub async fn stream(
+        &mut self,
+        columns: Range<u16>,
+        rows: Range<u16>,
+        buffers: (&mut [u8], &mut [u8]),
+        strips: usize,
+        mut fill: impl FnMut(usize, &mut [u8]),
+    ) {
+        let (mut sending, mut making) = buffers;
+        debug_assert_eq!(sending.len(), making.len(), "strips of one size");
+        debug_assert_eq!(
+            sending.len() * strips,
+            columns.len() * rows.len() * 2,
+            "strips that fill the window"
+        );
+        self.start_pixels(columns, rows).await;
+        if strips > 0 {
+            fill(0, sending);
+        }
+        for strip in 0..strips {
+            let bus = self
+                .held
+                .as_mut()
+                .expect("the bus is locked around every transfer");
+            let next = strip + 1;
+            if next < strips {
+                // The next strip is made while this one goes out. But not
+                // at once: on the nRF52832, embassy-nrf's workaround for
+                // anomaly 109 makes a transfer's first poll start a
+                // transfer of nothing, and only the poll after its
+                // STARTED interrupt starts the real one. Yielding first
+                // gets that poll in before `fill` holds the CPU.
+                let make = async {
+                    embassy_futures::yield_now().await;
+                    fill(next, &mut *making)
+                };
+                embassy_futures::join::join(spi::write(bus, sending), make).await;
+            } else {
+                spi::write(bus, sending).await;
+            }
+            #[cfg(feature = "compare")]
+            crate::compare::pixels(sending.len());
+            core::mem::swap(&mut sending, &mut making);
+        }
+        self.end_pixels();
     }
 
     /// Sends a command and its parameters.

@@ -694,6 +694,8 @@ async fn main(spawner: Spawner) {
 }
 
 // Last, so that nothing above moves (panic messages carry line numbers, and
-// a release image must stay byte for byte the same without the feature).
+// a release image must stay byte for byte the same without these features).
 #[cfg(feature = "coverage")]
 mod coverage;
+#[cfg(feature = "game")]
+mod game;
