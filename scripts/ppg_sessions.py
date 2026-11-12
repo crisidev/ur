@@ -33,24 +33,65 @@ extracted here.)
 
 Usage: python -I scripts/ppg_sessions.py HEALTH_CONNECT_DB DECODED_LOG OUT
 
-The Garmin is app 9 in the exports this was written against; check
-`application_info_table` in yours.
+The Garmin is Garmin Connect's app in the export's
+`application_info_table`.
+
+A log may hold several boots (an update, a reset), each with uptime from
+0 again: each boot's segments are dated by that boot's last `clock: N
+UTC` line (after any `clock: was off by` correction), and a boot with
+none is skipped. Lines without a leading timestamp (defmt-print's
+`(HOST) malformed frame skipped`) are skipped.
 """
 import re
 import sqlite3
 import sys
 
 db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
-log = open(sys.argv[2]).read().splitlines()
-GARMIN = 9
-clock = [l for l in log if re.search(r"clock: \d+ UTC", l)][-1]
-BASE = int(re.search(r"clock: (\d+) UTC", clock)[1]) - float(clock.split()[0])
+GARMIN = db.execute(
+    "select row_id from application_info_table where package_name = ?",
+    ("com.garmin.android.apps.connectmobile",)).fetchone()
+if GARMIN is None:
+    sys.exit(f"{sys.argv[1]}: no Garmin Connect in application_info_table")
+GARMIN = GARMIN[0]
+
+# ==============================================================================
+# The log, by boot
+# ==============================================================================
+
+# Uptime restarts at each boot, so the log's UTC base (UTC minus uptime) is
+# a boot's own. A boot starts at its `ur <version> booting` line or, if the
+# ring overwrote that, where uptime falls back.
+boots = []  # [[(uptime, line)], ...]
+last_up = None
+with open(sys.argv[2], encoding="utf-8", errors="replace") as f:
+    raw = f.read().splitlines()
+for line in raw:
+    if not re.match(r"\d+\.\d+ ", line):
+        continue
+    up = float(line.split()[0])
+    if not boots or re.search(r"INFO  ur \S+ booting", line) or up + 5 < last_up:
+        boots.append([])
+    boots[-1].append((up, line))
+    last_up = up
+log = []  # (boot, its UTC base, uptime, line)
+for n, lines in enumerate(boots):
+    clocks = [(up, int(m[1])) for up, l in lines if (m := re.search(r"clock: (\d+) UTC", l))]
+    if not clocks:
+        print(f"boot {n + 1} of {len(boots)}: no clock line, so its {len(lines)} lines are "
+              "skipped", file=sys.stderr)
+        continue
+    # The last clock line is after every correction the boot made (the
+    # first comes a few seconds after boot, once the phone says the time).
+    base = clocks[-1][1] - clocks[-1][0]
+    log += [(n, base, up, line) for up, line in lines]
+if not log:
+    sys.exit(f"{sys.argv[2]}: no boot with a clock line")
 
 ghr = list(db.execute(
     "select s.epoch_millis/1000.0, s.beats_per_minute from heart_rate_record_series_table s "
     "join heart_rate_record_table r on s.parent_key = r.row_id where r.app_info_id = ? "
     "and s.epoch_millis between ? and ? order by 1",
-    (GARMIN, BASE * 1000, (BASE + float(log[-1].split()[0]) + 600) * 1000)))
+    (GARMIN, min(b + u for _, b, u, _ in log) * 1000, (max(b + u for _, b, u, _ in log) + 600) * 1000)))
 
 
 def garmin(t):
@@ -70,8 +111,14 @@ recording = False
 # When the last background session was due: its samples follow within a
 # second or two.
 due_at = float("-inf")
-for line in log:
-    up = float(line.split()[0])
+boot = None
+for n, base, up, line in log:
+    if n != boot:
+        # A reboot cuts the session under way short, and starts afresh.
+        if current:
+            segments.append(current)
+        boot, current, carried, recording, due_at = n, None, None, False, float("-inf")
+        period, asleep, drive, arm, round_, length = 37500.0, False, 0, None, None, None
     if "heart: due (" in line:
         due_at = up
         m = re.search(r"; (?:round (\d+) )?(Asleep|Dim|Bright) drive \d(?: (Usual|Longer))?", line)
@@ -100,7 +147,7 @@ for line in log:
         drive, period = int(m[1]), float(m[2])
     elif m := re.search(r"heart: samples \[([\d, ]*)\]", line):
         if current is None:
-            current = {"t": BASE + up - 1, "samples": [], "movement": [], "outcome": "-",
+            current = {"t": base + up - 1, "samples": [], "movement": [], "outcome": "-",
                        "asleep": asleep, "background": up - due_at < 3,
                        "drive": drive, "brighter": False, "cont": False,
                        "arm": arm if up - due_at < 3 else None,
