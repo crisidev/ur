@@ -21,11 +21,15 @@ pub enum PhoneEvent {
         app: Text<24>,
         who: Text<40>,
     },
+    /// Who's calling: their name, or without one, the number. As a
+    /// notification's text is kept (see [`TextBuilder`]), in UTF-8.
     IncomingCall {
         caller: String<40>,
     },
     /// The call was answered, rejected, or ended, on either side.
     CallOver,
+    /// What's playing, its texts kept as a notification's are (see
+    /// [`TextBuilder`]), in UTF-8.
     MusicInfo {
         artist: String<40>,
         track: String<40>,
@@ -152,6 +156,29 @@ impl<const N: usize> Text<N> {
             }
         }
     }
+
+    /// The text as UTF-8 in `M` bytes, for what the UI keeps as a
+    /// `String` (a caller, music's artist and track). Where it doesn't
+    /// all fit (`M < 2 * N + 1`, and accented letters, 2 bytes each),
+    /// it ends in an ellipsis, as the builder ends text it cut, so a cut
+    /// name never passes for a whole one.
+    pub fn to_utf8<const M: usize>(&self) -> String<M> {
+        const CUT: char = '\u{2026}';
+        let mut out = String::new();
+        for c in self.chars() {
+            if out.push(c).is_err() {
+                // Room for the ellipsis, without a space before it.
+                while out.len() + CUT.len_utf8() > M || out.ends_with(' ') {
+                    if out.pop().is_none() {
+                        break;
+                    }
+                }
+                let _ = out.push(CUT);
+                break;
+            }
+        }
+        out
+    }
 }
 
 impl<const N: usize> Default for Text<N> {
@@ -233,8 +260,10 @@ struct Builder {
 /// (`android-emojify` 1.9.7) knows as `:alias:`, the emoji's first alias
 /// (`EmojiConverter.convertUnicodeEmojiToAscii`, called from
 /// `BangleJSDeviceSupport.renderUnicodeAsImage` for a notification's
-/// title and sender, never its `src`): `:house_with_garden:`, `:+1:`
-/// (👍), `:no:` (🇳🇴), `:registered:` (®). Skin tones go (`:+1:` for 👍🏽
+/// title and sender, never its `src`, and for a call's name and music's
+/// artist, album and track, never a call's number):
+/// `:house_with_garden:`, `:+1:` (👍), `:no:` (🇳🇴), `:registered:`
+/// (®). Skin tones go (`:+1:` for 👍🏽
 /// too); a family or other joined emoji the library lacks arrives as its
 /// parts, `:man::computer:`. Emoji the library doesn't know (newer ones)
 /// come through as themselves, and are left out as pictographs.

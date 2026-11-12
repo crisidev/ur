@@ -27,16 +27,20 @@ gb GB({"t":"notify","id":1762436802,"src":"Signal","title":"","subject":"","body
 expect buzzing
 shot text-as-bitmaps.png
 
-# Music, while the screen times out.
+# Music, while the screen times out, its emoji (\u2728, \ud83c\udf19) as
+# shortcodes, which go here too: the screenshot is of `Ida Moreau` and
+# `Night Signals` alone.
 wait 30s
-gb GB({"t":"musicinfo","artist":"Ida Moreau","album":"Late Trains","track":"Night Signals","dur":215,"c":12,"n":3})
+gb GB({"t":"musicinfo","artist":"Ida Moreau :sparkles:","album":"Late Trains","track":"Night Signals :crescent_moon:","dur":215,"c":12,"n":3})
 gb GB({"t":"musicstate","state":"play","position":0,"shuffle":-1,"repeat":-1})
 button
 up
 shot music.png
 
-# A call, answered on the phone.
-gb GB({"t":"call","cmd":"incoming","name":"Kari Nordmann","number":"+4799999999"})
+# A call, answered on the phone, from a contact saved with a sunflower
+# first (\ud83c\udf3b), which Gadgetbridge sends as a shortcode too: the
+# screenshot is of `Kari Nordmann` alone, from its start.
+gb GB({"t":"call","cmd":"incoming","name":":sunflower: Kari Nordmann","number":"+4799999999"})
 expect buzzing
 shot call.png
 gb GB({"t":"call","cmd":"start","name":"Kari Nordmann","number":"+4799999999"})

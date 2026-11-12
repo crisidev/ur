@@ -150,7 +150,8 @@ watch comes off; 0% is where it switches itself off.
 
 **Notifications** show the app and who it's from (the sender, or the
 title without one), never what it says, and without emoji (nor the
-`:shortcodes:` Gadgetbridge sends in their place). One that comes with
+`:shortcodes:` Gadgetbridge sends in their place, here or in a
+caller's name or what's playing). One that comes with
 the screen on shows along the bottom for 4 seconds; with the
 screen off, it gets the whole screen, dimly, the name centred, and large
 if it's short.

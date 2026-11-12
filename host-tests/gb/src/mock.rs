@@ -59,7 +59,7 @@ fn received(sent: &Sent, parsed: impl FnOnce(Option<Incoming<'_>>)) -> Option<()
     Some(())
 }
 
-/// Text as the watch keeps a caller's name or a track's: `N` bytes of
+/// Text as the watch decodes a navigation step's: `N` bytes of
 /// UTF-8, line breaks and tabs as spaces, cut where it stops fitting.
 fn kept<const N: usize>(text: &str) -> heapless::String<N> {
     let mut out = heapless::String::new();
@@ -213,9 +213,15 @@ fn means_what_gadgetbridge_meant(before: &Gadgetbridge, action: &Action, sent: &
                     panic!("not an incoming call: {}", context());
                 };
                 if !garbled(&name) && !garbled(&number) {
-                    let name: heapless::String<40> = kept(&name);
-                    let expected = if name.is_empty() { kept(&number) } else { name };
-                    assert_eq!(caller, expected, "{}", context());
+                    // As a notification's sender is shown (shortcodes
+                    // and all), the number standing in for the name.
+                    let name = Text::<40>::from(name.as_str());
+                    let expected = if name.is_empty() {
+                        Text::<40>::from(number.as_str())
+                    } else {
+                        name
+                    };
+                    assert_eq!(caller, expected.to_utf8::<40>(), "{}", context());
                 }
             } else {
                 assert_eq!(event, PhoneEvent::CallOver, "{}", context());
@@ -235,8 +241,9 @@ fn means_what_gadgetbridge_meant(before: &Gadgetbridge, action: &Action, sent: &
             // less.)
             let album = render(spec.album.as_deref()).unwrap_or_default();
             if !wanted.iter().any(|text| garbled(text)) && !garbled(&album) {
-                assert_eq!(artist, kept::<40>(&wanted[0]), "{}", context());
-                assert_eq!(track, kept::<40>(&wanted[1]), "{}", context());
+                let shown = |text: &str| Text::<40>::from(text).to_utf8::<40>();
+                assert_eq!(artist, shown(&wanted[0]), "{}", context());
+                assert_eq!(track, shown(&wanted[1]), "{}", context());
             }
         }
         (
@@ -993,6 +1000,52 @@ fn emoji_arrive_as_ascii_by_default() {
             panic!("a notification");
         };
         assert_eq!(who.to_string(), "Familien: Nils <3");
+    })
+    .expect("it fits");
+}
+
+/// The same for a call's name and music's artist and track, which
+/// Gadgetbridge converts too (`onSetCallState`, `onSetMusicInfo`).
+#[test]
+fn emoji_in_calls_and_music_arrive_as_ascii_by_default() {
+    let mut gb = connected();
+    gb.on_set_call_state(&CallSpec {
+        command: CallSpec::CALL_INCOMING,
+        name: Some("Mor \u{2764}\u{FE0F} \u{1F3E1}".into()),
+        number: Some("+4799999999".into()),
+    });
+    gb.on_set_music_info(&gbmock::spec::MusicSpec {
+        artist: Some("Ida Moreau \u{1F525}".into()),
+        album: Some("Late Trains".into()),
+        track: Some("\u{1F389} Night Signals".into()),
+        ..Default::default()
+    });
+    let sent = gb.take_sent();
+    received(&sent[0], |parsed| {
+        let Some(Incoming::Phone {
+            event: PhoneEvent::IncomingCall { caller },
+            ..
+        }) = parsed
+        else {
+            panic!("a call");
+        };
+        // `:house_with_garden:` goes; `<3`, Gadgetbridge's emoticon for
+        // the heart, is text.
+        assert_eq!(caller, "Mor <3");
+    })
+    .expect("it fits");
+    received(&sent[1], |parsed| {
+        let Some(Incoming::Phone {
+            event: PhoneEvent::MusicInfo { artist, track },
+            ..
+        }) = parsed
+        else {
+            panic!("music");
+        };
+        assert_eq!(
+            (artist.as_str(), track.as_str()),
+            ("Ida Moreau", "Night Signals")
+        );
     })
     .expect("it fits");
 }

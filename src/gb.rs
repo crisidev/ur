@@ -489,8 +489,8 @@ fn phone_event(kind: &str, object: Object<'_>, bitmaps: &mut bool) -> Option<Pho
         }
         out
     }
-    /// The text of a notification, as it's kept to show (see
-    /// [`TextBuilder`]).
+    /// The text of a notification, a call, or music, as it's kept to
+    /// show (see [`TextBuilder`]).
     fn shown<const N: usize>(object: Object<'_>, key: &str, bitmaps: &mut bool) -> TextBuilder<N> {
         let mut out = TextBuilder::new();
         if let Some(value) = object.get(key) {
@@ -522,21 +522,36 @@ fn phone_event(kind: &str, object: Object<'_>, bitmaps: &mut bool) -> Option<Pho
             }
         }
         "call" => match object.get("cmd").and_then(|v| v.as_raw_str()) {
+            // The name and the number are kept as a notification's text
+            // is (see `TextBuilder`), so a contact's emoji, which
+            // Gadgetbridge sends as shortcodes, go (`Mor :blue_heart:`
+            // is `Mor`), and the number stands in for a name that would
+            // show nothing, as the title does for a sender.
+            //
+            // Then back to UTF-8, where the UI (and the dev kit's
+            // comparisons, and the simulator) keep a caller and music as
+            // `String<40>`: a name heavy in accented letters is cut a
+            // little sooner than a `Text<40>` would keep it, which a name
+            // that scrolls anyway can spare.
             Some("incoming") => {
-                let name: String<40> = text(object, "name", bitmaps);
+                let name: TextBuilder<40> = shown(object, "name", bitmaps);
                 let caller = if name.is_empty() {
-                    text(object, "number", bitmaps)
+                    shown(object, "number", bitmaps)
                 } else {
                     name
                 };
-                PhoneEvent::IncomingCall { caller }
+                PhoneEvent::IncomingCall {
+                    caller: caller.finish().to_utf8(),
+                }
             }
             // Answered, rejected, ended, …: the call no longer needs us.
             _ => PhoneEvent::CallOver,
         },
+        // Kept as a notification's text is too, for Gadgetbridge's
+        // shortcodes (`Natt :crescent_moon:`).
         "musicinfo" => PhoneEvent::MusicInfo {
-            artist: text(object, "artist", bitmaps),
-            track: text(object, "track", bitmaps),
+            artist: shown::<40>(object, "artist", bitmaps).finish().to_utf8(),
+            track: shown::<40>(object, "track", bitmaps).finish().to_utf8(),
         },
         "musicstate" => PhoneEvent::MusicState {
             playing: object.get("state").and_then(|v| v.as_raw_str()) == Some("play"),

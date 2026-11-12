@@ -516,8 +516,10 @@ mod tests {
         assert_eq!(
             event_received(line.as_bytes()),
             PhoneEvent::IncomingCall {
-                // 40 bytes: 20 Cyrillic letters.
-                caller: s(&"Чайковский".repeat(2))
+                // As a notification's text is kept: beyond Latin-1, `?`s,
+                // which the font would have drawn anyway, cut to 40
+                // bytes with an ellipsis.
+                caller: s(&format!("{}\u{2026}", "?".repeat(37)))
             }
         );
         let line = format!(
@@ -526,7 +528,8 @@ mod tests {
         let PhoneEvent::MusicInfo { artist, track } = event_received(line.as_bytes()) else {
             panic!("music");
         };
-        assert_eq!((artist.chars().count(), track.chars().count()), (20, 20));
+        assert_eq!((artist.chars().count(), track.chars().count()), (38, 38));
+        assert!(artist.ends_with('\u{2026}') && track.ends_with('\u{2026}'));
         let line = format!(
             r#"GB({{"t":"nav","instr":{long},"distance":{long},"action":"left","eta":{long}}})"#
         );
@@ -898,15 +901,15 @@ mod tests {
             (br#""a\1b\20c\x035""#, "a\u{1}b\u{10}c\u{3}5"),
         ];
         for &(spelled, text) in cases {
-            // A caller's name keeps the text as decoded (a notification's
-            // is cleaned up: see `text_as_shown`).
-            let mut line = br#"GB({"t":"call","cmd":"incoming","name":"#.to_vec();
+            // A street keeps the text as decoded (a notification's, a
+            // caller's and music's are cleaned up: see `text_as_shown`).
+            let mut line = br#"GB({"t":"nav","instr":"#.to_vec();
             line.extend_from_slice(spelled);
             line.extend_from_slice(br#"})"#);
-            let PhoneEvent::IncomingCall { caller } = event(&line) else {
-                panic!("a call");
+            let PhoneEvent::Route(Some(step)) = event(&line) else {
+                panic!("a step");
             };
-            assert_eq!(caller, text, "{}", String::from_utf8_lossy(spelled));
+            assert_eq!(step.street, text, "{}", String::from_utf8_lossy(spelled));
         }
     }
 
@@ -1313,6 +1316,59 @@ mod tests {
         assert_eq!(event(line), PhoneEvent::IncomingCall { caller: s("") });
     }
 
+    /// A caller's name is kept as a notification's sender is (see
+    /// `TextBuilder`): a contact's emoji, which Gadgetbridge sends as
+    /// shortcodes by default, go, and the number stands in for a name
+    /// that shows nothing.
+    #[test]
+    fn a_callers_emoji_go() {
+        for (name, shown) in [
+            ("Mor :blue_heart:", "Mor"),
+            (":house_with_garden: Familien Nordmann", "Familien Nordmann"),
+            ("Kari :+1::skin-tone-2:", "Kari"),
+            // An emoji the library lacks, as itself, escaped.
+            (r"Ola \ud83e\udee1", "Ola"),
+            // Colons in text stay.
+            ("Kontor 10:30", "Kontor 10:30"),
+            // Nothing to show: the number.
+            (":blue_heart:", "+4799999999"),
+            ("  ", "+4799999999"),
+        ] {
+            let line = format!(
+                r#"GB({{"t":"call","cmd":"incoming","name":"{name}","number":"+4799999999"}})"#
+            );
+            assert_eq!(
+                event(line.as_bytes()),
+                PhoneEvent::IncomingCall { caller: s(shown) },
+                "{name}"
+            );
+        }
+    }
+
+    /// What a caller's or a track's `Text` keeps of 40 characters, in a
+    /// `String` of 40 bytes: whole, where it fits; with an ellipsis where
+    /// it doesn't, as accented letters take 2 bytes.
+    #[test]
+    fn kept_as_utf8_with_an_ellipsis() {
+        let utf8 = |text: &str| t::<40>(text).to_utf8::<40>();
+        assert_eq!(utf8(&"a".repeat(40)), s::<40>(&"a".repeat(40)));
+        assert_eq!(
+            utf8(&"a".repeat(41)),
+            s::<40>(&format!("{}\u{2026}", "a".repeat(37)))
+        );
+        assert_eq!(utf8(&"ø".repeat(20)), s::<40>(&"ø".repeat(20)));
+        assert_eq!(
+            utf8(&"ø".repeat(21)),
+            s::<40>(&format!("{}\u{2026}", "ø".repeat(18)))
+        );
+        // No space before the ellipsis.
+        assert_eq!(
+            utf8(&format!("{} Åse", "æ".repeat(18))),
+            s::<40>(&format!("{}\u{2026}", "æ".repeat(18)))
+        );
+        assert_eq!(utf8(""), s::<40>(""));
+    }
+
     #[test]
     fn every_other_call_command_ends_the_call() {
         // `CallSpec.CALL_*`, lower-cased, as Gadgetbridge sends them.
@@ -1354,6 +1410,20 @@ mod tests {
             PhoneEvent::MusicInfo {
                 artist: s(""),
                 track: s("Episode 12: Tides")
+            }
+        );
+    }
+
+    /// Music's artist and track are kept as a notification's text is:
+    /// Gadgetbridge's shortcodes for their emoji go.
+    #[test]
+    fn musics_emoji_go() {
+        let line = br#"GB({"t":"musicinfo","artist":"Ida Moreau :sparkles:","album":"Late Trains :train:","track":":crescent_moon: Night Signals","dur":215,"c":12,"n":3})"#;
+        assert_eq!(
+            event(line),
+            PhoneEvent::MusicInfo {
+                artist: s("Ida Moreau"),
+                track: s("Night Signals")
             }
         );
     }
