@@ -169,7 +169,7 @@ without touching the rest:
 |---|---|
 | `mod.rs` | The `Theme` impl (which file draws which screen), every tap area, the layout's constants, the handles, and what several files draw: the big digits, and the media actions' icons |
 | `clock.rs` | The clock face, and its battery |
-| `glance.rs` | A glance: the time, the next turn, or the charge and the time to full on the charger |
+| `glance.rs` | A glance: the time, the next turn, or the charge and the time to full on the charger; and the full charge's screen |
 | `past.rs` | Today, and Last night |
 | `alarms.rs` | Alarms, the phone's alarms, the editor, an alarm ringing, and "find my watch" |
 | `messages.rs` | A notification, its banner, a call, and music |
@@ -334,6 +334,7 @@ Each draws its screen from scratch: clear the canvas first, then draw.
 | `settings`, `info` | A settings screen (`SettingsPage`, below); the watch's state |
 | `storage_prompt`, `bthome_qr`, `bthome_key` | Asking to switch to storage mode; Home Assistant's key as a QR code (`Canvas::qr`) and as text |
 | `editor`, `ringing`, `find`, `call`, `pairing`, `update`, `off` | What takes the screen over: the alarm editor, an alarm or timer ringing, "find my watch", a call, pairing, an update, switching off |
+| `charged` | The charge just finished on the cradle, for a few seconds with a buzz, to be seen from across the room: in the scheme's palette, never the dim look, a bolt (or whatever the theme draws a charge as), big, and a word ("FULL"), not the percentage, which may still be catching up (Retro: its battery's bolt, big; Living Tokyo: the city under a full moon, struck by lightning) |
 
 `settings` draws both settings screens, LOOK (THEME, FORCE, LIGHT) and
 BUTTON GRID (BUTTONS, GRID, and BTHOME KEY while the grid's presses go
@@ -482,7 +483,8 @@ Then a few screenshots:
   and LOOK (Settings);
 - the dim look: a glance, a notification that came with the screen
   off, and a glance on the charger. Once, if its dim look is the same in every scheme (as Retro's
-  is, and a copy of Retro's); a side each if not.
+  is, and a copy of Retro's); a side each if not;
+- on the charger, the clock face and the full charge's screen.
 
 Those are all: every committed screenshot is a Git LFS object, and so
 is every approval of one, so a theme shows how it looks, not every

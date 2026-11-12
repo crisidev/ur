@@ -271,7 +271,9 @@ fn in_disc(x: i32, y: i32, d: i32) -> bool {
     dx * dx + dy * dy <= d * d
 }
 
-fn disc(canvas: &mut Canvas, left: i32, top: i32, d: i32, color: Color) {
+/// A disc `d` across, from `(left, top)`: the moon's, and the full
+/// charge's full moon.
+pub(super) fn disc(canvas: &mut Canvas, left: i32, top: i32, d: i32, color: Color) {
     for y in 0..d {
         for x in 0..d {
             if in_disc(x, y, d) {
@@ -279,6 +281,12 @@ fn disc(canvas: &mut Canvas, left: i32, top: i32, d: i32, color: Color) {
             }
         }
     }
+}
+
+/// The city, its windows lit by the day's `steps`, as the clock face
+/// has it, for the full charge's screen beneath its sky.
+pub(super) fn city(canvas: &mut Canvas, steps: Option<u32>) {
+    render_city(canvas, &NIGHT, lit_level(steps));
 }
 
 /// How many windows of 256 are lit for the day's `steps`.

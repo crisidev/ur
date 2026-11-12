@@ -198,3 +198,74 @@ fn render_charge_glance(canvas: &mut Canvas, status: &Status, to_full: ToFull) {
     centred(canvas, LABEL_Y, label, 1, Color::TEXT_DIM);
     centred(canvas, VALUE_Y, &value, 3, Color::TEXT);
 }
+
+/// Stars round the full charge's moon and bolt, clear of both.
+const CHARGED_STARS: [(i32, i32); 8] = [
+    (4, 6),
+    (30, 4),
+    (40, 13),
+    (34, 24),
+    (46, 30),
+    (5, 29),
+    (75, 33),
+    (60, 34),
+];
+
+/// The lightning's path down the sky, from the top edge to the tallest
+/// far building's roof (`clock`'s `FAR`, at x 28–33, its top at 35): a
+/// stroke between each point and the next; and a fork off it, from its
+/// first kink.
+const LIGHTNING: [(i32, i32); 6] = [(11, 0), (17, 10), (13, 12), (22, 23), (18, 25), (29, 35)];
+const FORK: [(i32, i32); 3] = [(17, 10), (10, 16), (8, 21)];
+
+/// Draws a stroke through `points`, each pixel of it a `size`-sided
+/// square from it down and right.
+fn stroke(canvas: &mut Canvas, points: &[(i32, i32)], size: i32, color: Color) {
+    for pair in points.windows(2) {
+        let ((x0, y0), (x1, y1)) = (pair[0], pair[1]);
+        let steps = (x1 - x0).abs().max((y1 - y0).abs());
+        for i in 0..=steps {
+            let x = x0 + (x1 - x0) * i / steps;
+            let y = y0 + (y1 - y0) * i / steps;
+            canvas.fill_rect(x, y, size, size, color);
+        }
+    }
+}
+
+/// The full charge's screen (see `Theme::charged`): the city at night,
+/// as the clock face has it, under a full moon (the face's moon is the
+/// battery) with lightning striking a roof, and FULL in neon, big, on a
+/// sign in front of the city. Not the time: it's up for a few seconds,
+/// for a look from across the room.
+pub(super) fn render_charged(canvas: &mut Canvas, status: &Status) {
+    const MOON_D: i32 = 21;
+    const MOON_X: i32 = 52;
+    const MOON_Y: i32 = 5;
+    const SCALE: i32 = 3;
+    const SIGN_Y: i32 = 56;
+    const SIGN_H: i32 = 5 * SCALE + 6;
+    canvas.clear(BACKGROUND);
+    for (i, &(x, y)) in CHARGED_STARS.iter().enumerate() {
+        let color = if i % 3 == 0 {
+            Color::TEXT_DIM
+        } else {
+            Color::TEXT_FAINT
+        };
+        canvas.pixel(x, y, color);
+    }
+    super::clock::disc(canvas, MOON_X, MOON_Y, MOON_D, Color::TEXT);
+    super::clock::city(canvas, status.steps);
+    // The lightning: a white-hot core in a glow of the windows' yellow,
+    // three pixels across, so it reads at a glance; its fork thinner.
+    stroke(canvas, &LIGHTNING, 3, Color::HEART_SHINE);
+    stroke(canvas, &FORK, 2, Color::HEART_SHINE);
+    let core: [(i32, i32); 6] = LIGHTNING.map(|(x, y)| (x + 1, y + 1));
+    stroke(canvas, &core, 1, Color::TEXT);
+    // The sign: its box in the near buildings' colour, as the clock
+    // face's are, with a lit tube's FULL.
+    let word = "FULL";
+    let width = font::small_text_width(word) * SCALE;
+    let left = 40 - width / 2;
+    canvas.fill_rect(left - 3, SIGN_Y, width + 6, SIGN_H, Color::SHADOW);
+    canvas.text_scaled(left, SIGN_Y + 3, word, Color::REM, SCALE);
+}

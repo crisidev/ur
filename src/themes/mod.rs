@@ -186,6 +186,14 @@ pub trait Theme: Sync {
     fn update(&self, canvas: &mut Canvas, percent: u8, now: Instant);
     /// The few seconds before the watch switches itself off, and why.
     fn off(&self, canvas: &mut Canvas, reason: Reason);
+    /// The watch has just become fully charged on its cradle (see
+    /// `ui::App::on_charged`): for a few seconds, with a buzz, so the
+    /// wearer sees, from across the room, that it can come off. In the
+    /// scheme's palette (never the dim look), a bolt or whatever the
+    /// theme draws a charge as, big, and a word or two ("FULL"). Not the
+    /// percentage: it may still be catching up to 100 (see
+    /// `battery::FullCharge`). The button or a touch ends it.
+    fn charged(&self, canvas: &mut Canvas, status: &Status);
 
     // Where a touch lands, at (`x`, `y`) in canvas pixels, on the screens
     // with something to tap: each where the theme draws it. Swipes that
@@ -564,6 +572,9 @@ impl Theme for Scheme {
     }
     fn off(&self, canvas: &mut Canvas, reason: Reason) {
         with_theme!(*self, theme => theme.off(canvas, reason))
+    }
+    fn charged(&self, canvas: &mut Canvas, status: &Status) {
+        with_theme!(*self, theme => theme.charged(canvas, status))
     }
     fn alarm_at(&self, x: i32, y: i32) -> Option<Editing> {
         with_theme!(*self, theme => theme.alarm_at(x, y))

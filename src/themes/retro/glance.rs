@@ -226,3 +226,64 @@ fn render_charge_glance(canvas: &mut Canvas, status: &Status, to_full: ToFull) {
     centred(canvas, LABEL_Y, label, 1, Color::TEXT_DIM);
     centred(canvas, VALUE_Y, &value, 3, Color::TEXT);
 }
+
+/// The full charge's lightning bolt (see [`render_charged`]), 16×16, a
+/// row of `#`s and `.`s each, made bits by [`bolt_rows`].
+const BOLT: [&str; 16] = [
+    ".........######.",
+    "........######..",
+    ".......######...",
+    "......######....",
+    ".....######.....",
+    "....######......",
+    "...######.......",
+    "..############..",
+    ".############...",
+    ".......#####....",
+    "......#####.....",
+    ".....####.......",
+    "....####........",
+    "...###..........",
+    "..##............",
+    ".#..............",
+];
+
+/// [`BOLT`] as bits, for [`Canvas::sprite16`], at compile time.
+const fn bolt_rows() -> [u16; 16] {
+    let mut out = [0; 16];
+    let mut y = 0;
+    while y < 16 {
+        let row = BOLT[y].as_bytes();
+        let mut x = 0;
+        while x < 16 {
+            if row[x] == b'#' {
+                out[y] |= 1 << (15 - x);
+            }
+            x += 1;
+        }
+        y += 1;
+    }
+    out
+}
+
+/// The full charge's screen (see `Theme::charged`): the clock face's
+/// battery bolt, as big as the glance's digits, with the big digits'
+/// drop shadow, and FULL under it, as big as fits. Not the time: it's up
+/// for a few seconds, for a look from across the room, which the one
+/// shape is for.
+///
+/// From the top: the bolt (16×16 at 3×, 48 px) and the word (3×, 15 px),
+/// 6 px apart, the block centred.
+pub(super) fn render_charged(canvas: &mut Canvas, _status: &Status) {
+    const SCALE: i32 = 3;
+    const ROWS: [u16; 16] = bolt_rows();
+    const BOLT_Y: i32 = (80 - (16 * SCALE + 6 + 5 * SCALE)) / 2;
+    const WORD_Y: i32 = BOLT_Y + 16 * SCALE + 6;
+    canvas.clear(BACKGROUND);
+    let x = 40 - 8 * SCALE;
+    canvas.sprite16(x + 1, BOLT_Y + 1, &ROWS, false, SCALE, Color::SHADOW);
+    canvas.sprite16(x, BOLT_Y, &ROWS, false, SCALE, Color::HEART);
+    let word = "FULL";
+    let width = font::small_text_width(word) * SCALE;
+    canvas.text_scaled(40 - width / 2, WORD_Y, word, Color::TEXT, SCALE);
+}

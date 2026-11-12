@@ -230,6 +230,10 @@ impl Theme for LivingTokyo {
         system::render_off(canvas, reason);
     }
 
+    fn charged(&self, canvas: &mut Canvas, status: &Status) {
+        glance::render_charged(canvas, status);
+    }
+
     fn alarm_at(&self, x: i32, y: i32) -> Option<Editing> {
         use layout::{ALARMS_TOP, SMART_TOP, TIMERS_TOP};
         let right = u8::from(x >= 40);
