@@ -283,7 +283,7 @@ impl Board for Hardware {
     }
 
     fn charger(&mut self) -> (bool, bool) {
-        (self.charging.is_low(), self.power_present.is_low())
+        debug::charger_forced().unwrap_or((self.charging.is_low(), self.power_present.is_low()))
     }
 
     fn daytime(&mut self) -> bool {

@@ -62,6 +62,12 @@ is busy, above 1500 too vigorous to measure through). `skin:1,0` makes
 the heart rate sensor take whatever it's on as skin from then on, so a
 dev kit's sessions run their whole length rather than ending at once as
 "not on a wrist" (`skin:0,0` to stop).
+`charger:1,0` makes the watch take the charger's lines as charging from
+then on, `charger:2,0` as charged (power, not charging: the charger's
+"done"), `charger:3,0` as unplugged, and `charger:0,0` as measured
+again: for what it does on the charger (the screen waking, the glances
+with the time to full, the full charge's screen) without a cradle, or
+the hours a charge takes.
 
 `--theme` renders the frame in another theme's colours (e.g. HANDHELD, for
 the day look at night): the canvas holds colour roles, not colours.
@@ -111,6 +117,7 @@ KINDS = {
     "movement": 22,
     "skin": 23,
     "blip": 24,
+    "charger": 25,
 }
 
 

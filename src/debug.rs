@@ -60,8 +60,11 @@ static UR_CANVAS: AtomicPtr<Canvas> = AtomicPtr::new(core::ptr::null_mut());
 /// from now on if `x` is 1, or not if 0 (see [`skin_forced`]), 24 the
 /// simulated finger (of 16) reported lifted, and down again where it was
 /// `x` ms later (10 if 0), as the touch controller does mid-hold (see
-/// [`crate::gesture::REJOIN_WINDOW`])) and the next two the canvas x and y.
-/// Cleared once taken.
+/// [`crate::gesture::REJOIN_WINDOW`]), 25 the charger's lines from now on
+/// instead of the measured: charging if `x` is 1, charged (power, not
+/// charging) if 2, unplugged if 3, measured again if 0 (see
+/// [`charger_forced`])) and the next two the canvas x and y. Cleared once
+/// taken.
 #[cfg(feature = "debug-input")]
 #[unsafe(no_mangle)]
 static UR_INPUT: AtomicU32 = AtomicU32::new(0);
@@ -90,6 +93,26 @@ const FIND_LINES: [&[u8]; 2] = [
 /// The battery voltage injected by input 13, in millivolts, or 0.
 #[cfg(feature = "debug-input")]
 static BATTERY_MV: AtomicU16 = AtomicU16::new(0);
+
+/// The charger's lines as input 25 set them, or 0 for the measured.
+#[cfg(feature = "debug-input")]
+static CHARGER: AtomicU8 = AtomicU8::new(0);
+
+/// The charger's lines (charging, power present) to use instead of the
+/// measured, if input 25 set them: for what the watch does on the
+/// charger, charging and done (see `battery::FullCharge`), on a dev kit
+/// without waiting the hours a charge takes, or a cradle at all.
+pub fn charger_forced() -> Option<(bool, bool)> {
+    #[cfg(feature = "debug-input")]
+    return match CHARGER.load(Ordering::Relaxed) {
+        1 => Some((true, true)),
+        2 => Some((false, true)),
+        3 => Some((false, false)),
+        _ => None,
+    };
+    #[cfg(not(feature = "debug-input"))]
+    None
+}
 
 /// Whether input 21 said the wearer is asleep.
 #[cfg(feature = "debug-input")]
@@ -279,6 +302,11 @@ pub async fn input_task() {
             21 => {
                 defmt::warn!("debug: asleep {}", x == 1);
                 ASLEEP.store(x == 1, Ordering::Relaxed);
+                continue;
+            }
+            25 => {
+                defmt::warn!("debug: charger lines {} from now on (0: measured)", x);
+                CHARGER.store(x, Ordering::Relaxed);
                 continue;
             }
             23 => {
