@@ -1047,6 +1047,7 @@ async fn serve(
                             offset_minutes,
                         } => {
                             clock::set(utc_seconds, offset_minutes);
+                            crate::system_off::on_clock_set(utc_seconds.div_euclid(60));
                             info!("ble: time set (UTC offset {} min)", offset_minutes);
                             // Proof that this image can talk to the phone,
                             // and so receive the next update.

@@ -124,10 +124,43 @@
 //!   in the night stops at the night's start, and the morning's sends it
 //!   whole (see [`crate::sleep_hold`] and [`Fetch::hold`]).
 //!
-//! TODO: a clock set back by the phone drops the history's minutes after
-//! the new time (see [`crate::minute_ring`]); a bucket sent before that and
-//! again after it would overwrite Gadgetbridge's steps with fewer. The
-//! phone only corrects the clock by seconds, so this is a bucket at most.
+//! **A clock put right.** The phone sets the watch's clock to its own on
+//! connecting, and when its own changes. A phone whose clock was ahead
+//! (wrong, and since put right) has set the watch's ahead too, and its
+//! fetches then took the watch's sync point ([`Fetch::synced_through`])
+//! into what is, once the clock is put right, the future. Set back, the
+//! clock files the minutes from the new time again: the history drops
+//! those after it, and adds to its own (see [`crate::minute_ring`]). So
+//! when the phone sets the clock, the sync point goes back to the minute
+//! before at the latest ([`synced_after_set`]), and the next fetch sends
+//! the bucket the clock was put right in, whole, and everything since.
+//! Left where it was, the minutes from the new time on never reached the
+//! phone, up to the old sync point or to the fetch after next, whichever
+//! came first: the sync point claimed the phone had them, and a phone
+//! asking from its future (as it does after its own clock was put right:
+//! Gadgetbridge asks from its clock at its last fetch) got nothing before
+//! the bucket under way, as [`start`] takes the earlier of the sync point
+//! and after what the phone asked for.
+//!
+//! What Gadgetbridge already has at those times (the samples the watch
+//! sent while its clock was ahead, of other minutes) is overwritten where
+//! the new bucket's steps, heart rate or movement aren't 0, and its kind
+//! may stay (see [`crate::sleep_hold`]): the watch can't take back what it
+//! sent stamped wrong. A clock set back by seconds, as the phone does when
+//! the watch's crystal has run fast, resends at most the last bucket the
+//! watch sent, whole.
+//!
+//! A clock set ahead needs nothing: the sync point is behind it, and the
+//! next fetch sends from there, the minutes before the jump at their
+//! times. But a jump of more than a day drops the history at the next
+//! minute the watch files (see [`crate::minute_ring`]), so what the phone
+//! hadn't fetched is lost, unless it fetches first.
+//!
+//! TODO: a clock set back drops the history's minutes after the new time;
+//! a bucket sent before that and again after it would overwrite
+//! Gadgetbridge's steps with fewer (or more, the steps since). The phone
+//! only corrects the clock by seconds, unless its own was wrong, so this
+//! is a bucket at most.
 
 /// Minutes per bucket. Must be over 2 (see the module docs), and divide a
 /// day, so buckets line up with midnight in every time zone (whose UTC
@@ -164,6 +197,13 @@ pub fn start(asked_ms: i64, synced: Option<i64>, now: i64) -> i64 {
     let reached = asked_ms.div_euclid(60_000).saturating_add(REACH).min(now);
     let after = start_of(reached) + MINUTES;
     synced.map_or(after, |synced| after.min(synced + 1))
+}
+
+/// Where the phone's copy ends (`synced`, as for [`start`]) once the phone
+/// has set the clock to `now` (a UTC minute): no later than the minute
+/// before. See the module docs' "A clock put right".
+pub fn synced_after_set(synced: Option<i64>, now: i64) -> Option<i64> {
+    synced.map(|synced| synced.min(now - 1))
 }
 
 /// One minute of the history, as a bucket takes it in.
@@ -215,12 +255,21 @@ impl Fetch {
     /// 1970): from the start of `since`'s bucket, or of the first bucket
     /// the history has whole if that's later, to the end of the last
     /// bucket that's over.
+    ///
+    /// A history whose oldest minute is after the bucket under way is one
+    /// the clock went back on, further than it reaches, and that hasn't
+    /// filed a minute since (which drops all of it, see
+    /// `crate::minute_ring`): nothing to send, and nothing it says about
+    /// where the phone's copy ends. Starting at its oldest minute would
+    /// put that among the minutes still to come, where [`start`] can't
+    /// use it (see the module docs' "A clock put right").
     pub fn new(since: i64, oldest: i64, now: i64) -> Self {
-        let start = start_of(since).max(start_of(oldest + MINUTES - 1));
+        let end = start_of(now);
+        let start = start_of(since).max(start_of(oldest + MINUTES - 1).min(end));
         Self {
             start,
             next: start,
-            end: start_of(now),
+            end,
         }
     }
 

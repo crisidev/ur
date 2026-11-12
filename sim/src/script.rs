@@ -244,6 +244,7 @@ pub fn execute(watch: &mut Watch, line: &str, output: &Output) -> Result<Next, S
                 parse_time(need(0, "a date")?, need(1, "a time")?, arg(2))?
             };
             clock::set(utc, offset as i16);
+            on_clock_set(utc);
             watch.log("time set");
             watch.refresh();
         }
@@ -671,6 +672,7 @@ fn gadgetbridge(watch: &mut Watch, line: &str) -> Result<(), String> {
             offset_minutes,
         }) => {
             clock::set(utc_seconds, offset_minutes);
+            on_clock_set(utc_seconds);
             watch.log(format!("time set (UTC offset {offset_minutes} min)"));
             watch.refresh();
         }
@@ -733,6 +735,17 @@ fn gadgetbridge(watch: &mut Watch, line: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Where the last fetch stopped (`system_off::synced_through`).
+static SYNCED: std::sync::Mutex<Option<i64>> = std::sync::Mutex::new(None);
+
+/// As `system_off::on_clock_set`, when the phone sets the clock to
+/// `utc_seconds`: the last fetch's stop goes back to before it, if it was
+/// past it (see `gb_buckets`' "A clock put right").
+pub fn on_clock_set(utc_seconds: i64) {
+    let mut synced = SYNCED.lock().expect("nothing panics while holding it");
+    *synced = crate::gb_buckets::synced_after_set(*synced, utc_seconds.div_euclid(60));
+}
+
 /// As `ble::send_activity` does: the history since where the last fetch
 /// stopped, or without one, since after what Gadgetbridge asked for (see
 /// `gb_buckets::start`), in buckets (see `gb_buckets`), the bucket under way
@@ -745,9 +758,6 @@ fn gadgetbridge(watch: &mut Watch, line: &str) -> Result<(), String> {
 /// with steps are the ones up and about), no stages, nor `ble`'s 24-hour
 /// limit.
 fn activity_fetch(watch: &mut Watch, since_ms: i64) {
-    /// Where the last fetch stopped (`system_off::synced_through`).
-    static SYNCED: std::sync::Mutex<Option<i64>> = std::sync::Mutex::new(None);
-
     let send = |message: Outgoing| {
         let line = message.to_line();
         crate::watch::to_phone(line.trim_end());

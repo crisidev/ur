@@ -1130,6 +1130,48 @@ fn activity_fetch_after_minute_samples() {
     );
 }
 
+/// A phone whose clock was 3 hours ahead (`gb_buckets`' "A clock put
+/// right"): it sets the watch's to 18:00 (really 15:00), fetches at
+/// 18:10, puts its own clock right and the watch's back to 15:10, then
+/// fetches at 15:30 from its clock at the last fetch, 18:09: its future.
+/// That fetch sends what the watch recorded from 15:10 on, rather than
+/// nothing (the watch's last fetch had stopped at 18:10).
+#[test]
+fn activity_fetch_after_the_clock_is_put_right() {
+    let dir = out("activity-fetch-put-right");
+    let script = dir.join("script.txt");
+    std::fs::create_dir_all(&dir).expect("the target dir is writable");
+    // 2026-11-10 15:00 UTC, a bucket's start.
+    let t0: i64 = 1_794_150_000;
+    let ahead = t0 + 3 * 60 * 60;
+    let mut text = format!("gb setTime({ahead});E.setTimeZone(1.0)\nwait 10s\n");
+    text += &"steps 10\nwait 1m\n".repeat(10);
+    text += &format!(
+        "echo fetch ahead\ngb GB({{\"t\":\"actfetch\",\"ts\":{}}})\n",
+        (ahead - 10 * 60) * 1000
+    );
+    text += &format!("gb setTime({});E.setTimeZone(1.0)\n", t0 + 10 * 60 + 10);
+    text += &"steps 7\nwait 1m\n".repeat(20);
+    text += &format!(
+        "echo fetch put right\ngb GB({{\"t\":\"actfetch\",\"ts\":{}}})\n",
+        (ahead + 9 * 60 + 10) * 1000
+    );
+    std::fs::write(&script, text).expect("the target dir is writable");
+    let (ok, log) = run(script.to_str().expect("UTF-8"), &[]);
+    assert!(ok, "{log}");
+    let (ahead_part, right) = log.split_once("fetch put right").expect("both fetch");
+    // 18:00 and 18:05, by the clock that was ahead.
+    assert_eq!(activity_samples(ahead_part).len(), 2, "{log}");
+    // 15:10 to 15:30 by the clock put right, 7 steps a minute.
+    let expected: Vec<String> = (0..4)
+        .map(|i| {
+            let ts = (t0 + 10 * 60 + i * 5 * 60 + 299) * 1000;
+            format!(r#"{{"t":"act","ts":{ts},"stp":35,"mov":0,"hrm":0}}"#)
+        })
+        .collect();
+    assert_eq!(activity_samples(right), expected, "{log}");
+}
+
 /// A night held back (`sleep_hold`): a fetch at 07:00, half an hour after
 /// waking, sends nothing from the night's start on; one at 09:00, past
 /// 06:30 plus the 135 minutes its stages may still change in, sends the

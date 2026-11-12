@@ -117,7 +117,8 @@ const RETIRING: u8 = 2;
 /// boot (or, until it has, the minute before a restored record that knew
 /// where the phone's copy ended), or 0 if the watch doesn't know: where
 /// the next save can start (see [`snapshot::unsynced_from`]), and the next
-/// fetch at the latest (see [`synced_through`]).
+/// fetch at the latest (see [`synced_through`]). Put back when the phone
+/// sets the clock to before it (see [`on_clock_set`]).
 static SYNCED: AtomicU32 = AtomicU32::new(0);
 
 // ==============================================================================
@@ -260,6 +261,19 @@ pub fn on_synced(through_minute: i64) {
         Ordering::Relaxed,
     );
     let _ = RECORD_STATE.compare_exchange(RESTORED, RETIRING, Ordering::Relaxed, Ordering::Relaxed);
+}
+
+/// Called when the phone sets the clock, with the UTC minute it set it to:
+/// what the phone has fetched from that minute on was filed by a clock
+/// that was ahead, and the history files those minutes again (see
+/// `gb_buckets`' "A clock put right"). After a restore, too: the record
+/// may have been saved by a clock that was ahead.
+pub fn on_clock_set(minute: i64) {
+    let _ = SYNCED.try_update(Ordering::Relaxed, Ordering::Relaxed, |synced| {
+        let synced = (synced != 0).then_some(i64::from(synced));
+        let synced = gb_buckets::synced_after_set(synced, minute)?;
+        Some(synced.clamp(0, i64::from(u32::MAX)) as u32)
+    });
 }
 
 /// Where the phone's copy of the history ends, as far as the watch knows:

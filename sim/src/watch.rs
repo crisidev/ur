@@ -207,6 +207,7 @@ impl Watch {
             (self.connected, self.phone_time.take(), off_for)
         {
             clock::set(utc + off_for.as_secs() as i64, offset);
+            crate::script::on_clock_set(utc + off_for.as_secs() as i64);
             self.log("the phone reconnected, and set the time");
         }
         self.pass();
