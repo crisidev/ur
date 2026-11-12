@@ -39,7 +39,7 @@ concurrency:
 name: check
 jobs:
   fmt:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     name: fmt
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
@@ -68,7 +68,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: git ls-files -z '*.py' | xargs -0 python3 -m py_compile
   clippy:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     name: clippy
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1

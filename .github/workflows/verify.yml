@@ -44,7 +44,7 @@ env:
 name: verify
 jobs:
   kani:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     name: kani
     # All 32 crates take 50 minutes on a desktop (in November 2026;
     # alarm 20 of them, heart_schedule 6, the rest under 4): room for a
@@ -85,7 +85,7 @@ jobs:
             exit 1
           fi
   miri:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     name: miri
     # About a minute on a desktop (in November 2026; packet_pool 48 s).
     timeout-minutes: 30
@@ -121,7 +121,7 @@ jobs:
             exit 1
           fi
   bolero:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     name: bolero
     # 39 harnesses, four minutes each, and the builds.
     timeout-minutes: 300
@@ -170,7 +170,7 @@ jobs:
           path: host-tests/*/src/__fuzz__/*/crashes/
           if-no-files-found: ignore
   sim-fuzz:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     name: sim-fuzz
     timeout-minutes: 120
     steps:

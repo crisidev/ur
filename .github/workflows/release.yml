@@ -25,12 +25,16 @@
 #   files (see scripts/release.sh).
 # - host: creates the GitHub release, with every file and the checksums.
 #
-# Every job runs on ubuntu-24.04, not ubuntu-latest (here and in the other
-# workflows): v0.11.0's build landed on ubuntu-latest's new 26.04 image,
-# where the Nordic crates' bindgen (nrf-sdc-sys, nrf-mpsl-sys) found no
-# `stdint.h` and failed, and a reproducible release shouldn't change image
-# under it anyway. Move to a newer image deliberately, with a build on it
-# checked first.
+# Every job runs on ubuntu-latest, as the other workflows do, so CI tests
+# on the image releases build on. Which image that is doesn't change the
+# files: release.sh pins the toolchain, the dependencies and the paths,
+# and `.cargo/config.toml` has the Nordic crates' bindgen (nrf-sdc-sys,
+# nrf-mpsl-sys) parse their headers `-ffreestanding`, so whichever mix of
+# LLVM releases the image has can't break or change them (it broke
+# v0.11.0's build when ubuntu-latest moved to 26.04; see there). A
+# release built on 24.04 and one on 26.04 were identical, every file. If
+# a later image ever does change them, pin `runs-on` to the previous one
+# while finding out why.
 #
 # Unlike cargo-dist, there's no installer and no per-platform matrix: the
 # PineTime is the one platform, and the release *is* the package people
@@ -59,7 +63,7 @@ env:
   TAG: ${{ inputs.tag || github.ref_name }}
 jobs:
   plan:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.plan.outputs.version }}
       prerelease: ${{ steps.plan.outputs.prerelease }}
@@ -78,7 +82,7 @@ jobs:
           echo "prerelease=$([[ $version == *-* ]] && echo true || echo false)" >>"$GITHUB_OUTPUT"
   build:
     needs: plan
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       # For actions/attest: the OIDC token that gets a Sigstore signing
@@ -93,6 +97,12 @@ jobs:
       - name: Install the pinned toolchain
         run: rustup toolchain install
       - name: build and package
+        # As `.cargo/config.toml` sets it (keep the two the same: this one
+        # wins), for a tag from before it did, released by hand: without
+        # it, such a tag no longer builds on ubuntu-latest. It doesn't
+        # change what such a tag builds into, only that it builds.
+        env:
+          BINDGEN_EXTRA_CLANG_ARGS_thumbv7em_none_eabihf: -ffreestanding
         run: UR_THEME_LIST=themes.tsv scripts/release.sh dist
       # test.yml's size check, on exactly what's released: a package that
       # doesn't fit the watch must not ship.
@@ -121,7 +131,7 @@ jobs:
           if-no-files-found: error
   host:
     needs: [plan, build]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     permissions:
       # To create the release.
       contents: write

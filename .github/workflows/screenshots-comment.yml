@@ -68,7 +68,7 @@ concurrency:
 name: screenshots-comment
 jobs:
   post:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     name: post
     permissions:
       # To download the other run's artifact.
@@ -423,7 +423,7 @@ jobs:
           fi
 
   clean:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     name: clean
     permissions:
       # To delete the PR's images, assets of the release.
