@@ -14,17 +14,7 @@ missing below were test builds for the dev kit.
 
 ### Added
 
-- Add themes as build features: how every screen looks is a theme (`src/themes/`), Retro (today's look, with ARCADE and TERMINAL by night and HANDHELD and PARCHMENT by day) by default, and a build can have other themes instead or as well (`theme-<name>`, or `themes-all`), LOOK's THEME then stepping through every scheme built in for the time of day; a release has a package of each other theme, `ur-<theme>-<version>-dfu.zip` (one with only night or only day colour schemes shows them by day and by night alike, its FORCE fixed); and the chosen schemes are now saved by name, so they survive a build with other themes, and a watch updated from 0.10.0 keeps its own (6ff3133, c2d0b0c, 59aa7ad, bfa2d57)
-- Add Tokyo Night's colours, from tokyonight.nvim, as three more of Retro's colour schemes: TOKYO NIGHT and TOKYO STORM by night and TOKYO DAY by day, after Retro's own four in THEME's cycle; and Living Tokyo, a night-only theme of its own: a city at night, with the time and seconds across the top, the moon as the battery, windows lit by the day's steps, a beacon blinking, a sign showing the heart rate, and a billboard for unseen notifications, built with `theme-living_tokyo` and published as its own update, `ur-living_tokyo-<version>-dfu.zip`, which shows the city by day too (FAQ D02); contributed by Matteo Bigoi (0252f69)
-- Add a FORCE row to LOOK, under THEME: NONE follows the sun as before, and DAY or NIGHT shows that side's colour schemes whatever the time, THEME then stepping through those and saving the choice as that side's; only the look, as the brightness and everything else still follow the sun. With one scheme for the time of day, THEME can't change, nor FORCE in a build with schemes of one side only: either is dim, and a tap says why, "ONLY ONE THEME" / "SEE FAQ D01", or "NO DAY THEMES" (or NIGHT) / "SEE FAQ D02" (98b856d)
-- Link to the web simulator showing a theme: `?theme=living_tokyo` opens it in that theme's first scheme for the time of day, `?scheme=tokyo+night` in a scheme by name, and `&side=day` or `&side=night` picks the side; picking a theme updates the address to match, so it's always a link to what's showing, and each theme's README links to its own as "Try it live" (ed50efd, 94e8378)
-
 ### Changed
-
-- Send the night to Gadgetbridge, and so to Health Connect, about 47 minutes after you get up rather than 2¼ hours after you last slept: once you've been awake for 46 minutes, walked or had the watch off your wrist for at least two minutes of them, and aren't lying still, the watch settles the night's sleep and stages for good and the next fetch gets it, and the morning's steps after it go as they come (but for a stillness of 10 minutes or more, which may yet be a nap); a lie-in after that is a sleep of its own, and a morning without walking or taking the watch off, or a short nap, waits the 2¼ hours as before (introduced in 0.10.0) (79c00c8, f41606c)
-- Ring smart wake early only at a stir after ten minutes of light sleep (none of them deep or REM, nor all still), or at its time if that doesn't come, rather than at the first stir in its window, which came within its first few minutes on most mornings, from deep and REM sleep as often as light: against a Garmin over four nights, rings before the time from deep sleep went from 11% to almost none, and from REM from 37% to 21%, while about a quarter of mornings now ring at the time (a7f266e)
-- Split the Settings screen in two, side by side where it was, before Info: LOOK, with THEME, FORCE and LIGHT, and BUTTON GRID, with BUTTONS, GRID and BTHOME KEY; three rows at most each, so every row is taller, about 7 mm rather than 5, for a fingertip, and none moves as another comes or goes (98b856d)
-- Try longer heart-rate measurements on a busy wrist in the logging build (`ur-logging`), an experiment whose field logs will say whether more time reads more, and how well: on half the awake rounds of background measurements, one that has no reading after its usual 30 s on a busy wrist goes on to 90 s, and one that reads early on a busy wrist keeps recording to 90 s (its first reading counts as before; what it reads after is only logged, never shown or sent), each when the hourly LED budget can spare it and still leave the next try its share; and every awake measurement now logs the accelerometer's samples alongside, to tell a walk's rhythm from the pulse. That's ~0.4 MB more log a day, so the log holds ~22 hours rather than ~26 (fetch it daily), and ~2 mAh a day (up to ~8 if the light draws more than its datasheet says). The `ur` build is unchanged (5b59a9a)
 
 ### Deprecated
 
@@ -33,6 +23,32 @@ missing below were test builds for the dev kit.
 ### Fixed
 
 ### Security
+
+## [0.11.0] - 2026-11-12
+
+The new ideas in it: **themes**, each drawing every screen its own way
+and each other than Retro published as a package of its own, the first
+being **Living Tokyo**, a city at night by Matteo Bigoi, who also brought
+**Tokyo Night's colours** to Retro; **FORCE**, to show the day's or the
+night's colour schemes at any hour, with Settings split into **LOOK** and
+**BUTTON GRID**; **smart wake that waits for light sleep**; and **the
+night in Gadgetbridge and Health Connect soon after you're up**, rather
+than hours later.
+
+### Added
+
+- Add themes: how every screen looks is now a theme, chosen when the firmware is built, with Retro, today's look, in `ur` and `ur-logging`; a release also has a package for each other theme, `ur-<theme>-<version>-dfu.zip`, with only that theme in it (one with colour schemes only for day or only for night shows them at all hours; FAQ D02), and each theme's README has a "Try it live" link to it in the web simulator; a build of your own can have any themes, instead of Retro or beside it (`theme-<name>`, or `themes-all` for every one), THEME then stepping through all their schemes for the time of day shown (6ff3133, c2d0b0c, bfa2d57, 94e8378)
+- Add Living Tokyo, a night-only theme published as its own package, `ur-living_tokyo-<version>-dfu.zip`: a city at night on the clock face, with the time and seconds across the top, the moon as the battery, windows lit by the day's steps, a beacon blinking, a sign showing the heart rate, and a billboard for unseen notifications (in place of the top edge's handle), in two schemes, LIVING TOKYO and LIVING STORM; its other screens are Retro's in its colours for now, and alone in its package it shows the city by day too (FAQ D02); contributed by Matteo Bigoi (6865af1)
+- Add Tokyo Night's colours, from folke's tokyonight.nvim, as three more of Retro's colour schemes, in every package with Retro: TOKYO NIGHT and TOKYO STORM by night, after ARCADE and TERMINAL, and TOKYO DAY by day, after HANDHELD and PARCHMENT, so a watch with nothing saved still opens on ARCADE and HANDHELD; contributed by Matteo Bigoi (6865af1)
+- Add a FORCE setting, under THEME on LOOK (the new first half of Settings): NONE follows the sun as before, and DAY or NIGHT shows the day's or the night's colour schemes whatever the time, THEME then stepping through those and saving the choice for that time of day; it changes only the look, while the brightness, alarms, sleep, and everything else still follow the sun. With only one scheme for the time of day shown, THEME is dim and can't change, and nor can FORCE in a package with schemes only for day or only for night (Living Tokyo's, say; never `ur` or `ur-logging`): a tap on either says why, "ONLY ONE THEME" / "SEE FAQ D01", or "NO DAY THEMES" (or "NO NIGHT THEMES") / "SEE FAQ D02" (98b856d)
+
+### Changed
+
+- Ring smart wake early only at a stir after 10 minutes of light sleep (none of them deep or REM, and not all still), or else at its time, rather than at the first stir in its window, which on most mornings came within its first few minutes, from deep or REM sleep as often as light: replaying four nights against a Garmin, early rings from deep sleep went from 11% to almost none, and from REM from 37% to 21%, while about one alarm in four now rings at its time, as a plain alarm would (a7f266e)
+- Send the night to Gadgetbridge, and so to Health Connect, as soon as 47 minutes after you wake rather than 2¼ hours after: once you've been awake that long, walked or had the watch off your wrist for at least two minutes of it, and aren't lying still, the watch stops revising the night's sleep and stages and the next fetch gets them, and the morning's steps after that are no longer held back (but for a still spell of 10 minutes or more, which may yet be a nap); a lie-in after that is a sleep of its own, and a morning without walking or taking the watch off, or a short nap, waits the 2¼ hours as before (introduced in 0.10.0) (79c00c8, f41606c)
+- Split the Settings screen in two, side by side where it was, to make room for FORCE, so Info is a swipe further out: LOOK, with THEME, FORCE, and LIGHT, and BUTTON GRID, with BUTTONS, GRID, and BTHOME KEY; with three rows at most on each, every row is nearly half as tall again (about 6 mm rather than 4), easier to hit with a fingertip, and no row shifts when another appears or disappears (98b856d)
+- Save the colour scheme chosen for day and for night by name rather than by its place in THEME's cycle, which now depends on the themes built in, so an update, or another theme's package, keeps it if the new firmware has it (firmware without it shows its first scheme for that time of day, but keeps yours saved until you pick another); a watch updated from 0.10.0 or 0.10.1 keeps its own (59aa7ad)
+- Try longer heart-rate measurements on a moving wrist in the logging build (`ur-logging`), an experiment whose field logs will say whether more time reads more, and how well: on half the background measurements while awake, one that has no reading after its usual 30 s on a moving wrist goes on to 90 s, and one on a moving wrist that reads early keeps recording to 90 s (its first reading counts as before; what it reads after is only logged, unless you look at the watch meanwhile), each only when the hourly LED budget can spare it; and every measurement while awake now logs the accelerometer's samples alongside, to tell a walk's rhythm from the pulse. That fills the log faster, so on a worn watch it holds about 20 hours (fetch it at least twice a day), and costs ~2 mAh a day (up to ~8 if the light draws more than its datasheet says). The `ur` build is unchanged (5b59a9a, ec64aa6)
 
 ## [0.10.1] - 2026-11-11
 
@@ -353,7 +369,8 @@ built up to that point, below.
 - Install under the PineTime's stock MCUBoot bootloader, and receive firmware updates over Bluetooth (fdc5a70)
 - Keep a field log in flash in the logging build, and fetch it over Bluetooth (57f261f)
 
-[Unreleased]: https://github.com/jonhoo/ur/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/jonhoo/ur/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/jonhoo/ur/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/jonhoo/ur/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/jonhoo/ur/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/jonhoo/ur/compare/v0.8.17...v0.9.0
