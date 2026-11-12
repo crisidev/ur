@@ -76,8 +76,8 @@ mod tests {
             (self.next() >> 40) as f32 / (1u64 << 24) as f32
         }
 
-        fn sign(&mut self) -> i8 {
-            (self.next() % 3) as i8 - 1
+        fn sign(&mut self) -> f32 {
+            (self.next() % 3) as f32 - 1.0
         }
     }
 
@@ -302,7 +302,10 @@ mod tests {
     #[test]
     fn the_screen_in_thirds() {
         let input = |x, y| Input::from_touch(Some((x, y)), 240);
-        let i = |turn, walk| Input { turn, walk };
+        let i = |turn: i8, walk: i8| Input {
+            turn: turn.into(),
+            walk: walk.into(),
+        };
         assert_eq!(Input::from_touch(None, 240), Input::default());
         assert_eq!(input(120, 120), i(0, 0));
         assert_eq!(input(0, 0), i(-1, 1));
@@ -325,7 +328,10 @@ mod tests {
                 &MAP,
                 &THINGS,
                 &mut p,
-                Input { turn: 1, walk: 0 },
+                Input {
+                    turn: 1.0,
+                    walk: 0.0
+                },
                 0.05
             ));
         }
@@ -333,7 +339,16 @@ mod tests {
         assert_eq!((p.x, p.y), (Player::START.x, Player::START.y));
         // Left past east wraps round.
         let mut p = Player::START;
-        step(&MAP, &THINGS, &mut p, Input { turn: -1, walk: 0 }, 0.05);
+        step(
+            &MAP,
+            &THINGS,
+            &mut p,
+            Input {
+                turn: -1.0,
+                walk: 0.0,
+            },
+            0.05,
+        );
         assert!((p.angle - (TAU - TURN_SPEED * 0.05)).abs() < 1e-4, "{p:?}");
     }
 
@@ -344,7 +359,10 @@ mod tests {
             &MAP,
             &THINGS,
             &mut p,
-            Input { turn: 0, walk: 1 },
+            Input {
+                turn: 0.0,
+                walk: 1.0
+            },
             0.1
         ));
         assert!(
@@ -355,25 +373,49 @@ mod tests {
             &MAP,
             &THINGS,
             &mut p,
-            Input { turn: 0, walk: -1 },
+            Input {
+                turn: 0.0,
+                walk: -1.0
+            },
             0.1
         ));
         assert!((p.x - 1.5).abs() < 1e-5, "{p:?}");
         // A long gap between frames moves no further than `MAX_STEP`.
         let mut far = Player::START;
-        step(&MAP, &THINGS, &mut far, Input { turn: 1, walk: 1 }, 5.0);
+        step(
+            &MAP,
+            &THINGS,
+            &mut far,
+            Input {
+                turn: 1.0,
+                walk: 1.0,
+            },
+            5.0,
+        );
         let mut most = Player::START;
         step(
             &MAP,
             &THINGS,
             &mut most,
-            Input { turn: 1, walk: 1 },
+            Input {
+                turn: 1.0,
+                walk: 1.0,
+            },
             MAX_STEP,
         );
         assert_eq!(far, most);
         // And time going backwards (it can't, but) moves nothing.
         let mut p = Player::START;
-        step(&MAP, &THINGS, &mut p, Input { turn: 1, walk: 1 }, -1.0);
+        step(
+            &MAP,
+            &THINGS,
+            &mut p,
+            Input {
+                turn: 1.0,
+                walk: 1.0,
+            },
+            -1.0,
+        );
         assert_eq!(p, Player::START);
     }
 
@@ -382,7 +424,16 @@ mod tests {
         // North, into the top wall: nowhere to go.
         let mut p = player(1.5, 1.0 + RADIUS + 0.01, 3.0 * FRAC_PI_2);
         let before = p;
-        assert!(step(&MAP, &THINGS, &mut p, Input { turn: 0, walk: 1 }, 0.1));
+        assert!(step(
+            &MAP,
+            &THINGS,
+            &mut p,
+            Input {
+                turn: 0.0,
+                walk: 1.0
+            },
+            0.1
+        ));
         assert!(
             (p.y - before.y).abs() < 0.02 && p.y >= 1.0 + RADIUS,
             "{p:?}"
@@ -400,7 +451,10 @@ mod tests {
                 &MAP,
                 &THINGS,
                 &mut p,
-                Input { turn: 0, walk: 1 },
+                Input {
+                    turn: 0.0,
+                    walk: 1.0
+                },
                 0.1
             ));
         }
@@ -557,7 +611,16 @@ mod tests {
         // West of a barrel, walking east into it.
         let barrel = THINGS.iter().find(|t| t.kind == Kind::Barrel).unwrap();
         let mut p = player(barrel.x - RADIUS - PROP_RADIUS - 0.01, barrel.y, 0.0);
-        assert!(step(&MAP, &THINGS, &mut p, Input { turn: 0, walk: 1 }, 0.1));
+        assert!(step(
+            &MAP,
+            &THINGS,
+            &mut p,
+            Input {
+                turn: 0.0,
+                walk: 1.0
+            },
+            0.1
+        ));
         assert!(barrel.x - p.x >= RADIUS + PROP_RADIUS, "{p:?}");
         // A gem isn't: walking through one takes it.
         let gem = THINGS[0];
@@ -569,7 +632,10 @@ mod tests {
                 &MAP,
                 &THINGS,
                 &mut p,
-                Input { turn: 0, walk: 1 },
+                Input {
+                    turn: 0.0,
+                    walk: 1.0
+                },
                 0.05
             ));
             pick(&THINGS, &mut taken, &p);
@@ -636,7 +702,16 @@ mod tests {
         let mut panel = Panel::new();
         panel.frame(&p, true, None, None, true);
         for i in 0..40 {
-            step(&MAP, &THINGS, &mut p, Input { turn: 0, walk: 1 }, 0.05);
+            step(
+                &MAP,
+                &THINGS,
+                &mut p,
+                Input {
+                    turn: 0.0,
+                    walk: 1.0,
+                },
+                0.05,
+            );
             pick(&THINGS, &mut panel.taken, &p);
             panel.frame_changing(&p, None, None, false, false);
             let mut whole = Panel::new();
@@ -645,6 +720,106 @@ mod tests {
             assert!(panel.pixels == whole.pixels, "frame {i}, at {p:?}");
         }
         assert_eq!(panel.taken, 1);
+    }
+
+    // ==========================================================================
+    // Tilt
+    // ==========================================================================
+
+    /// As the glance's pose: looking at the watch, 12 o'clock up and the
+    /// screen tilted towards the wearer.
+    const LEVEL: [i16; 3] = [0, 724, 724];
+
+    /// `LEVEL` turned by `roll` about 12 o'clock (the 3 o'clock edge down)
+    /// and `tip` about 3 o'clock (12 o'clock away), in radians.
+    fn tilted(roll: f32, tip: f32) -> [i16; 3] {
+        let [x, y, z] = LEVEL.map(f32::from);
+        let (x, z) = (
+            x * roll.cos() - z * roll.sin(),
+            x * roll.sin() + z * roll.cos(),
+        );
+        let (y, z) = (y * tip.cos() - z * tip.sin(), y * tip.sin() + z * tip.cos());
+        [x, y, z].map(|a| a as i16)
+    }
+
+    #[test]
+    fn tilting() {
+        let tilt = |roll: f32, tip: f32| Input::from_tilt(tilted(roll, tip), LEVEL).unwrap();
+        // Level, and a wobble: nothing.
+        assert_eq!(tilt(0.0, 0.0), Input::default());
+        assert_eq!(tilt(0.05, -0.05), Input::default());
+        // Rolled right, turning right; left, left; further, faster, up
+        // to full speed.
+        let (a, b) = (tilt(0.2, 0.0).turn, tilt(0.3, 0.0).turn);
+        assert!(0.0 < a && a < b && b <= 1.0, "{a} {b}");
+        assert!(tilt(-0.3, 0.0).turn < 0.0);
+        assert_eq!(tilt(0.8, 0.0).turn, 1.0);
+        // Tipped away, forward; towards, back.
+        assert!(tilt(0.0, 0.3).walk > 0.0);
+        assert!(tilt(0.0, -0.3).walk < 0.0);
+        assert_eq!(tilt(0.0, 0.3).turn, 0.0);
+        // Mid-swing (far from 1 g): nothing to say.
+        assert_eq!(Input::from_tilt([0, 2000, 2000], LEVEL), None);
+        assert_eq!(Input::from_tilt([0, 100, 100], LEVEL), None);
+    }
+
+    #[test]
+    fn the_ways_to_steer() {
+        let tilted = Input {
+            turn: 0.5,
+            walk: -0.25,
+        };
+        let tilt = Some(tilted);
+        let top = Some((0, 10));
+        let bottom = Some((239, 200));
+        assert_eq!(
+            Controls::Touch.input(top, 240, tilt),
+            Input::from_touch(top, 240)
+        );
+        assert_eq!(Controls::Tilt.input(top, 240, tilt), tilted);
+        assert_eq!(Controls::Tilt.input(None, 240, None), Input::default());
+        let hybrid = |finger| Controls::Hybrid.input(finger, 240, tilt);
+        assert_eq!((hybrid(top).turn, hybrid(top).walk), (0.5, 1.0));
+        assert_eq!(hybrid(bottom).walk, -1.0);
+        assert_eq!(hybrid(None).walk, 0.0);
+        // Round and round, and only touch without the tilt.
+        let mut c = Controls::default();
+        assert_eq!(c, Controls::Touch);
+        for want in [Controls::Tilt, Controls::Hybrid, Controls::Touch] {
+            c = c.next();
+            assert_eq!(c, want);
+        }
+        assert!(!Controls::Touch.tilts() && Controls::Tilt.tilts() && Controls::Hybrid.tilts());
+    }
+
+    /// A tilt asks for a fraction of the speed: it goes that fraction as
+    /// far.
+    #[test]
+    fn slower_by_half() {
+        let mut full = Player::START;
+        step(
+            &MAP,
+            &THINGS,
+            &mut full,
+            Input {
+                turn: 0.0,
+                walk: 1.0,
+            },
+            0.1,
+        );
+        let mut half = Player::START;
+        step(
+            &MAP,
+            &THINGS,
+            &mut half,
+            Input {
+                turn: 0.0,
+                walk: 0.5,
+            },
+            0.1,
+        );
+        let (f, h) = (full.x - 1.5, half.x - 1.5);
+        assert!((h * 2.0 - f).abs() < 1e-5, "{f} {h}");
     }
 
     /// Columns share windows wherever they can: one for a whole frame,
@@ -658,7 +833,16 @@ mod tests {
         // Up against a wall, a step back: every column changes, all of it.
         let mut p = player(1.5, 1.0 + RADIUS + 0.01, 3.0 * FRAC_PI_2);
         panel.frame(&p, true, None, Some(&readout), true);
-        step(&MAP, &THINGS, &mut p, Input { turn: 0, walk: -1 }, 0.02);
+        step(
+            &MAP,
+            &THINGS,
+            &mut p,
+            Input {
+                turn: 0.0,
+                walk: -1.0,
+            },
+            0.02,
+        );
         panel.frame_changing(&p, None, Some(&readout), false, false);
         assert!(panel.windows <= 3, "{} windows", panel.windows);
         // A random walk: far fewer windows than columns.
@@ -667,7 +851,7 @@ mod tests {
         let mut p = Player::START;
         for i in 0..300 {
             let held = Input {
-                turn: if i % 40 < 20 { 1 } else { rng.sign() },
+                turn: if i % 40 < 20 { 1.0 } else { rng.sign() },
                 walk: rng.sign(),
             };
             step(&MAP, &THINGS, &mut p, held, 0.05);

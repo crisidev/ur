@@ -970,14 +970,13 @@ impl App {
         }
     }
 
-    /// A frame's input for the game: a finger down is input, holding the
-    /// screen on (see `screen_timeout`).
+    /// A frame's input for the game: a finger down, or a tilt that
+    /// steers, is input, holding the screen on (see `screen_timeout`).
     #[cfg(feature = "game")]
     pub fn game_step(&mut self, now: Instant, finger_at: Option<(u8, u8)>) {
-        if finger_at.is_some() {
+        if self.game.step(now, finger_at) {
             self.last_input = now;
         }
-        self.game.step(now, finger_at);
     }
 
     /// Whether the game has the screen, which then shows no handles: the
@@ -1724,6 +1723,10 @@ impl App {
                     self.go_to(Screen::Settings(Page::Grid), Sweep::LeftToRight)
                 }
                 (Gesture::Tap | Gesture::LongPress, Screen::Buttons) => self.on_grid(touch, now),
+                #[cfg(feature = "game")]
+                (Gesture::Tap, Screen::Game) if crate::game::on_controls(touch.x, touch.y) => {
+                    self.game.next_controls();
+                }
                 #[cfg(feature = "game")]
                 (Gesture::Tap, Screen::Game) => {
                     // Seen, if a banner showed; it would pause the game.
@@ -2851,7 +2854,7 @@ impl App {
             // Not the theme's: the game looks the same in every one, bar
             // its colours.
             #[cfg(feature = "game")]
-            Screen::Game => crate::game::draw(canvas),
+            Screen::Game => crate::game::draw(canvas, self.game.controls),
         }
         match self.place() {
             // Notifications nobody has seen. The clock face has no other

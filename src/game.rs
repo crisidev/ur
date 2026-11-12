@@ -46,7 +46,7 @@ use crate::display::{Display, Format, Order};
 use crate::font;
 use crate::game_view::{self as view, Hud, Readout, Sprites, view_column};
 use crate::motor::{self, Pattern};
-use crate::raycast::{self, Camera, Input, MAP, Player, THINGS, Taken};
+use crate::raycast::{self, Camera, Controls, Input, MAP, Player, THINGS, Taken};
 
 /// The panel's width and height, in pixels: the view's.
 const PANEL: usize = canvas::WIDTH * canvas::SCALE;
@@ -100,6 +100,12 @@ pub struct Game {
     taken: Taken,
     /// Whether that changed since the HUD last showed it.
     found: bool,
+    /// How the player steers: picked on the title ([`Game::next_controls`]).
+    pub controls: Controls,
+    /// While tilting, the wrist's pose when the game started, which is
+    /// level; and what its tilt last asked for, smoothed.
+    neutral: Option<[i16; 3]>,
+    tilted: Input,
     /// Whether the next frame sends every pixel: the panel shows
     /// something else (the title), and what columns showed means nothing.
     whole: bool,
@@ -118,6 +124,12 @@ impl Game {
             player: Player::START,
             taken: 0,
             found: false,
+            controls: Controls::Touch,
+            neutral: None,
+            tilted: Input {
+                turn: 0.0,
+                walk: 0.0,
+            },
             whole: true,
             shown_time: None,
         }
@@ -136,6 +148,9 @@ impl Game {
         if found == all {
             self.taken = 0;
         }
+        self.neutral = None;
+        self.tilted = Input::default();
+        crate::activity::set_tilting(self.controls.tilts());
         cycles::enable();
         cache(true);
     }
@@ -143,20 +158,25 @@ impl Game {
     pub fn stop(&mut self) {
         if core::mem::take(&mut self.playing) {
             defmt::info!("game: paused");
+            crate::activity::set_tilting(false);
             cycles::disable();
             cache(false);
         }
     }
 
     /// Moves the player, by where a finger is (in panel pixels), if one
-    /// is, for the time since the last step.
-    pub fn step(&mut self, now: Instant, finger_at: Option<(u8, u8)>) {
-        if finger_at.is_some() {
-            self.last_touch = now;
-        }
+    /// is, and the wrist's tilt, as [`Game::controls`] has it, for the
+    /// time since the last step. Whether the player asked for anything,
+    /// which keeps the game going (see [`IDLE`]).
+    pub fn step(&mut self, now: Instant, finger_at: Option<(u8, u8)>) -> bool {
         let seconds = (now - self.stepped).as_micros() as f32 / 1e6;
         self.stepped = now;
-        let input = Input::from_touch(finger_at, PANEL as u16);
+        let tilt = self.controls.tilts().then(|| self.tilt()).flatten();
+        let input = self.controls.input(finger_at, PANEL as u16, tilt);
+        let active = finger_at.is_some() || input != Input::default();
+        if active {
+            self.last_touch = now;
+        }
         let bumped = raycast::step(&MAP, &THINGS, &mut self.player, input, seconds);
         if bumped && !self.bumped {
             motor::buzz(Pattern::BUMP);
@@ -171,6 +191,28 @@ impl Game {
                 Pattern::FOUND
             });
         }
+        active
+    }
+
+    /// What the tilt asks for, smoothed over the last few readings, once
+    /// there's been one (the first is level).
+    fn tilt(&mut self) -> Option<Input> {
+        let now = crate::activity::tilt()?;
+        let neutral = *self.neutral.get_or_insert(now);
+        // A reading mid-swing keeps what the last asked.
+        if let Some(input) = Input::from_tilt(now, neutral) {
+            let smooth = |was: f32, now: f32| was + (now - was) * 0.5;
+            self.tilted = Input {
+                turn: smooth(self.tilted.turn, input.turn),
+                walk: smooth(self.tilted.walk, input.walk),
+            };
+        }
+        Some(self.tilted)
+    }
+
+    /// Picks the next way to steer.
+    pub fn next_controls(&mut self) {
+        self.controls = self.controls.next();
     }
 
     /// Whether it's gone [`IDLE`] without a touch.
@@ -179,18 +221,39 @@ impl Game {
     }
 }
 
-/// Draws the title, and how to play.
-pub fn draw(canvas: &mut Canvas) {
+/// The title's button for the controls, in canvas pixels: tapped, it
+/// picks the next ([`on_controls`]); a tap anywhere else plays.
+const CONTROLS_BOX: (i32, i32, i32, i32) = (14, 27, 52, 13);
+
+/// Whether a tap at (`x`, `y`), in canvas pixels, is on the title's
+/// button for the controls.
+pub fn on_controls(x: i32, y: i32) -> bool {
+    let (bx, by, w, h) = CONTROLS_BOX;
+    (bx..bx + w).contains(&x) && (by..by + h).contains(&y)
+}
+
+/// Draws the title: the controls picked, how they steer, and how to play.
+pub fn draw(canvas: &mut Canvas, controls: Controls) {
     canvas.clear(Color::BACKGROUND);
     let centre = |canvas: &mut Canvas, y, text: &str, color| {
         let x = (canvas::WIDTH as i32 - font::small_text_width(text)) / 2;
         canvas.text(x, y, text, color);
     };
-    centre(canvas, 10, "RAYCAST", Color::ACCENT);
-    centre(canvas, 26, "TAP TO PLAY", Color::TEXT);
-    centre(canvas, 42, "HOLD LEFT, RIGHT: TURN", Color::TEXT_FAINT);
-    centre(canvas, 50, "HOLD TOP, BOTTOM: WALK", Color::TEXT_FAINT);
-    centre(canvas, 66, "BUTTON: PAUSE, BACK", Color::TEXT_FAINT);
+    centre(canvas, 8, "RAYCAST", Color::ACCENT);
+    centre(canvas, 20, "CONTROLS", Color::TEXT_FAINT);
+    let (x, y, w, h) = CONTROLS_BOX;
+    canvas.fill_rect(x, y, w, h, Color::TRACK);
+    canvas.fill_rect(x + 1, y + 1, w - 2, h - 2, Color::BACKGROUND);
+    let (name, turn, walk) = match controls {
+        Controls::Touch => ("< TOUCH >", "HOLD SIDES: TURN", "TOP, BOTTOM: WALK"),
+        Controls::Tilt => ("< TILT >", "TILT SIDEWAYS: TURN", "TIP AWAY, NEAR: WALK"),
+        Controls::Hybrid => ("< HYBRID >", "TILT SIDEWAYS: TURN", "TOP, BOTTOM: WALK"),
+    };
+    centre(canvas, y + 4, name, Color::TEXT);
+    centre(canvas, 46, turn, Color::TEXT_FAINT);
+    centre(canvas, 54, walk, Color::TEXT_FAINT);
+    centre(canvas, 64, "TAP ELSEWHERE: PLAY", Color::TEXT);
+    centre(canvas, 72, "BUTTON: PAUSE, BACK", Color::TEXT_FAINT);
 }
 
 /// Readies the panel for frames: column by column, in [`FORMAT`].

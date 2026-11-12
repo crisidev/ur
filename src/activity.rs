@@ -962,6 +962,42 @@ pub fn still() -> bool {
 
 static STILL: AtomicBool = AtomicBool::new(false);
 
+/// Whether the game steers by the wrist's tilt (the `game` feature):
+/// then [`motion_task`] reads the acceleration every [`TILT_POLL`], and
+/// doesn't let the wrist go still, until it's turned off.
+#[cfg(feature = "game")]
+static TILTING: AtomicBool = AtomicBool::new(false);
+/// Wakes [`motion_task`] from waiting out a still wrist, for tilting.
+#[cfg(feature = "game")]
+static TILT_WAKE: embassy_sync::signal::Signal<CriticalSectionRawMutex, ()> =
+    embassy_sync::signal::Signal::new();
+/// The latest acceleration while tilting, in the watch's axes
+/// (`glance::Vector`), if one's been read since it was turned on.
+#[cfg(feature = "game")]
+static TILT: Mutex<CriticalSectionRawMutex, Cell<Option<crate::glance::Vector>>> =
+    Mutex::new(Cell::new(None));
+/// How often the acceleration is read while tilting: the chip samples at
+/// 100 Hz (for the step counter), so this is all the bus's cost.
+#[cfg(feature = "game")]
+const TILT_POLL: Duration = Duration::from_millis(40);
+
+/// Starts or stops reading the tilt for the game.
+#[cfg(feature = "game")]
+pub fn set_tilting(on: bool) {
+    if TILTING.swap(on, Ordering::Relaxed) != on {
+        TILT.lock(|t| t.set(None));
+        if on {
+            TILT_WAKE.signal(());
+        }
+    }
+}
+
+/// The latest acceleration while tilting (see [`set_tilting`]).
+#[cfg(feature = "game")]
+pub fn tilt() -> Option<crate::glance::Vector> {
+    TILT.lock(Cell::get)
+}
+
 // ==============================================================================
 // Motion and glances
 // ==============================================================================
@@ -1023,7 +1059,18 @@ pub async fn motion_task(i2c: Device, mut interrupt: Input<'static>) {
         if STILL.load(Ordering::Relaxed) {
             crate::power::on(crate::power::Meter::Still);
             loop {
+                #[cfg(not(feature = "game"))]
                 let woken = select(interrupt.wait_for_high(), Timer::after(STILL_CHECK)).await;
+                // Unless the game wants the tilt, moving or not.
+                #[cfg(feature = "game")]
+                let Either::First(woken) = select(
+                    select(interrupt.wait_for_high(), Timer::after(STILL_CHECK)),
+                    TILT_WAKE.wait(),
+                )
+                .await
+                else {
+                    break;
+                };
                 // Before the read below lowers it.
                 let raised = matches!(woken, Either::First(())) || interrupt.is_high();
                 // A failed read counts as motion: polling is the safe side.
@@ -1045,8 +1092,20 @@ pub async fn motion_task(i2c: Device, mut interrupt: Input<'static>) {
             poll_now = true;
         }
 
+        #[cfg(feature = "game")]
+        let tilting = TILTING.load(Ordering::Relaxed);
         if !poll_now {
+            #[cfg(not(feature = "game"))]
             Timer::after(if glancing { GLANCE_POLL } else { STATUS_POLL }).await;
+            #[cfg(feature = "game")]
+            Timer::after(if tilting {
+                TILT_POLL
+            } else if glancing {
+                GLANCE_POLL
+            } else {
+                STATUS_POLL
+            })
+            .await;
         }
         poll_now = false;
         let screen_on = crate::glance::screen_on();
@@ -1067,7 +1126,11 @@ pub async fn motion_task(i2c: Device, mut interrupt: Input<'static>) {
         // The acceleration (0x12..=0x17) and, five bytes on, the interrupt
         // status (0x1C), in one transfer; or only the status.
         let mut data = [0u8; 11];
-        let (register, bytes) = if glancing {
+        #[cfg(feature = "game")]
+        let reading = glancing || tilting;
+        #[cfg(not(feature = "game"))]
+        let reading = glancing;
+        let (register, bytes) = if reading {
             (REG_ACC_DATA, &mut data[..])
         } else {
             (REG_INT_STATUS_0, &mut data[10..])
@@ -1081,17 +1144,33 @@ pub async fn motion_task(i2c: Device, mut interrupt: Input<'static>) {
         } else {
             polls_since_motion.saturating_add(1)
         };
-        if glancing {
+        if reading {
             let axis = |i: usize| i16::from_le_bytes([data[i], data[i + 1]]) >> 4;
             let sample = crate::glance::from_sensor([axis(0), axis(2), axis(4)]);
-            if detector.push(sample) {
+            #[cfg(feature = "game")]
+            if tilting {
+                TILT.lock(|t| t.set(Some(sample)));
+            }
+            #[cfg(feature = "game")]
+            let glanced = glancing && detector.push(sample);
+            #[cfg(not(feature = "game"))]
+            let glanced = detector.push(sample);
+            if glanced {
                 let _ = crate::INPUT.try_send(crate::InputEvent::Glance);
             }
         }
 
         // Still: stop polling until INT1 says otherwise. The read above
         // cleared the latch, so any motion from here on raises the pin.
-        if interrupt_works && status & INT_NO_MOTION != 0 && polls_since_motion >= MIN_MOVING_POLLS
+        // Never while tilting, which needs the samples.
+        #[cfg(feature = "game")]
+        let may_rest = !tilting;
+        #[cfg(not(feature = "game"))]
+        let may_rest = true;
+        if interrupt_works
+            && status & INT_NO_MOTION != 0
+            && polls_since_motion >= MIN_MOVING_POLLS
+            && may_rest
         {
             debug!("activity: still");
             detector.pause();

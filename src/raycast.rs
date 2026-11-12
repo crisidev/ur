@@ -134,13 +134,14 @@ pub fn cos_sin(angle: f32) -> (f32, f32) {
     }
 }
 
-/// What the player asks for in a step: each -1, 0 or 1.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// What the player asks for in a step: each from -1 to 1, for how fast
+/// (touch only ever asks -1, 0 or 1; tilt anything between).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Input {
     /// Left (-1) or right (1).
-    pub turn: i8,
+    pub turn: f32,
     /// Back (-1) or forward (1).
-    pub walk: i8,
+    pub walk: f32,
 }
 
 impl Input {
@@ -154,13 +155,94 @@ impl Input {
             return Self::default();
         };
         let third = |at: u8| match u16::from(at) * 3 / panel {
-            0 => -1,
-            1 => 0,
-            _ => 1,
+            0 => -1.0,
+            1 => 0.0,
+            _ => 1.0,
         };
         Self {
             turn: third(x),
             walk: -third(y),
+        }
+    }
+
+    /// From how the wrist is tilted, `now`, from how it was when the game
+    /// started, `neutral` (accelerations in the watch's axes, 1024 per g:
+    /// x to 3 o'clock, y to 12, z out of the screen, pointing up, away
+    /// from gravity). Rolling the 3 o'clock edge down turns right, and
+    /// up, left; tipping 12 o'clock away, down, walks forward, and
+    /// towards, back. Nothing within [`TILT_DEAD`] g of neutral, full
+    /// speed from [`TILT_FULL`]. `None` for a reading far from 1 g: the
+    /// arm swinging, which says nothing of the tilt.
+    pub fn from_tilt(now: [i16; 3], neutral: [i16; 3]) -> Option<Self> {
+        const G: f32 = 1024.0;
+        let [x, y, z] = now.map(|a| f32::from(a) / G);
+        let magnitude2 = x * x + y * y + z * z;
+        if !(0.7 * 0.7..=1.3 * 1.3).contains(&magnitude2) {
+            return None;
+        }
+        let [nx, ny, _] = neutral.map(|a| f32::from(a) / G);
+        let speed = |tilt: f32| {
+            let past = (tilt.abs() - TILT_DEAD) / (TILT_FULL - TILT_DEAD);
+            past.clamp(0.0, 1.0).copysign(tilt)
+        };
+        // Rolled right, "up" leans to 9 o'clock: x falls. Tipped away, it
+        // leans to 6: y falls.
+        Some(Self {
+            turn: speed(nx - x),
+            walk: speed(ny - y),
+        })
+    }
+}
+
+/// How far from neutral, in g, a tilt starts to count (about 6°), and
+/// goes full speed (about 24°): see [`Input::from_tilt`].
+pub const TILT_DEAD: f32 = 0.1;
+pub const TILT_FULL: f32 = 0.4;
+
+/// How the player steers, as picked on the game's title.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Controls {
+    /// By where a finger's held ([`Input::from_touch`]).
+    #[default]
+    Touch,
+    /// By the wrist's tilt ([`Input::from_tilt`]).
+    Tilt,
+    /// Turning by tilt, walking by touch: the top half of the screen
+    /// forward, the bottom half back.
+    Hybrid,
+}
+
+impl Controls {
+    /// The next, round and round.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Touch => Self::Tilt,
+            Self::Tilt => Self::Hybrid,
+            Self::Hybrid => Self::Touch,
+        }
+    }
+
+    /// Whether it needs the tilt.
+    pub fn tilts(self) -> bool {
+        self != Self::Touch
+    }
+
+    /// What a step asks for, from the finger (as for
+    /// [`Input::from_touch`]) and the tilt ([`Input::from_tilt`]'s, if
+    /// there's one).
+    pub fn input(self, finger: Option<(u8, u8)>, panel: u16, tilt: Option<Input>) -> Input {
+        let tilt = tilt.unwrap_or_default();
+        match self {
+            Self::Touch => Input::from_touch(finger, panel),
+            Self::Tilt => tilt,
+            Self::Hybrid => Input {
+                turn: tilt.turn,
+                walk: match finger {
+                    Some((_, y)) if u16::from(y) * 2 < panel => 1.0,
+                    Some(_) => -1.0,
+                    None => 0.0,
+                },
+            },
         }
     }
 }
@@ -175,7 +257,7 @@ pub fn step(map: &Map, things: &[Thing], player: &mut Player, input: Input, seco
     // A step turns less than a whole turn (see `MAX_STEP`), so one
     // wrap brings it back into `0..TAU`; and once more if that rounded up
     // to `TAU` itself (an angle just below 0).
-    let mut angle = player.angle + f32::from(input.turn) * TURN_SPEED * seconds;
+    let mut angle = player.angle + input.turn.clamp(-1.0, 1.0) * TURN_SPEED * seconds;
     if angle < 0.0 {
         angle += TAU;
     }
@@ -183,11 +265,11 @@ pub fn step(map: &Map, things: &[Thing], player: &mut Player, input: Input, seco
         angle -= TAU;
     }
     player.angle = angle;
-    if input.walk == 0 {
+    if input.walk == 0.0 {
         return false;
     }
     let (fx, fy) = player.facing();
-    let distance = f32::from(input.walk) * WALK_SPEED * seconds;
+    let distance = input.walk.clamp(-1.0, 1.0) * WALK_SPEED * seconds;
     let (dx, dy) = (fx * distance, fy * distance);
     // Each way on its own: what one blocks, the other may still go.
     let mut moved = 0.0;
