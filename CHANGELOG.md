@@ -22,6 +22,7 @@ missing below were test builds for the dev kit.
 
 ### Fixed
 
+- Show a notification's sender or title without the `:shortcodes:` Gadgetbridge sends in place of emoji by default (`Familien :house_with_garden:: Nils` is now `Familien: Nils`, as it would be with the emoji), leaving colons in ordinary text (`Re: lunch`, `10:30`) alone (5969889)
 - Send Gadgetbridge the activity recorded after the phone puts the watch's clock right, when its own clock was ahead and has since been corrected: the minutes from the corrected time on used to be skipped, up to the time the clock had reached while ahead, or up to the fetch after next, so they never reached Gadgetbridge or Health Connect (adfc271)
 - Show the day's colour schemes and daytime brightness by day where the sun sets after local midnight, which had the night's all day: Tromsø the weeks either side of the midnight sun, Reykjavik around midsummer, and anywhere while the phone's time zone is hours from the last location the watch had (1f7bfb3)
 
