@@ -73,11 +73,15 @@ expect dim
 shot dim-notification.png
 wait 6s
 
-# On the charger: setting it there wakes the screen to the clock, and a
-# glance (one shows by itself every 5 minutes there) shows how long the
-# charge has to go.
+# On the charger: setting it there wakes the screen to the clock, which
+# says the heart rate is OFF (it isn't measured there), and a glance (one
+# shows by itself every 5 minutes there) shows how long the charge has to
+# go.
 battery 4000 charging
-wait 11s
+wait 1s
+expect clock
+shot clock-charging.png
+wait 10s
 expect not screen-on
 glance
 wait 1s

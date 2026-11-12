@@ -324,7 +324,7 @@ Each draws its screen from scratch: clear the canvas first, then draw.
 
 | Method | The screen |
 |---|---|
-| `clock` | The clock face (`Face`: the status, the next alarm, media, unseen notifications, whether it's in the dim look) |
+| `clock` | The clock face (`Face`: the status, the next alarm, media, unseen notifications, whether it's in the dim look); on the charger (`status.battery.power_present`) the heart rate isn't measured, which it should say rather than show an old reading (Retro: a grey heart, OFF) |
 | `glance` | A glance: the time, the next turn while the phone navigates, or on the charger the charge (`status.battery`) and the time to full (`charge`; `helpers::to_full` words it), and what a media gesture just did; always in the dim look |
 | `today`, `last_night` | The day's steps and heart rate by the hour; last night's sleep |
 | `alarms`, `phone_alarms` | The alarms, smart wake and timers; the phone's alarms, read-only |

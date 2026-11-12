@@ -198,29 +198,35 @@ pub(super) fn render_clock(canvas: &mut Canvas, face: &Face) {
     // The readings, in one row: the heart rate from the left edge, and the
     // next alarm within a day up to the right one, each an icon, 2 px, and
     // its value, the icon a row above the value's capitals.
+    // On the charger, nothing is measured (see `heart_schedule`'s "The
+    // charger"): the heart goes out, an old handheld's power light off,
+    // and says so, rather than show a reading from before, or "--" as if
+    // one were coming.
     const READING_Y: i32 = 57;
+    let charger = status.battery.power_present;
     let mut bpm = heapless::String::<3>::new();
     match status.heart_rate {
+        _ if charger => bpm.push_str("OFF").fits(),
         Some(rate) => write!(bpm, "{rate}").fits(),
         None => bpm.push_str("--").fits(),
     }
-    canvas.sprite(
-        4,
-        READING_Y - 1,
-        font::HEART_W,
-        &font::HEART,
-        1,
-        Color::HEART,
-    );
-    canvas.sprite(
-        4,
-        READING_Y - 1,
-        font::HEART_W,
-        &font::HEART_SHINE,
-        1,
-        Color::HEART_SHINE,
-    );
-    let bpm_end = canvas.text(4 + font::HEART_W as i32 + 2, READING_Y, &bpm, Color::TEXT);
+    let (heart, text) = if charger {
+        (Color::GREY, Color::TEXT_DIM)
+    } else {
+        (Color::HEART, Color::TEXT)
+    };
+    canvas.sprite(4, READING_Y - 1, font::HEART_W, &font::HEART, 1, heart);
+    if !charger {
+        canvas.sprite(
+            4,
+            READING_Y - 1,
+            font::HEART_W,
+            &font::HEART_SHINE,
+            1,
+            Color::HEART_SHINE,
+        );
+    }
+    let bpm_end = canvas.text(4 + font::HEART_W as i32 + 2, READING_Y, &bpm, text);
 
     if let (Some((kind, at)), Some(now)) = (next_alarm, status.local_second)
         && at - now <= 24 * 60 * 60

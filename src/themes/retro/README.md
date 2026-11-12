@@ -42,6 +42,14 @@ yellow, and deep and REM sleep its cyan and magenta.
 | Last night | <img src="shots/night-last-night.png" width="120" alt="Last night, at night, in ARCADE"> | <img src="shots/day-last-night.png" width="120" alt="Last night, by day, in HANDHELD"> |
 | LOOK, in Settings | <img src="shots/night-look-settings.png" width="120" alt="LOOK's settings, at night, in ARCADE"> | <img src="shots/day-look-settings.png" width="120" alt="LOOK's settings, by day, in HANDHELD"> |
 
+## On the charger
+
+No heart rate is measured there: the heart goes grey, and says OFF.
+
+| On the charger (ARCADE) | By day (HANDHELD) |
+|---|---|
+| <img src="shots/clock-charging.png" width="120" alt="The clock face on the charger, in ARCADE: the battery charging, with its red bolt; the heart grey, with OFF in grey beside it"> | <img src="shots/clock-charging-handheld.png" width="120" alt="The same in HANDHELD: the heart in olive ink rather than its red, with OFF"> |
+
 ## The dim look
 
 | A glance | A notification, with the screen off | A glance on the charger |

@@ -17,7 +17,8 @@
 //!   notifications haven't been seen. That's instead of a handle on the
 //!   top edge, where the time is (see `super`'s `handles`).
 //! - A smaller sign on the left-hand roof shows the heart rate, while
-//!   there's one to show.
+//!   there's one to show; on the charger, where nothing is measured, it
+//!   reads OFF, unlit, and the beacon is dark.
 //!
 //! It paints with colour roles (see `crate::palette`), in the scheme's
 //! palette, the Tokyo Night ones it was drawn in (see [`super::schemes`]).
@@ -193,16 +194,31 @@ pub(super) fn render_clock(canvas: &mut Canvas, face: &Face) {
         None => status.uptime_secs,
     };
     let second = (!face.dim).then_some(second);
-    render_beacon(canvas, status.heart_rate, second);
+    // On the charger, nothing is measured (see `heart_schedule`'s "The
+    // charger"), and a reading from before it is no one's pulse.
+    let charger = status.battery.power_present;
+    let heart_rate = status.heart_rate.filter(|_| !charger);
+    render_beacon(canvas, heart_rate, second);
     if face.unseen {
         render_billboard(canvas, palette, second);
     }
-    if let Some(rate) = status.heart_rate {
-        let mut text = heapless::String::<3>::new();
-        let _ = write!(text, "{rate}");
+    let mut text = heapless::String::<3>::new();
+    let color = match heart_rate {
+        Some(rate) => {
+            let _ = write!(text, "{rate}");
+            Color::HEART
+        }
+        // An unlit tube, as the billboard's flickering out.
+        None if charger => {
+            let _ = text.push_str("OFF");
+            Color::TEXT_FAINT
+        }
+        None => Color::HEART,
+    };
+    if !text.is_empty() {
         let x = PULSE_X + (PULSE_W - font::small_text_width(&text)) / 2;
         render_sign(canvas, palette, PULSE_X, PULSE_Y, PULSE_W, NEAR[0].top);
-        canvas.text(x, PULSE_Y + 1, &text, Color::HEART);
+        canvas.text(x, PULSE_Y + 1, &text, color);
     }
     render_time(canvas, status, face.dim);
 }

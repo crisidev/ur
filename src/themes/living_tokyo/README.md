@@ -4,8 +4,9 @@
 
 A city at night on the clock face, in [Tokyo Night]'s colours: the time
 and its seconds across the top, the moon as the battery, windows lit by
-the day's steps, a beacon blinking and a sign showing the heart rate,
-and a billboard for notifications nobody has seen. It's drawn once a
+the day's steps, a beacon blinking and a sign showing the heart rate
+(OFF, unlit, on the charger, where it isn't measured), and a billboard
+for notifications nobody has seen. It's drawn once a
 second and stays still in the dim look. No weather.
 (`theme-living_tokyo`.)
 
@@ -51,6 +52,12 @@ says.)
 |---|---|
 | Last night | <img src="shots/night-last-night.png" width="120" alt="Last night, at night, in LIVING TOKYO"> |
 | LOOK, in Settings | <img src="shots/night-look-settings.png" width="120" alt="LOOK's settings, at night, in LIVING TOKYO"> |
+
+## On the charger
+
+| On the charger (LIVING TOKYO) |
+|---|
+| <img src="shots/clock-charging.png" width="120" alt="The clock face on the charger: the moon waxing, in green; the beacon dark; and the heart rate's sign reading OFF, unlit"> |
 
 ## The dim look
 
