@@ -97,6 +97,17 @@ mod tests {
             .all(|(ox, oy)| open(map, player.x + ox * RADIUS, player.y + oy * RADIUS))
     }
 
+    /// Whether `player` is clear of walls and of every solid thing.
+    fn clear_of_all(player: &Player) -> bool {
+        let reach = RADIUS + PROP_RADIUS;
+        clear(&MAP, player)
+            && THINGS.iter().all(|t| {
+                !t.kind.solid()
+                    || (t.x - player.x).abs() >= reach
+                    || (t.y - player.y).abs() >= reach
+            })
+    }
+
     #[test]
     fn the_map_is_closed_all_round() {
         for i in 0..MAP_SIZE {
@@ -310,35 +321,59 @@ mod tests {
     fn turning() {
         let mut p = Player::START;
         for _ in 0..20 {
-            assert!(!step(&MAP, &mut p, Input { turn: 1, walk: 0 }, 0.05));
+            assert!(!step(
+                &MAP,
+                &THINGS,
+                &mut p,
+                Input { turn: 1, walk: 0 },
+                0.05
+            ));
         }
         assert!((p.angle - TURN_SPEED).abs() < 1e-4, "{p:?}");
         assert_eq!((p.x, p.y), (Player::START.x, Player::START.y));
         // Left past east wraps round.
         let mut p = Player::START;
-        step(&MAP, &mut p, Input { turn: -1, walk: 0 }, 0.05);
+        step(&MAP, &THINGS, &mut p, Input { turn: -1, walk: 0 }, 0.05);
         assert!((p.angle - (TAU - TURN_SPEED * 0.05)).abs() < 1e-4, "{p:?}");
     }
 
     #[test]
     fn walking() {
         let mut p = Player::START;
-        assert!(!step(&MAP, &mut p, Input { turn: 0, walk: 1 }, 0.1));
+        assert!(!step(
+            &MAP,
+            &THINGS,
+            &mut p,
+            Input { turn: 0, walk: 1 },
+            0.1
+        ));
         assert!(
             (p.x - 1.5 - WALK_SPEED * 0.1).abs() < 1e-5 && p.y == 1.5,
             "{p:?}"
         );
-        assert!(!step(&MAP, &mut p, Input { turn: 0, walk: -1 }, 0.1));
+        assert!(!step(
+            &MAP,
+            &THINGS,
+            &mut p,
+            Input { turn: 0, walk: -1 },
+            0.1
+        ));
         assert!((p.x - 1.5).abs() < 1e-5, "{p:?}");
         // A long gap between frames moves no further than `MAX_STEP`.
         let mut far = Player::START;
-        step(&MAP, &mut far, Input { turn: 1, walk: 1 }, 5.0);
+        step(&MAP, &THINGS, &mut far, Input { turn: 1, walk: 1 }, 5.0);
         let mut most = Player::START;
-        step(&MAP, &mut most, Input { turn: 1, walk: 1 }, MAX_STEP);
+        step(
+            &MAP,
+            &THINGS,
+            &mut most,
+            Input { turn: 1, walk: 1 },
+            MAX_STEP,
+        );
         assert_eq!(far, most);
         // And time going backwards (it can't, but) moves nothing.
         let mut p = Player::START;
-        step(&MAP, &mut p, Input { turn: 1, walk: 1 }, -1.0);
+        step(&MAP, &THINGS, &mut p, Input { turn: 1, walk: 1 }, -1.0);
         assert_eq!(p, Player::START);
     }
 
@@ -347,7 +382,7 @@ mod tests {
         // North, into the top wall: nowhere to go.
         let mut p = player(1.5, 1.0 + RADIUS + 0.01, 3.0 * FRAC_PI_2);
         let before = p;
-        assert!(step(&MAP, &mut p, Input { turn: 0, walk: 1 }, 0.1));
+        assert!(step(&MAP, &THINGS, &mut p, Input { turn: 0, walk: 1 }, 0.1));
         assert!(
             (p.y - before.y).abs() < 0.02 && p.y >= 1.0 + RADIUS,
             "{p:?}"
@@ -361,7 +396,13 @@ mod tests {
         let mut p = player(5.5, 1.0 + RADIUS + 0.01, 3.0 * FRAC_PI_2 + FRAC_PI_4);
         let before = p;
         for _ in 0..5 {
-            assert!(!step(&MAP, &mut p, Input { turn: 0, walk: 1 }, 0.1));
+            assert!(!step(
+                &MAP,
+                &THINGS,
+                &mut p,
+                Input { turn: 0, walk: 1 },
+                0.1
+            ));
         }
         assert!(p.x > before.x + 0.8, "slid east: {p:?}");
         assert!(p.y >= 1.0 + RADIUS && p.y <= before.y, "{p:?}");
@@ -388,10 +429,10 @@ mod tests {
                 _ => rng.unit() * 0.06,
             };
             let before = p;
-            step(&MAP, &mut p, held, seconds);
+            step(&MAP, &THINGS, &mut p, held, seconds);
             assert!(
-                clear(&MAP, &p),
-                "step {i}: from {before:?} into a wall at {p:?}"
+                clear_of_all(&p),
+                "step {i}: from {before:?} into something at {p:?}"
             );
             let moved = ((p.x - before.x).powi(2) + (p.y - before.y).powi(2)).sqrt();
             assert!(
@@ -435,7 +476,8 @@ mod tests {
                     walk: rng.sign(),
                 };
             }
-            step(&MAP, &mut player, held, 0.05);
+            step(&MAP, &THINGS, &mut player, held, 0.05);
+            pick(&THINGS, &mut panel.taken, &player);
             let time_changed = rng.next().is_multiple_of(20);
             if time_changed {
                 time = Some(((rng.next() % 24) as u8, (rng.next() % 60) as u8));
@@ -453,12 +495,156 @@ mod tests {
             );
             frames += 1;
             let mut whole = Panel::new();
+            whole.taken = panel.taken;
             whole.frame(&player, true, time, stats.then_some(&readout), true);
             assert!(panel.pixels == whole.pixels, "frame {i}, at {player:?}");
         }
         // And it's worth it: well under every pixel, on average.
         let average = sent / frames;
         assert!(average < SIZE * SIZE * 2 / 3, "{average} pixels a frame");
+    }
+
+    // ==========================================================================
+    // Things
+    // ==========================================================================
+
+    #[test]
+    fn things_are_apart_and_in_the_open() {
+        for (i, a) in THINGS.iter().enumerate() {
+            assert!(clear(&MAP, &player(a.x, a.y, 0.0)), "{a:?} by a wall");
+            for b in &THINGS[i + 1..] {
+                assert!(
+                    (a.x - b.x).abs() >= 1.0 || (a.y - b.y).abs() >= 1.0,
+                    "{a:?}, {b:?}"
+                );
+            }
+        }
+        assert!(clear_of_all(&Player::START));
+        assert_eq!(gems(&THINGS, 0), (0, 8));
+        assert_eq!(gems(&THINGS, Taken::MAX), (8, 8));
+    }
+
+    /// Every gem can be walked to from the start, the props in the way:
+    /// over every place a player fits, on a grid of a twentieth of a cell.
+    #[test]
+    fn every_gem_can_be_reached() {
+        const STEPS: usize = MAP_SIZE * 20;
+        let at = |i: usize, j: usize| player(i as f32 / 20.0, j as f32 / 20.0, 0.0);
+        let mut seen = vec![false; STEPS * STEPS];
+        let start = (
+            (Player::START.x * 20.0) as usize,
+            (Player::START.y * 20.0) as usize,
+        );
+        let mut todo = vec![start];
+        while let Some((i, j)) = todo.pop() {
+            if seen[j * STEPS + i] || !clear_of_all(&at(i, j)) {
+                continue;
+            }
+            seen[j * STEPS + i] = true;
+            todo.extend([(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)]);
+        }
+        for gem in THINGS.iter().filter(|t| t.kind == Kind::Gem) {
+            let reached = (0..STEPS * STEPS).any(|k| {
+                let p = at(k % STEPS, k / STEPS);
+                seen[k] && (p.x - gem.x).powi(2) + (p.y - gem.y).powi(2) < PICK_RADIUS.powi(2)
+            });
+            assert!(reached, "{gem:?} can't be reached");
+        }
+    }
+
+    #[test]
+    fn props_are_in_the_way() {
+        // West of a barrel, walking east into it.
+        let barrel = THINGS.iter().find(|t| t.kind == Kind::Barrel).unwrap();
+        let mut p = player(barrel.x - RADIUS - PROP_RADIUS - 0.01, barrel.y, 0.0);
+        assert!(step(&MAP, &THINGS, &mut p, Input { turn: 0, walk: 1 }, 0.1));
+        assert!(barrel.x - p.x >= RADIUS + PROP_RADIUS, "{p:?}");
+        // A gem isn't: walking through one takes it.
+        let gem = THINGS[0];
+        assert_eq!(gem.kind, Kind::Gem);
+        let mut p = player(gem.x - 1.0, gem.y, 0.0);
+        let mut taken = 0;
+        for _ in 0..8 {
+            assert!(!step(
+                &MAP,
+                &THINGS,
+                &mut p,
+                Input { turn: 0, walk: 1 },
+                0.05
+            ));
+            pick(&THINGS, &mut taken, &p);
+        }
+        assert_eq!(taken, 1, "{p:?}");
+        // Once.
+        assert!(!pick(&THINGS, &mut taken, &p));
+    }
+
+    /// Where a ray hits a wall, a thing there would be just as far, and
+    /// in the same column.
+    #[test]
+    fn things_project_where_rays_go() {
+        let mut rng = Rng(0x5eed);
+        for _ in 0..500 {
+            let p = player(
+                1.5 + rng.unit() * 13.0,
+                1.5 + rng.unit() * 13.0,
+                rng.unit() * TAU,
+            );
+            if !clear(&MAP, &p) {
+                continue;
+            }
+            let camera = Camera::new(&p, SIZE, SIZE);
+            let a = rng.unit() * 2.0 - 1.0;
+            let hit = cast(&MAP, &camera, a);
+            let (fx, fy) = p.facing();
+            let ray = (fx - fy * 0.5 * a, fy + fx * 0.5 * a);
+            let at = (p.x + hit.distance * ray.0, p.y + hit.distance * ray.1);
+            let (across, ahead) = camera.project(at.0, at.1).unwrap();
+            assert!((across - a).abs() < 1e-3, "{across} for {a}");
+            assert!((ahead - hit.distance).abs() < 1e-3 * hit.distance.max(1.0));
+        }
+        // Behind, nothing.
+        let camera = Camera::new(&Player::START, SIZE, SIZE);
+        assert_eq!(camera.project(0.5, 1.5), None);
+    }
+
+    /// A gem behind a wall doesn't show; one in front does.
+    #[test]
+    fn walls_hide_things() {
+        let gem = THINGS[1];
+        assert_eq!((gem.x, gem.y), (10.5, 4.5));
+        let frame = |p: &Player, taken| {
+            let mut panel = Panel::new();
+            panel.taken = taken;
+            panel.frame(p, true, None, None, true);
+            // Below the HUD, whose count differs.
+            panel.pixels[40 * SIZE..].to_vec()
+        };
+        // West of the room it's in, looking at it through the room's wall.
+        let behind = player(7.5, 4.5, 0.0);
+        assert_eq!(frame(&behind, 0), frame(&behind, 0b10));
+        // In the room, looking at it.
+        let front = player(10.5, 5.5, 3.0 * FRAC_PI_2);
+        assert_ne!(frame(&front, 0), frame(&front, 0b10));
+    }
+
+    /// Walking along the top row through a gem, every frame sent only
+    /// where it changed: the gem goes, and the frames stay right.
+    #[test]
+    fn taking_a_gem_redraws_where_it_was() {
+        let mut p = player(10.0, 1.5, 0.0);
+        let mut panel = Panel::new();
+        panel.frame(&p, true, None, None, true);
+        for i in 0..40 {
+            step(&MAP, &THINGS, &mut p, Input { turn: 0, walk: 1 }, 0.05);
+            pick(&THINGS, &mut panel.taken, &p);
+            panel.frame_changing(&p, None, None, false, false);
+            let mut whole = Panel::new();
+            whole.taken = panel.taken;
+            whole.frame(&p, true, None, None, true);
+            assert!(panel.pixels == whole.pixels, "frame {i}, at {p:?}");
+        }
+        assert_eq!(panel.taken, 1);
     }
 
     /// Columns share windows wherever they can: one for a whole frame,
@@ -472,7 +658,7 @@ mod tests {
         // Up against a wall, a step back: every column changes, all of it.
         let mut p = player(1.5, 1.0 + RADIUS + 0.01, 3.0 * FRAC_PI_2);
         panel.frame(&p, true, None, Some(&readout), true);
-        step(&MAP, &mut p, Input { turn: 0, walk: -1 }, 0.02);
+        step(&MAP, &THINGS, &mut p, Input { turn: 0, walk: -1 }, 0.02);
         panel.frame_changing(&p, None, Some(&readout), false, false);
         assert!(panel.windows <= 3, "{} windows", panel.windows);
         // A random walk: far fewer windows than columns.
@@ -484,7 +670,7 @@ mod tests {
                 turn: if i % 40 < 20 { 1 } else { rng.sign() },
                 walk: rng.sign(),
             };
-            step(&MAP, &mut p, held, 0.05);
+            step(&MAP, &THINGS, &mut p, held, 0.05);
             panel.frame_changing(&p, None, Some(&readout), false, false);
             windows += panel.windows;
             frames += 1;

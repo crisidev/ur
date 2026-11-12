@@ -1,14 +1,18 @@
 //! A panel for the view to be sent to, as the watch's: what `game` sends
 //! of each column (`game_view::view_column`) lands in it.
 
-use crate::game_view::{self, Hud, RGB444, Readout, SIZE, view_column};
-use crate::raycast::{Camera, Player};
+use crate::game_view::{self, Hud, RGB444, Readout, SIZE, Sprites, view_column};
+use crate::raycast::{self, Camera, Player, THINGS, Taken};
 
 pub struct Panel {
     /// RGB565 (or RGB444's 12 bits), by row.
     pub pixels: Vec<u16>,
-    /// Where each column's wall was (`game`'s lent front buffer).
+    /// What each column showed (`game`'s lent front buffer).
     walls: Vec<[u8; 2]>,
+    /// The gems taken, of `raycast::THINGS`, as the game keeps them.
+    pub taken: Taken,
+    /// What the HUD last showed of them.
+    shown_gems: Option<(u8, u8)>,
     /// Windows the last frame opened, as `Display::stream_columns`
     /// would (without its limit on a window's columns).
     pub windows: usize,
@@ -19,6 +23,8 @@ impl Panel {
         Self {
             pixels: vec![0; SIZE * SIZE],
             walls: vec![[0; 2]; SIZE],
+            taken: 0,
+            shown_gems: None,
             windows: 0,
         }
     }
@@ -57,13 +63,18 @@ impl Panel {
         time_changed: bool,
         readout_changed: bool,
     ) -> usize {
+        let gems = raycast::gems(&THINGS, self.taken);
+        let gems_changed = self.shown_gems.replace(gems) != Some(gems);
         let hud = Hud {
             time,
+            gems,
+            gems_changed: whole || gems_changed,
             readout,
             time_changed: whole || time_changed,
             readout_changed: whole || readout_changed,
         };
         let camera = Camera::new(player, SIZE, SIZE);
+        let sprites = Sprites::of(&camera, &THINGS, self.taken);
         let mut column = [0u8; SIZE * 2];
         let mut sent = 0;
         let mut last = 0..0;
@@ -72,6 +83,7 @@ impl Panel {
             let before = last.clone();
             let rows = view_column(
                 &camera,
+                &sprites,
                 x,
                 &mut column,
                 &mut self.walls[x],

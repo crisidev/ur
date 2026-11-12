@@ -166,10 +166,11 @@ impl Input {
 }
 
 /// Moves `player` as `input` asks, over `seconds` (up to [`MAX_STEP`]).
-/// Walls stop them, but only along the way they're in: walking into one
-/// at an angle slides along it. Whether a wall stopped them, of most of
-/// the way they asked to go: a bump.
-pub fn step(map: &Map, player: &mut Player, input: Input, seconds: f32) -> bool {
+/// Walls stop them, and solid `things` ([`Kind::solid`]), but only along
+/// the way they're in: walking into one at an angle slides along it.
+/// Whether something stopped them, of most of the way they asked to go:
+/// a bump.
+pub fn step(map: &Map, things: &[Thing], player: &mut Player, input: Input, seconds: f32) -> bool {
     let seconds = seconds.clamp(0.0, MAX_STEP);
     // A step turns less than a whole turn (see `MAX_STEP`), so one
     // wrap brings it back into `0..TAU`; and once more if that rounded up
@@ -190,29 +191,139 @@ pub fn step(map: &Map, player: &mut Player, input: Input, seconds: f32) -> bool 
     let (dx, dy) = (fx * distance, fy * distance);
     // Each way on its own: what one blocks, the other may still go.
     let mut moved = 0.0;
-    if !blocked(map, player.x + dx, player.y) {
+    if !blocked(map, things, player.x + dx, player.y) {
         player.x += dx;
         moved += dx * dx;
     }
-    if !blocked(map, player.x, player.y + dy) {
+    if !blocked(map, things, player.x, player.y + dy) {
         player.y += dy;
         moved += dy * dy;
     }
     moved < distance * distance / 4.0
 }
 
-/// Whether a player at (`x`, `y`) would be in a wall: any of their
-/// square's corners in one.
-fn blocked(map: &Map, x: f32, y: f32) -> bool {
+/// Whether a player at (`x`, `y`) would be in a wall, or a solid thing:
+/// any of their square's corners in a wall, or their square overlapping
+/// the thing's.
+fn blocked(map: &Map, things: &[Thing], x: f32, y: f32) -> bool {
     let cell = |v: f32| libm::floorf(v) as i32;
-    [
+    let walls = [
         (-RADIUS, -RADIUS),
         (RADIUS, -RADIUS),
         (-RADIUS, RADIUS),
         (RADIUS, RADIUS),
     ]
     .iter()
-    .any(|&(ox, oy)| wall(map, cell(x + ox), cell(y + oy)) != 0)
+    .any(|&(ox, oy)| wall(map, cell(x + ox), cell(y + oy)) != 0);
+    let reach = RADIUS + PROP_RADIUS;
+    walls
+        || things
+            .iter()
+            .any(|t| t.kind.solid() && (t.x - x).abs() < reach && (t.y - y).abs() < reach)
+}
+
+// ==============================================================================
+// Things: gems to find, and props in the way
+// ==============================================================================
+
+/// What a thing in the world is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// To find: walked into, it's taken ([`pick`]).
+    Gem,
+    Barrel,
+    Pillar,
+}
+
+impl Kind {
+    /// Whether it's in the way ([`step`]): all but gems.
+    pub const fn solid(self) -> bool {
+        !matches!(self, Self::Gem)
+    }
+
+    /// How tall it stands on the floor, as a fraction of a wall: and as
+    /// wide, its picture being square.
+    pub const fn height(self) -> f32 {
+        match self {
+            Self::Gem => 0.35,
+            Self::Barrel => 0.6,
+            Self::Pillar => 1.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Thing {
+    /// Where its middle is.
+    pub x: f32,
+    pub y: f32,
+    pub kind: Kind,
+}
+
+/// How far a solid thing reaches, as a square this far each way from its
+/// middle (see [`blocked`]).
+pub const PROP_RADIUS: f32 = 0.3;
+/// How near a gem's middle the player's must come to take it.
+pub const PICK_RADIUS: f32 = 0.45;
+
+/// Everything in [`MAP`], each in an open cell's middle.
+pub const THINGS: [Thing; 12] = {
+    const fn at(x: usize, y: usize, kind: Kind) -> Thing {
+        assert!(MAP[y][x] == 0, "a thing in a wall");
+        Thing {
+            x: x as f32 + 0.5,
+            y: y as f32 + 0.5,
+            kind,
+        }
+    }
+    [
+        at(13, 1, Kind::Gem),
+        at(10, 4, Kind::Gem),
+        at(4, 4, Kind::Gem),
+        at(14, 7, Kind::Gem),
+        at(6, 9, Kind::Gem),
+        at(13, 11, Kind::Gem),
+        at(8, 13, Kind::Gem),
+        at(1, 14, Kind::Gem),
+        at(7, 5, Kind::Barrel),
+        at(11, 13, Kind::Barrel),
+        at(3, 7, Kind::Pillar),
+        at(13, 5, Kind::Pillar),
+    ]
+};
+
+/// Which of [`THINGS`] have been taken, a bit each (only gems are).
+pub type Taken = u16;
+const _: () = assert!(THINGS.len() <= Taken::BITS as usize);
+
+/// The gems among `things`, and how many of them are taken.
+pub fn gems(things: &[Thing], taken: Taken) -> (u8, u8) {
+    let mut found = 0;
+    let mut all = 0;
+    for (i, thing) in things.iter().enumerate() {
+        if thing.kind == Kind::Gem {
+            all += 1;
+            found += u8::from(taken >> i & 1 != 0);
+        }
+    }
+    (found, all)
+}
+
+/// Takes any gem not yet taken that `player` is within [`PICK_RADIUS`] of;
+/// whether one was.
+pub fn pick(things: &[Thing], taken: &mut Taken, player: &Player) -> bool {
+    let mut picked = false;
+    for (i, thing) in things.iter().enumerate() {
+        let (dx, dy) = (thing.x - player.x, thing.y - player.y);
+        if thing.kind == Kind::Gem
+            && *taken >> i & 1 == 0
+            && dx * dx + dy * dy < PICK_RADIUS * PICK_RADIUS
+        {
+            *taken |= 1 << i;
+            picked = true;
+        }
+    }
+    picked
 }
 
 /// The player's view, for a frame's rays: where they stand, the way they
@@ -239,6 +350,19 @@ impl Camera {
             facing: (fx, fy),
             plane: (-fy * half_width, fx * half_width),
         }
+    }
+
+    /// Where a point in the world is in the view, if it's ahead: across it
+    /// as for [`cast`] (-1 at the left edge, 1 at the right, beyond them
+    /// outside it), and how far ahead, as walls' distances are.
+    pub fn project(&self, x: f32, y: f32) -> Option<(f32, f32)> {
+        let (dx, dy) = (x - self.x, y - self.y);
+        // The point as so much of the plane and of the way faced: the
+        // inverse of their matrix.
+        let det = self.plane.0 * self.facing.1 - self.facing.0 * self.plane.1;
+        let across = (self.facing.1 * dx - self.facing.0 * dy) / det;
+        let ahead = (self.plane.0 * dy - self.plane.1 * dx) / det;
+        (ahead >= NEAREST).then(|| (across / ahead, ahead))
     }
 }
 

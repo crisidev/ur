@@ -21,24 +21,32 @@
 //! column ([`Order::Columns`]), and the UI loop switches back ([`leave`])
 //! before the canvas draws again.
 //!
+//! In the world are things ([`THINGS`]): gems to find, by walking into
+//! them (a knock each, a flourish for the last; once all are found, they
+//! come back when the game next starts), and barrels and pillars in the
+//! way. Each is a picture standing on the floor, always facing the player
+//! ([`Sprites`]), drawn in a column only if it's nearer than the wall
+//! there, which the column's own ray says: so no depth buffer.
+//!
 //! The whole panel is more than the bus can send many times a second
 //! (115 KB a frame, 8 MHz: under 9). But the ceiling and floor are the
-//! same every frame, so only walls need sending: in each column, the rows
-//! its wall covers now, and those it covered last frame, which go back to
-//! ceiling and floor. Where the walls were is kept in the canvas's other
-//! buffer, also lent. Over it all, the HUD ([`Hud`]): the time, and, with
-//! the `game-stats` feature, the last second's frame rate and times (see
-//! [`Stats`]), for a sealed watch without a probe to read the log; their
-//! rows are sent when they change.
+//! same every frame, so only what's in front of them needs sending: in
+//! each column, the rows its wall and things cover now, and those they
+//! covered last frame, which go back to ceiling and floor. Which those
+//! were is kept in the canvas's other buffer, also lent. Over it all, the
+//! HUD ([`Hud`]): the time, the gems found, and, with the `game-stats`
+//! feature, the last second's frame rate and times (see [`Stats`]), for
+//! a sealed watch without a probe to read the log; their rows are sent
+//! when they change.
 
 use embassy_time::{Duration, Instant};
 
 use crate::canvas::{self, Canvas, Color};
 use crate::display::{Display, Format, Order};
 use crate::font;
-use crate::game_view::{self as view, Hud, Readout, view_column};
+use crate::game_view::{self as view, Hud, Readout, Sprites, view_column};
 use crate::motor::{self, Pattern};
-use crate::raycast::{self, Camera, Input, MAP, Player};
+use crate::raycast::{self, Camera, Input, MAP, Player, THINGS, Taken};
 
 /// The panel's width and height, in pixels: the view's.
 const PANEL: usize = canvas::WIDTH * canvas::SCALE;
@@ -55,10 +63,13 @@ const FORMAT: Format = if view::RGB444 {
 /// packed to [`FORMAT`] (see [`view_column`]).
 const COLUMN: usize = PANEL * 2;
 const _: () = assert!(2 * COLUMN <= canvas::LENT, "two columns in the batch");
-/// Where the walls were, each column's first row and the one after its
-/// last (see [`view_column`]).
-const WALLS: usize = PANEL * 2;
-const _: () = assert!(WALLS <= canvas::LENT_FRONT, "the walls in the front buffer");
+/// What each column showed in front of the ceiling and floor: its first
+/// row and the one after its last (see [`view_column`]).
+const SHOWN: usize = PANEL * 2;
+const _: () = assert!(
+    SHOWN <= canvas::LENT_FRONT,
+    "what's shown in the front buffer"
+);
 
 /// How long without a finger on the screen pauses the game. The screen
 /// then goes off as after any input, `ui`'s timeout later.
@@ -84,8 +95,13 @@ pub struct Game {
     bumped: bool,
     /// Kept while paused: a game picks up where it left off.
     player: Player,
+    /// The gems found ([`THINGS`]'), until all are and the game next
+    /// starts.
+    taken: Taken,
+    /// Whether that changed since the HUD last showed it.
+    found: bool,
     /// Whether the next frame sends every pixel: the panel shows
-    /// something else (the title), and where the walls were means nothing.
+    /// something else (the title), and what columns showed means nothing.
     whole: bool,
     /// The time the HUD shows, as hours and minutes, if known.
     shown_time: Option<(u8, u8)>,
@@ -100,6 +116,8 @@ impl Game {
             stepped: Instant::from_ticks(0),
             bumped: false,
             player: Player::START,
+            taken: 0,
+            found: false,
             whole: true,
             shown_time: None,
         }
@@ -113,6 +131,11 @@ impl Game {
         self.stepped = now;
         self.bumped = false;
         self.whole = true;
+        // All found last time: they're back.
+        let (found, all) = raycast::gems(&THINGS, self.taken);
+        if found == all {
+            self.taken = 0;
+        }
         cycles::enable();
         cache(true);
     }
@@ -134,11 +157,20 @@ impl Game {
         let seconds = (now - self.stepped).as_micros() as f32 / 1e6;
         self.stepped = now;
         let input = Input::from_touch(finger_at, PANEL as u16);
-        let bumped = raycast::step(&MAP, &mut self.player, input, seconds);
+        let bumped = raycast::step(&MAP, &THINGS, &mut self.player, input, seconds);
         if bumped && !self.bumped {
             motor::buzz(Pattern::BUMP);
         }
         self.bumped = bumped;
+        if raycast::pick(&THINGS, &mut self.taken, &self.player) {
+            self.found = true;
+            let (found, all) = raycast::gems(&THINGS, self.taken);
+            motor::buzz(if found == all {
+                Pattern::ALL_FOUND
+            } else {
+                Pattern::FOUND
+            });
+        }
     }
 
     /// Whether it's gone [`IDLE`] without a touch.
@@ -188,18 +220,21 @@ pub async fn frame(
     let (batch, front) = lent;
     let (sending, rest) = batch.split_at_mut(COLUMN);
     let making = &mut rest[..COLUMN];
-    let walls = front[..WALLS].as_chunks_mut::<2>().0;
+    let shown = front[..SHOWN].as_chunks_mut::<2>().0;
     let whole = core::mem::take(&mut game.whole);
     let time = crate::clock::now().map(|t| (t.hour, t.minute));
     let time_changed = time != core::mem::replace(&mut game.shown_time, time);
     let readout_changed = core::mem::take(&mut stats.readout_changed);
     let hud = Hud {
         time,
+        gems: raycast::gems(&THINGS, game.taken),
         readout: cfg!(feature = "game-stats").then_some(&stats.readout),
         time_changed: whole || time_changed,
+        gems_changed: whole || core::mem::take(&mut game.found),
         readout_changed: whole || readout_changed,
     };
     let camera = Camera::new(&game.player, PANEL, PANEL);
+    let sprites = Sprites::of(&camera, &THINGS, game.taken);
     let mut fill_cycles = 0u32;
     let mut pixels = 0u32;
     let mut sent = 0..0;
@@ -207,7 +242,16 @@ pub async fn frame(
         .stream_columns(0..PANEL as u16, (sending, making), |x, column| {
             let start = cycles::now();
             let x = usize::from(x);
-            let rows = view_column(&camera, x, column, &mut walls[x], &mut sent, whole, &hud);
+            let rows = view_column(
+                &camera,
+                &sprites,
+                x,
+                column,
+                &mut shown[x],
+                &mut sent,
+                whole,
+                &hud,
+            );
             pixels += rows.len() as u32;
             fill_cycles = fill_cycles.wrapping_add(cycles::now().wrapping_sub(start));
             rows.start as u16..rows.end as u16

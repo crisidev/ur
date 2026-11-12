@@ -66,6 +66,12 @@ impl Pattern {
     /// The game's player walked into a wall (see `crate::game`): a knock.
     #[cfg(feature = "game")]
     pub const BUMP: Self = Self::new(&[25], None);
+    /// The game's player found a gem: two quick taps.
+    #[cfg(feature = "game")]
+    pub const FOUND: Self = Self::new(&[30, 50, 30], None);
+    /// And the last of them: a flourish.
+    #[cfg(feature = "game")]
+    pub const ALL_FOUND: Self = Self::new(&[40, 60, 40, 60, 200], None);
     /// Incoming call: rings until stopped.
     pub const RING: Self = Self::new(&[400, 600], Some(0));
     /// Timers: two quick pulses and a pause, so it's not mistaken for a
