@@ -239,6 +239,9 @@ if ((${#others[@]} > 0)); then
   done <<<"$listing"
 fi
 
-(cd "$out" && sha256sum -- ur-*"$version"* >sha256.sum)
+# In the C locale, so the glob lists the files in the same (byte) order
+# wherever this runs: in en_US.UTF-8, `ur-0.9.0.img` sorts before
+# `ur-0.9.0-slot.elf`, in C after, and sha256.sum is itself released.
+(cd "$out" && LC_ALL=C && sha256sum -- ur-*"$version"* >sha256.sum)
 echo "== built $UR_VERSION into $out" >&2
 cat "$out/sha256.sum" >&2
