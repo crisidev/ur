@@ -1975,7 +1975,12 @@ mod tests {
             if released.is_none() && now > 60 + 400 && hold.is_none_or(|h| h.from > NOON + 460) {
                 released = Some(now);
             }
+            // Bar a hold from the minute under way, which holds nothing
+            // back (a fetch never sends its bucket): a calm minute before
+            // it may make it the first of a stillness, now and then even
+            // when walking.
             if released.is_some() && !held(now) {
+                let hold = hold.filter(|hold| hold.from < NOON + now as i64);
                 assert_eq!(hold, None, "seed {seed}: held at {now}");
             }
         }
@@ -1992,11 +1997,16 @@ mod tests {
     /// `SAME_NIGHT_GAP` minutes, rather than for 135; nor are the
     /// minutes after it, which go as they come; and it's the night the
     /// watch would have settled to by itself.
+    ///
+    /// Or a minute later, now and then: walking, a calm minute may make
+    /// the minute under way the first of a stillness, as far as can be
+    /// told before it's over, and settling waits that out.
     #[test]
     fn a_night_goes_soon_after_getting_up() {
         for seed in 0..50 {
             let after = released_after(seed, Truth::Active, |_| false);
-            assert_eq!(after, sleep::SAME_NIGHT_GAP + 2, "seed {seed}");
+            let soon = sleep::SAME_NIGHT_GAP + 2;
+            assert!((soon..=soon + 1).contains(&after), "seed {seed}: {after}");
         }
     }
 
@@ -2040,41 +2050,85 @@ mod tests {
     /// updates) is the watch's final one, as are its steps, heart rate and
     /// movement; and it has every step from where the first fetch started
     /// to where the last ended, the night included.
+    fn gets_the_settled_night(night: &Night, gaps: &[(u16, u8, bool)]) -> bool {
+        let fetched = fetch_night(night, gaps);
+        let full = fetched.watch.recorded();
+        let wrong: Vec<_> = fetched
+            .store
+            .iter()
+            .filter(|&(&timestamp, stored)| {
+                let start = start_of(timestamp.div_euclid(60));
+                reference(&full, start).is_none_or(|b| {
+                    b.timestamp_ms() / 1000 != timestamp
+                        || stored.steps != b.steps
+                        || stored.heart_rate != b.heart_rate
+                        || stored.intensity != b.movement
+                        || stored.kind != b.kind
+                })
+            })
+            .collect();
+        let steps = fetched.store.values().map(|s| s.steps).sum::<u32>();
+        let expected = steps_in(&full, fetched.from, fetched.to);
+        if !wrong.is_empty() || steps != expected || fetched.last_held_sleep {
+            eprintln!(
+                "{night:?}\n{gaps:?}\n{} wrong, e.g. {:?}; {steps} steps of {expected}; held at the end: {}",
+                wrong.len(),
+                wrong.first(),
+                fetched.last_held_sleep,
+            );
+            return false;
+        }
+        true
+    }
+
     #[test]
     fn gadgetbridge_gets_the_settled_night() {
         fn property(night: Night, gaps: Vec<(u16, u8, bool)>) -> bool {
-            let fetched = fetch_night(&night, &gaps);
-            let full = fetched.watch.recorded();
-            let wrong: Vec<_> = fetched
-                .store
-                .iter()
-                .filter(|&(&timestamp, stored)| {
-                    let start = start_of(timestamp.div_euclid(60));
-                    reference(&full, start).is_none_or(|b| {
-                        b.timestamp_ms() / 1000 != timestamp
-                            || stored.steps != b.steps
-                            || stored.heart_rate != b.heart_rate
-                            || stored.intensity != b.movement
-                            || stored.kind != b.kind
-                    })
-                })
-                .collect();
-            let steps = fetched.store.values().map(|s| s.steps).sum::<u32>();
-            let expected = steps_in(&full, fetched.from, fetched.to);
-            if !wrong.is_empty() || steps != expected || fetched.last_held_sleep {
-                eprintln!(
-                    "{night:?}\n{gaps:?}\n{} wrong, e.g. {:?}; {steps} steps of {expected}; held at the end: {}",
-                    wrong.len(),
-                    wrong.first(),
-                    fetched.last_held_sleep,
-                );
-                return false;
-            }
-            true
+            gets_the_settled_night(&night, &gaps)
         }
         QuickCheck::new()
             .tests(1_000)
             .quickcheck(property as fn(Night, Vec<(u16, u8, bool)>) -> bool);
+    }
+
+    /// Days and nights on which [`gets_the_settled_night`] once failed, a
+    /// few times in a hundred runs of its 1000 random ones: each sent
+    /// minutes as awake that the watch later made sleep.
+    #[test]
+    fn gadgetbridge_got_these_nights_wrong_once() {
+        use Truth::*;
+        let cases = [
+            // Settling down on the sofa: a restless minute, then the
+            // first minute of the night under way, which the hold took
+            // for not still, and so the stillness before it neither (see
+            // `sleep::unsettled_onset`).
+            (
+                vec![
+                    (Active, 204),
+                    (Lounging, 16),
+                    (DeepAsleep, 53),
+                    (Rem, 71),
+                    (Up, 6),
+                    (Asleep, 20),
+                    (DeepAsleep, 36),
+                    (Rem, 21),
+                    (DeepAsleep, 75),
+                    (OffWrist, 25),
+                    (Lounging, 8),
+                    (Active, 42),
+                    (Asleep, 29),
+                    (Active, 300),
+                ],
+                14_983_726_151_220_855_959,
+                vec![(34192, 0, false), (19107, 0, false)],
+            ),
+        ];
+        for (spans, seed, gaps) in cases {
+            assert!(
+                gets_the_settled_night(&Night { spans, seed }, &gaps),
+                "seed {seed}"
+            );
+        }
     }
 }
 

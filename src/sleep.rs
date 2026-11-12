@@ -292,19 +292,31 @@ pub const ONSET_SPAN: usize = ONSET + STIR + 2 + 1;
 ///
 /// The newest minute is under way, so its own and its predecessor's
 /// smoothed movement aren't final: they count as still if they may yet
-/// turn out so, should the wrist not move for the rest of the minute.
-/// (Its steps so far can only grow.)
+/// turn out so, should the wrist not move for the rest of the minute,
+/// nor the next. That next minute matters: a later pass smooths the
+/// newest over three minutes, not the two this one has, so a newest
+/// minute after a restless one (280, say, then nothing: 140 over two,
+/// but 93 over three) may be still after all, and with it the stillness
+/// before it, bridging the restless minutes as a stir. Without it, a
+/// wearer settling down on the sofa read as not still here, and the
+/// minutes before went to Gadgetbridge as awake, to become the start of
+/// the night a few minutes later. (Its steps so far can only grow.)
 ///
 /// Sleep that has started is a sleep's to settle (see `crate::sleep_hold`).
 pub fn unsettled_onset(minutes: &[Minute]) -> Option<usize> {
     let n = minutes.len();
-    // The newest three, the newest without movement from here on.
+    // The newest three, the newest without movement from here on, and a
+    // still minute after it, which is only its neighbour.
     let tail = n.saturating_sub(3);
-    let mut ending = [Minute::default(); 3];
-    let ending = &mut ending[..n - tail];
-    ending.copy_from_slice(&minutes[tail..]);
-    if let Some(newest) = ending.last_mut() {
+    let mut ending = [Minute::default(); 4];
+    let ending = &mut ending[..n - tail + 1];
+    ending[..n - tail].copy_from_slice(&minutes[tail..]);
+    if let [.., newest, next] = ending {
         newest.movement = 0;
+        *next = Minute {
+            seen: true,
+            ..Minute::default()
+        };
     }
     let still = |t: usize| {
         if t + 2 >= n {
